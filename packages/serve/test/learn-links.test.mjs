@@ -1,6 +1,6 @@
 // Every path the end of a run takes into its agent's learning folder goes through agentFolder (learning.ts): the
 // end-of-run turn's seed, read again; the check of what the turn wrote against that seed; the grade's read of main; and
-// the merge. With a link planted at homes/<key>/learning (homeOf), to a folder that works, each refuses: the run's
+// the merge. With a link planted at disk/agents/<key>/learning (agentFolderOf), to a folder that works, each refuses: the run's
 // learning is dropped with that step's reason, and nothing is read or written through the link.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, made, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
 
@@ -46,7 +46,7 @@ test("a link planted at the agent's learning folder after the run started: the e
   const answer = join(dir, "answer");
   await made(api, learner("seeder", { instructions: `Answer once ${answer} exists.`, plan: PLAN }));
   const seeder = await started(api, "seeder");
-  await until("the run is seeded", () => existsSync(join(data, "runs", seeder, "learning.json")));
+  await until("the run is seeded", () => existsSync(join(runDir(data, seeder), "learning.json")));
   const seederAside = join(dir, "seeder-learning");
   plant(data, "seeder", seederAside);
   const seederBefore = tree(seederAside);
@@ -67,7 +67,7 @@ test("a link planted at the agent's learning folder after the run started: the e
   writeFileSync(reflect, "");
   const two = await ended(api, proposer);
   settled(two.view, two.rows, "dropped", "propose_failed");
-  assert.equal(existsSync(join(data, "runs", proposer, "learning-proposal.json")), false, "nothing was proposed");
+  assert.equal(existsSync(join(runDir(data, proposer), "learning-proposal.json")), false, "nothing was proposed");
   assert.deepEqual(tree(proposerAside), proposerBefore, "nothing written through the link");
 });
 
@@ -87,7 +87,7 @@ test("a link planted at the agent's learning folder while a run's proposal waits
   await first.close();
   delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
   // The merger's verdict was kept before the server went: its next start merges on it, without reading main to grade.
-  const file = join(data, "runs", runs.merger, "serve.json");
+  const file = join(runDir(data, runs.merger), "serve.json");
   const meta = JSON.parse(readFileSync(file, "utf8"));
   assert.equal(meta.learning.state, "proposed");
   writeFileSync(file, JSON.stringify({ ...meta, learning: { ...meta.learning, verdict: { merge: true, reason: "Each note is general and new.", items: [{ file: "check-units.md", keep: true, why: "It holds as a general rule." }] }, cost_usd: { grade: 0.001 }, tokens: { grade: { input: 1, cache_read: 0, cache_write: 0, output: 1 } } } }));

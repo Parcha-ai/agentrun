@@ -12,25 +12,25 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import * as disk from "@parcha/pi-durable-disk";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
 const RAISED = "The cap was raised to $5; continue the task.";
-const recordOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8"));
+const recordOf = (data, runId) => runRecordOf(data, runId);
 const shown = (rows) => JSON.stringify(rows.map((r) => [r.kind, r.summary]));
 
 /** POST /submit to the run's own door, as serve's submit sends a message, with `origin`. */
 async function toDoor(data, runId, body) {
   const door = recordOf(data, runId).holder.serve;
-  const token = readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  const token = readFileSync(join(runDir(data, runId), "door-token"), "utf8").trim();
   const res = await fetch(new URL("/submit", door), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
 /** The run's store's entries, in order. */
 function storeEntries(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record)));
   } finally {

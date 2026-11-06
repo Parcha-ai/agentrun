@@ -77,6 +77,14 @@ test("a draft with a node the learned runner cannot run (a judge, pick or sift n
   assert.match(result.problems[0].detail, /judge node "refund" requires runJudge: a learned workflow runs model and tool-call nodes/, result.problems[0].detail);
 });
 
+test("a draft whose output names no path is refused as workflow at learn time: a learned workflow's output is the value at output.path", () => {
+  const doc = JSON.parse(workflow());
+  delete doc.output.path;
+  const result = check(draft(JSON.stringify(doc, null, 2)));
+  assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(result.problems));
+  assert.match(result.problems[0].detail, /its output names no path: a learned workflow's output is the value at output\.path/);
+});
+
 test("a draft whose model node names any tool is refused as workflow, though the agent was granted it: a learned model node runs without tools, so it is refused at learn time, never at a call after earlier nodes spent", () => {
   for (const named of [["web_fetch"], ["web_search"]]) {
     for (const node of ["agent", "extract"]) {
@@ -121,7 +129,7 @@ test("a draft with a code node, or a call via shell or executor, is refused as e
   }
   // Inside a child workflow too.
   const doc = JSON.parse(richWorkflow());
-  doc.root.steps[1] = { node: "workflow", label: "fetch", workflow: { v: 2, name: "inner", schemas: doc.schemas, input: { schemaId: "Store" }, output: { schemaId: "Page" }, root: { ...SHELL, label: "run" } }, input: { url: "{url}" }, out: "Page", as: "page" };
+  doc.root.steps[1] = { node: "workflow", label: "fetch", workflow: { v: 2, name: "inner", schemas: doc.schemas, input: { schemaId: "Store" }, output: { schemaId: "Page", path: "page" }, root: { ...SHELL, label: "run" } }, input: { url: "{url}" }, out: "Page", as: "page" };
   assert.deepEqual(rules(check(draft(JSON.stringify(doc)))), ["executable_node"]);
 });
 
@@ -303,6 +311,19 @@ test("the tools a learned draft may name are the granted ones the gate allows: o
   assert.equal(typeof tools.learnedDraftTools, "function");
   const granted = ["read", "web_fetch", "web_search"];
   const permission = (name) => (name === "web_fetch" ? "ask" : name === "web_search" ? "deny" : "allow");
-  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" } });
-  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {} });
+  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" }, deniedBy: {} });
+  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {}, deniedBy: {} });
+  // With where each was set, a deny names it.
+  assert.deepEqual(tools.learnedDraftTools(granted, permission, undefined, () => "agent").deniedBy, { web_search: "agent" });
+});
+
+test("a composed workflow node whose child names no output path is refused at learn time too, never after its nodes ran", () => {
+  const child = JSON.parse(callDraft("web_fetch"));
+  delete child.output.path;
+  const doc = JSON.parse(composedDraft("web_fetch"));
+  doc.root.workflow = child;
+  const result = check(draft(JSON.stringify(doc)));
+  assert.deepEqual(result.problems.map((p) => p.rule), ["workflow"], JSON.stringify(result.problems));
+  assert.match(result.problems[0].detail, /the workflow node at \/root: its output names no path/, result.problems[0].detail);
+  assert.ok(check(draft(composedDraft("web_fetch"))).ok, "a child that names its path passes");
 });

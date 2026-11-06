@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX } from "../dist/background.js";
 import { fauxRoot } from "./fixtures/faux-box.mjs";
-import { follow, serve } from "./support.mjs";
+import { follow, runDir, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -20,7 +20,7 @@ const TOOLS = ["bash", "bash_background", "bash_output", "bash_input", "bash_sig
 
 /** Each tool call of run `runId` and its answer, in order, from its store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -58,7 +58,7 @@ async function boxedRun(t, plan) {
   const run = await api("POST", "/agents/bg/runs", { input: { content: JSON.stringify({ probe: plan }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
-  const work = join(server.data, "runs", run.body.run_id, "work");
+  const work = join(runDir(server.data, run.body.run_id), "work");
   return { ...server, runId: run.body.run_id, said: answers(server.data, run.body.run_id), work, logged };
 }
 
@@ -217,4 +217,86 @@ test(`a log keeps its first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB, and the
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   assert.equal(said[2].text, `Background process 1 exited with code 4. Output bytes ${(BACKGROUND_LOG_BYTES - 3).toLocaleString("en-US")} to ${BACKGROUND_LOG_BYTES.toLocaleString("en-US")} of ${BACKGROUND_LOG_BYTES.toLocaleString("en-US")}, the end. Its log reached the 16 MiB cap, so later output was dropped.\n\nxxx`);
   assert.ok(existsSync(join(work, "background", "1", "capped")));
+});
+
+// tty: true runs the command on a terminal in the box (`script -qfec`), so a program that needs one works; paging, input
+// and signals are the same calls.
+test("tty: a tty process sits on a /dev/pts terminal, a plain one has none; a prompt answers over bash_input; INT reaches the terminal's process", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "tty", tty: true } },
+    { tool: "bash_background", args: { command: "tty" } },
+    { tool: "bash_background", args: { command: "read -r -p 'name? ' n; echo \"hello $n\"", tty: true } },
+    wait(1),
+    { tool: "bash_output", args: { id: "1" } },
+    { tool: "bash_output", args: { id: "2" } },
+    { tool: "bash_output", args: { id: "3" } },
+    { tool: "bash_input", args: { id: "3", text: "bob\n" } },
+    { tool: "bash_background", args: { command: "trap 'echo caught INT' INT; echo ready; while :; do sleep 0.1; done", tty: true } },
+    wait(1),
+    { tool: "bash_signal", args: { id: "4", signal: "INT" } },
+    { tool: "bash_output", args: { id: "3" } },
+    { tool: "bash_output", args: { id: "4" } },
+    { tool: "bash_signal", args: { id: "4", signal: "KILL" } },
+    { tool: "bash_list", args: {} },
+    // Left running on its terminal: the run's end ends it too.
+    { tool: "bash_background", args: { command: "sleep 60", tty: true } },
+  ];
+  const { said, work, data } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.match(said[15].text, /^Started background process 5 \(process group \d+\) on a terminal\./);
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  assert.equal(readFileSync(join(work, "background", "5", "exit"), "utf8"), "143\n", "TERM at the run's end reached the terminal's command");
+  assert.ok(existsSync(join(work, "background", "5", "ended")));
+  assert.match(said[4].text, /^Background process 1 exited with code 0\. .*\n\n\/dev\/pts\/\d+\r?\n$/s);
+  assert.match(said[5].text, /^Background process 2 exited with code 1\. .*\n\nnot a tty\n$/s);
+  // bash prints read's prompt only to a terminal; the answer is echoed by the terminal, then the reply follows.
+  assert.match(said[6].text, /^Background process 3 is running\. .*\n\nname\? $/s);
+  assert.equal(said[7].text, "Wrote 4 bytes to background process 3's stdin. Read what it answers with bash_output.");
+  assert.match(said[10].text, /^Sent INT to background process 4: it is running\./);
+  assert.match(said[11].text, /^Background process 3 exited with code 0\. .*\n\nname\? bob\r?\nhello bob\r?\n$/s);
+  assert.match(said[12].text, /\n\nready\r?\n(.*\r?\n)*caught INT\r?\n/);
+  assert.match(said[13].text, /^Sent KILL to background process 4: it ended by signal KILL \(exit code 137\)\./);
+  assert.match(said[14].text, /^0 of at most 8 running\.\n4: ended by signal KILL[^\n]*\(tty\)/);
+  for (const id of ["1", "3", "4"]) assert.ok(existsSync(join(work, "background", id, "tty")), `${id} is marked tty`);
+  assert.equal(existsSync(join(work, "background", "2", "tty")), false);
+});
+
+test("tty: INT is Ctrl-C to the terminal's foreground job, so an interactive shell's command stops and the shell runs on", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "bash --norc --noprofile -i", tty: true } },
+    wait(1),
+    { tool: "bash_input", args: { id: "1", text: "sleep 60\n" } },
+    wait(1),
+    { tool: "bash_signal", args: { id: "1", signal: "INT" } },
+    { tool: "bash_input", args: { id: "1", text: "echo back $?\n" } },
+    wait(1),
+    { tool: "bash_output", args: { id: "1" } },
+    { tool: "bash_input", args: { id: "1", text: "exit\n" } },
+  ];
+  const started = Date.now();
+  const { said } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.match(said[4].text, /^Sent INT to background process 1: it is running\./);
+  // The shell got its prompt back: sleep ended by Ctrl-C (130), well before its 60 s.
+  assert.match(said[7].text, /back 130/);
+  assert.ok(Date.now() - started < 50_000, "sleep 60 did not run out");
+});
+
+test("tty: a child the terminal command leaves running keeps the process running, and a signal reaches it after its shell is gone", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "trap '' HUP; sleep 60 </dev/null >/dev/null 2>&1 & echo $! > child.pid; echo done", tty: true } },
+    wait(1.5),
+    { tool: "bash_output", args: { id: "1" } },
+    { tool: "bash_list", args: {} },
+    { tool: "bash_signal", args: { id: "1", signal: "TERM" } },
+  ];
+  const { said, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  const child = Number(readFileSync(join(work, "child.pid"), "utf8"));
+  assert.match(said[2].text, /^Background process 1 is running\./);
+  assert.match(said[3].text, /^1 of at most 8 running\.\n1: is running;/);
+  assert.equal(said[4].text, "Sent TERM to background process 1: it exited with code 0.");
+  let alive = true;
+  try { process.kill(child, 0); } catch { alive = false; }
+  assert.equal(alive, false, "the child left on the terminal is gone");
 });

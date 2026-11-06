@@ -200,23 +200,31 @@ const toolingNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
     return Array.isArray(tools) && tools.length ? [{ rule: "workflow" as const, detail: `the model node at ${node.path} names a tool (${tools.map(String).join(", ").slice(0, 200)}): ${MODEL_NODE_TOOLS}` }] : [];
   });
 
+/** What a learned draft whose output names no path is refused with. */
+export const LEARNED_OUTPUT_PATH = "its output names no path: a learned workflow's output is the value at output.path";
+
 /** What a learned workflow is refused with when a node needs more than its runner gives the DSL (learned-workflow.ts:
  *  runNode and runEffect alone): a judge, pick or sift node, a route by question, a verify or an ask needs a decision
  *  provider (runJudge) a run is not given. Refused at learn time and before a call runs any node, never after. */
 export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes";
 
+/** Where a deny was set (tool-gate.ts SettingFrom), and its words (tool-gate.ts denyPlace), kept here so the learn
+ *  module needs no import of the gate. */
+type SettingFrom = "agent" | "server" | "default";
+const denyPlace = (from: SettingFrom = "server"): string => (from === "agent" ? "for this agent" : from === "default" ? "by default" : "on this server");
+
 /** A draft's call nodes that call a tool in `gated` (by name, what the gate holds it to: ask or deny), a composed
  *  workflow node's inner ones too (the DSL's inspection lists them, by their pointer under it): the run would park on it
  *  or refuse it, and a call node cannot wait for an approval. Worded as the server words a workflow revision's call node
  *  on such a tool before its run starts (runnable.ts), with the node's place. */
-const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<string, string>>): DraftProblem[] =>
+const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<string, string>>, deniedBy: Readonly<Record<string, SettingFrom>>): DraftProblem[] =>
   dsl.inspectWorkflow(doc).nodes.flatMap((node) => {
     if (node.kind !== "call") return [];
     const tool = (at(doc, node.path) as { tool?: unknown } | undefined)?.tool;
     const setting = typeof tool === "string" ? gated[tool] : undefined;
     if (!setting) return [];
     const words = setting === "deny"
-      ? `This workflow's call node calls ${tool}, which is set to deny on this server.`
+      ? `This workflow's call node calls ${tool}, which is set to deny ${denyPlace(deniedBy[tool as string])}.`
       : `This workflow's call node calls ${tool}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`;
     return [{ rule: "workflow" as const, detail: `${words} (the call node at ${node.path})` }];
   });
@@ -261,7 +269,7 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS), and a node the
  *  learned runner cannot run (LEARNED_NODES: a judge's). With no list it
  *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}): DraftProblem[] {
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -275,7 +283,18 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated)];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy)];
+    // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
+    // fails its output schema when the call ends, after every node spent.
+    const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
+    if (typeof path !== "string" || !path) out.push({ rule: "workflow", detail: LEARNED_OUTPUT_PATH });
+    // A composed workflow node's child too: its output is the value at its own output.path, or it fails the same way.
+    for (const node of dsl.inspectWorkflow(doc).nodes) {
+      if (node.kind !== "workflow") continue;
+      const child = (at(doc, node.path) as { workflow?: { output?: { path?: unknown } } } | undefined)?.workflow;
+      const childPath = child?.output?.path;
+      if (typeof childPath !== "string" || !childPath) out.push({ rule: "workflow", detail: `the workflow node at ${node.path}: ${LEARNED_OUTPUT_PATH}` });
+    }
   } catch (error) {
     // The inspection reads the whole document, as validation need not: what it cannot read is refused, never passed.
     return [{ rule: "workflow", detail: `the workflow DSL cannot inspect it: ${(error as Error).message.slice(0, 200)}` }];

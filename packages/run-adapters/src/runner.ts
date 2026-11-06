@@ -38,7 +38,7 @@ const spent = (total: number | null, cost: number | undefined): number | null =>
 export const RUNNER_RECORDS = { request: "runner.request", response: "runner.response", turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
 
 /** What the host is asked before each paid request. A `refuse` ends the node, final. A `holdUsd` (a finite amount, 0
- *  or more) is what the host holds for the request, its cap's worst case: written on the request's record before it
+ *  or more) is what the host holds for the request, what its cap admitted it at: written on the request's record before it
  *  leaves, it is what the request counts at in the spend the host is shown when the request's own cost never comes in
  *  (a response cut short, booked at an unknown cost, or a request a crash cut off, read by a later process). Without
  *  one, such a request leaves the spend unknown. The cost booked for the request is unknown either way. */
@@ -57,14 +57,15 @@ export type BeforeRequest = (request: {
   outputTokensAsked?: number;
   outputTokensLeast?: number;
   /** This session's paid requests admitted and not yet answered (in this process), oldest first, each with its own
-   *  `inputTokensMax` and the output limit it was admitted with (`outputTokensMax`): a budget holds each one's
-   *  worst case until it answers, since `spentUsd` counts answered requests only. Requests are admitted one at a time,
-   *  so each check sees every request admitted before it. */
+   *  `inputTokensMax`, the output limit it was admitted with (`outputTokensMax`) and what its host held for it
+   *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
+   *  admitted one at a time, so each check sees every request admitted before it. */
   inFlight: readonly InFlight[];
 }) => void | { refuse: string } | Admission | Promise<void | { refuse: string } | Admission>;
 
-/** A request admitted and not yet answered, as a budget holds it. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number };
+/** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
+ *  one. */
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
@@ -255,7 +256,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
       throw stoppedNow;
     }
-    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }) });
+    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }) });
     emit({ type: "request_start", turn, model });
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }) };
   };

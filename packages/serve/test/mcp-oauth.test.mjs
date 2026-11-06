@@ -7,19 +7,23 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "@parcha/pi-durable-agent";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
+/** The owner's sign-in phrase, made up for these tests. */
+const PHRASE = "the owner signs in with this phrase";
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
 const sealKey = () => randomBytes(32).toString("base64");
@@ -169,6 +173,8 @@ test("CIMD only on a public https address: the client id is this server's metada
   assert.equal(body.client_id, `${base}/v2/settings/mcp-servers/oauth/client.json`);
   assert.deepEqual(body.redirect_uris, [`${base}${CALLBACK}`]);
   assert.equal(body.token_endpoint_auth_method, "none");
+  // Public client metadata, and nothing else: a secret or a token added to the document fails here.
+  assert.deepEqual(Object.keys(body).sort(), ["client_id", "client_name", "grant_types", "redirect_uris", "response_types", "token_endpoint_auth_method"]);
 });
 
 test("a run's launch refreshes a token near its expiry, once for launches at the same time; a refused refresh reads expired", async (t) => {
@@ -185,17 +191,17 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
   const [one, two] = await Promise.all([store.headersForRun("docs"), store.headersForRun("docs")]);
   assert.deepEqual(one, two);
-  assert.match(one.authorization, /^Bearer access-/);
-  assert.notEqual(one.authorization, `Bearer ${signedIn}`, "a fresh access token");
+  assert.match(one.headers.authorization, /^Bearer access-/);
+  assert.notEqual(one.headers.authorization, `Bearer ${signedIn}`, "a fresh access token");
   assert.equal(as.log.filter((entry) => entry.form.grant_type === "refresh_token").length, 1, "one refresh, so a rotating refresh token is spent once");
-  assert.ok(as.accepts(one.authorization));
+  assert.ok(as.accepts(one.headers.authorization));
   const after = (await api("GET", "/settings/mcp-servers/docs")).body;
   assert.equal(after.credential, "sealed");
   assert.ok(Date.parse(after.oauth.expires_at) >= Date.parse(first.oauth.expires_at));
   holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), as.issued, "mcp-servers.json");
 
   as.revoke();
-  assert.equal(await store.headersForRun("docs"), undefined, "a refused refresh hands the run no credential");
+  assert.deepEqual(await store.headersForRun("docs"), { unopened: "its sign-in expired or was revoked: sign in again in Settings → MCP servers" }, "a refused refresh hands the run a credential that does not open, never none");
   const expired = (await api("GET", "/settings/mcp-servers/docs")).body;
   assert.equal(expired.credential, "expired");
   const preview = await api("POST", "/settings/mcp-servers/preview", { name: "docs" });
@@ -249,9 +255,11 @@ for (const name of ["docs", "constructor"]) test(`a run (server ${name}): its la
   assert.ok(mcp.log.some((entry) => entry.method === "tools/call" && entry.tool === "add" && entry.authorization));
 
   as.revoke();
+  const sent = mcp.log.filter((entry) => entry.method === "tools/call").length;
   const said = await run();
-  assert.ok(said.includes(`The MCP server ${name} refused its credential`), said);
-  assert.match(said, /sign in again in Settings → MCP servers/);
+  // The refused refresh marks the sign-in expired: the call is refused unsent, never sent with no credential.
+  assert.ok(said.includes(`The MCP server ${name}'s credential can't be opened on this server (its sign-in expired or was revoked: sign in again in Settings → MCP servers)`), said);
+  assert.equal(mcp.log.filter((entry) => entry.method === "tools/call").length, sent, "nothing more was sent");
   assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).body.credential, "expired");
 });
 
@@ -271,7 +279,7 @@ test("a token given with no expiry is taken to last an hour: a launch after that
   const headers = await store.headersForRun("docs");
   t.mock.timers.reset();
   assert.equal(refreshes(), 1, "within the margin of an hour: refreshed");
-  assert.ok(as.accepts(headers.authorization));
+  assert.ok(as.accepts(headers.headers.authorization));
 });
 
 test("a stop never waits on a token refresh: with the authorization server hanging, a running run's abort answers at once and asks it nothing", { timeout: 120_000 }, async (t) => {
@@ -326,7 +334,7 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
 
   // The next start refreshes with the refresh token it kept, which the authorization server spent: a sign-in again.
   const next = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
-  assert.equal(await next.headersForRun("docs"), undefined);
+  assert.deepEqual(await next.headersForRun("docs"), { unopened: "its sign-in expired or was revoked: sign in again in Settings → MCP servers" });
   const read = await api("GET", "/settings/mcp-servers/docs");
   assert.equal(read.body.credential, "expired");
 });
@@ -524,7 +532,7 @@ test("pi: an OAuth server's tool with no setting asks: the call parks, nothing r
   const { api } = server;
   const { mcp } = await fakes(t);
   const origin = `http://127.0.0.1:${server.port}`;
-  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PHRASE } });
   assert.equal(owner.status, 201, owner.text);
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal(started.status, 200, JSON.stringify(started.body));
@@ -545,4 +553,99 @@ test("pi: an OAuth server's tool with no setting asks: the call parks, nothing r
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(calls(), 1, `run exactly once, with the sealed token: ${JSON.stringify({ status: last.status, result: view.result, error: view.error, rows: rows.filter((row) => row.kind?.startsWith("tool")).map((row) => row.summary) })}`);
   assert.match(view.result?.final_answer ?? "", /5/);
+});
+
+/** serve for `harness`, its model scripted to call the docs server's add with {a: 2, b: 3} and then say what the tool
+ *  said: pi on the faux model, claude-agent on the pinned Agent SDK and CLI against a scripted Messages endpoint, codex on
+ *  the stand-in for Codex's app-server (its "model" the turn's text, through serve's gateway). */
+async function harnessServe(t, harness) {
+  if (harness === "pi") return { server: await serve(t, { faux: FAUX_MCP }), extra: {}, content: 'Call mcp__docs__add with {"a":2,"b":3}' };
+  if (harness === "claude-agent") {
+    const anthropic = await fakeAnthropic({ reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__docs__add") ? { tool: { name: "mcp__docs__add", input: { a: 2, b: 3 } } } : { text: "Noted." }) });
+    t.after(() => anthropic.close());
+    withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
+    return { server: await serve(t, { faux: undefined }), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: "Add 2 and 3 with the add tool." };
+  }
+  const standIn = join(await scratch(t), "codex-stand-in.mjs");
+  await copyStandIn(standIn);
+  const gateway = createServer(async (req, res) => {
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 10 } } })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  withEnv(t, {
+    AGENTRUN_CODEX_STANDIN: "1",
+    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
+    AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gateway.address().port}`,
+    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
+  }, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
+  return { server: await serve(t, { faux: undefined }), extra: { harness: "codex" }, content: 'mcp docs add {"a":2,"b":3}' };
+}
+
+for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"]) {
+  test(`${harness}: a sign-in whose refresh is refused at launch refuses the call unsent, in words: the MCP server sees no call at all`, { timeout: 240_000 }, async (t) => {
+    withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+    const { server: { api }, extra, content } = await harnessServe(t, harness);
+    // A token within the launch's refresh margin, and every refresh token spent: the launch's refresh is refused.
+    const { as, mcp } = await fakes(t, { expiresIn: 60 });
+    const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+    assert.equal((await approve(started)).status, 302);
+    assert.equal((await api("POST", "/agents", agent(`expired-${harness}`, { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } }, ...extra }))).status, 201);
+    as.revoke();
+    const before = mcp.log.length;
+    const made = await api("POST", `/agents/expired-${harness}/runs`, { input: { content } });
+    assert.equal(made.status, 202, JSON.stringify(made.body));
+    const { last } = await follow(api, made.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
+    const view = (await api("GET", `/runs/${made.body.run_id}`)).body;
+    assert.ok(as.log.some((entry) => entry.form.grant_type === "refresh_token"), "the launch asked for a refresh, and was refused");
+    assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "expired");
+    // Nothing reached the MCP server: no call, with or without a credential, and no handshake for one.
+    assert.deepEqual(mcp.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "the MCP server saw nothing of the run");
+    assert.equal(last.status, "completed", JSON.stringify(view.error ?? view.result));
+    assert.match(view.result?.final_answer ?? "", /The MCP server docs's credential can't be opened on this server \(its sign-in expired or was revoked: sign in again in Settings → MCP servers\)/);
+  });
+}
+
+test("pi: a run whose process went while its call was parked: the owner's allow launches it again, and that launch refreshes a token near its expiry first", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const server = await serve(t, { faux: FAUX_MCP, accounts: true, openSetup: true });
+  const { api, data } = server;
+  // Every access token is within the launch's refresh margin: each launch refreshes it.
+  const { as, mcp } = await fakes(t, { expiresIn: 60 });
+  const origin = `http://127.0.0.1:${server.port}`;
+  const owner = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: PHRASE } });
+  assert.equal(owner.status, 201, owner.text);
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("parker", { tools: ["mcp:docs/add"] }))).status, 201);
+  const made = await api("POST", "/agents/parker/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  const runId = made.body.run_id;
+  await follow(api, runId, ["input_required"], { deadlineMs: 120_000 });
+  const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+  assert.equal(pending?.kind, "approval", JSON.stringify(pending));
+  const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+  // Its process goes while the call waits; the same approval still waits, with no process.
+  const { holder } = runRecordOf(data, runId);
+  process.kill(holder.pid, "SIGKILL");
+  for (let i = 0; runRecordOf(data, runId).holder?.pid === holder.pid; i++) {
+    assert.ok(i < 300, "the process's end is settled");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, pending.id, "the same approval waits");
+  const before = refreshes();
+  const allowed = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: cookieOf(owner), origin }, body: { decision: "allow" } });
+  assert.equal(allowed.status, 204, allowed.text);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.ok(refreshes() > before, `the launch the allow made refreshed the token first (${before} refreshes before it, ${refreshes()} after)`);
+  const sent = mcp.log.filter((entry) => entry.method === "tools/call");
+  assert.equal(sent.length, 1, "run once");
+  assert.ok(sent[0].authorization);
 });

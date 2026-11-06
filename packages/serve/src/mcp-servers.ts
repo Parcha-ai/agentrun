@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
+import { metaToolOf } from "./mcp-meta.js";
 import { type ClientKind, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, systemNetwork, reasonOf, refreshed, refused, SIGN_IN_AGAIN, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -129,11 +130,11 @@ export class McpServers {
       const name = String(body.name);
       await this.freshen(name);
       const kept = this.need(name);
-      return listServer(new URL(kept.url), this.opened(name, kept, "name"), this.version, stop);
+      return marked(kept.url, await listServer(new URL(kept.url), this.opened(name, kept, "name"), this.version, stop));
     }
     const { url, auth } = this.admit(body);
     if (auth.type !== "none" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    return listServer(url, auth.headers ?? {}, this.version, stop);
+    return marked(url.href, await listServer(url, auth.headers ?? {}, this.version, stop));
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while
@@ -247,26 +248,30 @@ export class McpServers {
     }
   }
 
-  /** A run's launch: the server's credential as headers (headers), an OAuth access token refreshed first when it
-   *  expires within `margin`. Undefined when it takes none, none opens, or its sign-in expired. */
-  async headersForRun(name: string, margin = REFRESH_MARGIN_MS): Promise<HeaderMap | undefined> {
+  /** A run's launch: the server's credential (headers), an OAuth access token refreshed first when it expires within
+   *  `margin`. Undefined when it takes none; `{ unopened }` when it does not open, its sign-in expired among them. */
+  async headersForRun(name: string, margin = REFRESH_MARGIN_MS): Promise<{ headers: HeaderMap } | { unopened: string } | undefined> {
     await this.freshen(name, margin);
     return this.headers(name);
   }
 
-  /** The saved server's credential, opened, for a run's launch: its headers; undefined when it has none, none that opens,
-   *  or an OAuth sign-in that expired. */
-  headers(name: string): HeaderMap | undefined {
+  /** The saved server's credential, opened, for a run's launch: its headers, or why it does not open, each under its own
+   *  tag; undefined when it takes none. An OAuth sign-in that expired, or whose refresh was refused or had no refresh
+   *  token left, is a credential that does not open: its calls are refused unsent, saying to sign in again. */
+  headers(name: string): { headers: HeaderMap } | { unopened: string } | undefined {
     const kept = this.saved(name);
-    if (!kept || kept.auth.type === "none" || kept.auth.oauth?.expired) return undefined;
+    if (!kept || kept.auth.type === "none") return undefined;
+    if (kept.auth.oauth?.expired) return { unopened: `its sign-in expired or was revoked: ${SIGN_IN_AGAIN}` };
     const opened = this.open(name, kept);
-    return "headers" in opened ? opened.headers : undefined;
+    // Tagged, never told apart by a key a saved header could also have (`unopened` is a header name like any other).
+    if ("headers" in opened) return { headers: opened.headers };
+    return { unopened: opened.unreadable === "seal_key_missing" ? `this server was handed no seal key, ${SEAL_KEY_ENV}` : "sealed under another seal key, or damaged" };
   }
 
   /** An OAuth server's token set refreshed when its access token expires within `margin`. A refusal (revoked, expired)
    *  marks the sign-in expired; an authorization server out of reach leaves it as it is. It runs on exactly these
    *  paths: before a run's process is spawned (runs.ts mcpFresh: a start, a reopen, a relaunch after a crash, a
-   *  message that brings the process up), and before a preview by name, a PUT that keeps the token set, and a POST
+   *  message that brings the process up, an approval's answer that does), and before a preview by name, a PUT that keeps the token set, and a POST
    *  refresh. Never on a stop or an abort, nor on a path that only reaches a live process. */
   private freshen(name: string, margin = REFRESH_MARGIN_MS): Promise<void> {
     const running = this.refreshing.get(name);
@@ -332,7 +337,7 @@ export class McpServers {
     const opened = auth.type === "none" ? null : this.open(name, kept);
     return {
       name,
-      ...rest,
+      ...marked(kept.url, rest),
       auth: { type: auth.type, ...(auth.type === "headers" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
       credential: opened === null ? null : !("headers" in opened) ? opened.unreadable : auth.oauth?.expired ? ("expired" as const) : ("sealed" as const),
       ...(auth.oauth ? { oauth: { ...(auth.oauth.expires_at ? { expires_at: auth.oauth.expires_at } : {}), scopes: auth.oauth.scopes, client: auth.oauth.client, ...(auth.oauth.client_id ? { client_id: auth.oauth.client_id } : {}) } } : {}),
@@ -394,6 +399,15 @@ export class McpServers {
     if (this.stopped.signal.aborted) throw new ApiError("unavailable", "This server is stopping: nothing more is saved. Try again once it is back.", { retry_after_ms: 1000 }, { "retry-after": "1" });
     writeDurableSync(this.file, `${JSON.stringify({ format: FORMAT, servers }, null, 2)}\n`);
   }
+}
+
+/** `listed` with each known meta tool (mcp-meta.ts) marked `grantable: false` with its reason: the snapshot keeps what
+ *  the server listed, and every read says which of its tools can't be granted. */
+function marked<T extends { tools: McpTool[] }>(url: string, listed: T): T & { tools: (McpTool & { grantable?: false; reason?: string })[] } {
+  return { ...listed, tools: listed.tools.map((tool) => {
+    const meta = metaToolOf(url, tool.name);
+    return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool;
+  }) };
 }
 
 const aad = (name: string, header: string) => `mcp:${name}:${header}`;
