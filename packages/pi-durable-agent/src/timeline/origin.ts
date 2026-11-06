@@ -21,7 +21,8 @@ const REASONS: ReadonlySet<string> = new Set(["cap_raised", "approval"]);
 const SOURCES: ReadonlySet<string> = new Set(TRIGGER_SOURCES);
 
 /** An entry kind that names the origin of the next user entry in its conversation whose text is exactly `text`: written
- *  just before the input it names (pi-durable writes a user entry with no data of its own), placed in the same queue. */
+ *  just before the input it names (pi-durable writes a user entry with no data of its own), placed in the same queue.
+ *  One with `withdrawn: true` takes back the last open marker of the same text and origin: its input was refused. */
 export const MESSAGE_ORIGIN = "agentrun.message_origin";
 
 /** `value` as an origin, or undefined when it is not one. */
@@ -57,7 +58,12 @@ export function originMatcher(): (entry: EntryLike) => MessageOrigin | undefined
       const data = obj(entry.data);
       const origin = originOf(data?.origin);
       const text = str(data?.text);
-      if (origin && text !== undefined) open.set(conv, [...(open.get(conv) ?? []), { text: text.trim(), origin }]);
+      if (!origin || text === undefined) return undefined;
+      const markers = open.get(conv) ?? [];
+      if (data?.withdrawn === true) {
+        const at = markers.findLastIndex((marker) => marker.text === text.trim() && JSON.stringify(marker.origin) === JSON.stringify(origin));
+        if (at >= 0) markers.splice(at, 1);
+      } else open.set(conv, [...markers, { text: text.trim(), origin }]);
       return undefined;
     }
     if (!isUserEntry(entry)) return undefined;

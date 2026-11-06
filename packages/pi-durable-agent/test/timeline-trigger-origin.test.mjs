@@ -48,3 +48,12 @@ test("a trigger's message shows as the trigger's phase row, never as the person'
   assert.deepEqual([...messageOrigins(entries).entries()].map(([entry, origin]) => [entries.indexOf(entry), origin]), [[0, WEBHOOK], [3, SCHEDULE]], "the shared reader names them, with owner as given");
   assert.equal(entries[0].model[0].content, body, "the entry the model reads is unchanged");
 });
+
+test("a withdrawn marker takes back the open one of its text and origin: its input was refused, so a later message with the same words is the person's", () => {
+  const text = "A new event came in.";
+  const entries = [custom(MESSAGE_ORIGIN, { origin: WEBHOOK, text }), custom(MESSAGE_ORIGIN, { origin: WEBHOOK, text, withdrawn: true }), user(text)];
+  assert.equal(messageOrigins(entries).size, 0, "nothing left open");
+  assert.deepEqual(timelineOf(entries).filter((r) => r.kind === "user_message").map((r) => r.summary), [`You: ${text}`]);
+  const other = [custom(MESSAGE_ORIGIN, { origin: SCHEDULE, text }), custom(MESSAGE_ORIGIN, { origin: WEBHOOK, text, withdrawn: true }), user(text)];
+  assert.deepEqual([...messageOrigins(other).values()], [SCHEDULE], "a withdrawal takes back only its own origin's marker");
+});
