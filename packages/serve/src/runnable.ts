@@ -20,7 +20,7 @@ import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
 import { type McpTool, toolSchemaProblems } from "@parcha/agentrun-kernel";
 
 /** The harnesses an agent's MCP tools run on here. */
-export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent"];
+export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent", "codex"];
 
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. */
@@ -66,6 +66,11 @@ export const NOT_SET_UP = "not_set_up_here";
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
+/** The shapes of a tool's schema Codex drops or retypes (@parcha/agentrun-harness-codex codexSchemaProblems), loaded once;
+ *  none where that package is not installed, where codex runs nothing anyway (its offer says why). */
+let codexCheck: Promise<((name: string, schema: unknown) => string[]) | undefined> | undefined;
+const codexToolCheck = () => (codexCheck ??= import("@parcha/agentrun-harness-codex").then((codex) => codex.codexSchemaProblems, () => undefined));
+
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. */
@@ -106,6 +111,12 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   };
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
+    // Codex's own MCP client builds the model's copy of a server's tool with parse_tool_input_schema (codex-rs
+    // tools/src/mcp_tool.rs at rust-v0.164.0), the parser its host tools go through: a shape it drops or retypes
+    // (codexSchemaProblems, measured on the pinned binary) would offer the model another tool than the one granted, so its
+    // grant is refused here, at the save, as on claude-agent. A bound or a format it only strips is not: the server still
+    // checks it, and its error reaches the model.
+    const codexProblems = harness === "codex" && (revision.tools ?? []).some((tool) => tool.startsWith("mcp:")) ? await codexToolCheck() : undefined;
     (revision.tools ?? []).forEach((tool, index) => {
       // A remote MCP server's tool: one its saved snapshot lists, on a harness that binds them.
       if (tool.startsWith("mcp:")) {
@@ -118,17 +129,17 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         const declared = schema ? mcpHeaderProblem(schema) : undefined;
         // On claude-agent the CLI drops a tool whose schema fails the kernel's check, or whose root holds anyOf, allOf or
         // oneOf (harness-claude's check, measured on the pinned CLI), without a word: refused here, not missing at the run.
-        const dropped = schema && named && harness === "claude-agent" ? [...toolSchemaProblems(`mcp__${named.server}__${named.tool}`, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)][0] : undefined;
+        const dropped = schema && named && harness === "claude-agent" ? [...toolSchemaProblems(`mcp__${named.server}__${named.tool}`, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)][0] : schema && named && codexProblems ? codexProblems(`mcp__${named.server}__${named.tool}`, schema)[0] : undefined;
         if (!named) out.push({ field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool });
         // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
         else if (named.server === "hands") out.push({ field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool });
         // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
         // the harness's check, since no host setup makes it grantable.
         else if (listedTool?.grantable === false) out.push({ field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, tool });
-        else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.join(" and ")} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
+        else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.slice(0, -1).join(", ")} and ${MCP_HARNESSES.at(-1)} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
         else if (!listed) out.push({ field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool });
         else if (!listed.includes(named.tool)) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool });
-        else if (dropped) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} cannot be offered on claude-agent: ${dropped.replace(/^mcp__\S+: /, "")}.`, host: false, tool });
+        else if (dropped) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`, host: false, tool });
         else if (declared) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`, host: false, tool });
         else if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) out.push({ field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool });
         return;

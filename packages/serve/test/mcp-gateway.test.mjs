@@ -7,7 +7,7 @@ import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { useSpend } from "../dist/cap.js";
 import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf, mcpRegistrations } from "../dist/mcp-gateway.js";
 import { deniedText, GATED_BY_GATEWAY, gateOf, waitingText } from "../dist/tool-gate.js";
@@ -92,11 +92,12 @@ test("a redirect is never followed: the credential goes nowhere else", async (t)
 
 test("names that are an object's own properties are servers and tools like any other: the pin and the credentials hold them", async () => {
   const listed = [{ name: "toString", inputSchema: schema }];
-  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ authorization: `Bearer ${TOKEN}` }) };
+  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ headers: { authorization: `Bearer ${TOKEN}` } }) };
   const pin = mcpPinOf(["mcp:constructor/toString", "mcp:toString/add"], source);
   assert.deepEqual(Object.keys(pin), ["constructor"]);
   assert.deepEqual(pin.constructor.tools.map((tool) => tool.name), ["toString"]);
   assert.deepEqual(Object.keys(mcpCredentialsOf(pin, source)), ["constructor"]);
+  assert.deepEqual(mcpCredentialsOf(pin, source).constructor.headers, { authorization: `Bearer ${TOKEN}` });
   const none = mcpGateway({ pin: {}, credentials: {}, work: () => tmpdir() });
   assert.match(textOf(await none.call("constructor", "toString", {}, { signal: signal() })), /not a tool of the MCP server constructor/);
   assert.match(textOf(await none.call("__proto__", "toString", {}, { signal: signal() })), /not a tool/);
@@ -210,7 +211,7 @@ test("at the session proxy's /mcp/<server>: a client that drops a held tools/cal
   const { fake, gateway, cancelled } = await setup(t);
   const key = "session-key-for-tests";
   const policy = { id: "test", routes: [], keyOf: (headers) => String(headers.authorization ?? "").replace(/^Bearer /, ""), authHeaders: () => ({}), apply: (body) => body, usageOf: () => undefined };
-  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(gateway) }, key);
+  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: gateway, client: { callIdMeta: "claudecode/toolUseId" } } }, key);
   t.after(() => proxy.close());
   const gone = new AbortController();
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slow_write", arguments: { line: "x", seconds: 30 } } });
