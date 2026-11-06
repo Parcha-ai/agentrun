@@ -10,14 +10,15 @@ export function cdpDriver(base) {
     const pending = new Map();
     const waiters = [];
     const loaded = new Set();
-    // Fetches and XHRs the browser dropped itself (net::ERR_ABORTED), not documents: re-running a case over a
-    // navigation still in flight races it.
+    // Fetches, XHRs and their CORS preflights the browser or the network dropped (net::ERR_ABORTED, a preflight with no
+    // answer, ...), not documents: re-running a case over a navigation still in flight races it. A request the observer
+    // refused (net::ERR_BLOCKED_BY_CLIENT) is the effect under test, never a drop.
     let aborted = 0;
     ws.onmessage = (event) => {
       const m = JSON.parse(String(event.data));
       if (m.id !== undefined) { const p = pending.get(m.id); pending.delete(m.id); if (m.error) p?.reject(new Error(m.error.message)); else p?.resolve(m.result); return; }
       if (m.method === "Page.lifecycleEvent" && m.params.name === "load") loaded.add(m.params.loaderId);
-      if (m.method === "Network.loadingFailed" && m.params.errorText === "net::ERR_ABORTED" && (m.params.type === "Fetch" || m.params.type === "XHR")) aborted += 1;
+      if (m.method === "Network.loadingFailed" && ["Fetch", "XHR", "Preflight"].includes(m.params.type) && !m.params.errorText.startsWith("net::ERR_BLOCKED_BY_CLIENT")) aborted += 1;
       for (const w of waiters.splice(0)) if (w.test(m)) w.resolve(); else waiters.push(w);
     };
     ws.onclose = () => { for (const p of pending.values()) p.reject(new Error("the test driver's socket closed")); pending.clear(); };
@@ -61,6 +62,7 @@ export function cdpDriver(base) {
       /** Returns the moment the browser answers: the request the page starts in it exists, and nothing else has
        *  happened since. */
       fire: (expression) => evaluate(expression),
+      /** How many requests the browser or the network dropped so far (see above). */
       aborted: () => aborted,
       url: () => evaluate("location.href"),
       snapshot: () => evaluate("document.body ? document.body.innerText : ''"),
