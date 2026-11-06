@@ -53,6 +53,26 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
   assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length + 1, "one grader call a run, two for the unread one");
 });
 
+test("what is read from a partial answer goes through the grader like any answer: a note beside an opening never closed is graded, alone, before it merges or drops", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  // A valid note, then a skill's opening that never closes: the opening is left out, and the note is all that is read.
+  const answer = [`\`\`\`note check-units.md\n${note("Check units", "Convert every amount to one unit before comparing")}\`\`\``, "````skill weekly-summary\n---\nname: weekly-summary\ndescription: The weekly summary\n---\nThree lines.", "Reflected."].join("\n\n");
+  const grades = () => callsIn(calls).filter((call) => call.kind === "grade").length;
+  for (const [id, rule, state] of [["partial-kept", "", "merged"], ["partial-dropped", "Grade: drop.", "dropped"]]) {
+    await made(api, learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(answer)}`, rule].filter(Boolean).join("\n") }));
+    const before = grades();
+    const runId = await started(api, id);
+    const { view, rows } = await ended(api, runId);
+    settled(view, rows, state, state === "merged" ? null : "grader");
+    assert.equal(grades() - before, 1, `${id}: the grader is asked once`);
+    const { learning } = await savedOf(data, runId);
+    assert.deepEqual(learning.verdict.items.map(({ file }) => file), ["check-units.md"], `${id}: the note alone is graded, the unclosed skill never`);
+    assert.equal(git(repoOf(data, id), ["ls-tree", "-r", "--name-only", "main", "--", "check-units.md"]), state === "merged" ? "check-units.md" : "", `${id}: on main only once kept`);
+  }
+});
+
 test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, with the last kept on the run cut of secrets and in size, and never served", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   // A value saved as a tool key before the runs: the grader's answer holds it, and the run's learning never does.
