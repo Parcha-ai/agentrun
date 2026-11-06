@@ -110,7 +110,7 @@ export class Agents {
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
     const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
-    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}) };
+    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}), ...(typeof definition.cap_mode === "string" ? { capMode: definition.cap_mode } : {}) };
   }
 
   /** `definition.version`, when given, is the number of the revision the request leaves current. */
@@ -189,7 +189,9 @@ export class Agents {
       const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
       // And its default cap: leaving it out never removes a spend limit; only 0 clears it.
       const cap = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.maxCostUsd : undefined;
-      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}) }, files, note);
+      // And how that cap prices a request, as the cap itself is kept.
+      const capMode = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.capMode : undefined;
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}), ...(definition.cap_mode === undefined && capMode !== undefined ? { cap_mode: capMode } : {}) }, files, note);
       await this.checked(revision);
       await check?.(revision);
       const base = entry.revision?.id ?? null;
@@ -281,7 +283,7 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as `POST /agents` takes one, numbered. */
 export function definitionOf(agent: Agent, revision: Revision, version: number): Json {
   const body = revision.kind === "agentic"
-    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}) }
+    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}), ...(revision.body.capMode !== undefined ? { cap_mode: revision.body.capMode } : {}) }
     : { workflow: revision.body.workflow };
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }

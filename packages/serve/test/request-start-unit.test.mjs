@@ -6,6 +6,14 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timeline
 import { markRequests } from "../dist/request-start.js";
 import { sideRequests } from "../dist/cap.js";
 
+/** A side request's marks without their request id, once each names one and the same one (request-start.ts). */
+const sameRequest = (marks) => {
+  const ids = new Set(marks.map((m) => (Array.isArray(m) ? m[1] : m.data)?.requestId));
+  assert.ok(ids.size === 1 && typeof [...ids][0] === "string", `one request id across its marks: ${JSON.stringify(marks)}`);
+  const plain = ({ requestId: _, ...data }) => data;
+  return marks.map((m) => (Array.isArray(m) ? [m[0], plain(m[1])] : { ...m, data: plain(m.data) }));
+};
+
 /** Until `list` holds `n` items, or a second passes: the end mark follows the answer, which a terminal event settles. */
 const until = async (list, n) => {
   for (let i = 0; list.length < n && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -82,7 +90,7 @@ test("a compaction summary whose request throws: the error reaches pi, and the s
   const { models, open } = await markRequests({ completeSimple: async () => { throw new Error("the connection reset"); } });
   open(run);
   await assert.rejects(models.completeSimple(summaryModel, { messages: [] }, {}), /the connection reset/);
-  assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction" } }]);
+  assert.deepEqual(sameRequest(marks), [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction" } }]);
 });
 
 test("an aborted compaction summary is closed with its end, never priced: the run's cost reads unknown, not a known $0", async () => {
@@ -91,7 +99,7 @@ test("an aborted compaction summary is closed with its end, never priced: the ru
   const { models, open } = await markRequests({ completeSimple: async () => aborted });
   open(run);
   assert.equal((await models.completeSimple(summaryModel, { messages: [] }, {})).stopReason, "aborted");
-  assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction" } }], "no cost written");
+  assert.deepEqual(sameRequest(marks), [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction" } }], "no cost written");
   const answered = { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop", usage: { input: 1, output: 1, cost: { total: 0.01 } } }] };
   const usage = timelineOf([{ kind: REQUEST_STARTED, data: {} }, answered, ...marks]).at(-1).usage;
   assert.deepEqual(usage, { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 });
@@ -206,7 +214,7 @@ test("a run cancelled while its summary's start mark waits sends no summary requ
   const result = await summary;
   assert.equal(called, 0, "nothing was sent");
   assert.equal(result.stopReason, "error");
-  assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction", unsent: true } }]);
+  assert.deepEqual(sameRequest(marks), [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction", unsent: true } }]);
   assert.deepEqual(timelineOf([{ kind: REQUEST_STARTED, data: {} }, priced, ...marks], { settled: true }).at(-1).usage, { usd: 0.01, requests: 1 });
 });
 
@@ -220,6 +228,6 @@ test("a tool's own request is marked under its label, and booked with its fee on
   sideRequests.set(context, { label: "web_search", extraInputTokens: 125_000, maxFeeUsd: 0.05, feeUsd: () => 0.02 });
   const result = await models.completeSimple({ api: "faux", provider: "faux", id: "m" }, context, {});
   assert.equal(result.usage.cost.total, 0.0225, "the answer carries its fee");
-  assert.deepEqual(entries.map((entry) => [entry.kind, entry.data]), [[REQUEST_STARTED, { request: "web_search" }], [REQUEST_COST, { request: "web_search", usd: 0.0225, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0 } }]], "its tokens with it, as a summary's");
+  assert.deepEqual(sameRequest(entries.map((entry) => [entry.kind, entry.data])), [[REQUEST_STARTED, { request: "web_search" }], [REQUEST_COST, { request: "web_search", usd: 0.0225, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0 } }]], "its tokens with it, as a summary's");
   assert.deepEqual(timelineOf(entries).at(-1).usage, { usd: 0.0225, requests: 1 }, "the run's cost counts it once");
 });
