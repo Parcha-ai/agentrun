@@ -164,7 +164,9 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
   });
 
   it("an agent with no notes turns learning on from its empty tab: a new revision, and the tab says nothing is learned yet", async () => {
-    const s = replay(["learning.off-agent", "learning.stats", "learning.off-view", "learning.off-runs", "learning.off-switch"]);
+    // The agent is read by the page, again by the switch before its save (the same answer both times), and again after the
+    // save, now on its new revision.
+    const s = replay(["learning.off-agent", "learning.off-agent", "learning.stats", "learning.off-view", "learning.off-runs", "learning.off-switch", "learning.off-agent-after"]);
     const page = await mount(s.v2, "release-notes");
     expect(page.text()).toContain("Learning is off for this agent.");
     expect(page.text()).toContain("rev 1 of 1");
