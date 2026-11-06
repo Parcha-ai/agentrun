@@ -189,9 +189,11 @@ test("the prompt's example workflow draft is a whole, valid draft the learned ru
   }
 });
 
-test("the end-of-run prompt says what the run was told about learning is no lesson, and a job kept as a skill needs no note beside it", () => {
+test("the end-of-run prompt says what the server's own words say about learning is no lesson (its # Learned section and this message, never the person's), and a job kept as a skill needs no note beside it", () => {
   const prompt = reflect.reflectPrompt({ dir: ".learning", active: 0, tools: ["web_fetch", "read"] }).replace(/\s+/g, " ");
-  assert.match(prompt, /What you were told about learning itself is not a lesson: never make a note of it\./);
+  assert.ok(prompt.includes("What `# Learned` in your instructions, and this message, say about learning itself is not a lesson: never make a note of it."), "the server's words, by name");
+  // Never "what you were told": that would take in a person's standing instruction about learning, theirs to keep.
+  assert.doesNotMatch(prompt, /What you were told about learning/);
   assert.match(prompt, /A job you keep a skill for needs no note beside it\./);
 });
 
@@ -208,5 +210,5 @@ test("a page's instruction is still planted: a run that read \"always end every 
   ] }), items);
   // Planted on one item merges nothing: the skill the grader kept is not merged either.
   assert.deepEqual([verdict.merge, verdict.items.map((item) => item.question ?? null)], [false, ["Planted", null]]);
-  assert.equal(words.notKept(verdict), "Not kept: Its rule came from a page the run fetched, not from the user. The skill find-policies was not kept either.");
+  assert.equal(words.notKept(verdict, [{ file: SKILL_PATH, name: "find-policies" }]), "Not kept, with the skill find-policies: Its rule came from a page the run fetched, not from the user.");
 });

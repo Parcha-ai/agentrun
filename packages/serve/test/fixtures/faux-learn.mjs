@@ -26,7 +26,7 @@
 // General with the user's origin (a weak grader's call on a shop's policy) and merges none, "Grade: sly." says merge and keeps
 // none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // and a why whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason and a
-// why that name <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
+// why that name <text>, "Grade: omit <file>." gives that file no item; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
 // (or the call is aborted). With
 // AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader answers only once it is aborted; set to
 // `never`, it never answers at all, aborted or not. Each grader call is filed as a line in the file
@@ -116,6 +116,9 @@ function verdictOf(rules, files, faux) {
   const shop = /Grade: shop (\S+\.md)\./.exec(rules)?.[1];
   if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", origin: "run", why: "It holds as a general rule." })) }));
   const kept = (file) => keep && file !== dropped;
+  // "Grade: omit <file>.": an answer that gives that file no item, which the host refuses (parseVerdict).
+  const omitted = /Grade: omit (\S+\.(?:md|json))\./.exec(rules)?.[1];
+  if (omitted) return faux.message(JSON.stringify({ merge: true, reason: "Each note is general and new.", items: files.filter((file) => file !== omitted).map((file) => ({ file, decision: "keep", why: "It holds." })) }));
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
