@@ -4,13 +4,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { backoff } from "../lib/follow.mjs";
+import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
@@ -32,7 +33,7 @@ export default (context, faux) => {
 
 async function serve(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-follow-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") };
   writeFileSync(join(dir, "faux.mjs"), FAUX);
   const data = join(dir, "data");

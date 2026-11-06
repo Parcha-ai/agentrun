@@ -76,13 +76,17 @@ export function operationsOf(doc) {
         params.set(`${p.in} ${p.name}`, { name: p.name, in: p.in, required: p.required === true, ...shapeOf(doc, p.schema), description: firstLine(p.description) });
       }
       const body = deref(doc, op.requestBody);
-      const schema = deref(doc, body?.content?.['application/json']?.schema);
+      const media = body?.content?.['application/json'];
+      const schema = deref(doc, media?.schema);
+      // The JSON body's first documented example (an OpenAPI 3.1 media type's examples, else its example).
+      const example = Object.values(media?.examples ?? {}).map((e) => deref(doc, e)?.value).find((value) => value !== undefined) ?? media?.example;
       found.push({
         operationId: op.operationId, method: method.toUpperCase(), path, tags: op.tags ?? [], summary: op.summary ?? firstLine(op.description),
         unsupported: op['x-agentrun-serve-unsupported'] !== undefined, parameters: [...params.values()],
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
           properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
+          ...(example !== undefined ? { example } : {}),
         },
         answers: Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {})),
       });
@@ -142,6 +146,8 @@ export function commandsOf(ops, map) {
       // The path parameters that are file paths, slashes kept: the rest are encoded whole.
       multiSegment: map.multiSegment[op.operationId] ? [map.multiSegment[op.operationId]] : [],
       query, headers, bodyFlags, hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
+      // A working body, as the document gives it: the command's help prints it as a --body to paste. Never a secret body's.
+      ...(op.body?.example !== undefined && !secretBody ? { example: op.body.example } : {}),
       // A download: its answer is the file's bytes, written as received.
       raw: op.answers.length > 0 && !op.answers.includes('application/json'),
       summary: op.summary,

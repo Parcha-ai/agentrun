@@ -19,6 +19,7 @@ import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { HOOK_TOLERANCE_S } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
 import { LEGACY_NAMES, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
@@ -890,9 +891,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/graph": {
     get: {
       operationId: "getRunGraph", tags: ["runs"], summary: "A workflow run's graph, live",
-      description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run.",
+      description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run. 403 `forbidden` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): what its nodes said could repeat the sign-in's pointer, so none of it is served until the sign-in opens again.",
       parameters: [ref("parameters/RunId")],
-      responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 404, 429, 500) },
+      responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 403, 404, 429, 500) },
     },
   },
   "/runs/{run_id}/browser": {
@@ -1423,7 +1424,10 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     trigger: RUN_TRIGGER,
   },
-  InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
+  InputIssue: {
+    code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
+    example: { description: "A value the field accepts, said in `message` too: the operation's documented request body's value there, else the schema's example, const or option, else one made from its type; each is suggested only once the route's own check of the body takes it in place (else the schema, for a value the document gives), so this server never suggests a value it refuses. Absent when there is none. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"Due diligence\"}}`.", "x-agentrun-serve": "explain/1" },
+  },
   RunSummary: {
     ...RUN_FIELDS,
     effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
@@ -1616,6 +1620,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     route_prefix: { type: ["string", "null"], description: "With `source` `gateway`, the routing prefix this server puts before the gateway's model ids (`agent-model`): every tier's model and every harness's `default_model` here is the prefix, a slash and the gateway's own id. Null with any other source, where ids are shown whole.", "x-agentrun-serve": "model/2" },
     ready: { type: "boolean", description: "Whether a revision that names no model runs here: the host names a default (`AGENT_MODEL`), or a model provider's key is here, saved (`PUT /settings/tool-keys/{key_id}`, a `model` key) or the server's own, and gives its default model, the first of anthropic, openai, openrouter that has one.", "x-agentrun-serve": "toolkeys/1" },
     needs: { enum: ["key", "model", null], description: "When `ready` is false, what would make it true: `key`, a model provider's key (none is here, or the default model's provider has none); `model`, another default model (`AGENT_MODEL` names one this server does not know). Null when ready.", "x-agentrun-serve": "toolkeys/1" },
+    priced: { type: ["boolean", "null"], description: "Whether that model has a price here, which a run's `max_cost_usd` needs: false for a gateway model (`source` `gateway`) with no `AGENT_MODEL_PRICE` that pi-ai's catalog does not list in any form, whose answers' cost is unknown; a run with `max_cost_usd` on it is refused (409 agent_not_runnable, on `definition.model`), and one without runs with its cost unknown, never $0. Null while `ready` is false: no model, nothing to price.", "x-agentrun-serve": "pricing/1" },
   },
   Features: {
     archive: {
@@ -1686,7 +1691,7 @@ const BLOCKED_DETAILS = {
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },
-    decisions: { type: "object", description: "A workflow revision: each decision provider it needs that this host has not set up, with why and the variables it needs.", additionalProperties: { type: "object", additionalProperties: false, required: ["reason", "needs"], properties: { reason: { type: "string" }, needs: { type: "array", items: { type: "string" } } } } },
+    decisions: { type: "object", description: "A workflow revision: each decision provider it needs that this host has not set up, with why and the keys that would set it up.", additionalProperties: { type: "object", additionalProperties: false, required: ["reason", "needs"], properties: { reason: { type: "string" }, needs: { type: "array", items: { type: "string" }, description: "The variables that would set the provider up. Where it has more than one route, either key is enough (parallel: PARALLEL_API_KEY or OPENROUTER_API_KEY)." } } } },
   },
 };
 const ARCHIVED_DETAILS = {
@@ -1708,6 +1713,27 @@ function contract(): Json {
 
 /** The document: the contract, its operations this server turns off marked with why (`capabilityOf` gives an
  *  operation's capability here, by its operationId), and this server's own routes added and marked. */
+/** A working request body for each operation a client most often writes by hand, by operationId: served as its media type's
+ *  examples, printed by the CLI's help as a `--body`, and sent to the server by a test, so none can stop working. The run
+ *  and the trigger name the agent the first one makes. */
+export const REQUEST_EXAMPLES: Record<string, Record<string, { summary: string; value: Json }>> = {
+  createAgent: {
+    agentic: {
+      summary: "An agent that researches a company on the web",
+      value: { definition: { id: "due-diligence", name: "Due diligence", instructions: "Research the company you are given on the web and write a short brief: what it does, who runs it, red flags, and the sources you read.", tools: ["web_search", "web_fetch"] } },
+    },
+  },
+  createRun: {
+    agentic: { summary: "An agentic agent's run, capped at $1", value: { input: { content: "Research https://stripe.com and write the brief." }, max_cost_usd: 1 } },
+  },
+  createTrigger: {
+    schedule: {
+      summary: "A capped run of an agent every Monday at 09:00 UTC",
+      value: { name: "Weekly brief", source: { kind: "schedule", cron: "0 9 * * 1" }, target: { kind: "start_run", agent_id: "due-diligence", input: { content: "Research https://stripe.com again and say what changed this week." }, max_cost_usd: 1 } },
+    },
+  },
+};
+
 export function openapiDocument(capabilityOf: (operationId: string) => string | undefined): Json {
   const doc = structuredClone(contract()) as Json & { info: Json; paths: Record<string, Record<string, Json>> };
   const unsupported: string[] = [];
@@ -1749,7 +1775,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // A row's usage: the contract's shape, on more rows here than the usage row (pi-durable-agent's timeline, BROWSER_CHARGE).
   const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
   timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
-  const noted = ["DefinitionInput.max_cost_usd", "TimelineRow.usage"];
+  // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
+  const errorBody = schemas.ErrorBody as Json & { properties: Record<string, Json> };
+  errorBody.properties.fields = { ...errorBody.properties.fields, "x-agentrun-serve-note": "Also on `agent_not_runnable` (409) here: each thing that keeps the run from starting, by the field it is about, its reason, its message and the fix when there is one (such as AGENT_MODEL_PRICE for a capped run on a model with no price), as a 422 names each field." };
+  const noted = ["DefinitionInput.max_cost_usd", "TimelineRow.usage", "ErrorBody.fields"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.
@@ -1842,6 +1871,14 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     runStatus["x-agentrun-serve"] = "pause/1";
     fields.push("RunStatus.paused");
   }
+  // runnable/1: a 409 agent_not_runnable's `fields` (server.ts runnable) name what keeps a run from starting, many of them a
+  // setting this host lacks (`not_set_up_here`, runnable.ts NOT_SET_UP), a reason the contract's InputIssue enum lacks.
+  const issueReason = ((schemas.InputIssue as Json).properties as Record<string, Json>).reason as Json & { enum?: string[] };
+  if (Array.isArray(issueReason.enum) && !issueReason.enum.includes(NOT_SET_UP)) {
+    issueReason.enum = [...issueReason.enum, NOT_SET_UP];
+    issueReason["x-agentrun-serve"] = "runnable/1";
+    fields.push(`InputIssue.reason.${NOT_SET_UP}`);
+  }
   // A paid tool's charges (monid's) are a meter of their own on /usage, beside the model's tokens.
   const meter = schemas.Meter as Json & { enum?: string[] };
   if (Array.isArray(meter.enum) && !meter.enum.includes("tools")) {
@@ -1885,6 +1922,18 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     for (const [method, op] of Object.entries(item)) {
       (doc.paths[path] ??= {})[method] = { "x-agentrun-serve": true, ...op };
       extensions.push(`${method.toUpperCase()} ${path}`);
+    }
+  }
+  // examples/1: a working body for the operations in REQUEST_EXAMPLES, on the JSON media type; a contract operation that
+  // gains one is changed, and says so.
+  for (const [path, item] of Object.entries(doc.paths)) {
+    for (const [method, op] of Object.entries(item)) {
+      const examples = REQUEST_EXAMPLES[op.operationId as string];
+      if (!examples) continue;
+      (((op.requestBody as Json).content as Json)["application/json"] as Json).examples = structuredClone(examples);
+      if (op["x-agentrun-serve"] !== undefined) continue;
+      op["x-agentrun-serve-changed"] = { ...(op["x-agentrun-serve-changed"] as Json | undefined), requestBody: "examples/1" };
+      if (!changed.includes(`${method.toUpperCase()} ${path}`)) changed.push(`${method.toUpperCase()} ${path}`);
     }
   }
   doc.info["x-agentrun-serve"] = {

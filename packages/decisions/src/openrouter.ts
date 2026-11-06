@@ -40,6 +40,8 @@ export interface OpenRouterOptions {
   takesImages?: (model: string) => boolean | Promise<boolean>;
   /** Sent as OpenRouter's app attribution headers (HTTP-Referer, X-Title) when set. */
   app?: { url?: string; title?: string };
+  /** Whether a citation keeps its passage (default true); false keeps none, whatever the model sent. */
+  includeExcerpts?: boolean;
 }
 
 /** What a provider adds beside the seam's capabilities: the inputs not verified against the live API. */
@@ -115,7 +117,7 @@ function* tokenPlaces(state: unknown, questions: DecisionRequest["questions"]): 
 
 /** The answers, metering and id of a 200 response, checked for shape and against the questions asked; the seam checks
  *  each answer against its question. */
-function readResponse(body: unknown, questions: DecisionRequest["questions"], attempts: number): DecisionOutcome {
+function readResponse(body: unknown, questions: DecisionRequest["questions"], attempts: number, includeExcerpts = true): DecisionOutcome {
   // OpenRouter answered, so the request was billed: a response this rejects is booked at an unknown cost.
   const invalid = (why: string) => new DecisionProviderError("invalid_response", `OpenRouter returned ${why}.`, { attempts, costUsd: null, costBasis: "unknown" });
   if (!isRecord(body) || !isRecord(body.answers)) throw invalid("no answers");
@@ -131,7 +133,7 @@ function readResponse(body: unknown, questions: DecisionRequest["questions"], at
   // A reported cost above 0 is the price. 0 (a model OpenRouter's catalog prices at 0) or none is unpriced: unknown, never $0.
   const cost = usage && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost > 0 ? usage.cost : null;
   return {
-    answers: { ...answers }, evidence: urlCitations(body.annotations), model: typeof body.model === "string" && body.model.trim() ? body.model : null, usage: counted,
+    answers: { ...answers }, evidence: urlCitations(body.annotations, { excerpts: includeExcerpts }), model: typeof body.model === "string" && body.model.trim() ? body.model : null, usage: counted,
     cost_usd: cost, cost_basis: cost === null ? "unknown" : "reported", provider_request_id: typeof body.id === "string" ? body.id : null,
   };
 }
@@ -243,7 +245,7 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
           let parsed: unknown;
           try { parsed = JSON.parse(text); }
           catch { throw new DecisionProviderError("invalid_response", "OpenRouter returned a body that is not JSON.", { attempts: attempt, costUsd: null, costBasis: "unknown" }); }
-          return readResponse(parsed, request.questions, attempt);
+          return readResponse(parsed, request.questions, attempt, options.includeExcerpts ?? true);
         }
         const status = response.status;
         if (status === 408 || (status >= 500 && status <= 599)) { void response.body?.cancel().catch(() => {}); throw lost(attempt, `answered HTTP ${status}`, status); }
