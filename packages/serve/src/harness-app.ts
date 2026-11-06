@@ -246,7 +246,8 @@ export function adapterRun(
       refused = answer.refuse;
       capRefused = !byCancel;
       // A note this request carried was never sent: the next request that can take it is told, with what is left then.
-      wrap.taken = undefined;
+      // Only this request's: another one refused (a side call) leaves a note taken for a request still to be admitted.
+      if (noted) wrap.taken = undefined;
       refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" && typeof answer.leastCapUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, leastCapUsd: answer.leastCapUsd, ...("boundUsd" in answer && typeof answer.boundUsd === "number" && answer.boundUsd > 0 ? { boundUsd: answer.boundUsd } : {}) } : undefined;
       return answer;
     }
@@ -255,9 +256,11 @@ export function adapterRun(
     const inputTokensMax = withoutNote ? (plainInput as number) : request.inputTokensMax;
     admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
     if (!answer) return undefined;
-    // Admitted carrying the note: it is sent, once per cap, and its row says so.
+    // Admitted carrying the note: it is sent, once per cap, and its row says so. Only the admission of the request that
+    // carries it settles the note taken: a side call admitted between its take and that admission (the proxy reads the
+    // credential between the two) leaves it for that request.
     const data = noted && !withoutNote && !side ? wrap.taken : undefined;
-    wrap.taken = undefined;
+    if (noted) wrap.taken = undefined;
     // None priced yet: this request's expected cost is the typical one, and what is left as its admission counts it
     // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
     // next request. Never a side call's: the note is for the session's own model.
