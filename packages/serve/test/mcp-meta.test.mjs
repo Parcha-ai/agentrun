@@ -106,10 +106,12 @@ test("a run's pin made before the rule, holding a meta tool, refuses its next la
   assert.deepEqual([said.isError, said.content[0].text], [true, `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON} Nothing was sent.`]);
 });
 
-test("a workflow's own grants are held to the rule too: one that lists a meta tool is 422 at the save, never saved to fail its launches", async (t) => {
+test("a workflow's own grants are held to the rule too: one that lists a meta tool is 422 at the save, never saved to fail its launches; one that lists a direct MCP tool saves", async (t) => {
   const { api } = await serve(t);
   await saved(t, api, "composio", ["COMPOSIO_MULTI_EXECUTE_TOOL", "GMAIL_SEND_EMAIL"]);
   const refused = await api("POST", "/agents", flowAgent("flow-meta", undefined, { tools: ["mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.ok(JSON.stringify(refused.body).includes(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(refused.body));
+  const ordinary = await api("POST", "/agents", flowAgent("flow-direct", undefined, { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }));
+  assert.ok(![422].includes(ordinary.status), `a workflow that lists a direct MCP tool saves: ${JSON.stringify(ordinary.body)}`);
 });
