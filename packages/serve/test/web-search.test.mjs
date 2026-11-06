@@ -293,7 +293,7 @@ test("Parallel picked with no Parallel key: web_search is missing in capabilitie
   const saved = await api("POST", "/agents", { definition: { id: "searcher", name: "searcher", instructions: "Search.", tools: ["web_search"] } });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), [["definition.tools[0]", "not_set_up_here"]]);
-  assert.match(saved.body.warnings[0].message, /The tool web_search does not run here on pi: parallel picked, no PARALLEL_API_KEY\./);
+  assert.match(saved.body.warnings[0].message, /The\ tool\ web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)\./);
   const refused = await api("POST", "/agents/searcher/runs", { input: { content: "Search the web for widgets" } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
   assert.deepEqual(await seen(), [], "no request reached Parallel");

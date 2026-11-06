@@ -14,6 +14,7 @@ import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, 
 import { capabilityOf, DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { permissionOf } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { keyNeeded } from "./key-words.js";
 import { wireName } from "./catalog.js";
 import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
 import { type McpTool, toolSchemaProblems } from "@parcha/agentrun-kernel";
@@ -78,7 +79,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
   const unset = (field: string, tool: string) => {
     const vars = missingEnv(toolOf(tool)!, env);
-    if (vars.length) out.push({ field, reason: NOT_SET_UP, message: `This server's environment does not set what the tool needs: the tool ${tool} needs ${vars.join(" and ")}.`, host: true, missing: { tool, vars } });
+    if (vars.length) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} needs ${keyNeeded(vars)}.`, host: true, missing: { tool, vars } });
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
   const offer = (offers ?? (await harnessOffers(env))).find((h) => h.id === harness);

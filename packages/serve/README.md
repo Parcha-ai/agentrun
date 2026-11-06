@@ -444,7 +444,21 @@ go through `work/` by path.
 An agent whose place is a sandbox may also name `bash_background`, `bash_output`, `bash_input`, `bash_signal` and
 `bash_list`, to run a command that outlives one call: a dev server, a watcher, a long build, a program that reads its
 input as it goes. Each call is one short command in the run's box, on the same path as `bash`, so they work on every box
-`bash` runs on, the permission gate takes each call as it takes `bash`'s, and nothing new runs on this server.
+`bash` runs on, and nothing new runs on this server.
+
+The permission gate holds all five to `bash`'s setting (none is a settings key of its own, so no setting of one lifts
+`bash`'s), and `capabilities.tools` and an agent's `tools` show each as the gate takes it, `permission_from` being
+where `bash`'s setting came from:
+
+- `bash: deny` refuses all five, as it refuses `bash`, with no shell at all.
+- `bash: ask` parks only the calls that start or feed a process: `bash_background` and `bash_input` (and `bash`
+  itself), each under its own name, so an approval runs that call. `bash_output`, `bash_list` and `bash_signal` run
+  unasked: they reach only the processes this run started, by its own ids (another run's id, or one never started, is
+  answered "there is no background process"), so watching an approved process costs no approval per page. They run so
+  on a server with accounts off too, where an ask is refused. Only an `ask` set as written lets them: where `bash` asks
+  because its setting is a value not offered, or because the settings file never read, they ask too. A save of the
+  settings as served keeps that stand-in, and the file keeps the value as written; only a different permission sets it.
+- `bash: allow` runs all five.
 
 - `bash_background {command}` starts the command from `work/`, in a fresh shell (`bash`, else `sh`) under a session of
   its own (`setsid`, its runner under `nohup`), and answers its id (`"1"`, then `"2"`, and on) at once. Its stdout and
@@ -465,6 +479,15 @@ input as it goes. Each call is one short command in the run's box, on the same p
   exit code is the shell's.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
   16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
+- `bash_background {command, tty: true}` runs the command on a terminal instead: `script -qfec` (util-linux) in the box
+  gives it a pty, so a program that needs one works (a prompt, a REPL, a progress display). Paging, input and signals are
+  the same calls: the log holds what the terminal shows (input echoed, lines ending in `\r\n`), `bash_input` types into
+  the terminal, and `bash_signal` reaches the terminal's processes: `INT` goes to its foreground job, as Ctrl-C does, so an
+  interactive shell's running command stops and the shell runs on; `TERM` and `KILL` go to every process group of the
+  terminal's session. That session is tracked as the process: a child its command leaves running on the terminal keeps
+  the process running, counted against the cap, reached by `bash_signal` and ended at the run's end, after `script`
+  itself is gone. A box with no `script` refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
+  process `(tty)`.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
   default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
   and the offset to read from next. Once it says the process ended, the log is whole.
@@ -740,7 +763,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
-| `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command}` in. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
+| `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command, tty?}` in, `tty: true` for a terminal. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
 | `bash_output` | Read a background process's output from a byte offset: `{id, offset?, max_bytes?}` in (at most 48 KiB a call), its state, exit code, the log's size and the next offset out | an agentic definition whose place is a sandbox | no, no |
 | `bash_input` | Write to a running background process's stdin: `{id, text, close?}` (at most 64 KiB a call) | an agentic definition whose place is a sandbox | no, no |
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |

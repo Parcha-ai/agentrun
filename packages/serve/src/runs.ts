@@ -2474,11 +2474,12 @@ export class Runs {
   /** One message to the run's door. `origin`: who wrote it when the person did not (a raised cap's follow-up, an
    *  approval's resume), carried to its user entry so the Timeline shows it as the server's (pi-durable-agent's
    *  MessageOrigin); the model reads the same text either way. `answers: false`: the run's door refuses the message
-   *  (WAITING) when the run's turn ended on ask_person, and when the run is busy (BUSY), so it is never queued behind a
+   *  (WAITING) when the run's turn ended on ask_person or a tool call of it waits for its owner's approval (the gate's
+   *  park, APPROVAL_ENTRY), and when the run is busy (BUSY), so it is never queued behind a
    *  turn that may end so; decided at the door's admission, past every wait here. */
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number, origin?: MessageOrigin, answers = true): Promise<void> {
     await this.beforeSubmit?.(run.id, content);
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}), ...(answers ? {} : { answers: false, asks: [ASK_TOOL] }) }, readyMs);
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}), ...(answers ? {} : { answers: false, asks: [ASK_TOOL], parks: [APPROVAL_ENTRY] }) }, readyMs);
     if (answer.status === 409 && answer.body?.error === "WAITING") throw new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
     if (answer.status === 409 && answer.body?.error === "BUSY" && !answers) throw new ApiError("rate_limited", "The run is working: a message that may not answer it waits until it is idle.", { retry_after_ms: 5_000, details: { reason: "working" } });
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
