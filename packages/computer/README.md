@@ -162,14 +162,73 @@ await docker.release(made.value, "delete");
   `/opt/agentrun/computerd` as the entrypoint, `computerd init`, which is PID 1, holds every process and reaps orphans. The label
   `agentrun.computer.deadline` holds the time `lifetimeMs` ends; the provider declares `lifetime: "janitor"`, since
   Docker ends nothing on its own. A container that is not running after its start is removed.
+- `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
+  refuses with every mismatch in words.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
-  Each `connect` is a connection of its own; processes are shared by all of them.
+  Each `connect` is a connection of its own; processes are shared by all of them. A daemon whose version is not the
+  provider's, or that lacks a capability the provider declares, is refused (`refused`) and the stream closed.
+- `attach({ id })` finds a computer by its name (`computer-<12 hex digits>`) or its container id (12 to 64 hex digits);
+  `attach({ labels })` by labels, which must match exactly one computer: none is `not_found`, more is `invalid`
+  ("2 computers match ...").
+- `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspect, and
+  returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
+  the ISO time the provider writes), `state` (`running` or `stopped`) and `network` as read back.
+- `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
+  (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
+  `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
+  network is fixed at create, since Docker cannot move a container with no network onto one.
 - `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
+- Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
+  any other container is `not_found`.
 
 Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
 
 What a Docker computer cannot do: switch users, gain a capability, reach any network when asked for `none`, write the
-daemon, or outlive its deadline once the janitor (a later change) sweeps by label.
+daemon, or outlive its deadline once the janitor sweeps.
+
+### The drift check
+
+After `docker run`, `create` reads the computer's own report and compares it with the spec, in `drift(spec, inspected,
+hello, expected)`, a pure function that returns one sentence per mismatch. From `docker inspect`:
+
+| Field | Must be |
+| --- | --- |
+| network | `none` or `open` as declared, read back as `network(ref)` does |
+| `HostConfig.CapDrop`, `CapAdd`, `Privileged` | `["ALL"]`, nothing added, false |
+| `HostConfig.SecurityOpt` | holds `no-new-privileges` |
+| `HostConfig.PidsLimit` | `pids`, or 4096 |
+| `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, when asked |
+| `HostConfig.NanoCpus` | `cpus` times 10^9, when asked |
+| `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd`, and no other bind mount |
+| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init"]` |
+| `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for |
+
+From the daemon's `hello`, over one short connection: the provider's version, `os` linux, every capability in
+`capabilities().daemon`, and `arch` the Docker host's architecture (`docker info`, x86_64 as amd64, aarch64 as arm64).
+
+Any mismatch, or a computer that cannot be inspected or whose daemon does not answer, and the computer is deleted
+before `create` returns `refused` with every mismatch. A computer is never left running wider than it was declared.
+
+### The janitor
+
+Docker ends nothing at a deadline, so the provider declares `lifetime: "janitor"` and `sweep(provider, { labels?, now?,
+signal? })` (in `src/janitor.ts`) ends computers instead. It works for any provider that declares `lifetime: "janitor"`
+and refuses one that declares `"vendor"`. It lists the provider's computers with `labels` (all of them by default) and
+deletes each whose deadline is at or before `now`, or whose deadline is missing or unreadable; it keeps the rest and
+returns `{ deleted, kept }`. It never touches a container the provider does not list: on Docker, one without
+`agentrun.computer=1` and a computer's name. A computer it cannot delete does not stop it; the result is then an error
+naming it and what was deleted.
+
+This package does not schedule the janitor. Whoever runs computers runs `sweep` on a schedule, at least as often as
+the shortest lifetime it allows overruns acceptably (a cron job, or a timer in a long-lived service), with Docker's
+CLI on its PATH.
+
+```ts
+import { DockerProvider, sweep } from "@parcha/agentrun-computer";
+
+const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }));
+if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
+```
 
 ## Build
 
@@ -186,7 +245,8 @@ cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 ```
 
-The live tests need Docker, `debian:bookworm-slim` pulled, and both builds. They use the daemon for Docker's own
+The live tests need Docker, `debian:bookworm-slim` and `alpine:3.20` pulled, both builds, and Go on PATH (the drift
+test builds a daemon of another version). They use the daemon for Docker's own
 architecture, and remove every container they make by its exact name, pass or fail.
 
 ## Acknowledgements
