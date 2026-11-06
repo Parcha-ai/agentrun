@@ -259,3 +259,19 @@ test("links planted at pid and tty are replaced at the run's end by the process'
   assert.equal(readFileSync(join(work, "background", "1", "tty"), "utf8"), "");
   assert.equal(readFileSync(secret, "utf8"), "SECRET-TEXT-OUTSIDE-WORK\n");
 });
+
+test("links planted at tty and capped of a process that has neither are removed at the run's end", { timeout: 120_000 }, async (t) => {
+  const outside = await scratch(t);
+  const secret = join(outside, "secret.txt");
+  await writeFile(secret, "SECRET-TEXT-OUTSIDE-WORK\n");
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 30" } },
+    { tool: "bash", args: { command: `ln -sf ${secret} background/1/tty; ln -sf ${secret} background/1/capped` } },
+  ];
+  const { said, data, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
+  const names = readdirSync(join(work, "background", "1"));
+  assert.ok(!names.includes("tty") && !names.includes("capped"), JSON.stringify(names));
+  assert.equal(readFileSync(secret, "utf8"), "SECRET-TEXT-OUTSIDE-WORK\n", "the file the links named is as it was");
+});

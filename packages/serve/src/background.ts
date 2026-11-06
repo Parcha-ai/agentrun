@@ -120,6 +120,9 @@ const SCRIPT = [
   // A display copy in work/ (the runner's put, by id): from inside work/background/<id>, entered with cd -P and checked
   // by its real path, an exclusive new file there renamed over its name on the same filesystem; a failed check skips it.
   `put() { [ -n "$rw" ] || return 0; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] || exit 0; r=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' '); [ -n "$r" ] || exit 0; t=./.put.$$.$r; ( set -C; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t" ) || { rm -f "$t"; exit 0; }; { mv -fT "$t" "./$2" 2>/dev/null || { [ -d "./$2" ] && [ ! -L "./$2" ] && { rm -f "$t"; exit 0; }; [ -L "./$2" ] && rm -f "./$2"; mv -f "$t" "./$2"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
+  // A display name the process has no box-only copy for (a tty or capped mark planted in work/), removed from inside the
+  // checked directory, as put enters it: a link goes, never what it names.
+  `drop() { [ -n "$rw" ] || return 0; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] || exit 0; rm -f "./$2" ) 2>/dev/null; return 0; }`,
   'known() { [ -d "$c/$1" ] || { [ ! -L "$d" ] && [ -d "$d/$1" ]; }; }',
   // A tty process's command runs in the pty's own session (tsid: script's command, its leader), whose processes may
   // outlive script: the groups of that session (sgs), and its terminal's foreground group (fgs, the tpgid its processes
@@ -186,7 +189,7 @@ const SCRIPT = [
   '  for i in $(running); do r=$(cat "$c/$i/runner" 2>/dev/null); [ -n "$r" ] && kill -KILL -"$r" 2>/dev/null; done',
   // Every display copy rewritten from the box-only copies, by the checked rename, so a link planted at one since its start
   // does not stay in the run's files after the box is gone.
-  '  for i in $(cids); do put "$i" command "$(cat "$c/$i/command" 2>/dev/null)"; put "$i" started "$(cat "$c/$i/started" 2>/dev/null)" n; [ -s "$c/$i/pgid" ] && put "$i" pid "$(cat "$c/$i/pgid")" n; [ -f "$c/$i/tty" ] && put "$i" tty ""; [ -f "$c/$i/capped" ] && put "$i" capped "" n; done',
+  '  for i in $(cids); do put "$i" command "$(cat "$c/$i/command" 2>/dev/null)"; put "$i" started "$(cat "$c/$i/started" 2>/dev/null)" n; [ -s "$c/$i/pgid" ] && put "$i" pid "$(cat "$c/$i/pgid")" n; if [ -f "$c/$i/tty" ]; then put "$i" tty ""; else drop "$i" tty; fi; if [ -f "$c/$i/capped" ]; then put "$i" capped "" n; else drop "$i" capped; fi; done',
   '  echo "ended $n";;',
   'esac',
 ].join("\n");

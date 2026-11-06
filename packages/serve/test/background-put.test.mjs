@@ -34,8 +34,9 @@ test("with no random bytes to name a temporary file, a display copy is skipped a
   const env = { cwd: work, exec: (command, options, context) => local.exec(command, { ...options, env: { PATH: bin, TMPDIR: join(dir, "tmp") }, inheritEnv: false }, context) };
   const [start, , , signal, list] = backgroundTools();
   const began = Date.now();
-  const hung = new Promise((_, reject) => setTimeout(() => reject(new Error("the start hung past 12 s on a planted FIFO")), 12_000));
-  const started = await Promise.race([start.execute({ command: "sleep 30" }, { env }, ctx), hung]);
+  let timer;
+  const hung = new Promise((_, reject) => void (timer = setTimeout(() => reject(new Error("the start hung past 12 s on a planted FIFO")), 12_000)));
+  const started = await Promise.race([start.execute({ command: "sleep 30" }, { env }, ctx), hung]).finally(() => clearTimeout(timer));
   assert.match(started.content[0].text, /^Started background process 1 /);
   assert.ok(Date.now() - began < 12_000);
   // No copy was written: what stands at the names the copy would use is what was planted, and no command or started.
