@@ -10,7 +10,8 @@ export type Group = "health" | "exec" | "files" | "process" | "provider" | "drif
 
 /**
  * What a case needs: a daemon capability (declared by both the provider's capabilities().daemon and the daemon's
- * hello), a network the provider declares, the janitor as the keeper of deadlines, or a spec.user the provider takes.
+ * hello), a network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, or
+ * a release that stops a computer and keeps it.
  */
 export type Capability =
 	| DaemonCapability
@@ -19,7 +20,8 @@ export type Capability =
 	| "network:allow"
 	| "lifetime:janitor"
 	| "user:root"
-	| "user:uid";
+	| "user:uid"
+	| "release:stop";
 
 /** What every computer must declare: a provider without one of these cannot pass Core. */
 export const CORE_CAPABILITIES: readonly Capability[] = ["exec", "files", "processes", "network:none"];

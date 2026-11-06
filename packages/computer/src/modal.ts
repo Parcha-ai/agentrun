@@ -385,6 +385,7 @@ export class ModalProvider implements ComputerProvider {
 			os: "linux",
 			daemon: ["exec", "files", "processes"],
 			user: ["root", "uid"],
+			release: ["delete"],
 		};
 	}
 

@@ -254,7 +254,8 @@ await docker.release(made.value, "delete");
   (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
   `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
   network is fixed at create, since Docker cannot move a container with no network onto one.
-- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
+- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`; `capabilities().release`
+  declares both. A computer already gone is ok.
 - Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
   any other container is `not_found`.
 
@@ -426,7 +427,8 @@ of that slice, and the live conformance file waits for a key (below).
 - **attach** by id or labels runs the same drift check on what it finds and refuses a drifted computer in words, left
   running. Its `spec.user` is the probe's uid:gid; the rest is as recorded.
 - **release** `delete` is `terminate()`, idempotent: a sandbox that has finished, or that Modal no longer knows, is ok.
-  `stop` is refused: terminate is a sandbox's only end, and Modal has no stopped state. `release`, `connect` and
+  `capabilities().release` is `["delete"]`, so `stop` is refused as `unsupported`, in words, and the sandbox runs on:
+  terminate is a sandbox's only end, and Modal has no stopped state. `release`, `connect` and
   `network` act only on a sandbox whose tags name it as this provider's, with the ref's name.
 - **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; other calls
   60 s; hello and the probe 30 s; a whole list 120 s) and takes the caller's signal. A create that gives up has its
@@ -469,7 +471,7 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 | No count limit on CIDR entries is documented | [guide/sandbox-networking](https://modal.com/docs/guide/sandbox-networking) (searched: none) |
 | No read-back of a sandbox's network policy | `modal_proto/task_command_router.proto:434-437`, `modal_proto/api.proto:5936-5937` (setters only; searched both for a getter: none) |
 | `updateNetworkPolicy` cannot change a sandbox made with `blockNetwork`, and updates only an allowlist set at create | [guide/sandbox-networking#dynamic-policy-limitations](https://modal.com/docs/guide/sandbox-networking#dynamic-policy-limitations); `sandbox.ts:2631` |
-| No stopped state: terminate is the only end | `sandbox.ts:2238-2262`; [guide/sandboxes#lifecycle](https://modal.com/docs/guide/sandboxes#lifecycle) |
+| No stopped state: terminate is the only end, so `release` declares `["delete"]` and refuses `stop` | `sandbox.ts:2238-2262`; [guide/sandboxes#lifecycle](https://modal.com/docs/guide/sandboxes#lifecycle) |
 | The client reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` itself | `config.ts:144-145` |
 | With a profile's `sandboxV2`, create and list go to the V2 backend, and list then covers both | `sandbox.ts:808-815`, `884-889`, `1116-1122`, `1161-1175` |
 
@@ -485,9 +487,10 @@ Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_C
   `/run` is writable there;
 - the tag value's longest length (the spec tag is JSON) and whether `getTags` answers for a terminated sandbox;
 - that `terminate` of a finished sandbox does not throw, and how long `list` keeps a terminated sandbox out;
-- the probe's view of `blockNetwork`, and the bypass cases before any allowlist is declared;
-- Core cases the suite cannot pass on Modal as written: `provider.stop` expects a stopped computer to be listed, and
-  Modal has none.
+- the probe's view of `blockNetwork`, and the bypass cases before any allowlist is declared.
+
+Core `provider.stop` expects Modal's refusal (it declares no stop), and the Full `provider.janitor` case is skipped
+(`lifetime:janitor`, `release:stop`).
 
 `createProvider()` in `dist/conformance/modal.js` builds a real client, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1`,
 `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` set; it also reads `AGENTRUN_COMPUTER_MODAL_APP`,
@@ -547,13 +550,16 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
   that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
   (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
-  `network` read-back and `release`, a change to a network the provider does not declare refused with the
+  `network` read-back and `release`, `release(ref, "stop")` as declared (a provider whose `capabilities().release` holds
+  `"stop"` lists the computer stopped until it is deleted; one that does not refuses stop as `unsupported`, in words,
+  and the computer stays listed and running), a change to a network the provider does not declare refused with the
   network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
   (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
-  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
+  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers
+  (`lifetime:janitor`, `release:stop`), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capabilities.
 

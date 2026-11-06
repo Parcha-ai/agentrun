@@ -141,9 +141,25 @@ export const providerCases: Case[] = [
 		t.assert(deadline >= before + spec.lifetimeMs - 1000 && deadline <= after + spec.lifetimeMs + 1000, `its deadline, ${String(info.deadline)}, is lifetimeMs after create`);
 		t.deepEqual(await names(t, { ...labels, role: "other" }), [], "list by a label no computer has");
 	}),
+	// Stop is declared or refused: a provider that declares it lists the computer stopped; one that does not refuses it
+	// in words and leaves the computer running, never stopped or deleted behind the caller's back.
 	provider("stop", async (t) => {
 		const labels = own(t, "stop");
 		const ref = await t.create({ labels });
+		const declared = t.provider.capabilities().release;
+		if (!(Array.isArray(declared) && declared.includes("stop"))) {
+			const words = "release stop, which the provider does not declare";
+			const error = t.refused(await t.provider.release(ref, "stop"), words, ["unsupported"]);
+			t.assert(error.message !== "", `${words}: the refusal is in words`);
+			t.deepEqual(
+				t.ok(await t.provider.list(labels), "list").map((info) => [info.ref.name, info.state]),
+				[[ref.name, "running"]],
+				`${words}: the computer is still listed, running`,
+			);
+			t.ok(await t.provider.release(ref, "delete"), "release delete");
+			t.deepEqual(await names(t, labels), [], "listed after delete");
+			return;
+		}
 		t.ok(await t.provider.release(ref, "stop"), "release stop");
 		const listed = t.ok(await t.provider.list(labels), "list");
 		t.deepEqual(
@@ -235,6 +251,6 @@ export const providerCases: Case[] = [
 			t.deepEqual(refOf(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer")), t.ref, "a computer outside the swept labels");
 			t.deepEqual(t.ok(await sweep(t.provider, { labels }), "a second sweep"), { deleted: [], kept: 1 }, "a second sweep, now");
 		},
-		{ level: "full", needs: ["lifetime:janitor"], computer: "shared" },
+		{ level: "full", needs: ["lifetime:janitor", "release:stop"], computer: "shared" },
 	),
 ];
