@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/agentForm";
-import type { Permission, ToolSettings } from "@/lib/v2";
+import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
 import { Picker } from "@/components/ui/picker";
 
 /** One row of a tools table: a tool, with its provider choice (`choice`) where it has one and its permission (`gate`)
@@ -62,7 +62,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
               const own = settings[name]?.provider;
               const set = t !== undefined && own !== undefined && own !== fallback;
               const provider = set ? own : fallback;
-              const pick = (next: string | undefined) => onEdit((current) => withProvider(current, name, next, fallback));
+              const pick = (next: ToolSetting["provider"]) => onEdit((current) => withProvider(current, name, next, fallback));
               const gateFallback = gate ? permissionFallbackOf(gate) : "allow";
               const ownPermission = settings[name]?.permission;
               const permissionSet = gate !== undefined && ownPermission !== undefined && ownPermission !== gateFallback;
@@ -82,7 +82,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     </td>}
                     {providers && <td className="px-3 py-2">
                       {t ? <>
-                        <Picker small label={`${name} provider`} value={provider} disabled={busy} onChange={(v) => pick(v)}
+                        <Picker small label={`${name} provider`} value={provider} disabled={busy} onChange={(v) => pick(v as ToolSetting["provider"])}
                           className={cn("w-56 max-w-full", set && "border-primary text-primary")}
                           options={t.providers.map((p) => ({ value: p, label: `${providerLabel(p, name)}${p === fallback ? " (default)" : ""}` }))} />
                         {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider, name)}</span>}

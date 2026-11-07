@@ -100,7 +100,7 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
     const done = spawnSync("sh", ["-e", "-c", block.code], { cwd: work, env: server.env, encoding: "utf8", timeout: 60_000 });
     seen.push(done.stdout, done.stderr);
     assert.equal(done.status, block.exit, `${block.title}:\n${block.code}\n${done.stdout}\n${done.stderr}`);
-    ran.push({ ...block, out: done.stdout, err: done.stderr, run: existsSync(join(work, "run.json")) ? JSON.parse(readFileSync(join(work, "run.json"), "utf8")) : undefined });
+    ran.push({ ...block, out: done.stdout, err: done.stderr, run: existsSync(join(work, "out.json")) ? JSON.parse(readFileSync(join(work, "out.json"), "utf8")) : undefined });
   }
   const of = (n) => ran.filter((block) => block.title.startsWith(`${n}.`));
   assert.match(of(4)[0].out, /^# Europe$/m, "recipe 4 read what the run that asked wrote: its person's answer");

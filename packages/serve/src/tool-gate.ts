@@ -357,6 +357,9 @@ export class RunGate {
   /** The run's own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
   private extra: readonly ToolRegistration[] = [];
   private resume?: Resume;
+  /** Told just before an allowed call runs (harness-app's): the run is un-parked, so the call's own model requests (a
+   *  learned workflow's node) go out; the harness is idle then, as the park ended its turn. */
+  private unpark?: () => void;
   private drive?: Promise<Drive>;
   private timer?: NodeJS.Timeout;
   private settling = false;
@@ -530,8 +533,9 @@ export class RunGate {
   }
 
   /** Acts on the answers from now on, resuming the session through `resume`; by default pi's root conversation. */
-  start(resume?: Resume): void {
+  start(resume?: Resume, unpark?: () => void): void {
     this.resume = resume ?? this.submit;
+    this.unpark = unpark;
     this.watch();
   }
 
@@ -601,6 +605,7 @@ export class RunGate {
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
         // A request parked on a replay may follow an attempt that was sent: its refusal makes no "nothing was charged" claim.
+        if (decision === "allow") this.unpark?.();
         const result = decision === "deny" ? { text: refusedText(held.tool, answer.note, held.replayed ? "unknown" : "no"), isError: true } : this.policy(held.tool) === "deny" ? await this.ranOrDenied(held) : await this.run(held);
         // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL, a file that marks it once): an approved
         // call that ran and whose outcome is in the journal, then the process goes before its resume, once the test says go

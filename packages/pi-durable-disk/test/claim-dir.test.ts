@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { exitCodeFor, FencedError } from "../src/errors.ts";
-import { CLAIM_UNMOUNTED, deviceName, openClaimDir, persistRecord, readRunRecord, RUN_JSON, writeRunRecord, type ClaimDir, type RunRecord } from "../src/status.ts";
+import { writeFile } from "node:fs/promises";
+import { CLAIM_UNMOUNTED, deviceName, openClaimDir, type ClaimDir } from "../src/status.ts";
 import { onPlatform } from "./_macos.ts";
 import { removeWhileWritten, scratchRoot } from "./_run-support.ts";
 
@@ -16,17 +17,9 @@ const unmounted = (error: unknown) => error instanceof FencedError && error.code
 /** glibc's makedev. */
 const makedev = (major: bigint, minor: bigint) => (minor & 0xffn) | ((major & 0xfffn) << 8n) | ((minor & ~0xffn) << 12n) | ((major & ~0xfffn) << 32n);
 
-const record: RunRecord = {
-  run: "r1",
-  status: "running",
-  generation: 1,
-  sealedSeq: null,
-  wakeAt: null,
-  holder: { driver: "local", host: "h", bootId: null, pid: 42, since: "2026-10-07T00:00:00.000Z" },
-  heartbeatAt: "2026-10-07T00:00:01.000Z",
-  updatedAt: "2026-10-07T00:00:01.000Z",
-  detail: null,
-};
+/** A write of the run's own files through `at`, as the layout's are. */
+const PROBE = "probe";
+const writeThrough = (at: string, text: string) => writeFile(join(at, PROBE), text);
 
 /** A run root, and the place its directory is moved to when a test takes its path away. */
 function swappable(prefix: string) {
@@ -89,19 +82,16 @@ describe("the claim directory", () => {
     }
   });
 
-  it("writes land in the directory opened, whatever the root's path names now; run.json is refused once the path moved", async () => {
+  it("writes land in the directory opened, whatever the root's path names now; the check refuses once the path moved", async () => {
     const t = swappable("claimdir-at");
     try {
       const claim = await openClaimDir(t.root, {});
-      await writeRunRecord(claim, record);
-      assert.deepEqual(await readRunRecord(claim), record, "run.json round-trips through the directory");
+      await claim.assertMounted();
       t.swap();
-      await persistRecord(claim.at, "{}\n");
-      assert.equal(readFileSync(join(t.held, RUN_JSON), "utf8"), "{}\n", "the write went to the directory held open");
+      await writeThrough(claim.at, "{}\n");
+      assert.equal(readFileSync(join(t.held, PROBE), "utf8"), "{}\n", "the write went to the directory held open");
       assert.deepEqual(readdirSync(t.root), [], "and not to the root's path");
       await assert.rejects(claim.assertMounted(), unmounted);
-      await assert.rejects(writeRunRecord(claim, { ...record, generation: 2 }), unmounted);
-      assert.equal(readFileSync(join(t.held, RUN_JSON), "utf8"), "{}\n", "the check refused before the write");
       assert.deepEqual(readdirSync(t.root), [], "nothing under the root's path");
       await claim.close();
       assert.throws(() => claim.at, FencedError, "a closed directory has no path: its number may name another file");
@@ -128,20 +118,19 @@ describe("the claim directory", () => {
     }
   });
 
-  it("by path (macOS has no /proc/self/fd): at is the root, and a write or an owner-lock check is refused once the path names another directory", async () => {
+  it("by path (macOS has no /proc/self/fd): at is the root, and the checks refuse once the path names another directory", async () => {
     const t = swappable("claimdir-bypath");
     try {
       const claim = await openClaimDir(t.root, { byPath: true });
       assert.equal(claim.at, t.root);
-      await writeRunRecord(claim, record);
-      assert.deepEqual(await readRunRecord(claim), record, "run.json round-trips by path");
+      await claim.assertMounted();
       writeFileSync(join(t.root, "owner.lock"), "");
       await claim.assertSame("owner.lock");
       t.swap();
       writeFileSync(join(t.root, "owner.lock"), "");
       await assert.rejects(claim.assertSame("owner.lock"), unmounted, "the root's path is another directory");
-      await assert.rejects(writeRunRecord(claim, { ...record, generation: 2 }), unmounted);
-      assert.deepEqual(readdirSync(t.root), ["owner.lock"], "the check refused before the write");
+      await assert.rejects(claim.assertMounted(), unmounted, "the check refuses before any write");
+      assert.deepEqual(readdirSync(t.root), ["owner.lock"]);
       await claim.close();
       assert.throws(() => claim.at, FencedError);
     } finally {
@@ -170,22 +159,22 @@ describe("the claim directory", () => {
       const claim = await openClaimDir(t.root, {});
       try {
         t.swap();
-        await persistRecord(claim.at, "{}\n");
+        await writeThrough(claim.at, "{}\n");
         // One pass, as rmSync(recursive) does it: the walk, a write landing, then the rmdir: CI's ENOTEMPTY.
         for (const name of readdirSync(t.held)) rmSync(join(t.held, name), { force: true });
-        await persistRecord(claim.at, "{}\n");
+        await writeThrough(claim.at, "{}\n");
         assert.throws(() => rmdirSync(t.held), (error: unknown) => (error as { code?: string }).code === "ENOTEMPTY");
         // The helper, the same write forced after its first walk: it walks again and the directory goes.
         let landed = 0;
         await removeWhileWritten(t.held, async (attempt) => {
           if (attempt === 0) {
-            await persistRecord(claim.at, "{}\n");
+            await writeThrough(claim.at, "{}\n");
             landed++;
           }
         });
         assert.equal(landed, 1, "the write landed after the first walk");
         assert.equal(existsSync(t.held), false);
-        await assert.rejects(persistRecord(claim.at, "{}\n"), (error: unknown) => (error as { code?: string }).code === "ENOENT", "nothing lands once it is gone");
+        await assert.rejects(writeThrough(claim.at, "{}\n"), (error: unknown) => (error as { code?: string }).code === "ENOENT", "nothing lands once it is gone");
       } finally {
         await claim.close();
       }
@@ -200,7 +189,7 @@ describe("the claim directory", () => {
       const claim = await openClaimDir(t.root, {});
       t.swap();
       rmSync(t.held, { recursive: true });
-      await assert.rejects(persistRecord(claim.at, "{}\n"), (error: unknown) => (error as { code?: string }).code === "ENOENT");
+      await assert.rejects(writeThrough(claim.at, "{}\n"), (error: unknown) => (error as { code?: string }).code === "ENOENT");
       assert.deepEqual(readdirSync(t.root), []);
       await claim.close();
     } finally {

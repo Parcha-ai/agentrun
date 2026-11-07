@@ -227,7 +227,7 @@ const MCP_PREVIEW = { type: "object", additionalProperties: false, required: ["p
 /** The owner's declared prices of a server's tools. */
 const MCP_PRICES = {
   type: "object", additionalProperties: { type: "number", minimum: 0 },
-  description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw.",
+  description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw. On a PUT: no `prices` keeps the saved ones, for the tools the server still lists at the same URL (a new URL keeps none); `{}` clears them; any other value replaces them.",
 };
 const MCP_SERVER_VIEW = {
   type: "object", additionalProperties: false, required: ["name", "url", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
@@ -247,6 +247,7 @@ const MCP_SERVER_VIEW = {
     },
     ...MCP_LISTING,
     prices: MCP_PRICES,
+    not_metered: { type: "array", items: { type: "string" }, description: "The tools it lists that no price meters, in its order: a call of one runs outside the run's cost and its cap (\"not metered\" on the run's timeline). Absent when every tool has a price ($0 included)." },
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
   },
@@ -534,6 +535,9 @@ const TRIGGER_SOURCE = {
   ],
   description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), or a signed request to /hooks/{trigger_id} (\`webhook\`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
 };
+/** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
+ *  start always set, to UTC and to when it was written when the write left them out. */
+const TRIGGER_SOURCE_SENT = { ...TRIGGER_SOURCE, oneOf: TRIGGER_SOURCE.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) };
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
@@ -570,7 +574,7 @@ const TRIGGER = closed({
   id: { type: "string" },
   name: { type: "string", maxLength: 200 },
   enabled: { type: "boolean" },
-  source: TRIGGER_SOURCE,
+  source: TRIGGER_SOURCE_SENT,
   target: TRIGGER_TARGET,
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, description: `How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one \`missed\` firing. 0: a missed time never fires. Default ${CATCHUP_WINDOW_S}.` },
   failures_in_a_row: { type: "integer", minimum: 0, description: `Failed firings since the last that started a run; at ${FAILURES_TO_PAUSE} the trigger turns itself off (\`disabled\`). Turned on again, it counts from 0.` },
@@ -998,7 +1002,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
+      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
       responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
@@ -1294,6 +1298,8 @@ const LEARNING_SHORT = {
  *  `serve/1`. */
 /** consoleurl/1: the console's page of a run or an agent, where a person opens it. */
 const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
+/** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
+export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
 const RUN_FIELDS: Record<string, Json> = {
   console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
@@ -1737,6 +1743,12 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       object.properties[field] = schema;
       fields.push([name, ...down, field].join("."));
     }
+  }
+  // This server's own run fields it always sends, on a run and in a list (runs.ts view and summary): required with the
+  // contract's, so a client may read them as there.
+  for (const name of ["Run", "RunSummary"]) {
+    const schema = schemas[name] as Json & { required: string[] };
+    schema.required = [...schema.required, ...RUN_FIELDS_SENT];
   }
   // The contract's definition fields this server refuses (validate.ts), each marked with the reason its 422 gives.
   const definition = schemas.DefinitionInput as Json & { properties: Record<string, Json> };

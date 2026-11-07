@@ -1,6 +1,6 @@
 // The reference child as an app module (@parcha/agentrun-harness/child-app, built to packages/harness/dist/child-app.js) under `pi-durable-disk run --dir <dir> --app`: one open path, the disk package's own. The job runs on fakes to the end, its
-// outcome line carries the record, and run.json's final status `done` carries the record and the store's hash too (a box place has only run.json). A kill -9 (a crossing that ends the process) and the
-// same command again resumes the run.
+// outcome line carries the record, and the run's record, left `done` in its store, carries the record and the store's hash too. A kill -9 (a crossing that ends the process) and the
+// same command again, at the next epoch, resumes the run.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend } from '@parcha/pi-browser/testing';
+import { readLocalRunStatus } from '@parcha/pi-durable-disk';
 
 const CLI = fileURLToPath(new URL('../packages/pi-durable-disk/dist/cli.js', import.meta.url));
 const APP = fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'));
@@ -26,8 +27,10 @@ async function instance(t, env) {
   const served = await backend.serve();
   t.after(() => served.close());
   const dir = join(tmp, 'run');
+  // Each start is the next epoch, as its host would hand it: the place's supervisor counts its runners.
+  let epoch = 0;
   const start = (extra = {}) => new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', CLI, 'run', '--dir', dir, '--app', APP, '--id', 'reference'], {
+    const proc = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', CLI, 'run', '--dir', dir, '--epoch', String(++epoch), '--app', APP, '--id', 'reference'], {
       env: { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp, DEMO_SPEC: spec, DEMO_ENTRY: FIXTURE.href, BACKEND: served.url, BROWSER: 'fake', ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = ''; let stderr = '';
@@ -39,15 +42,15 @@ async function instance(t, env) {
   return { dir, start };
 }
 
-test('the reference job runs to the end under pi-durable-disk run --app: exit 0, the outcome line has the record, and run.json is done with the record and the store\'s hash', { timeout: 180_000 }, async (t) => {
+test('the reference job runs to the end under pi-durable-disk run --app: exit 0, the outcome line has the record, and the run\'s record is done with the record and the store\'s hash', { timeout: 180_000 }, async (t) => {
   const { dir, start } = await instance(t, {});
   const result = await start();
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.outcome.status, 'complete');
   assert.equal(result.outcome.record.company, 'Acme Ltd');
-  const run = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+  const run = await readLocalRunStatus(dir);
   assert.equal(run.status, 'done');
-  assert.deepEqual(run.detail.record, result.outcome.record, 'run.json has the record: a box place reads only that');
+  assert.deepEqual(run.detail.record, result.outcome.record, 'the run\'s record has the record too');
   assert.match(run.detail.storeSha256, /^[0-9a-f]{64}$/);
 });
 
@@ -60,7 +63,7 @@ test('kill -9 at a crossing and the same command again resumes the run, on the d
   assert.equal(resumed.code, 0, resumed.stderr);
   assert.deepEqual([resumed.outcome.status, resumed.outcome.generation], ['complete', 2]);
   assert.equal(resumed.outcome.record.company, 'Acme Ltd');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).status, 'done');
+  assert.equal((await readLocalRunStatus(dir)).status, 'done');
 });
 
 test('nothing is written under the run\'s directory before the claim is open: the recorder\'s lines wait in memory and are written, in order, in the directory the mount then shows', { timeout: 120_000 }, async (t) => {
@@ -96,7 +99,7 @@ test('a demo module that calls demo(options) at its top level, as its own comman
   const result = await start();
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.outcome.status, 'complete');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).status, 'done');
+  assert.equal((await readLocalRunStatus(dir)).status, 'done');
 });
 
 test('a job that must run in a box is refused under the app, not run outside the box: the app cannot take the box as its environment', { timeout: 60_000 }, async (t) => {
@@ -111,7 +114,7 @@ test('a job that must run in a box is refused under the app, not run outside the
   await assert.rejects(() => prepareChild({ ...options, spec: { ...options.spec, boxes: { kind: 'local', runIn: true } } }, { BACKEND: 'http://127.0.0.1:1' }, place), /boxes\.runIn is not supported under pi-durable-disk run --app/);
 });
 
-test('the run\'s final status carries the models the live parts chose, so a place that reads only run.json (a box place) hands them to manifest() too', async () => {
+test('the run\'s final status carries the models the live parts chose, so a place that reads only the run\'s record hands them to manifest() too', async () => {
   const { finalDetail } = await import('../packages/harness/dist/assemble.js');
   const done = { status: 'complete', generation: 1, output: { company: 'Acme' } };
   assert.deepEqual(finalDetail(done, 'ab', { models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } }), { status: 'complete', record: { company: 'Acme' }, storeSha256: 'ab', models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } });
@@ -141,11 +144,11 @@ test('a large outcome reaches the supervisor whole: the app waits for its stdout
   assert.ok(JSON.stringify(result.outcome.result).includes(big), 'the whole result line, not a cut one');
 });
 
-test('the demo\'s shaped result is also in run.json\'s final status: a place that reads only run.json keeps the cited result, not just the raw record', { timeout: 180_000 }, async (t) => {
+test('the demo\'s shaped result is also in the run\'s final status: a place that reads only the record keeps the cited result, not just the raw record', { timeout: 180_000 }, async (t) => {
   const { dir, start } = await instance(t, { DEMO_RESULT: '1' });
   const result = await start();
   assert.equal(result.code, 0, result.stderr);
-  const run = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+  const run = await readLocalRunStatus(dir);
   assert.equal(run.detail.result.title, 'A cited result');
   assert.equal(run.detail.result.json.format, 'agentrun.cited/1');
   assert.deepEqual(run.detail.result, result.outcome.result, 'the same result the outcome line carries');

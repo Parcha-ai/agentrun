@@ -22,7 +22,7 @@ const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], resolved
   agent_id: "searcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["read", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
   // GET /agents/{id}'s tools: what each grant resolves to for this agent.
-  tools: [{ name: "read" }, { name: "web_search", provider: toolSettings?.web_search?.provider ?? "exa-keyless", provider_from: toolSettings ? "agent" : "server", default_provider: "exa-keyless", resolved }],
+  tools: [{ name: "read", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] }, { name: "web_search", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const], provider: toolSettings?.web_search?.provider ?? "exa-keyless", provider_from: toolSettings ? "agent" : "server", default_provider: "exa-keyless", resolved }],
 });
 
 async function open(agent: Agent, { providerChoices = choices, editorCaps = caps }: { providerChoices?: typeof choices; editorCaps?: typeof caps } = {}) {
@@ -47,7 +47,8 @@ describe("AgentEditor, an agent's tool settings", () => {
     const page = await open(agentWith());
     expect(page.row("web_search")).toBeTruthy();
     expect(page.row("web_fetch")).toBeNull();
-    expect(page.row("read")).toBeNull();
+    // A tool with no provider choice has no provider to pick: its row holds only its permission.
+    expect(page.row("read")?.querySelector('button[aria-haspopup=listbox][aria-label="read provider"]') ?? null).toBeNull();
     expect((await optionsOf(page.select("web_search"))).map((o) => o.text)).toEqual(["auto", "native", "Exa keyless (default)", "Parallel", "off"]);
     expect(valueOf(page.select("web_search"))).toBe("exa-keyless");
     expect(page.row("web_search")!.hasAttribute("data-set")).toBe(false);
@@ -86,7 +87,7 @@ describe("AgentEditor, an agent's tool settings", () => {
     const off = toolChoices([{ ...SEARCH, provider: "off", available: false, reason: OFF, resolves: { pi: `unavailable: ${OFF}`, "claude-agent": `unavailable: ${OFF}`, codex: `unavailable: ${OFF}` } }, FETCH]);
     const offCaps = { ...caps, tools: caps.tools.map((t) => (t.name === "web_search" ? { ...t, available: false } : t)) };
     const base = agentWith();
-    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["read"] }, tools: [{ name: "read" }] };
+    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["read"] }, tools: [{ name: "read", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] }] };
     const page = await open(agent, { providerChoices: off, editorCaps: offCaps });
     const grant = () => page.host.querySelector<HTMLInputElement>('input[value="web_search"]')!;
     // The server's off is the only obstacle: the grant waits for a provider of the agent's own, offered before it.

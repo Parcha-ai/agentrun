@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex
+kind: fix
+---
+A learned workflow's model nodes, its `llm` call nodes and a call node's native search, on claude-agent, codex and opencode, are requests on the run's one route: the session's own model proxy, under a side key the proxy mints for the host (`ModelProxy.sideKey`, `AdapterSession.port`). They get the harness's own body rules, provider, key, price and booking, labelled `learned_workflow` on the session's records (`runner.request.host`), under the run's one cap, as a side call: the spend cap's wrap-up never counts it toward a typical request, and it never takes the wrap-up's note. They reach an operator's gateway at ANTHROPIC_BASE_URL or AGENT_MODEL_BASE_URL as the harness's requests do, and never go around it, so a run there is offered its learned workflows (the learning pin's `workflows_off` is gone). A side request is never the turn's answer request: a content-filter stop on it does not halt the turn.
+Upgrading: Finish or cancel capped runs that used learned workflows before upgrading: their earlier learned-workflow spend is not counted against the cap after it. A pin written before this keeps the workflows it left out, and its `workflows_off` is no longer read.

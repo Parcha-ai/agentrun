@@ -7,9 +7,9 @@ import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
 import { pick } from "@/test/picker";
 
-const run = (id: string, status: Run["status"], state: Run["state"], title: string): Run => ({
+const run = (id: string, status: Run["status"], state: Run["state"], title: string): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: id, agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status, state, title, created_at: "2026-10-30T03:00:00Z",
-  ended_at: null, result: null, error: null, cost: null, archived_at: null,
+  ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 });
 // GET /v2/stats's `analytics`: tokens, time, success, cost, by harness and effort, per day and by tool, over the range
 // picked. A partial figure says what it holds; an unknown cost never reads $0.
@@ -65,9 +65,6 @@ describe("costLine: a total said honestly, never $0 for a cost not known", () =>
     expect(costLine({ usd: 1.5, basis: "estimate", unknownRuns: 0 })).toBe("$1.50 est.");
     expect(costLine({ usd: 0.0043, basis: "estimate", unknownRuns: 0 })).toBe("$0.0043 est.");
   });
-  it("says a reported total plainly", () => {
-    expect(costLine({ usd: 1.5, basis: "reported", unknownRuns: 0 })).toBe("$1.50");
-  });
   it("says how many runs aren't in the total", () => {
     expect(costLine({ usd: 0.0043, basis: "estimate", unknownRuns: 2 })).toBe("$0.0043 est. · 2 runs unknown");
     expect(costLine({ usd: 0.0043, basis: "estimate", unknownRuns: 1 })).toBe("$0.0043 est. · 1 run unknown");
@@ -88,9 +85,8 @@ describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them
     });
     expect(costLine(v.cost)).toBe("Unknown");
   });
-  it("reads the contract's cost basis: an estimate says est., a charge says it plainly", () => {
+  it("reads the server's cost basis: an estimate says est.", () => {
     expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "estimate", unknown_runs: 0 } }, []).cost)).toBe("$1.50 est.");
-    expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "charge", unknown_runs: 0 } }, []).cost)).toBe("$1.50");
   });
   it("keeps the runs whose state the server can't tell, and the page says how many", () => {
     const v = missionFrom({ ...stats, runs: { ...stats.runs, status_unknown: 3 } }, []);
@@ -258,7 +254,7 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     expect(html).not.toContain("$0.0000");
   });
   it("shows a latest run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", () => {
-    const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
+    const unknown = { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null };
     const stopped: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), cost: { ...unknown, so_far_usd: 0.0123, unpriced: 1 } };
     const html = render({ ...view, recent: [stopped, { ...run("run-2", "completed", "idle", "Summarize the standup"), cost: unknown }] });
     expect(html).toContain("so far $0.0123 est. · 1 not priced");

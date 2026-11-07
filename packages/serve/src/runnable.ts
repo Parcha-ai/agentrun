@@ -7,7 +7,7 @@ import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.j
 import { REPLAY } from "./host-tools.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { chooseModel, llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
+import { chooseModel, FAUX_ENV, llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
@@ -44,8 +44,9 @@ export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?
  */
 export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean } | { refused: string } | undefined> {
   // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
-  // harness every harness takes the run's usual model.
-  const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
+  // harness with pi's faux model every harness takes that model, and with a real one claude-agent's is its own, as in
+  // production (its session's proxy reaches claude-agent's own provider: adapters.ts fauxProxy).
+  const own = harness === "claude-agent" && !(env[FAUX_HARNESS_ENV] && env[FAUX_ENV]);
   if (own && !available) return undefined;
   // codex's is the run's usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (codexRef).
   const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" || harness === "opencode" ? await (await import("./adapters.js")).codexModel(env, ref, harness) : await chooseModel(env, ref, "default", harness);

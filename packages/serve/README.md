@@ -181,7 +181,7 @@ shell: compose reads it each time, and `compose.yaml` needs it to be read at all
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
-(trixie), with git 2.47 for `pi-git-remote` and the Docker client. Everything it keeps is under `/data`: the agent store,
+(trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
 The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
@@ -1321,7 +1321,13 @@ proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and h
 and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
 and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
-refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+refresh is refused with words and nothing is sent. A loopback MCP server is a development-only exception: its
+authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
+another loopback address, the IPv6 loopback, or a name for this machine in its place), on any port but this server's own; any other
+loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
+its own port. What that leaves: such an authorization server can still have this server send its sign-in and refresh
+requests to other ports on that same loopback host (a port Docker publishes there, say), blind, learning only the
+endpoint and its status, never a body. That is why the allowance is for development only. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
@@ -1332,7 +1338,9 @@ Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at,
 set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
 (one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
 alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
-and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
+and a preview, refresh or run says to sign in again in Settings → MCP servers. A launch's refresh waits at most 4 s a
+try, two tries, so an authorization server that does not answer holds a start's answer about 8 s at most; the run's
+call is then refused unsent, saying to try again. A token that expires during a run is not
 refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it. A server that stops aborts any
 refresh or code exchange under way and writes nothing after; if the authorization server had already rotated that
 refresh token, the next start reads `credential: "expired"` and asks for a sign-in again.
@@ -1409,6 +1417,9 @@ asked by default.
   run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
   row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
   (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
+  A PUT that names no `prices` keeps the saved ones, for the tools the server still lists at the same URL (a new URL
+  keeps none), so a save from any client never leaves a paid tool unmetered; `"prices": {}` clears them. A read lists
+  the tools no price meters as `not_metered`.
 - **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
@@ -2052,13 +2063,12 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   and handed the key of; a tier the run has no model of runs there too), in a session of its own with no tool of its
   own, each call node `via: "tool"` on a tool the agent has, its paid requests booked under
   the `learned_workflow` call, and web_search on the provider's own search where it resolves native, through the run's
-  models. Its model requests are the run's, under its cap and on its timeline as side requests labelled
-  `learned_workflow`: on claude-agent and codex, the harness's requests and the workflow's count against one total, and
-  each holds its worst case in flight where the other's check sees it, and the workflow's go where the harness's go (on
-  OPENROUTER_API_KEY alone, through OpenRouter, by OpenRouter's name for the run's model; claude-agent through the
-  operator's own gateway at ANTHROPIC_BASE_URL, or any harness at an origin its requests could not follow, is offered
-  none, which its pin names in `workflows_off`; opencode takes codex's route). A call a crash cut off is answered interrupted,
-  never run again. The tool gate holds
+  models. Its model requests are the run's, under its cap: on pi, side requests of the run's models labelled
+  `learned_workflow` on its timeline; on claude-agent, codex and opencode, requests on the run's one route, the session's
+  model proxy, under a key of the run's own: the same body rules, provider, key, price and cap as the harness's own
+  requests, booked on the session's records labelled `learned_workflow`. So they go wherever the harness's go (the
+  operator's gateway at ANTHROPIC_BASE_URL or AGENT_MODEL_BASE_URL, OpenRouter, the vendor's API), and every run is
+  offered the workflows its pin names. A call a crash cut off is answered interrupted, never run again. The tool gate holds
   `learned_workflow` like any tool: its settings key is `learned_workflow`, allowed by default (the agent's own graded
   workflow, each node checked), and tool settings may set it to ask (the run parks until an owner answers) or deny.
 

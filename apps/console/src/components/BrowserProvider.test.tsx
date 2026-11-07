@@ -6,6 +6,7 @@ import { PerHarness, ToolTable, toolRows } from "./ToolSettings";
 import type { Agent, AgentFields } from "@/lib/agentForm";
 import { providerHelp, providerLabel, toolChoices } from "@/lib/toolSettings";
 import { optionsOf, pick, picker, valueOf } from "@/test/picker";
+import type { ToolSetting } from "@/lib/v2";
 
 // The browser's providers (serve's tool-plane.ts PROVIDERS.browser: auto, browserbase, kernel, chrome) read as the
 // browser's, not through the labels web_search and web_fetch share: there "kernel" is the guarded fetch and "auto" the
@@ -72,10 +73,10 @@ describe("Settings → Tools, the browser row", () => {
 
 describe("an agent's browser pick in its editor", () => {
   const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true }, { name: "browser", available: true }], thinking: ["low"] };
-  const agentWith = (provider?: string): Agent => ({
+  const agentWith = (provider?: ToolSetting["provider"]): Agent => ({
     agent_id: "browsing", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Browsing", instructions: "Look.", harness: "pi", skills: [], tools: ["read", "browser"], ...(provider ? { tool_settings: { browser: { provider } } } : {}) },
-    tools: [{ name: "read" }, { name: "browser", provider: provider ?? "auto", provider_from: provider ? "agent" : "server", default_provider: "auto", resolved: provider === "browserbase" ? "browserbase" : "kernel" }],
+    tools: [{ name: "read", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] }, { name: "browser", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const], provider: provider ?? "auto", provider_from: provider ? "agent" : "server", default_provider: "auto", resolved: provider === "browserbase" ? "browserbase" : "kernel" }],
   });
   async function open(agent: Agent) {
     const saves: AgentFields[] = [];
