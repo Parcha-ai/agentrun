@@ -17,7 +17,7 @@
 // way: the server makes, seeds, pulls and ends it with its own client, and the run's process runs pi-transport's VM
 // provider over the relay's VM half (box-relay-vm.ts), which holds the client and the token. It has no network.
 import { createHash } from "node:crypto";
-import { appendFile, lstat, readFile, realpath } from "node:fs/promises";
+import { appendFile, lstat, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -160,6 +160,9 @@ export const BOX_SYNC_FILE = "box-sync.json";
  *  process never writes it; a pull folds these lines into the mark it compares against, for paths the mark lacks, so
  *  the box's later edit of such a file comes back instead of reading as a change the server made. */
 export const BOX_MIRRORED_FILE = "box-mirrored.jsonl";
+/** In a run's directory while the box the server destroyed for a new one has no successor yet (ensureRemoteBox): the
+ *  attempt that makes one says the box was replaced, though the one that destroyed the old box failed after it. */
+export const BOX_REPLACED_FILE = "box-replaced";
 
 type Mount = NonNullable<BoxSpec["mounts"]>[number];
 
@@ -525,7 +528,6 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
-  let replaced = false;
   const facts = box?.facts();
   // Kept with its network as asked, and its work/ where every box has it now (BOX_WORK): one made when boxes had it
   // elsewhere is pulled from there, whole, and made again.
@@ -538,9 +540,10 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     } catch (error) {
       throw new Error(`the run's box has another host list than this server's now (or a network it does not ask for, or its files outside /workspace), and its files could not all be copied back, so it is kept and not used: ${(error as Error).message}`);
     }
+    // Noted before the old box goes: should what follows fail, the attempt that makes its successor still says so.
+    await writeFile(join(run.dir, BOX_REPLACED_FILE), "");
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
-    replaced = true;
   }
   if (!box) {
     let created = await boxes.create(remoteSpec(run.id, allow, limits), context);
@@ -571,7 +574,9 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     }
     await keepMark(run.dir, { box: box.id, mark: seeded.value.mark });
   }
-  // `replaced`: a box the run had was destroyed for this one, and what it held outside the run's files with it.
+  // `replaced`: a box the run had was destroyed for this one (in this attempt or a failed one before it), and what it
+  // held outside the run's files with it. Said once.
+  const replaced = await rm(join(run.dir, BOX_REPLACED_FILE)).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : Promise.reject(error)));
   return { id: box.id, made, ...(replaced ? { replaced } : {}) };
 }
 

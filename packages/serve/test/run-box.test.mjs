@@ -317,6 +317,31 @@ test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work
   assert.equal(specs[0].workspace, "/workspace");
 });
 
+test("a remote box replaced, then a create of its successor that fails: the next attempt that makes one still says replaced, once", async (t) => {
+  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  let found;
+  let fails = 1;
+  const box = (id, workspace) => ({ id, facts: () => ({ provider: "fake", workspace, network: "none" }), destroy: async () => ((found = found?.id === id ? undefined : found), { ok: true, value: undefined }) });
+  const boxes = {
+    list: async () => ({ ok: true, value: found ? [{ id: found.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: found && found.id === id ? found : undefined }),
+    create: async (spec) => {
+      if (fails-- > 0) return { ok: false, error: Object.assign(new Error("the provider is busy"), { code: "unavailable" }) };
+      found = box("new", spec.workspace);
+      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "new", mark: { entries: [] } }));
+      return { ok: true, value: found };
+    },
+  };
+  found = box("old", "/run/agentrun/run/work");
+  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "old", mark: { entries: [] } }));
+  const pull = async () => undefined;
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), /could not be made: the provider is busy/);
+  assert.equal(found, undefined, "the old box is gone, and no new one came");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: true, replaced: true }, "the attempt that makes one says the box was replaced");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: false }, "and only that one");
+});
+
 test("a remote box found with a host list is kept only when its list is the one asked, as a set: another list, or one it does not say, is destroyed and made again", async (t) => {
   const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
   // A box replaced here is copied back first; the copy is this stand-in, which counts its calls.
