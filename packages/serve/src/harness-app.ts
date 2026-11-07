@@ -272,7 +272,10 @@ export function adapterRun(
     }
     inFlight.admitted(answer?.holdUsd);
     const side = (request as { side?: unknown }).side === true;
-    const inputTokensMax = withoutNote ? (plainInput as number) : request.inputTokensMax;
+    // The bound its `previous` is read against for the next request on its model: the body as its client sent it, without
+    // the note (the note goes after the client's content, in this request alone, so the next request's cached prefix is the
+    // client's body). Its hold above is what it sends, the note included.
+    const inputTokensMax = noted && typeof plainInput === "number" ? plainInput : request.inputTokensMax;
     admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
     if (!answer) return undefined;
     // Admitted carrying the note: it is sent, once per cap, and its row says so. Only the admission of the request that
