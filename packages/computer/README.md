@@ -463,7 +463,7 @@ core screen    screenshot-size                              - 1
 ...
 full lifetime  extend                                       - 1
   - lifetime.extend: the provider has no extend()
-core PASS 53/53 · 9 Core cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 Core cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
@@ -473,7 +473,7 @@ undeclared? }], core, undeclared, cleanup }`). A failure is listed under its lin
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
-not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 51 Core cases
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 52 Core cases
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 
