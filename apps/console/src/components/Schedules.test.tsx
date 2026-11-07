@@ -16,7 +16,8 @@ const NIGHTLY: Trigger = {
   last_firing: { key: "fir_a", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "skipped", at: "2026-11-04T09:30:01Z", run_id: null, reason: "The last run is still working.", error: null },
 };
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_x", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "started", at: "2026-11-04T09:30:01Z", run_id: null, reason: null, error: null, ...over });
-const AGENTS = [
+type AgentFixture = { agent_id: string; kind: string; definition: { name: string; max_cost_usd?: number }; archived_at: null };
+const AGENTS: AgentFixture[] = [
   { agent_id: "triage", kind: "agentic", definition: { name: "Triage" }, archived_at: null },
   { agent_id: "flow", kind: "workflow", definition: { name: "Refund flow" }, archived_at: null },
   // An agent with a default cap per run (definition.max_cost_usd): a schedule on it may leave its own cap out.
@@ -31,19 +32,28 @@ const refuse = (fields: { field: string; reason: string; message: string }[]) =>
  *  now answers once `release` is called (so a second click lands while the first is out). While `hold.on`, a read of a
  *  schedule or its firings answers as things stood when it was asked, but only once `releaseHeld` is called: a late,
  *  stale background read. */
-function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>, write }: { triggers?: Trigger[]; firings?: Record<string, Firing[]>; write?: (call: Call) => Response | undefined } = {}) {
+function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>, write, agents = AGENTS }: { triggers?: Trigger[]; firings?: Record<string, Firing[]>; write?: (call: Call) => Response | undefined; agents?: typeof AGENTS } = {}) {
   const calls: Call[] = [];
   let release: () => void = () => {};
   const hold = { on: false };
   const held: (() => void)[] = [];
   const later = async (answer: Response) => { await new Promise<void>((r) => held.push(r)); return answer; };
+  // While `agentHold.on`, a read of one agent answers as it stood when asked, once released by its place in the queue.
+  const agentHold = { on: false };
+  const agentHeld: (() => void)[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, key: new Headers(init?.headers).get("idempotency-key") };
     calls.push(call);
     const m = /^\/v2\/triggers\/([^/]+)(\/fire|\/firings)?$/.exec(call.path);
-    if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
+    if (call.path === "/v2/agents") return json(200, { agents, next_cursor: null });
     const agentRead = /^\/v2\/agents\/([^/]+)$/.exec(call.path);
-    if (agentRead) { const a = AGENTS.find((x) => x.agent_id === decodeURIComponent(agentRead[1])); return a ? json(200, a) : json(404, { error: { code: "not_found", message: "no agent", retryable: false } }); }
+    if (agentRead) {
+      const a = agents.find((x) => x.agent_id === decodeURIComponent(agentRead[1]));
+      const answer = a ? json(200, a) : json(404, { error: { code: "not_found", message: "no agent", retryable: false } });
+      if (!agentHold.on) return answer;
+      await new Promise<void>((r) => agentHeld.push(r));
+      return answer;
+    }
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
     if (call.path === "/v2/triggers" && call.method === "POST") {
       const answer = write?.(call);
@@ -73,7 +83,7 @@ function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>
     }
     return json(404, { error: { code: "not_found", message: call.path, retryable: false } });
   }) as typeof globalThis.fetch;
-  return { v2: createClient({ fetch }), calls, release: () => release(), hold, releaseHeld: () => held.splice(0).forEach((r) => r()) };
+  return { v2: createClient({ fetch }), calls, release: () => release(), hold, releaseHeld: () => held.splice(0).forEach((r) => r()), agentHold, agentHeld };
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -193,6 +203,20 @@ describe("a new schedule", () => {
     await t.choose("every");
     expect(t.text()).toContain("At least 2 minutes.");
   });
+  // Before an agent is picked the cap's rule depends on it: the hint says so, and a cap that may be left empty shows no
+  // amount to copy. The cron line says what every minute is.
+  it("says the cap's rule before an agent is picked, offers no amount where the cap is optional, and shows every minute in cron", async () => {
+    const t = await open(server().v2, { schedule: null });
+    const cap = () => t.host.querySelector('[name="maxCost"]') as HTMLInputElement;
+    expect(t.text()).toContain("Required unless the agent has a default cap per run.");
+    expect(t.text()).toContain("* * * * * = every minute");
+    await t.set("agent", "triage");
+    expect(t.text()).toContain("Required: each run this schedule starts stops at this spend.");
+    expect(cap().placeholder).toBe("2");
+    await t.set("agent", "story");
+    expect(t.text()).toContain("Uses the agent's default ($0.50) if empty.");
+    expect(cap().placeholder).toBe("");
+  });
   // The server takes no cap when the agent has a default (each firing uses the agent's): the field is optional then.
   it("leaves the cap out on an agent with a default cap, and says the default under the field", async () => {
     const { v2, calls } = server();
@@ -308,6 +332,81 @@ describe("one schedule", () => {
     const t = await open(server({ triggers: [own] }).v2, { schedule: "trg_1" });
     expect(t.text()).toContain("Agent's default ($0.50)");
     expect(t.text()).not.toContain("undefined");
+  });
+  // The agent's default is read again with the schedule, so a change made elsewhere shows; and an amount read for one
+  // agent never stays on the page for another whose read failed.
+  it("reads the agent's default again while open, and drops an amount that belonged to another agent", async () => {
+    const agents = AGENTS.map((a) => ({ ...a, definition: { ...a.definition } }));
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const triggers = [own];
+    const t = await open(server({ triggers, agents }).v2, { schedule: "trg_1" }, undefined, 30);
+    expect(t.text()).toContain("Agent's default ($0.50)");
+    (agents.find((a) => a.agent_id === "story")!.definition as { max_cost_usd?: number }).max_cost_usd = 0.75;
+    for (let i = 0; i < 20 && !t.text().includes("($0.75)"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(t.text()).toContain("Agent's default ($0.75)");
+    triggers[0] = { ...own, target: { kind: "start_run", agent_id: "gone", input: { content: "Say hello." } } };
+    for (let i = 0; i < 20 && t.text().includes("($0.75)"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(t.text()).toContain("Agent's default");
+    expect(t.text()).not.toContain("($0.75)");
+  });
+  // An action's answer can name another agent (the schedule was edited elsewhere): it is applied as a read is, so the
+  // cap shows that agent's default at once, and never the old agent's amount.
+  it("shows the agent's default an action's answer names, at once, and never the old agent's amount", async () => {
+    const agents: AgentFixture[] = [...AGENTS, { agent_id: "big", kind: "agentic", definition: { name: "Big", max_cost_usd: 2 }, archived_at: null }];
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const pausedOn = (agent: string) => (call: { method: string }) => (call.method === "PATCH" ? json(200, { ...own, enabled: false, target: { ...own.target, agent_id: agent } }) : undefined);
+    const t = await open(server({ triggers: [own], agents, write: pausedOn("big") }).v2, { schedule: "trg_1" });
+    expect(t.text()).toContain("Agent's default ($0.50)");
+    await t.click(/^Pause$/);
+    expect(t.text()).toContain("Agent's default ($2.00)");
+    expect(t.text()).not.toContain("($0.50)");
+    act(() => root?.unmount());
+    // The new agent's read fails: the amount stays dropped.
+    const u = await open(server({ triggers: [own], agents, write: pausedOn("gone") }).v2, { schedule: "trg_1" });
+    expect(u.text()).toContain("Agent's default ($0.50)");
+    await u.click(/^Pause$/);
+    expect(u.text()).toContain("Agent's default");
+    expect(u.text()).not.toContain("($0.50)");
+  });
+  // Pause or Resume is done when its answer lands: the agent's default is looked up after, on its own.
+  it("gives the buttons back as soon as Pause answers, while the agent's default is still being read", async () => {
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const s = server({ triggers: [own] });
+    const t = await open(s.v2, { schedule: "trg_1" });
+    s.agentHold.on = true;
+    await t.click(/^Pause$/);
+    expect(s.agentHeld.length).toBeGreaterThan(0);
+    expect(t.button(/^Resume$/)?.disabled).toBe(false);
+    expect(t.button(/^Delete$/)?.disabled).toBe(false);
+    await act(async () => { s.agentHold.on = false; s.agentHeld.splice(0).forEach((r) => r()); });
+  });
+  // Two reads of the agent's default can be out at once (an action's and a refresh's): the newer one asked wins, whichever
+  // answers last.
+  it("keeps the agent's default the newer read gave when an older read answers after it", async () => {
+    const agents = AGENTS.map((a) => ({ ...a, definition: { ...a.definition } }));
+    const story = agents.find((a) => a.agent_id === "story")!.definition as { max_cost_usd?: number };
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const s = server({ triggers: [own], agents });
+    const t = await open(s.v2, { schedule: "trg_1" }, undefined, 30);
+    expect(t.text()).toContain("Agent's default ($0.50)");
+    s.agentHold.on = true;
+    story.max_cost_usd = 0.75;
+    await act(async () => { t.button(/^Pause$/)!.click(); });
+    for (let i = 0; i < 20 && s.agentHeld.length < 1; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    const older = s.agentHeld.length;
+    story.max_cost_usd = 1.25;
+    for (let i = 0; i < 40 && s.agentHeld.length <= older; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(s.agentHeld.length).toBeGreaterThan(older);
+    // Reads after these stay held, so no later read can put the page right by itself. The newer reads (asked last)
+    // answer first, then the older ones.
+    await act(async () => { s.agentHeld.splice(older).forEach((r) => r()); });
+    await t.settle();
+    expect(t.text()).toContain("Agent's default ($1.25)");
+    await act(async () => { s.agentHeld.splice(0, older).forEach((r) => r()); });
+    await t.settle();
+    expect(t.text()).toContain("Agent's default ($1.25)");
+    expect(t.text()).not.toContain("($0.75)");
+    await act(async () => { s.agentHold.on = false; s.agentHeld.splice(0).forEach((r) => r()); });
   });
   it("says a trigger this page does not show is not a schedule that starts runs, with nothing to change it", async () => {
     const hook = { ...NIGHTLY, id: "trg_hook", name: "on push", source: { kind: "webhook" } } as unknown as Trigger;

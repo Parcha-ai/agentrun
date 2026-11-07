@@ -133,26 +133,42 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   // Moves on when an action (Pause, Resume, Run now) starts and when its answer lands: a read applies its answer only if
   // no action moved it since the read was asked, so an older answer never replaces a newer one.
   const generation = useRef(0);
+  // A schedule with no cap of its own runs under its agent's default (definition.max_cost_usd): read with the schedule,
+  // so a change made elsewhere shows. The amount is dropped the moment the schedule names another agent, and stays
+  // dropped if that agent's read fails: an amount read for one agent never shows for another.
+  const [agentCap, setAgentCap] = useState<number | undefined>(undefined);
+  const capAgent = useRef<string | null>(null);
+  // Each read of the agent's default takes the next number; only the newest one asked may set the amount, whichever
+  // answers last.
+  const capAsked = useRef(0);
+  // The one way the page takes a schedule, from a read or an action's answer: the schedule at once, then its agent's
+  // default when it has no cap of its own, read on its own (nothing waits on it), with the amount dropped first when the
+  // agent changed. A read of the default that fails leaves it dropped.
+  const apply = (t: Trigger) => {
+    setTrigger(t);
+    const agent = isScheduleTrigger(t) && typeof t.target.max_cost_usd !== "number" ? t.target.agent_id : null;
+    if (agent !== capAgent.current) { capAgent.current = agent; setAgentCap(undefined); }
+    if (!agent) return;
+    const mine = ++capAsked.current;
+    void v2.getAgent(agent).then((r) => r.agent.definition.max_cost_usd, () => undefined).then((cap) => {
+      if (mine === capAsked.current && capAgent.current === agent) setAgentCap(typeof cap === "number" ? cap : undefined);
+    });
+  };
   const read = () => {
     reading.current = true;
     const asked = generation.current;
     return Promise.all([v2.getTrigger(id), v2.triggerFirings(id)])
-      .then(([t, f]) => { if (asked === generation.current) { setTrigger(t); setFirings(f.firings); setError(null); } })
+      .then(([t, f]) => {
+        if (asked !== generation.current) return;
+        setFirings(f.firings); setError(null);
+        apply(t);
+      })
       .finally(() => { reading.current = false; });
   };
   useEffect(() => { read().catch((e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   // Read again while the page is open, so a timed firing, its run and the next time show with no reload; not while a
   // read or a Run now is out. A read that fails here leaves the page as it was.
   useRereads(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every, [v2, id]);
-  // A schedule with no cap of its own runs under its agent's default (definition.max_cost_usd): read it to say so.
-  const [agentCap, setAgentCap] = useState<number | undefined>(undefined);
-  const capAgent = trigger && isScheduleTrigger(trigger) && typeof trigger.target.max_cost_usd !== "number" ? trigger.target.agent_id : null;
-  useEffect(() => {
-    if (!capAgent) return;
-    let live = true;
-    v2.getAgent(capAgent).then((r) => { if (live) setAgentCap(typeof r.agent.definition.max_cost_usd === "number" ? r.agent.definition.max_cost_usd : undefined); }, () => {});
-    return () => { live = false; };
-  }, [v2, capAgent]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/schedules", label: "All schedules" }} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
   if (!isScheduleTrigger(trigger)) return <NotASchedule />;
 
@@ -164,7 +180,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
     generation.current++;
     const answer = await v2.updateTrigger(id, { enabled: !trigger.enabled });
     generation.current++;
-    setTrigger(answer);
+    apply(answer);
   }, trigger.enabled ? "the pause" : "the resume");
   const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/schedules"); }, "the delete");
   const runNow = async () => {
@@ -332,7 +348,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
             ))}
           </div>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><input name="cron" className={INPUT} value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
+            {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week. * * * * * = every minute."><input name="cron" className={INPUT} value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
             {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><input name="at" type="datetime-local" step={1} className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
             {draft.kind === "every" && (
               <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
@@ -363,8 +379,9 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
         </Field>
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
-          hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
-          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder="2" />
+          hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : !draft.agentId ? "Required unless the agent has a default cap per run." : "Required: each run this schedule starts stops at this spend."}>
+          {/* A cap that may be left empty offers no amount to copy. */}
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capOptional ? "" : "2"} />
         </Field>
         {!trigger && (
           <div>
