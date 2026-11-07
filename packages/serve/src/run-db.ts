@@ -137,10 +137,11 @@ export async function checkpointRunDb(file: string, held: boolean, platform: Nod
   if (held) throw new HeldRunDbError(file);
   const db = new DatabaseSync(file, { timeout: 0 });
   try {
-    // As its writer opened it (pi-durable-disk's exclusive profile): the WAL index in heap, so no -shm is made;
-    // synchronous FULL, so the checkpoint's copy is synced into the database file before the WAL that held it is removed;
-    // and on macOS F_FULLFSYNC (`fullfsync`, `checkpoint_fullfsync`), as fsync there leaves the drive's cache unflushed.
-    for (const [pragma, value] of Object.entries(profilePragmas("exclusive", platform))) db.exec(`PRAGMA ${pragma} = ${value}`);
+    // As its writer opened it (pi-durable-disk's exclusive profile): the WAL index in heap, so no -shm is made; and on
+    // macOS F_FULLFSYNC (`fullfsync`, `checkpoint_fullfsync`), as fsync there leaves the drive's cache unflushed. And
+    // synchronous FULL whatever level the run's journal runs at, so the checkpoint's copy is synced into the database file
+    // before the WAL that held it is removed (pi-durable-disk barriers.ts lists this store as FULL).
+    for (const [pragma, value] of Object.entries(profilePragmas("exclusive", platform, "FULL"))) db.exec(`PRAGMA ${pragma} = ${value}`);
     db.prepare("SELECT count(*) FROM sqlite_schema").get();
     runDbTestHooks.beforeCheckpoint?.(db);
   } finally {
