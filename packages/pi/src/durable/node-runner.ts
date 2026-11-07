@@ -31,6 +31,7 @@ import { RecordDoc, recordNudge, recordTool, spendNudge, submitDefinition, type 
  *  starts without it, as with the record: the runner never attaches a fork, so a fork is no node and waits for nothing. */
 export const NodeDoc = defineDoc<{ system: string; label: string; schema: JsonValue | null; fileKey: string | null; input?: { [key: string]: JsonValue } }>({
   kind: "agentrun.node", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ system: "", label: "", schema: null, fileKey: null }),
+  checkpointWhen: () => false,
 });
 
 /** The JSON object a node's user text holds, or nothing: the interpreter sends a node its prompt state stringified. */

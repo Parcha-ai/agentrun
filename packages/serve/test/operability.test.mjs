@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { BOX_IDS } from "../dist/boxes.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);
@@ -40,7 +40,7 @@ test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and 
   assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
   const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } });
   await follow(api, run.run_id, ["working"]);
-  const pid = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, run.run_id).holder.pid;
   const from = Date.now();
   server.child.kill("SIGTERM");
   const code = await Promise.race([server.exited, sleep(40_000).then(() => "still running")]);
@@ -48,7 +48,7 @@ test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and 
   assert.equal(code, 0, server.seen.err);
   assert.ok(took < 2_000 + 3_000, `it exited ${took} ms after SIGTERM, past its 2 s drain`);
   assert.equal(alive(pid), false, "the run's process exited with it");
-  const left = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  const left = runRecordOf(data, run.run_id);
   assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
@@ -64,7 +64,7 @@ test("the image drains within Docker's 10 s grace, and Compose gives the stop mo
   const drain = /"--drain-timeout", "(\d+)s"/.exec(dockerfile);
   assert.ok(drain, "the image's CMD names its drain");
   assert.ok(Number(drain[1]) < 10, `the image drains ${drain[1]} s`);
-  const compose = await readFile(new URL("compose.yaml", DOCKER), "utf8");
+  const compose = await readFile(new URL("compose.yaml", ROOT), "utf8");
   const grace = /stop_grace_period: (\d+)s/.exec(compose);
   assert.ok(grace && Number(grace[1]) > Number(drain[1]), "compose's stop_grace_period is above the drain");
   const render = await readFile(new URL("render.yaml", ROOT), "utf8");
@@ -177,4 +177,20 @@ test("a run whose process crashes at its start fails with the crash in words, ne
   assert.equal(error.code, "run_failed");
   assert.match(error.message, /has no default export function/);
   assert.doesNotMatch(error.message, /[{}]|"at":|"event":/, error.message);
+});
+
+test("compose: every command the docs give works in a fresh shell (DOCKER_GID goes to .env once, before the first), and another port takes AGENTRUN_PUBLIC_URL with it", async () => {
+  const compose = await readFile(new URL("compose.yaml", ROOT), "utf8");
+  // The link's default names the default port (a loopback address with a variable port is refused by the key gate's
+  // loopback rule), so the README says to set AGENTRUN_PUBLIC_URL with AGENTRUN_PORT.
+  assert.match(compose, /AGENTRUN_PUBLIC_URL: "\$\{AGENTRUN_PUBLIC_URL:-http:\/\/127\.0\.0\.1:7340\/\}"/);
+  assert.match(await readFile(new URL("packages/serve/README.md", ROOT), "utf8"), /`AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port/);
+  // compose.yaml needs DOCKER_GID to be read at all (group_add's ${DOCKER_GID:?}): a value given to one command alone
+  // leaves every later one, `docker compose logs` included, unable to read it.
+  for (const [name, text] of [["compose.yaml", compose], ["README.md", await readFile(new URL("README.md", ROOT), "utf8")], ["packages/serve/README.md", await readFile(new URL("packages/serve/README.md", ROOT), "utf8")]]) {
+    const commands = text.split("\n").map((line) => line.replace(/^[#\s]*/, "")).filter((line) => /^(echo .*DOCKER_GID|DOCKER_GID=|docker compose )/.test(line));
+    assert.ok(commands.length >= 2, `${name} gives its compose commands: ${JSON.stringify(commands)}`);
+    assert.ok(!commands.some((line) => /^DOCKER_GID=.* docker compose/.test(line)), `${name}: no DOCKER_GID given to one command alone`);
+    assert.match(commands[0], /^echo "DOCKER_GID=\$\(stat -c %g \/var\/run\/docker\.sock\)" >> \.env$/, `${name}: the first writes DOCKER_GID to .env`);
+  }
 });

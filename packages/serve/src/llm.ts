@@ -2,6 +2,7 @@
 // model a workflow's model node of the same tier runs on here (the faux module's under `--faux`), and its text comes
 // back with the usage and the price pi-ai's catalog gives it, null when the model has no price (never $0).
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { sideRequests } from "./cap.js";
 
 export const LLM_TOOL = "llm";
 const MAX_PROMPT = 400_000;
@@ -32,6 +33,8 @@ export function completer(models: Models, pick: (tier: string | undefined) => { 
     const model = models.getModel(ref.provider, ref.modelId) as { cost?: { input: number; output: number } } | undefined;
     if (!model) throw new Error(`llm: the model ${ref.provider}/${ref.modelId} is not known here`);
     const context = { ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] };
+    // A side request of its own (request-start.ts): its marks name it "llm", never the default a compaction's summary takes.
+    sideRequests.set(context, { label: LLM_TOOL, extraInputTokens: 0, maxFeeUsd: 0, feeUsd: () => 0 });
     const message = await models.completeSimple(model as never, context as never, { signal, reasoning: thinking, ...(maxTokens ? { maxTokens } : {}) } as never);
     if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(`llm: ${message.errorMessage ?? message.stopReason}`);
     const text = message.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("");

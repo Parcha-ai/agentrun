@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, made, repoOf, savedOf, settled, started } from "./learn-support.mjs";
-import { serve, withEnv } from "./support.mjs";
+import { runDir, serve, withEnv } from "./support.mjs";
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const hooked = { source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Go." }, max_cost_usd: 0.5 } };
@@ -18,7 +18,7 @@ async function proposing(api, data, id, held) {
   await made(api, learner(id, { instructions: `Answer: ${JSON.stringify(answerWith([["hook.md", note("Hook", "The hook's key", `It is ${held}.\n`)]]))}` }));
   const run = await ended(api, await started(api, id));
   settled(run.view, run.rows, "dropped", "checker");
-  assert.equal(existsSync(join(data, "runs", run.view.run_id, "learning-proposal.json")), false, "nothing is kept that the checks refuse");
+  assert.equal(existsSync(join(runDir(data, run.view.run_id), "learning-proposal.json")), false, "nothing is kept that the checks refuse");
   assert.equal(git(repoOf(data, id), ["rev-list", "--count", "main"]), "1", "nothing merged");
   assert.ok(!JSON.stringify(run.view.learning).includes(held), "the run's learning shows it nowhere");
   return (await savedOf(data, run.view.run_id)).learning.problems.map((p) => p.rule);

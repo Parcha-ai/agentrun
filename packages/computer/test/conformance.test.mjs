@@ -666,3 +666,11 @@ test("a create still pending when the cleanup bound runs out is named in cleanup
 	assert.equal(report.core, "fail", "a run whose cleanup is incomplete is not a Core pass");
 	assert.match(formatReport(report), /cleanup ✗ could not show nothing was left/);
 });
+
+test("files.list passes a daemon whose pages hold one entry each", async () => {
+	for (const filesPage of [1, 100]) {
+		const fake = fakeComputers({ filesPage });
+		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("files.list") });
+		assert.equal(statuses(report)["files.list"], "pass", `pages of ${filesPage}: ${reasons(report)["files.list"]}`);
+	}
+});

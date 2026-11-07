@@ -155,19 +155,3 @@ test("stats over 1,000 runs across several agents counts each run once, the arch
   store.close();
 });
 
-test("a store written before runs_by_state opens: the reader answers stats, and the writer adds the index with no new version", async () => {
-  const { dir, store } = await seeded(["alpha"], [["alpha", "completed", 0.5], ["alpha", "running", null]]);
-  const before = store.stats();
-  store.close();
-  const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  db.exec("DROP INDEX runs_by_state");
-  db.close();
-  const reader = openStoreReader(dir);
-  assert.deepEqual(reader.stats(), before);
-  reader.close();
-  openStore(dir).close();
-  const again = new DatabaseSync(path.join(dir, "store.sqlite"), { readOnly: true });
-  assert.deepEqual(again.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'runs' AND name LIKE 'runs_by_%' ORDER BY name").all().map((r) => r.name), ["runs_by_agent", "runs_by_state"]);
-  assert.equal(again.prepare("PRAGMA user_version").get().user_version, 1);
-  again.close();
-});

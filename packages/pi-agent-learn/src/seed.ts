@@ -13,7 +13,7 @@ import { deriveSeed, renderSection, type SeedRecord, type WorkflowHint } from ".
 type SeedState = { sha: string; index: string[]; omitted: string[]; workflows: WorkflowHint[]; copied: boolean };
 
 /** What the run was seeded from: the agent repository commit and the index derived there. Written once per run. */
-export const SeedDoc = defineDoc<SeedState>({ kind: "learn.seed", version: 1, scope: "session", initial: () => ({ sha: "", index: [], omitted: [], workflows: [], copied: false }) });
+export const SeedDoc = defineDoc<SeedState>({ kind: "learn.seed", version: 1, scope: "session", initial: () => ({ sha: "", index: [], omitted: [], workflows: [], copied: false }), checkpointWhen: () => false });
 
 /** The seed recorded in a run's store, or undefined before `seedLearning`. A Harness is a valid `target`. */
 export async function readSeed(target: Pick<Session, "snapshot">, context: Context = BACKGROUND_CONTEXT): Promise<SeedRecord | undefined> {

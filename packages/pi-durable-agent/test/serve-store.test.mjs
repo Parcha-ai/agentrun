@@ -17,6 +17,11 @@ import { all, assertInert, mount } from "./page-dom.mjs";
 import { hostFor, mapDoc } from "./workflow-support.mjs";
 import { ctx, openSession, request, scratch } from "./support.mjs";
 
+/** Run `id`'s folder on the disk of the store in `root`, as its reader names it. */
+const runFolder = (root, id) => {
+  const reader = openStoreReader(root);
+  try { return reader.runDir(id); } finally { reader.close(); }
+};
 const CLI = fileURLToPath(new URL("../dist/serve/cli.js", import.meta.url));
 const HOT_JOURNAL = 'this store has an unfinished write from a run that stopped; open it once with write access to roll it back, for example: sqlite3 store.sqlite "PRAGMA integrity_check"';
 
@@ -54,7 +59,7 @@ test("the picker: the store's agents, each with its current revision's kind and 
   } finally {
     await served.close();
   }
-  assert.deepEqual(readdirSync(root).sort(), ["runs", "store.sqlite"], "no journal or side file beside store.sqlite");
+  assert.deepEqual(readdirSync(root).sort(), ["disk", "store.sqlite"], "no journal or side file beside store.sqlite");
   assert.deepEqual(mainFiles(root), before.filter((file) => !/-(wal|shm)$/.test(file.path)), "every store file is byte-identical, its mtime unmoved");
   const reader = openStoreReader(root);
   try {
@@ -192,7 +197,7 @@ test("an agentic run: its row, agent and note, and its own store's entries as th
     const gone = (await get(`/api/runs/${ids.m2}`)).json;
     assert.deepEqual([gone.gone, gone.rows, gone.workflow], [true, undefined, undefined]);
 
-    const store = path.join(root, "runs", ids.b1, "store");
+    const store = path.join(runFolder(root, ids.b1), "store");
     const outside = path.join(await scratch(), "elsewhere");
     mkdirSync(outside);
     cpSync(path.join(store, "run.sqlite"), path.join(outside, "run.sqlite"));
@@ -241,7 +246,8 @@ test("serving every route makes no file beside an ended run's store, read as an 
     await served.close();
   }
   const made = files(root).filter((file) => !before.some((was) => was.path === file.path)).map((file) => file.path);
-  assert.deepEqual(made, [`runs/${ids.t1}/store/run.sqlite-shm`, `runs/${ids.t1}/store/run.sqlite-wal`], "only the running run's store, which a writer may hold, is read through its log");
+  const t1 = path.relative(root, runFolder(root, ids.t1));
+  assert.deepEqual(made, [`${t1}/store/run.sqlite-shm`, `${t1}/store/run.sqlite-wal`], "only the running run's store, which a writer may hold, is read through its log");
   assert.deepEqual(files(root).filter((file) => before.some((was) => was.path === file.path)), before, "every file there before is byte-identical, its mtime unmoved");
   assert.equal(live.run.state, "running");
   assert.ok(live.rows.length > 0, "the live run's entries are read");
@@ -338,7 +344,7 @@ test("a workflow run its reader refuses (one in the keyed layout) is that refusa
 
 test("no answer holds a skill's text or a run's saved sign-in: only what an exporter may copy is served", async () => {
   const { root, served, get, ids } = await sample();
-  const session = await openSession(path.join(root, "runs", ids.a1, "store", "run.sqlite"));
+  const session = await openSession(path.join(runFolder(root, ids.a1), "store", "run.sqlite"));
   await durableProfileStore(session).resolve("practice", async () => "PROFILE-MARKER-7731");
   await session.close(ctx);
   try {
