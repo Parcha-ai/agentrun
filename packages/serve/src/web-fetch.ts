@@ -23,6 +23,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
+import { capRefusals } from "./cap.js";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
 import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
@@ -138,14 +139,21 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
 /** The page at `url` read once: through `parallel` when it is given and live and the guard passes the URL within
  *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. A page
  *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
- *  never a silent fallback. */
+ *  never a silent fallback. In a workflow's call node (a listener for the cap's refusals, cap.ts capRefusals), a read the
+ *  cap refuses is the call's held refusal: no page, no direct fetch in its place, and nothing the run keeps, so the call
+ *  run again after a raise reads through Parallel. */
 async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
   let why: string | undefined;
   if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
   else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
   else if (parallel) {
-    const read = await parallel.read(url as string, options.signal);
+    const told = capRefusals.getStore();
+    let held = false;
+    const read = told
+      ? await capRefusals.run((refusal) => ((held = true), told(refusal)), () => parallel.read(url as string, options.signal))
+      : await parallel.read(url as string, options.signal);
     if (typeof read !== "string") return { ...read, via: "parallel" };
+    if (held) return { ok: false, url: clip(url as string, URL_MAX), status: 0, title: "", text: "", links: [], error: read, via: "parallel", parallel: read };
     why = read;
   }
   return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
