@@ -48,8 +48,9 @@ export type FauxAction =
   | ({ call: string; args?: unknown; usd?: number | null } & FauxRequest)
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
    *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
-   *  response, so a call can end before the request that asked for it is paid. */
-  | ({ calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean } & FauxRequest)
+   *  response, so a call can end before the request that asked for it is paid. A call's `say` streams that text first,
+   *  as a model writes between the calls of one answer. */
+  | ({ calls: { call: string; args?: unknown; say?: string }[]; usd?: number | null; bookAfter?: boolean } & FauxRequest)
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
    *  turn interrupted, with no stop asked for, ends it so). */
@@ -188,9 +189,10 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end(action.turn ?? "completed");
             else {
-              const asked = "calls" in action ? action.calls.map((c) => ({ name: c.call, args: c.args ?? {} }))
+              const asked: { name: string; args: unknown; say?: string }[] = "calls" in action ? action.calls.map((c) => ({ name: c.call, args: c.args ?? {}, ...(c.say ? { say: c.say } : {}) }))
                 : [{ name: "call" in action ? action.call : "submit", args: "call" in action ? action.args ?? {} : { value: action.submit } }];
-              for (const [n, { name, args }] of asked.entries()) {
+              for (const [n, { name, args, say }] of asked.entries()) {
+                if (say) io.onEvent({ type: "text", delta: say });
                 const callId = "calls" in action ? `${spec.key}:${index}.${n}` : `${spec.key}:${index}`;
                 const tool = tools.get(name);
                 await append(FAUX_RECORDS.call, { callId, name });
