@@ -15,13 +15,26 @@ export interface DockerConformance {
 	close(): void;
 }
 
-/** Throws in words when Docker cannot be asked its architecture or the daemon for it is not built. */
-export function dockerConformance({ docker = "docker" }: { docker?: string } = {}): DockerConformance {
+export interface DockerConformanceOptions {
+	/** The docker CLI. */
+	docker?: string;
+	/** The longest `docker version` may take before it is killed and the run fails; default 30 s. */
+	timeoutMs?: number;
+}
+
+/** Throws in words when Docker cannot be asked its architecture, in bounded time, or the daemon for it is not built. */
+export function dockerConformance({ docker = "docker", timeoutMs = 30_000 }: DockerConformanceOptions = {}): DockerConformance {
 	let arch: string;
 	try {
-		arch = execFileSync(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+		arch = execFileSync(docker, ["version", "--format", "{{.Server.Arch}}"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: timeoutMs,
+			killSignal: "SIGKILL",
+		}).trim();
 	} catch (error) {
-		throw new Error(`cannot ask Docker its architecture (${docker} version): ${(error as Error).message.split("\n")[0]}`);
+		const why = (error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (error as Error).message.split("\n")[0];
+		throw new Error(`cannot ask Docker its architecture (${docker} version): ${why}`);
 	}
 	const daemonPath = fileURLToPath(new URL(`../computerd-linux-${arch}`, import.meta.url));
 	if (!existsSync(daemonPath)) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);

@@ -78,17 +78,20 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		providerVersion: provider.version,
 		image,
 		daemon: null,
-		...(only === undefined ? {} : { only }),
+		...(only === undefined ? {} : { only, coreNotRun: cases.filter((c) => c.level === "core" && !selected.includes(c)).map((c) => c.id) }),
 		results: [],
 		core: "fail",
 		undeclared: [],
 		cleanup: { deleted: [], left: [], errors: [], late: [] },
 	};
 	const deleted = new Set<string>();
-	/** Provider calls a run stopped waiting for; the cleanup waits for them, bounded, so what they make is deleted. */
-	const pending = new Set<Promise<unknown>>();
-	const keep = (promise: Promise<unknown>) => {
-		pending.add(promise);
+	/**
+	 * Provider calls a run stopped waiting for, each with what it is; the cleanup waits for them, bounded, so what they
+	 * make is deleted, and names each one still pending after that in cleanup.errors.
+	 */
+	const pending = new Map<Promise<unknown>, string>();
+	const keep = (promise: Promise<unknown>, what: string) => {
+		pending.set(promise, what);
 		// Both branches handled: a rejection is the caller's to report, never an unhandled one here.
 		const done = () => pending.delete(promise);
 		void promise.then(done, done);
@@ -112,7 +115,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		}
 	};
 	/** Deletes the computer a create gives after nobody waits for it any more, and names it in the report. */
-	const lateCreate = (creating: Promise<Result<ComputerRef>>, by: ComputerProvider = provider) =>
+	const lateCreate = (creating: Promise<Result<ComputerRef>>, what: string, by: ComputerProvider = provider) =>
 		keep(
 			creating.then(
 				async (created) => {
@@ -122,6 +125,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				() => {},
 			),
+			what,
 		);
 	const createError = (result: Result<unknown>) =>
 		result.ok ? "" : `create ${result.error.code === "refused" ? "was refused" : `failed (${result.error.code})`}: ${result.error.message}`;
@@ -141,7 +145,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				created = await within(creating, caseTimeoutMs, "create");
 			} catch (error) {
 				stop.abort();
-				lateCreate(creating);
+				lateCreate(creating, "create (the run's computer)");
 				return { error: words(error) };
 			}
 			if (!created.ok) return { error: createError(created) };
@@ -151,7 +155,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			try {
 				connected = await within(connecting, caseTimeoutMs, "connect");
 			} catch (error) {
-				keep(connecting.then((late) => (late.ok ? bounded(late.value.close(), CLOSE_MS) : undefined), () => {}));
+				keep(
+					connecting.then((late) => (late.ok ? bounded(late.value.close(), CLOSE_MS) : undefined), () => {}),
+					`connect to ${created.value.name} (the run's computer)`,
+				);
 				return { error: words(error) };
 			}
 			if (!connected.ok) return { error: `connect: ${connected.error.code}: ${connected.error.message}` };
@@ -210,7 +217,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			if (!ended) refs.push({ ref, by });
 			else {
 				report.cleanup.late.push(ref.name);
-				keep(release(ref, by));
+				keep(release(ref, by), `release ${ref.name}`);
 			}
 		};
 		const connect = async (ref: ComputerRef) => {
@@ -218,22 +225,26 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				if (!connected.ok) return connected;
 				let closing: Promise<void> | undefined;
 				const once: ComputerConnection = { ...connected.value, close: () => (closing ??= connected.value.close()) };
-				if (ended) keep(bounded(once.close(), CLOSE_MS));
+				if (ended) keep(bounded(once.close(), CLOSE_MS), `close of a connection to ${ref.name} (${c.id})`);
 				else connections.push(once);
 				return ok(once);
 			});
-			keep(connecting);
+			keep(connecting, `connect to ${ref.name} (${c.id})`);
 			const once = unwrap(await connecting, `connect to ${ref.name}`);
 			sawHello(once.hello);
 			return once;
 		};
-		const create = async (extra?: Partial<ComputerSpec>) => {
-			const creating = provider.create(spec(extra), { signal: caseSignal }).then((created) => {
-				if (created.ok) track(created.value);
+		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
+		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
+			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
+				if (created.ok) track(created.value, by);
 				return created;
 			});
-			keep(creating);
-			const created = await creating;
+			keep(creating, `create (${c.id})`);
+			return creating;
+		};
+		const create = async (extra?: Partial<ComputerSpec>) => {
+			const created = await attempt(spec(extra));
 			if (!created.ok) throw new Error(createError(created));
 			return created.value;
 		};
@@ -271,6 +282,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				spec,
 				create,
+				attempt,
 				track,
 				connect: (ref) => connect(ref ?? needComputer().ref),
 				async home() {
@@ -368,12 +380,24 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	} finally {
 		if (shared !== undefined) await shared;
 		if (sharedRef !== undefined) await release(sharedRef);
-		await bounded(Promise.allSettled([...pending]), cleanupTimeoutMs);
+		// A kept call may keep another as it settles (a late create, then its release): wait until none is left.
+		await bounded(
+			(async () => {
+				while (pending.size > 0) await Promise.allSettled([...pending.keys()]);
+			})(),
+			cleanupTimeoutMs,
+		);
+		// The bound kept: a call still pending may yet make a computer, so the cleanup is incomplete and Core fails.
+		for (const what of pending.values()) {
+			report.cleanup.errors.push(`${what} did not settle within ${cleanupTimeoutMs / 1000} s of the run's end: what it makes may be left`);
+		}
 		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs);
 	}
 	const core = report.results.filter((r) => r.level === "core");
 	const clean = report.cleanup.left.length === 0 && report.cleanup.errors.length === 0;
-	report.core = core.length > 0 && core.every((r) => r.status === "pass") && clean ? "pass" : "fail";
+	const corePassed = core.every((r) => r.status === "pass") && clean;
+	if ((report.coreNotRun ?? []).length === 0) report.core = core.length > 0 && corePassed ? "pass" : "fail";
+	else report.core = corePassed && report.results.every((r) => r.status !== "fail") ? "partial" : "fail";
 	return report;
 }
 

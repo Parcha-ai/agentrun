@@ -174,7 +174,7 @@ test("a refused request is final: one refusal, never retried, the model is never
   const run = (await api("GET", `/runs/${run_id}`)).body;
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0001\. Raise the cap to at least \$0\.01 to continue\.$/);
-  assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal: the request was not tried again");
+  assert.deepEqual(rows.filter((r) => r.kind === "error" || r.paused === true).map((r) => r.kind), ["phase"], "one refusal, its pause row: the request was not tried again");
   assert.equal(posts(), 0);
   assert.equal(run.cost.usd, 0, "never sent: $0");
   assert.equal(run.result, null, "no answer was paid for");
