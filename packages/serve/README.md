@@ -1288,7 +1288,9 @@ Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at,
 set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
 (one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
 alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
-and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
+and a preview, refresh or run says to sign in again in Settings → MCP servers. A launch's refresh waits at most 4 s a
+try, two tries, so an authorization server that does not answer holds a start's answer about 8 s at most; the run's
+call is then refused unsent, saying to try again. A token that expires during a run is not
 refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it. A server that stops aborts any
 refresh or code exchange under way and writes nothing after; if the authorization server had already rotated that
 refresh token, the next start reads `credential: "expired"` and asks for a sign-in again.

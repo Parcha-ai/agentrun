@@ -21,6 +21,10 @@ export const SIGN_IN_AGAIN = "sign in again in Settings → MCP servers";
 const STATE_MS = 10 * 60_000;
 const MAX_PENDING = 64;
 const REQUEST_MS = 15_000;
+/** How long a token refresh's request may take: a run's start waits for it, two tries at most (mcp-servers.ts), so an
+ *  authorization server that never answers holds a start's answer no more than about eight seconds, well under a
+ *  client's timeout, and its call is then refused unsent, saying to try again. */
+export const REFRESH_REQUEST_MS = 4_000;
 
 export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 /** What is sealed: the tokens and all a refresh needs. */
@@ -66,15 +70,15 @@ export const systemNetwork: OAuthNetwork = {
 type Seen = { refused?: string; failed?: { what: string; status?: number; why?: string } };
 
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
- *  held to REQUEST_MS, and stopped with `stop` (the server's own stop). None goes to a private or link-local address or
+ *  held to REQUEST_MS (a refresh's to REFRESH_REQUEST_MS), and stopped with `stop` (the server's own stop). None goes to a private or link-local address or
  *  over plain http (checked), and each is dialled at the address checked: its authorization server cannot steer this
  *  server's code, verifier, secret or refresh token to a service on this machine or its network, by its metadata or by
  *  its name's next answer. The one exception, for development and tests, is a loopback MCP server's (`mcpUrl`): its
  *  authorization server may be on the same loopback host, never another loopback address nor this server's own port
  *  (`own`, this server's address), so it cannot reach this server or another service on this machine (loopbackAllowed). */
-const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}, own?: string) => async (input: string | URL | Request, init?: RequestInit) => {
+const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}, own?: string, ms = REQUEST_MS) => async (input: string | URL | Request, init?: RequestInit) => {
   // Started before the address check: its name lookup is bounded by the same timeout and the server's stop.
-  const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]);
+  const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]);
   const url = new URL(input instanceof Request ? input.url : String(input));
   const what = `endpoint ${url.origin}${url.pathname}`;
   if (loopbackAllowed(url, mcpUrl, own)) return noted(fetch(input, { ...init, redirect: "manual", signal }), what, seen);
@@ -289,7 +293,7 @@ export async function refreshed(set: TokenSet, mcpUrl: string, stop?: AbortSigna
     clientInformation: set.client,
     refreshToken: set.tokens.refresh_token!,
     ...(set.resource ? { resource: set.resource } : {}),
-    fetchFn: guarded(stop, mcpUrl, network, {}, own),
+    fetchFn: guarded(stop, mcpUrl, network, {}, own, REFRESH_REQUEST_MS),
   });
   const scope = tokens.scope ?? set.tokens.scope;
   const { expires_at: _, ...rest } = set;
