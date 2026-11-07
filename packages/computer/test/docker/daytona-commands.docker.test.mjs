@@ -157,8 +157,15 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 			for (const which of ["init", "stdio"]) {
 				const ran = shell(name, commands[which]);
 				assert.equal(ran.status, 6, `${which}: ${ran.stdout}${ran.stderr}`);
-				assert.match(ran.stderr, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt\/agentrun is d[rwx-]{9}, owner 1000/, which);
+				assert.match(ran.stderr, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt\/agentrun\/computerd is -rwxr-xr-x, owner 1000/, which);
 				assert.equal(docker("exec", name, "sh", "-c", "cat /tmp/ran-as 2>/dev/null || echo never ran").trim(), "never ran", which);
+			}
+			// A root-owned binary in that directory is refused too: its owner could swap it at any time.
+			docker("exec", name, "sh", "-c", "mv /opt/agentrun/real /opt/agentrun/computerd && chown 0:0 /opt/agentrun/computerd");
+			for (const which of ["init", "stdio"]) {
+				const ran = shell(name, commands[which]);
+				assert.equal(ran.status, 6, `${which}: ${ran.stdout}${ran.stderr}`);
+				assert.match(ran.stderr, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt\/agentrun is drwxr-xr-x, owner 1000/, which);
 			}
 		});
 
