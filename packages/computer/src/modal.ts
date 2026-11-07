@@ -99,7 +99,8 @@ export interface ModalTimeouts {
 	uploadMs: number;
 	/**
 	 * How long release delete, and a create that refuses its sandbox (drift, an abort, a failed upload), wait after the
-	 * terminate for poll to read the sandbox finished: Modal ends a sandbox asynchronously, and lists it until then.
+	 * terminate for poll to read the sandbox finished: Modal ends a sandbox asynchronously, and lists it until then. Each
+	 * wait also ends on the caller's abort.
 	 */
 	releaseMs: number;
 	/** The first pause between two of those polls; the pauses double up to 5 s. */
@@ -662,11 +663,11 @@ export class ModalProvider implements ComputerProvider {
 		const uploaded = daemon === undefined ? ok(undefined) : await this.#upload(sandbox, name, daemon, signal);
 		const checked = uploaded.ok ? await this.#checkCreated(sandbox, ref, tags, recorded, signal) : uploaded;
 		if (signal?.aborted) {
-			const after = await this.#terminate(sandbox, name);
+			const after = await this.#terminate(sandbox, name, signal);
 			return fail("aborted", `create was aborted after Modal made the sandbox; the computer ${name} ${after}`);
 		}
 		if (checked.ok) return ok(ref);
-		const after = await this.#terminate(sandbox, name);
+		const after = await this.#terminate(sandbox, name, signal);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
 	}
 
@@ -707,13 +708,14 @@ export class ModalProvider implements ComputerProvider {
 
 	/**
 	 * Terminates a sandbox create gives up on and waits, as release delete does, until poll reads it finished, so a
-	 * refused create leaves nothing listed; and says how that went. Neither the terminate nor the wait takes the caller's
-	 * signal: an aborted create still finishes its cleanup, within callMs and releaseMs.
+	 * refused create leaves nothing listed; and says how that went. The terminate does not take the caller's signal, so
+	 * an aborted create still sends it, within callMs; the wait does, within releaseMs, so an abort ends it and the words
+	 * say the sandbox may still be ending. A sandbox that lands after create gave up is given no signal.
 	 */
-	async #terminate(sandbox: ModalSandbox, name: string): Promise<string> {
+	async #terminate(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<string> {
 		const ended = await call(`terminate of ${name}`, () => sandbox.terminate(), this.#timeouts.callMs);
 		if (!ended.ok && ended.error.code !== "not_found") return `could not be terminated (${ended.error.message})`;
-		const finished = await this.#untilFinished(sandbox, name);
+		const finished = await this.#untilFinished(sandbox, name, signal);
 		return finished.ok ? "was terminated" : `was terminated, and may still be ending (${finished.error.message})`;
 	}
 

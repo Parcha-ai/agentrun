@@ -588,9 +588,9 @@ of that slice, and the live conformance file waits for a key (below).
   min; other calls 60 s; hello and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
   signal. A create that gives up has its
   sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
-  terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns; that wait
-  does not take the caller's signal, since an aborted create still cleans up, and past the bound the refusal says the
-  sandbox may still be ending and what `poll()` last read.
+  terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
+  is sent whatever the caller's signal; the wait takes it, so an aborted create returns at once, and a wait past the
+  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read.
 - **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
 
 ### What every Modal fact rests on
