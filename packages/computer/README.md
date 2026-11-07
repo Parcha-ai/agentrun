@@ -1104,8 +1104,8 @@ fetch? })` returns the report, and `formatReport(report)` the text above.
 
 ## Adding a computer
 
-A new computer is one provider file and one registry line. Serve and the conformance CLI resolve providers through
-the registry, `src/providers.ts`, and nothing else, so neither needs an edit:
+A new computer is one provider file and one registry line. The conformance CLI (and serve, once wired) resolves
+providers through the registry, `src/providers.ts`, and nothing else, so neither needs an edit:
 
 ```ts
 export const providers = {
