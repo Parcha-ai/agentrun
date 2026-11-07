@@ -4,12 +4,16 @@
 // it, as 1.1 translated each publication. Held branch pi/family-1.5 until P5 moves the readers to conversation.watch with
 // ConversationTranscript and pi.live and deletes this (scripts/watch-events-p5.test.mjs lists the two callers).
 //
-// The snapshot is the conversation's view as a watch acquires it (`Conversation.watch`), every entry included. Commits
-// published while it is acquired are held, then translated after it: an entry the snapshot already holds is not appended
-// again (by its ID), and their documents are not applied over the snapshot's newer ones.
+// The conversation's documents (pi.live, pi.inbox, pi.agent, pi.usage) are each followed by a document observer
+// (Session.observeDoc), attached atomically on the Session line: its value includes every commit before it and it hears
+// every later one, synchronously as each is published, a microtask before the commit observers. So the documents never
+// miss a change, whenever a commit lands against the snapshot. The snapshot's entries are the view a watch acquires
+// (`Conversation.watch`), every entry; commits published while it is acquired are held, then translated after it, and an
+// entry the snapshot already holds is not appended again (by its ID). A document absent when the stream attaches is
+// followed through the commits instead: any change to it is after the snapshot.
 import type { Context, JsonValue } from "@earendil-works/chord";
-import { AgentDoc, UsageDoc } from "@earendil-works/pi-durable";
-import type { CommitPublication, ConversationId, EntryRecord, Harness, JsonObject, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
+import type { CommitPublication, ConversationId, EntryRecord, Harness, JsonObject, Observation, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
 
 type Op = readonly [string, ...unknown[]];
 type Live = {
@@ -62,15 +66,17 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
   let snapshotNewest = -1;
   const completing = new Set<number>();
   let delivering = Promise.resolve();
+  // Each followed document's newest value, and the operations on pi.live since the last translation (view paths).
+  const docs: Followed = { now: {}, observed: new Set(), liveOps: [] };
   const flush = () => {
     if (!state || !listener || ended) return;
     while (held.length) {
       const { publication, fresh } = held.shift()!;
-      const events = translate(conversationId, publication, state, completing, snapshotNewest, fresh);
+      const events = translate(conversationId, publication, state, completing, snapshotNewest, fresh, docs);
       if (events.length) {
         const deliver = listener;
         delivering = delivering.then(() => (ended ? undefined : deliver(events, context))).catch((error) => {
-          observation.detach();
+          detachAll();
           endIt({ reason: "failed" });
           void error;
         });
@@ -90,19 +96,41 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
     // A close of the Session is pi's `failed` "session closed"; the door ends its stream either way.
     end: (end) => endIt({ reason: end.kind === "failed" || end.kind === "listener_error" ? "failed" : "ended" }),
   });
+  const followed: Observation<unknown>[] = [];
+  const detachAll = () => {
+    observation.detach();
+    for (const each of followed) each.detach();
+  };
   try {
+    for (const [kind, token] of [["pi.live", LiveDoc], ["pi.inbox", InboxDoc], ["pi.agent", AgentDoc], ["pi.usage", UsageDoc]] as const) {
+      const attached = await harness.observeDoc(token as never, conversationId, {
+        advance: (call: { kind: string; value?: JsonObject; ops?: readonly Op[] }) => {
+          if (call.kind !== "value") return;
+          docs.now[kind] = call.value;
+          if (kind === "pi.live") for (const op of call.ops ?? []) docs.liveOps.push([op[0], ["docs", kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
+        },
+        end: () => undefined,
+      } as never, context) as Observation<JsonObject> | undefined;
+      if (attached) {
+        followed.push(attached);
+        docs.observed.add(kind);
+        docs.now[kind] = attached.value;
+      }
+    }
     const watch = await conversation.watch(context, { min: 1_000_000 });
     const view = watch.value;
     await watch.stop();
-    state = { entries: [...view.entries], docs: Object.fromEntries(DOCS.map((kind) => [kind, view.docs[kind]])) };
+    // The followed documents as they are now (every commit so far); one absent at the attachment, as the view has it.
+    state = { entries: [...view.entries], docs: Object.fromEntries(DOCS.map((kind) => [kind, docs.observed.has(kind) ? docs.now[kind] : view.docs[kind]])) };
+    docs.liveOps.length = 0;
     snapshotNewest = view.entries.reduce((max, entry) => Math.max(max, Number(entry.id)), -1);
     for (const record of await scanCompleting(harness, conversationId, context)) completing.add(Number(record.id));
   } catch (error) {
-    observation.detach();
+    detachAll();
     throw error;
   }
   const signal = context.abortSignal;
-  const abort = () => { observation.detach(); endIt({ reason: "aborted" }); };
+  const abort = () => { detachAll(); endIt({ reason: "aborted" }); };
   if (signal?.aborted) {
     abort();
     throw signal.reason;
@@ -115,7 +143,7 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
       flush();
     },
     stop: async () => {
-      observation.detach();
+      detachAll();
       endIt({ reason: "stopped" });
       await delivering;
       return ended!;
@@ -140,7 +168,11 @@ async function scanCompleting(harness: Harness, conversationId: ConversationId, 
 
 /** Every event one stored commit causes for the conversation, in the order of spec §9.4; `state` moves to after it. A
  *  commit held while the snapshot was taken (`fresh` false) appends no entry the snapshot holds and leaves its documents. */
-function translate(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean): LiveEvent[] {
+/** The followed documents: each one's newest value from its observer, which kinds have one, and the operations on
+ *  pi.live since the last translation, with view paths. */
+type Followed = { now: Record<string, JsonObject | undefined>; observed: Set<string>; liveOps: Op[] };
+
+function translate(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed): LiveEvent[] {
   const entries: EntryRecord[] = [];
   const tasks = new Map<number, TaskRecord<JsonValue, JsonValue, JsonValue>>();
   const submissions: SubmissionRecord[] = [];
@@ -150,13 +182,17 @@ function translate(conversationId: ConversationId, publication: CommitPublicatio
     if (change.type === "entry" && change.value.conversationId === conversationId && (fresh || Number(change.value.id) > snapshotNewest)) entries.push(change.value);
     else if (change.type === "task" && change.value.conversationId === conversationId) tasks.set(Number(change.value.id), change.value);
     else if (change.type === "submission" && change.value.conversationId === conversationId) submissions.push(change.value as SubmissionRecord);
-    else if (fresh && change.type === "document" && change.conversationId === conversationId && (DOCS as readonly string[]).includes(change.record.kind) && change.record.key === undefined) {
+    // A document the stream did not find when it attached: every change to it is after the snapshot.
+    else if (change.type === "document" && change.conversationId === conversationId && (DOCS as readonly string[]).includes(change.record.kind) && change.record.key === undefined && !followed.observed.has(change.record.kind)) {
       if (change.kind === "change") {
         state.docs[change.record.kind] = change.value;
         for (const op of change.ops as unknown as Op[]) docOps.push([op[0], ["docs", change.record.kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
       } else state.docs[change.record.kind] = undefined;
     }
   }
+  // A followed document is as its observer last heard it (it hears each commit before this one runs).
+  for (const kind of followed.observed) state.docs[kind] = followed.now[kind];
+  if (followed.observed.has("pi.live")) docOps.push(...followed.liveOps.splice(0));
   if (docOps.length === 0 && entries.length === 0 && tasks.size === 0 && submissions.length === 0 && !docsMoved(before, state)) return [];
   state.entries = entries.length ? [...state.entries, ...entries] : state.entries;
   submissions.sort((a, b) => Number(a.id) - Number(b.id));
