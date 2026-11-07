@@ -10,7 +10,7 @@ import { SESSION_SECRET_FILE } from "./owner.js";
 import { SealedSettings } from "./sealed-settings.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
-import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
+import { webhookSecretIn } from "./webhooks.js";
 
 export class ServerSecrets {
   private readonly sources = new Map<string, () => readonly string[]>();
@@ -37,13 +37,15 @@ const fileIn = (data: string, name: string): string => {
 };
 
 /** The server's own secrets data directory `data` keeps, each store opened with the seal key of `env`: the tokens' and
- *  the session secret's files, the outbound webhook's secret (said to `say` when it does not open), and every adapter's
- *  sealed settings, which are returned too, by adapter id, for the server to keep using. */
+ *  the session secret's files, the outbound webhook's secret, and every adapter's sealed settings (a value that does not
+ *  open is said to `say`), which are returned too, by adapter id, for the server to keep using. */
 export function openServerSecrets(data: string, env: NodeJS.ProcessEnv, adapters: readonly TriggerAdapter[], say: (fields: Record<string, string>) => void = () => {}): { secrets: ServerSecrets; settings: Map<string, SealedSettings> } {
   const secrets = new ServerSecrets();
-  secrets.add("files", () => [fileIn(data, TOKEN_FILE), fileIn(data, DOOR_TOKEN_FILE), fileIn(data, SESSION_SECRET_FILE)]);
+  // Each read until it is there, then kept: they are made once, and a redaction reads the list often.
+  const read = new Map<string, string>();
+  const kept = (name: string) => read.get(name) || (read.set(name, fileIn(data, name)), read.get(name)!);
+  secrets.add("files", () => [kept(TOKEN_FILE), kept(DOOR_TOKEN_FILE), kept(SESSION_SECRET_FILE)]);
   const webhook = webhookSecretIn(data, env);
-  if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so it is not cut" });
   secrets.add("webhook", () => (webhook && "secret" in webhook ? [webhook.secret] : []));
   const key = sealKeyOf(env[SEAL_KEY_ENV]);
   const settings = new Map<string, SealedSettings>();

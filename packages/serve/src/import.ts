@@ -23,8 +23,9 @@ import { logLine } from "./print.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
-import { ToolKeys } from "./tool-keys.js";
+import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
 import { openServerSecrets } from "./server-secrets.js";
+import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 import { readRunDbSync } from "./run-db.js";
@@ -873,6 +874,8 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
  *  from elsewhere). A webhook secret that does not open is said to `say`, as ToolKeys says a saved key that does not:
  *  the import goes on, and does not cut it. */
 export function ownSecrets(data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): string[] {
+  const webhook = webhookSecretIn(data, env);
+  if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
   return openServerSecrets(data, env, TRIGGER_ADAPTERS, say).secrets.values();
 }
 
