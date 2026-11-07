@@ -1262,8 +1262,10 @@ export class E2BProvider implements ComputerProvider {
 			}
 			const written = await client.call("files.write", { path: STREAM_PASSWORD_FILE, data: Buffer.from(`${password}\n`).toString("base64"), mode: 0o600 }, { signal: bound() });
 			if (!written.ok) return fail(written.error.code, `writing the stream's password file: ${written.error.message}`);
-			const vnc = ["x11vnc", "-display", desktop.display, "-forever", "-shared", "-localhost", "-rfbport", String(VNC_PORT), "-passwdfile", STREAM_PASSWORD_FILE, ...(viewOnly ? ["-viewonly"] : [])];
-			const novnc = ["/opt/noVNC/utils/novnc_proxy", "--vnc", `localhost:${VNC_PORT}`, "--listen", String(STREAM_PORT), "--web", "/opt/noVNC"];
+			// x11vnc listens on the computer's own loopback, IPv4 alone, and noVNC reaches it there.
+			const listen = "localhost"; // key-gate: loopback-rule the VNC server listens inside the computer only
+			const vnc = ["x11vnc", "-display", desktop.display, "-forever", "-shared", "-listen", listen, "-noipv6", "-rfbport", String(VNC_PORT), "-passwdfile", STREAM_PASSWORD_FILE, ...(viewOnly ? ["-viewonly"] : [])];
+			const novnc = ["/opt/noVNC/utils/novnc_proxy", "--vnc", `${listen}:${VNC_PORT}`, "--listen", String(STREAM_PORT), "--web", "/opt/noVNC"];
 			for (const argv of [vnc, novnc]) {
 				const started = await client.call("process.start", { argv, cwd: "/opt/noVNC/utils" }, { signal: bound() });
 				if (!started.ok) return fail(started.error.code, `starting ${argv[0]}: ${started.error.message}`);

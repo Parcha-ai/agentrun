@@ -1127,7 +1127,7 @@ reports E2B's own end once it is past where create set it (its start plus the ti
 URL needs the `e2b-traffic-access-token` header, which a browser cannot send (E2B docs, network/restrict-public-access),
 so a stream URL a person can open needs public traffic, and that opens every port, so such a provider's computers are
 network `open` only, and `check()` refuses none in words. `stream()` starts x11vnc on the display, listening on
-loopback only, with a fresh password from a file only the computer's user reads, and noVNC in front of it, both through
+loopback only and IPv4 alone, with a fresh password from a file only the computer's user reads, and noVNC in front of it, both through
 the daemon (the ports and paths are E2B Desktop's own: `@e2b/desktop@2.5.0` `dist/index.mjs:426-506`), and returns
 `https://6080-<id>.<domain>/vnc.html?autoconnect=true&resize=scale&password=<password>`. The password is the URL's
 only secret beyond the sandbox's id, a bearer token: it is never logged and never in an error (a unit test holds that).

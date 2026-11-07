@@ -618,7 +618,9 @@ test("with publicStream the computers take public traffic and network open only,
 	assert.match(url.searchParams.get("password"), /^[A-Za-z0-9]{8}$/, "8 characters: VNC authentication reads no more");
 	const sb = only(fake);
 	const x11vnc = sb.processes.find((p) => p.argv[0] === "x11vnc");
-	assert.ok(x11vnc.argv.includes("-localhost"), "the VNC server listens on loopback only; noVNC is its one way in");
+	const listen = x11vnc.argv[x11vnc.argv.indexOf("-listen") + 1];
+	assert.ok(["localhost", "127.0.0.1"].includes(listen) && x11vnc.argv.includes("-noipv6"), "the VNC server listens on loopback only, IPv4 alone; noVNC is its one way in");
+	assert.ok(sb.processes.find((p) => p.argv[0] === "/opt/noVNC/utils/novnc_proxy").argv.includes(`${listen}:5900`));
 	assert.ok(!x11vnc.argv.join(" ").includes(url.searchParams.get("password")), "the password is in a file, not on a command line");
 	const view = await provider.stream(made.value, { viewOnly: true });
 	assert.ok(sb.processes.filter((p) => p.argv[0] === "x11vnc").at(-1).argv.includes("-viewonly"));
