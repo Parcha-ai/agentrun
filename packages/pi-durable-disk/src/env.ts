@@ -15,13 +15,13 @@ import { err, ExecutionError, FileError, getOrThrow, ok } from "@earendil-works/
 import type {
   BinaryReader,
   DirReader,
+  FileChange,
   FileInfo,
   FileWatcher,
   Result,
   ShellExecOptions,
   ShellExecResult,
   TextLineReader,
-  WatchChange,
   WatchTarget,
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv, type NodeWatchOptions } from "@earendil-works/pi-durable/env/node";
@@ -473,7 +473,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
 
   override async watch(
     targets: readonly WatchTarget[],
-    onChange: (change: WatchChange) => void,
+    onChange: (change: FileChange) => void,
     context: Context,
   ): Promise<Result<FileWatcher, FileError>> {
     const confinement = this.#scope.confinement;
