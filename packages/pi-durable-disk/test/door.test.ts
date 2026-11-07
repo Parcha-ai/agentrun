@@ -954,12 +954,12 @@ describe("the door hook: turns, children and stops", () => {
     }
   });
 
-  it("an app that releases the run itself, or fails in onOpen, leaves no adopted child behind", async () => {
+  it("an app that releases the run itself, or fails in onOpen, leaves no adopted child behind, and its hook is closed once", async () => {
     for (const how of ["released", "failed"] as const) {
       const disk = new LocalDisk(`door-app-${how}`);
       let pid = 0;
       try {
-        const { hook } = scripted({
+        const { hook, calls } = scripted({
           submit: async (_input, ctx) => {
             const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
             child.unref();
@@ -974,9 +974,13 @@ describe("the door hook: turns, children and stops", () => {
         const onOpen = how === "released" ? (run: DurableRun) => void run.release() : async () => Promise.reject(new Error("the app broke"));
         const exit = await serveUntilDone(s.run, onOpen, "resume", () => {}, new EventEmitter(), { server: s.server });
         assert.equal(exit, how === "released" ? 0 : 1);
-        assert.ok(await waitGone(pid, 2_000), `no harness child outlives an app that ${how}`);
+        const gone = await waitGone(pid, 2_000);
+        const closed = calls.close;
         if (how === "failed") await s.run.release();
         await s.server.close();
+        assert.ok(gone, `no harness child outlives an app that ${how}`);
+        // Released, the door drains; failed in onOpen (a start that crashed), it is fenced: either way the hook hears once.
+        assert.equal(closed, 1, `the hook of an app that ${how} is closed once`);
       } finally {
         killQuietly(pid);
         disk.remove();
