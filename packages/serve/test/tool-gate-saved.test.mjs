@@ -13,6 +13,7 @@ import { agent, call, cookieOf, follow, runDir, serve, withEnv } from "./support
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), fauxHarness: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const json = { "content-type": "application/json" };
+const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const HELD = ["not-a-secret", "saved-held-key", randomBytes(6).toString("hex")].join("-");
 const holdsPiece = (text, secret) => [...Array(Math.max(0, secret.length - 7)).keys()].some((i) => text.includes(secret.slice(i, i + 8)));
 const savedRows = (rows) => rows.filter((r) => /^Saved /.test(r.summary ?? ""));
@@ -22,7 +23,7 @@ const serverRows = (rows) => rows.filter((r) => r.kind !== "final_answer" && r.k
 /** The owner's password session on `server`: an answer to an approval, as the console sends it. */
 async function owner(server) {
   const origin = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: "the owner signs in with this phrase" } });
+  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
   return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
