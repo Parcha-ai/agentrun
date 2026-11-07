@@ -6,14 +6,15 @@
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type Cursor, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-kernel";
-import { FencedError } from "@parcha/pi-durable-disk";
+import { BARRIER, FencedError, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 
 const SESSION_KEY = "session.key";
 const PAGE = 500;
 
 type EntryLike = { kind: string; data?: unknown };
 
-export function durableSessions(harness: Harness, context: Context): SessionStore {
+/** `store`: the run's store, which the sessions' barrier syncs (a kernel effect's start, before it runs). */
+export function durableSessions(harness: Harness, context: Context, store?: SyncTarget): SessionStore {
   const holders = new Map<string, number>();
   const known = new Map<string, ConversationId>();
   // One creation per key at a time: two first opens at once share it, so a key names one conversation.
@@ -95,6 +96,9 @@ export function durableSessions(harness: Harness, context: Context): SessionStor
       const writer: SessionWriter = {
         key,
         read: () => read(key),
+        // Every record appended so far is durable when this resolves: the kernel calls it after an effect's start record
+        // and before the effect runs (drive.ts), so a lost box never runs it twice.
+        sync: () => syncNow(store, BARRIER.kernelEffectIntent),
         async append(records) {
           await commit(key, async (tx) => {
             // Checked in the commit: an open that resolved before it fences this writer, whatever its own timing.

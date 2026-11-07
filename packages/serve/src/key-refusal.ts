@@ -196,3 +196,12 @@ export function withoutLoopback(text: string): string {
   }
   return out.replace(LOOPBACK, "a local address").replace(LOOPBACK_BARE, "a local address");
 }
+
+/** `value` with each string in it, however deep, through `cut`: what a run error's details hold is served and kept as its
+ *  message is (runs.ts). */
+export function cutStrings(value: unknown, cut: (text: string) => string): unknown {
+  if (typeof value === "string") return cut(value);
+  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut));
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cutStrings(item, cut)]));
+  return value;
+}

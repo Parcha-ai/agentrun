@@ -100,8 +100,8 @@ export interface HarnessRunnerOptions {
   signal?: AbortSignal;
   /** The host's check before each paid request: its budget, `max_cost_usd`. */
   beforeRequest?: BeforeRequest;
-  /** Every event, with the node it belongs to. */
-  onEvent?: (event: HarnessEvent) => void;
+  /** Every event, with the node it belongs to. A `request_start` handler's promise is awaited before the request leaves. */
+  onEvent?: (event: HarnessEvent) => void | Promise<void>;
   /** The private directory of a session, when the adapter needs one. */
   sessionDir?: (key: string) => string;
 }
@@ -129,7 +129,9 @@ export interface ModelPortOptions {
   budgetUsd?: number;
   /** Asked before every paid request; a `refuse` ends the attempt. */
   beforeRequest?: BeforeRequest;
-  onEvent?: (event: ModelPortEvent & { key: string; label: string; executionPath?: string }) => void;
+  /** Every event. For `request_start` its promise is awaited before the request leaves, and a rejection refuses it: a
+   *  host's start mark, made durable there, is never behind a request that was sent. */
+  onEvent?: (event: ModelPortEvent & { key: string; label: string; executionPath?: string }) => void | Promise<void>;
   /** The session's records, as already read (default: read from the writer). */
   records?: readonly SessionRecord[];
   /** How a record is written (default: the writer's append, which a newer open fences). */
@@ -276,8 +278,25 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
       throw stoppedNow;
     }
+    // The host's start mark, awaited before the request leaves (its handler commits and syncs it). One it refuses is
+    // booked as a stop is, withdrawn at $0, and the request never joins the open ones, which a ticketless answer reads.
+    try {
+      await emit({ type: "request_start", turn, model, ...(host === undefined ? {} : { host }) });
+    } catch (error) {
+      answered.add(turn);
+      await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
+      throw error;
+    }
+    // A stop that came while the mark was made: the request has not left either. Booked withdrawn as above, and its end
+    // told to the host, whose mark has it started: at $0, so the host never reads it cut at an unknown price.
+    const stoppedLate = options.stopped?.();
+    if (stoppedLate) {
+      answered.add(turn);
+      await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
+      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 }, ...(host === undefined ? {} : { host }) });
+      throw stoppedLate;
+    }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }) });
-    emit({ type: "request_start", turn, model, ...(host === undefined ? {} : { host }) });
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
   const models: ModelPort = {
