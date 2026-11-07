@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { DaemonClient } from "./client.js";
 import {
 	COMPUTER_LABEL,
@@ -50,7 +51,8 @@ export interface DockerDesktopOptions {
 	display?: string;
 	/** The X server's argv, run in the computer as its user. Default Xvfb on the display, 1280x800 at 24 bits, no TCP. */
 	server?: readonly string[];
-	/** How long create waits for the display to answer after starting the server. Default 30 s. */
+	/** How long create waits for the display to answer, from asking the daemon to start the server: every call to the
+	 *  daemon in that time is bounded by it, so a daemon that stops answering fails create as `timeout`. Default 30 s. */
 	timeoutMs?: number;
 }
 
@@ -277,33 +279,38 @@ export class DockerProvider implements ComputerProvider {
 
 	/**
 	 * Starts the desktop's X server through the daemon (process.start) and waits until hello declares the display: the
-	 * server ending first, or the bound passing, is a failure in words, with the server's own last words.
+	 * server ending first, or the bound passing, is a failure in words, with the server's own last words. Every call
+	 * takes a signal that ends at the bound, so a hello the X connection setup holds, or a daemon that stops answering,
+	 * cannot outwait it.
 	 */
 	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		const { client } = opened.value;
 		const server = desktop.server.join(" ");
+		const bound = AbortSignal.timeout(desktop.timeoutMs);
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		const late = () => fail("timeout", `the display ${desktop.display} was not up within ${desktop.timeoutMs / 1000} s of starting the X server (${server})`);
+		// A call that failed because the bound passed is the timeout; the caller's own abort stays aborted.
+		const timedOut = () => bound.aborted && !signal?.aborted;
 		try {
-			const started = await client.call("process.start", { argv: [...desktop.server] }, { signal });
-			if (!started.ok) return fail(started.error.code, `the X server (${server}) did not start: ${started.error.message}`);
+			const started = await client.call("process.start", { argv: [...desktop.server] }, { signal: either });
+			if (!started.ok) return timedOut() ? late() : fail(started.error.code, `the X server (${server}) did not start: ${started.error.message}`);
 			const { id } = started.value;
-			const bound = Date.now() + desktop.timeoutMs;
 			for (;;) {
-				const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal });
-				if (!hello.ok) return hello;
+				const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: either });
+				if (!hello.ok) return timedOut() ? late() : hello;
 				if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return ok(undefined);
-				const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal });
+				const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal: either });
 				if (waited.ok && !waited.value.running) {
-					const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal });
+					const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal: either });
 					const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
 					const how = waited.value.signal ? `signal ${waited.value.signal}` : `exit code ${waited.value.exitCode}`;
 					return fail("docker", `the X server (${server}) ended with ${how} before the display ${desktop.display} was up${words ? `: ${words}` : ""}`);
 				}
-				if (Date.now() >= bound) {
-					return fail("timeout", `the display ${desktop.display} was not up within ${desktop.timeoutMs / 1000} s of starting the X server (${server})`);
-				}
-				await new Promise((done) => setTimeout(done, DISPLAY_POLL_MS));
+				if (timedOut()) return late();
+				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
+				await sleep(DISPLAY_POLL_MS, undefined, { signal: either }).catch(() => undefined);
 				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
 			}
 		} finally {
