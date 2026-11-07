@@ -1,13 +1,15 @@
 // The server's own secrets, as one list: its API token, its door token, its sign-in sessions' secret, its outbound
 // webhook's signing secret, and every value a trigger source keeps sealed (sealed-settings.ts). Each store adds itself
-// when it opens, as a reader, so a secret made or rotated since is in the list at once. What a run shows (runs.ts), what
-// learning keeps (learning-run.ts), what an import writes (import.ts) and what the server answers (server.ts) are cut of
-// it; none of them assembles its own.
+// when it opens, as a reader, so a secret made or rotated since is in the list at once. With the host's, they are the one
+// list a server never shows (server.ts serverSecrets): what a run shows (runs.ts), what learning keeps (learning-run.ts),
+// what the server answers and the VM relay's errors are cut of it, and what an import writes (import.ts) of these; none
+// of them assembles its own.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DOOR_TOKEN_FILE, TOKEN_FILE } from "./files.js";
 import { SESSION_SECRET_FILE } from "./owner.js";
 import { SealedSettings } from "./sealed-settings.js";
+import { secretForms } from "./standard-webhooks.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { webhookSecretIn } from "./webhooks.js";
@@ -20,9 +22,11 @@ export class ServerSecrets {
     this.sources.set(name, read);
   }
 
-  /** Every secret held now, once each: of 8 characters or more and no whitespace, so no word is cut as one. */
+  /** Every secret held now, once each: of 8 characters or more and no whitespace, so no word is cut as one. A signing
+   *  secret's key, after `whsec_`, signs alone and is pasted alone, which its `whsec_` form never matches: each is listed
+   *  in every spelling of it (standard-webhooks.ts secretForms). */
   values(): string[] {
-    const all = [...this.sources.values()].flatMap((read) => read());
+    const all = [...this.sources.values()].flatMap((read) => read()).flatMap(secretForms);
     return [...new Set(all)].filter((value) => value.length >= 8 && !/\s/.test(value));
   }
 }
