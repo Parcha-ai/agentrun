@@ -302,3 +302,12 @@ test("priceOf: a catalog that cannot be read throws CatalogUnreadable, never a p
   down = false;
   assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers");
 });
+
+test("priceOf: a catalog that answers 200 with no list of models is one that cannot be read: CatalogUnreadable, never kept, and read again next time", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  let broken = true;
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async (url, init) => (broken && new URL(String(url)).pathname.endsWith("/v1/models") ? new Response("{}", { status: 200, headers: { "content-type": "application/json" } }) : faux(url, init)) });
+  await assert.rejects(provider.priceOf("liquid/d1"), { name: "CatalogUnreadable" });
+  broken = false;
+  assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers a list");
+});

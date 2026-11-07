@@ -132,3 +132,48 @@ test("a decision's hold is kept only once the driver has admitted its request, r
   await driven(params({ provider: "parallel", model: undefined }));
   assert.deepEqual(seen, ["admit", "keep", "send", "book"]);
 });
+
+test("a step whose nested decision waits for a raise counts once, as waiting: the paused process lets go after the hold, as with no nesting", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "nested-wait-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent: the decision could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  const stop = new AbortController();
+  // A model node (the outer step) whose verification decision (a step of its own, run inside it) waits for a raise.
+  const decision = waits.step(async () => waits.wait(refusal, stop.signal, { label: "review", path: "/root/steps/0/verify" }));
+  const node = waits.step(async () => decision());
+  const running = node();
+  for (const end = Date.now() + 2_000; gone === 0 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 50));
+  stop.abort();
+  await running;
+  assert.equal(gone, 1, "let go once the hold had passed");
+});
+
+test("a step still working beside one that waits keeps the process: nothing lets go while work is under way (a pin)", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "busy-beside-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent.", room: true, capUsd: 1 };
+  const stop = new AbortController();
+  let release;
+  const busy = waits.step(() => new Promise((resolve) => (release = resolve)));
+  const waiting = waits.step(async () => waits.wait(refusal, stop.signal, { label: "a", path: "/root/steps/1" }));
+  const both = [busy(), waiting()];
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(gone, 0);
+  stop.abort();
+  release();
+  await Promise.all(both);
+});
+
+test("mid-run, OpenRouter's catalog answering 200 with no list of models is a catalog that cannot be read: the decision fails unsent as a connection error, never a stop of the cap's", { timeout: 30_000 }, async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  const { openrouterProvider } = await import("@parcha/agentrun-decisions");
+  const openrouter = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }) });
+  const { seen, waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
+  assert.deepEqual([await outcome(capped.before(async () => "answered", () => false), params()), seen.stops], [["threw", "DecisionProviderError", "connection"], []]);
+});
