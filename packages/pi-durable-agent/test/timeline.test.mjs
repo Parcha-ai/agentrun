@@ -957,3 +957,22 @@ test("a message after an adapter turn's end is the person's next message, not a 
   ];
   assert.deepEqual([userMessages(timelineOf(entries)), userMessages(live(entries))], [["You: Write five files", "You: Go on."], ["You: Write five files", "You: Go on."]]);
 });
+
+test("a waiting row's words are the host's redact's: a browser hand-over's reason and request_sign_in's, settled and live, never a held value in the clear", () => {
+  // A value the host holds, made here (no real key).
+  const held = ["held", "value", "for", "this", "test"].join("-");
+  const redact = (text) => text.replaceAll(held, "[redacted]");
+  const entries = [
+    assistant([call("r", "request_sign_in", { reason: `Sign in with ${held}` })], 0),
+    result("r", "request_sign_in", "waiting", 1),
+    custom("agent.handover", { state: "waiting", reason: `Use ${held} to sign in`, session: "tag-1" }),
+  ];
+  const reducer = timelineReducer({ conversationId: 1, redact });
+  reducer.apply([{ type: "snapshot", entries: entries.slice(0, 1), agent: {} }]);
+  reducer.apply(entries.slice(1).map((entry) => ({ type: "message_end", entry })));
+  for (const rows of [timelineOf(entries, { redact }), reducer.rows()]) {
+    const waiting = rows.filter((row) => row.kind === "waiting");
+    assert.deepEqual(waiting.map((row) => row.summary), ["Waiting for you: Sign in with [redacted]", "Waiting for you: Use [redacted] to sign in"]);
+    assert.ok(!JSON.stringify(rows).includes(held), "no held value in any row");
+  }
+});

@@ -41,7 +41,8 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveHttp, proxyLiveUpgrade, readHandover, readHandovers, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { answerAsk } from "./browser-person.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
 import { runLines } from "./usage-lines.js";
@@ -364,6 +365,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },
@@ -569,8 +571,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
-      /** The owner watches a run's browser live, read-only (GET /runs/{id}/browser, browser-live.ts). */
-      browser_live: { read_only: true },
+      /** The owner watches a run's browser live (GET /runs/{id}/browser, browser-live.ts), takes it over from the viewer and
+       *  hands it back, and answers the agent's ask for them (POST /runs/{id}/browser/hand-back, browser-person.ts). */
+      browser_live: { read_only: false, take_over: true, ask: true },
       /** An agent's browser stays signed in between its runs (sign-ins.ts): with a seal key to keep each pointer under, and a
        *  browser vendor here (Browserbase's or Kernel's; local Chrome keeps none). */
       sign_ins: sealKeyOf(env[SEAL_KEY_ENV]) !== undefined && tools.some((tool) => tool.name === "browser" && tool.available),
@@ -1912,9 +1915,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     // A run's live browser view is a full-control credential for its browser: the owner's signed-in page alone, as approving
     // a note is (never a token a run, an MCP client or a script may hold).
-    if (found.name === "getRunBrowser" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "browser_without_session");
-      throw new ApiError("forbidden", owner ? "A run's live browser view takes the owner's password sign-in in the console, never a token." : "A run's live browser view takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+      throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
@@ -2109,6 +2112,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
         return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
+      }
+      case "handBackRunBrowser": {
+        // The owner's answer to the agent's ask for them in its browser (browser-person.ts): the first answer wins, the same
+        // one again is that answer, a different one is 409; an ask past its expiry has `expired`.
+        const run = await needRun(id);
+        const body = await bodyOf(req);
+        const issues = unknownFields(body, ["outcome"]);
+        if (body.outcome !== "done" && body.outcome !== "cancelled") issues.push({ field: "outcome", reason: body.outcome === undefined ? "missing" : "not_an_option", message: "outcome is done or cancelled" });
+        if (issues.length) throw invalid(issues);
+        const answered = answerAsk(run.dir, body.outcome as "done" | "cancelled");
+        if (!answered) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
+        if (answered.outcome !== body.outcome) throw new ApiError("handoff_answered", answered.outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${answered.outcome}.`, { details: { outcome: answered.outcome } });
+        if (answered.first) runs.remark(run.id);
+        return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
         const run = await needRun(id);
@@ -2394,8 +2411,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     res.end(text);
   }
 
-  /** A run's live viewer's page and files (browser-live.ts): the owner's signed-in page alone, GET or HEAD, to the port the
-   *  run's hand-over names, for its own viewer's path. */
+  /** A run's live viewer's page and files (browser-live.ts): the owner's signed-in page alone, GET or HEAD, for a viewer the
+   *  run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
+   *  only the viewer's WebSocket reaches the run. */
   async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
     if (!byOwnerSession(req)) {
@@ -2404,10 +2422,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const run = await needRun(runId);
     const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
-    // A viewer's page goes to that viewer's session; its two files, to the newest one's.
+    // A viewer's page, for a viewer the run has open; its two files, while the run has one open.
     const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
     if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
-    await proxyLiveHttp(req, res, handover, rest);
+    await serveViewerFile(req, res, rest);
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */

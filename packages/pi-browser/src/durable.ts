@@ -652,7 +652,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
       for (;;) {
         const { state } = await api.waitForTask(task, context);
         if (state.outcome.status === "completed" && state.outcome.result) {
-          const { outcome } = state.outcome.result;
+          const { outcome, reason } = state.outcome.result;
           // A sign-in just happened and the person has handed back: kept now, so a crash after it does not lose it.
           const current = currentRecord(await stateOf(c, scope), scope.plane);
           if (current) await captureSession(c, current.tag, true);
@@ -660,7 +660,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
           if ((await stateOf(c, scope)).notice?.includes(told)) {
             await editState(c, scope, (sessions) => { sessions.notice = sessions.notice?.replace(told, "").replace(/\s+/g, " ").trim() || null; });
           }
-          return { outcome };
+          return { outcome, ...(reason ? { reason } : {}) };
         }
         const next = await find();
         if (next === undefined || next === task) throw HANDOFF_ENDED;

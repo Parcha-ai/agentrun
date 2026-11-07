@@ -789,7 +789,10 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: data?.after === "crash" ? "Resumed after a crash" : "Resumed after the server stopped" }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
-      const [state, reason, tag] = [str(data?.state), str(data?.reason), str(data?.session)];
+      const [state, tag] = [str(data?.state), str(data?.session)];
+      // The model's words (what it asks the person to do), so redacted as its call's arguments are: a held value it echoes
+      // never shows.
+      const reason = str(data?.reason) && redactText(str(data?.reason)!);
       const session = tag && TAG.test(tag) ? tag : undefined;
       if (state === "waiting") add(make("waiting", conv, base, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}`, session }));
       else if (state === "done") add(make("user_message", conv, base, { summary: "You signed in", session }));

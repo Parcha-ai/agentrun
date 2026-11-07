@@ -25,6 +25,7 @@ import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { dropHandover } from "./browser-live.js";
+import { asked, askShown, dropAsks, HANDOFF_TOOL, type PendingAsk } from "./browser-person.js";
 import { DATA_ENV, dataOfRun, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
 import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
@@ -555,10 +556,31 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
+};
+/** The ask its agent made for the person in its browser (browser-person.ts) that the run waits on, once its waiting row
+ *  is in the run's rows. */
+const browserAsk = (run: Run): PendingAsk | undefined => (run.dir ? askShown(run.dir, run.rows) : undefined);
+/** Whether the run's agent waits on an ask a process must still take up: unanswered, expired or not; or answered, while
+ *  the agent's hand-off call has no saved result yet (the owner answered after its process went: the answer is on disk,
+ *  but only a process that takes the ask up hands it to the agent). */
+const askWaits = (run: Run): boolean => run.dir !== undefined && (askShown(run.dir, run.rows, "waiting") !== undefined || (handoffOpen(run.rows) && asked(run.dir)));
+/** Whether a hand-off call of the agent's (HANDOFF_TOOL) has no saved result: the call is still under way, or was cut off
+ *  with its process. A cut-off call shows an "interrupted" result row, which is no result (no output: tool_result_size_bytes
+ *  null, as the timeline marks it); the next process resumes the call and saves its real one. */
+const handoffOpen = (rows: readonly TimelineEvent[]): boolean => {
+  const done = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_name === HANDOFF_TOOL && row.tool_result_size_bytes !== null).map((row) => row.tool_use_id));
+  return rows.some((row) => row.kind === "tool_use" && row.tool_name === HANDOFF_TOOL && !done.has(row.tool_use_id));
+};
+/** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
+ *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
+ *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
+const browserPending = (run: Run, redact: (text: string) => string): Pending | undefined => {
+  const ask = browserAsk(run);
+  return ask && { kind: "browser", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
 };
 /** Notes the tool calls that wait for approval in `entries` (the run's stored entries), and those whose answer its process
  *  acted on. */
@@ -954,6 +976,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
   // (raisedToGo: from the moment the raise is taken, through its paused process's let-go and the follow-up's tries), since
   // nothing waits on a person; for a message only if that follow-up will not go.
   if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : raisedToGo(run) ? { status: "queued", state: "working" } : { status: "input_required", state: "idle" };
+  // Its agent asked for the person in its browser (browser-person.ts): its turn is still open, the tool call waiting for
+  // the hand-back, and the run waits on the person until they answer or the ask expires.
+  if (browserAsk(run)) return { status: "input_required", state: "waiting" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -1135,8 +1160,9 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   }
 }
 
-/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went. */
-export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void } = {};
+/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went;
+ *  `beforeRestartCheck` holds a settle that found the run's process gone just before it decides whether to open it again. */
+export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void; beforeRestartCheck?: (runDir: string) => Promise<void> | void } = {};
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
@@ -1354,7 +1380,8 @@ export class Runs {
         run.cancel = true;
         run.finishing = "cancelled";
       }
-      // A process an earlier server started that is gone took its browser's view with it.
+      // A process an earlier server started that is gone took its browser's view with it. Its agent's ask, if one waits,
+      // stays for the run's next process to take up (browser-person.ts).
       if (!lives) void dropHandover(dir).catch(() => undefined);
       if (run.meta.unshown && !lives && !run.outcome) {
         // Its process gone: never opened again. The start's recovery settles it, failed (settleOnce reads `finishing`).
@@ -1580,6 +1607,13 @@ export class Runs {
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
   private live(run: Run): boolean {
     return Boolean(run.child || run.orphan);
+  }
+
+  /** Run `id`'s status read again now: the owner answered its browser ask (browser-person.ts), so it is working again
+   *  before its process has read the answer. */
+  remark(id: string): void {
+    const run = this.runs.get(id);
+    if (run) this.mark(run);
   }
 
   /** Whether run `id` has a process serving it now: the child this server started, or an adopted one that is alive. A
@@ -2177,12 +2211,12 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined ? "budget" : "question" });
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined ? "budget" : browserAsk(run) ? "browser" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
    *  has (settle, persistLater, reopen). What it already queued it queues no more. */
-  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" | "budget" }): Emitted | undefined {
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" }): Emitted | undefined {
     if (!this.options.notify || !marker) return undefined;
     try {
       return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
@@ -2822,6 +2856,8 @@ export class Runs {
       // Its live browser view went with it, however it ended (browser-live.ts): a process killed before it let its
       // sessions go leaves its hand-over behind, naming a port another listener may take.
       void dropHandover(run.dir).catch(() => undefined);
+      // Its agent's ask, if one waits, stays: the run's next process takes it up (browser-person.ts), and the run ends
+      // with it gone (carryBack).
       this.reportedBack(run);
       void this.settle(run, code, true);
     });
@@ -3040,9 +3076,12 @@ export class Runs {
       ended = end && { outcome: end.outcome };
     }
     if (!ended) {
-      // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
+      // Work left and no process: opened again. A run that waits for the person waits without one, until a message; but
+      // one whose agent waits on its ask for the person in its browser is mid-turn (the tool call waits inside it), and its
+      // next process takes the wait up: it reads the owner's answer, or writes the ask's expiry (browser-person.ts).
       // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
-      const stalled = run.kind === "workflow" || (statusOf(run).status !== "input_required" && !raisedToGo(run));
+      if (gone) await runsTestHooks.beforeRestartCheck?.(run.dir);
+      const stalled = run.kind === "workflow" || (statusOf(run).status !== "input_required" && !raisedToGo(run)) || askWaits(run);
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
       // that let go cleanly to wait for its person released its sessions first, so its lease goes now.
@@ -3101,6 +3140,8 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
+    // Its agent's asks for the person in its browser end with it: nobody is left to take them up.
+    if (run.dir) dropAsks(run.dir);
     // Its reads ended with its end's read (settleOnce): their guard goes. A follow-up's process starts it again from none.
     this.reads.forget(run.id);
     // Ended, it saves to its agent's sign-in no more; but a process that went without letting its sessions go may have
@@ -3627,7 +3668,9 @@ export class Runs {
     if (paused !== undefined) throw new ApiError("budget_reached", `The run is paused at its ${money(run.meta.max_cost_usd ?? 0)} cap: raise the cap first. ${paused}`, { details: { cap_usd: run.meta.max_cost_usd ?? null } });
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
     // the same run, which the contract calls follow_up, never a steer it does not do.
-    const working = status === "queued" || (status === "working" && state === "working");
+    // A run whose agent waits on the person in its browser (browser-person.ts) is mid-turn: a message is no answer to it
+    // (the hand-back is), and goes to that turn as one to a working run does.
+    const working = status === "queued" || (status === "working" && state === "working") || browserAsk(run) !== undefined;
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     // A message that may not answer (a trigger's): one that would is refused here, past every wait, before it is sent.
     if (mode === "answer" && !answers) throw waitingRefusal();
@@ -4030,7 +4073,7 @@ export class Runs {
       // Cut as its rows and answer are (shown): an error can quote what the run said, or a process's last line.
       error: status === "failed" ? this.servedRunError(run, run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : this.servedReview(run, reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt)),
-      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? browserPending(run, this.redactor(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       // How its cap prices a request (cap.ts CapMode): its own, else expected; null with no cap.
       cap_mode: run.meta.max_cost_usd === undefined ? null : (run.meta.cap_mode ?? "expected"),

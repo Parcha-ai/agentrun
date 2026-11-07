@@ -19,7 +19,7 @@ type ReleaseInput = { row: InventoryRow; notBefore?: number; found?: string[] };
 type ReleaseState = { phase: "release"; attempt: number; found?: string[] } | { phase: "confirm"; attempt: number; ids: string[]; polls: number };
 type ReleaseRuntime = TaskRuntime<ReleaseInput, ReleaseState, { released: number }, object>;
 export type HandoffInput = { row: InventoryRow; requestId: string; interactionId: string; completionCondition: string };
-type HandoffResult = { outcome: HandoffOutcome };
+type HandoffResult = { outcome: HandoffOutcome; reason?: string };
 
 export type StoreDeps = {
   name: string;
@@ -216,7 +216,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
           return { status: "terminal", outcome: { status: "failed", error: { code: "handoff_ended", message: `${row.tag}: no longer held for ${requestId}` } } };
         }, context);
         if (over) return;
-        let answer: "pending" | HandoffOutcome = "pending";
+        let answer: "pending" | HandoffOutcome | { outcome: HandoffOutcome; reason: string } = "pending";
         try { if (handoff) answer = await handoff.outcome(interactionId, runtime.signal); } catch (error) {
           if (runtime.signal.aborted) throw error;
           runtime.report(scrubbed(error));
@@ -226,7 +226,8 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
           await runtime.commit(() => ({ status: "running", checkpoint: { phase: "poll", attempt: attempt + 1 } }), context);
           return;
         }
-        const outcome = answer;
+        const outcome = typeof answer === "string" ? answer : answer.outcome;
+        const reason = typeof answer === "string" ? undefined : answer.reason;
         await runtime.commit(async (tx) => {
           const state = await tx.doc(Sessions, cidOf(row));
           const record = state.sessions.find((r) => r.tag === row.tag);
@@ -235,7 +236,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
             addNotice(state, notices.handedBack(outcome, completionCondition));
             handedBack?.(row.tag, record.fence ?? 0);
           }
-          return { status: "terminal", outcome: { status: "completed", result: { outcome } } };
+          return { status: "terminal", outcome: { status: "completed", result: { outcome, ...(reason ? { reason } : {}) } } };
         }, context);
       },
     },

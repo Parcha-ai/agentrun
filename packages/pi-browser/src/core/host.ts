@@ -152,7 +152,8 @@ export interface HandoffPort {
   /** Idempotent by `requestId`. `sessionId` is the provider's id for the held session, by which a host finds the
    *  session's own grants. `liveView` reaches the host only, never the model. */
   request(ask: { requestId: string; sessionTag: string; sessionId: string; liveView: LiveView | null; instruction: string; completionCondition: string }, signal: AbortSignal): Promise<{ interactionId: string } | { refused: string }>;
-  outcome(interactionId: string, signal: AbortSignal): Promise<"pending" | HandoffOutcome>;
+  /** With `reason`: why, in the host's words, for the model (an ask the host ended at its spend cap). */
+  outcome(interactionId: string, signal: AbortSignal): Promise<"pending" | HandoffOutcome | { outcome: HandoffOutcome; reason: string }>;
 }
 
 export type ReleaseReason = "tool" | "idle" | "relaunch" | "close" | "ended" | "lost" | "create_failed";
