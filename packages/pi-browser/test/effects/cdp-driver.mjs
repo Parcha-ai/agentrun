@@ -42,9 +42,10 @@ export function cdpDriver(base) {
     await send("Network.enable", {}, sessionId);
     /** The pid of Chrome's network service, its own process; null when Chrome names none. */
     const networkService = async () => (await send("SystemInfo.getProcessInfo")).processInfo.find((p) => p.type.includes("NetworkService"))?.id ?? null;
-    // When the network service dies (Chrome for Testing 155 with its sandbox on, as CI runs it, sometimes crashes it just after
-    // a CORS preflight), Chrome starts another and never ends the requests the dead one carried: no loadingFailed, no pause,
-    // nothing at the server. Its restart is a drop: it is counted, and what was in flight is forgotten, since nothing will end it.
+    // When the network service dies (Chrome for Testing 155 sometimes crashes it just after a CORS preflight while Fetch
+    // interception is on, more often under load, sandbox or not), Chrome starts another, and here never ends the requests
+    // the dead one carried: no loadingFailed, no pause, nothing at the server. Its restart is a drop: it is counted, and what
+    // was in flight is forgotten, since nothing will end it.
     // Checks run one at a time, so one restart is counted once.
     let service = await networkService().catch(() => null);
     let restarts = 0;

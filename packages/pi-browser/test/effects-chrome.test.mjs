@@ -36,9 +36,9 @@ function recorder(observer) {
 
 /** One case, run until the journal has every effect it expects. A request the browser drops had no effect: the driver counts
  *  the drop and the case runs again, twice at most for a drop the page saw (a refused preflight) and five times for one
- *  Chrome lost when its network service died (Chrome for Testing 155 with its sandbox on, as CI runs it, does that after a
- *  held cross-origin preflight, more often the busier the machine). One still on its way is waited for. `attempts` is how
- *  many runs it took, `lost` how many of them the network service took with it. */
+ *  Chrome lost when its network service died (Chrome for Testing 155 does that after a cross-origin preflight while Fetch
+ *  interception is on, sandbox or not, more often the busier the machine). One still on its way is waited for. `attempts`
+ *  is how many runs it took, `lost` how many of them the network service took with it. */
 async function journalCase({ driver, observer, server, mode, c }) {
   const want = c.expected.length;
   const restarts = await driver.restarts();
@@ -99,9 +99,9 @@ test("a cross-origin POST whose preflight fails is run again, not read as an eff
 
 test("a cross-origin POST that Chrome loses with its network service is run again, not waited for: under deny the retry is journaled and denied", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const { driver, observer, server } = await denyRig(t, "effects-crash");
-  // As Chrome for Testing 155 with its sandbox on sometimes does (CI's real-chrome job), its network service dies while the
-  // request is on its way. Chrome starts another, and never ends the request the dead one carried: no loadingFailed, no
-  // pause, nothing at the server. Here it is killed when the preflight reaches the server.
+  // As Chrome for Testing 155 sometimes does while Fetch interception is on (seen on CI's real-chrome job), its network
+  // service dies while the request is on its way. Chrome starts another, and never ends the request the dead one carried:
+  // no loadingFailed, no pause, nothing at the server. Here it is killed when the preflight reaches the server.
   const pid = await driver.networkService();
   assert.ok(pid, "Chrome names its network service's process");
   // A kill that fails is not thrown from the server's handler: nothing is lost then, and the assertions below say so.
