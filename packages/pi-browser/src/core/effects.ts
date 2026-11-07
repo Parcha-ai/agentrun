@@ -96,7 +96,7 @@ export class EffectObserver {
   private readonly hops = new Map<string, number>();
   /** Allowed requests, continued and not yet answered: until the response's head says whether the request redirects (its
    *  next hop is then announced) or ends, a flush waits for them, so a redirect's next hop is decided under the same call. */
-  private readonly responding = new Map<string, { sessionId: string; seq: number }>();
+  private readonly responding = new Map<string, { sessionId: string; seq: number; hop: number }>();
   private respondSeq = 0;
   private lastAskAt = 0;
   /** Chrome's network service runs in a process of its own. When it dies, Chrome starts another, and a request the dead one
@@ -234,8 +234,9 @@ export class EffectObserver {
     else if (m.method === "Network.requestWillBeSent") {
       const hop = this.hopOf(m.params);
       this.announce(m.sessionId!, m.params, hop);
-      // A redirect is the previous hop's answer; its next hop, just announced, is waited for in its place.
-      if (m.params.redirectResponse) this.answered(m.params.requestId);
+      // A redirect is the previous hop's answer; its next hop, just announced, is waited for in its place. A next hop
+      // already paused (its pause came before this announcement) stays waited for.
+      if (m.params.redirectResponse && (this.responding.get(m.params.requestId)?.hop ?? 0) < hop) this.answered(m.params.requestId);
       this.track(this.sent(m.sessionId!, m.params, hop));
     }
     else if (m.method === "Network.responseReceived") this.answered(m.params.requestId);
@@ -243,6 +244,9 @@ export class EffectObserver {
       // A preflight (OPTIONS) is paused first and says nothing about the request it precedes.
       const id = m.params.networkId ?? m.params.requestId;
       const hop = SAFE.has(m.params.request.method) ? 0 : (this.pauses.get(id) ?? 0) + 1;
+      // A held request is waited for from its pause, through its decision, to its answer (paused() lets it go when it is
+      // refused): it is covered before it stops being announced, so a flush never sees a gap between the two.
+      if (hop && this.decide && !isOwnTraffic(m.params.request.url)) this.responding.set(id, { sessionId: m.sessionId!, seq: (this.respondSeq += 1), hop });
       this.track(this.paused(m.sessionId!, m.params, hop));
       if (hop) {
         this.pauses.set(id, hop);
@@ -492,19 +496,31 @@ export class EffectObserver {
     try { return this.endpoints.includes(new URL(url).href); } catch { return false; }
   }
 
+  /** A held request stays in `responding` (set at its pause) only once it is let go: refused, or not decided at all, it
+   *  is not waited for. */
   private async paused(sessionId: string, p: { requestId: string; networkId?: string; frameId?: string; resourceType?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }, hop: number): Promise<void> {
+    const id = p.networkId ?? p.requestId;
+    let continued = false;
+    try {
+      continued = await this.decidePaused(sessionId, p, hop, id);
+    } finally {
+      if (!continued) this.answered(id);
+    }
+  }
+
+  /** True when the held request was continued (allowed and recorded). */
+  private async decidePaused(sessionId: string, p: { requestId: string; networkId?: string; frameId?: string; resourceType?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }, hop: number, id: string): Promise<boolean> {
     const { method, url, postData, headers } = p.request;
-    if (SAFE.has(method) || !this.decide || isOwnTraffic(url)) return this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId);
+    if (SAFE.has(method) || !this.decide || isOwnTraffic(url)) { await this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId); return false; }
     let request: EffectRequest;
     // A request the observer cannot describe cannot be judged or journaled, and a held request nobody answers waits forever: refuse it.
-    try { request = describeRequest(method, url, postData, headers); } catch { return this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); }
+    try { request = describeRequest(method, url, postData, headers); } catch { await this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); return false; }
     // Only the extension's own worker runs the model's code: a website's worker sends what the website sent.
     const session = this.sessions.get(sessionId);
     if (session?.type === "service_worker" && session.url.startsWith(EXTENSION)) request = { ...request, trigger: RUN_CODE };
     const cutoff = this.cutoff;
     // Journaled `pending` and committed before deciding: a process that dies mid-decision loses the hold and the
     // request goes, so the journal must already name it. A request whose row could not be saved never leaves.
-    const id = p.networkId ?? p.requestId;
     const row = rowId(id, hop);
     const saved = await this.journal(row, request, "pending", null);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -518,8 +534,8 @@ export class EffectObserver {
     const { allow, verdict } = saved && !told ? await Promise.race([this.decide(request), cutoff, limit]).finally(() => clearTimeout(timer)) : REFUSED;
     clearTimeout(timer);
     const recorded = await this.journal(row, request, allow ? "allowed" : "denied", verdict);
-    if (allow && !recorded) return this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId);
-    if (allow) this.responding.set(id, { sessionId, seq: (this.respondSeq += 1) });
+    if (allow && !recorded) { await this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); return false; }
     await this.send(allow ? "Fetch.continueRequest" : "Fetch.failRequest", allow ? { requestId: p.requestId } : { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId);
+    return allow;
   }
 }

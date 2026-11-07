@@ -381,6 +381,50 @@ test("a redirect hop is waited for and decided under its own call, journaled apa
   assert.deepEqual(rows, ["R1 POST http://fake.test/api/order pending", "R1 POST http://fake.test/api/order allowed", "R1#2 POST http://other.test/api/xorigin pending", "R1#2 POST http://other.test/api/xorigin allowed"]);
 });
 
+test("a request whose decision comes after the flush started is waited for through its decision and its answer: its redirect's next hop is the same call's", async (t) => {
+  const browser = await fakeBrowser();
+  const slowAllow = async () => { await sleep(300); return { allow: true, verdict: null }; };
+  const observer = await EffectObserver.open({ sdkCdpUrl: browser.url }, slowAllow);
+  t.after(async () => { observer.close(); await browser.close(); });
+  const rows = [];
+  const stop = observer.record((row) => { rows.push(`${row.requestId} ${row.path} ${row.held}`); });
+  browser.announce("R1");
+  browser.pause("F1", "R1");
+  // The flush starts while hop 1's decision is still pending; hop 1 goes out once allowed, and its 307 comes back after.
+  setTimeout(() => browser.redirected("R1", "/api/xorigin"), 500);
+  setTimeout(() => browser.pauseAt("F2", "R1", "http://other.test", "/api/xorigin"), 600);
+  setTimeout(() => browser.responded("R1"), 1_200);
+  await observer.flush(undefined, 3_000);
+  stop();
+  assert.deepEqual(rows, ["R1 /api/order pending", "R1 /api/order allowed", "R1#2 /api/xorigin pending", "R1#2 /api/xorigin allowed"]);
+});
+
+test("a redirect's next hop paused before its announcement arrives is still waited for through its decision", async (t) => {
+  const browser = await fakeBrowser();
+  const slowAllow = async () => { await sleep(300); return { allow: true, verdict: null }; };
+  const observer = await EffectObserver.open({ sdkCdpUrl: browser.url }, slowAllow);
+  t.after(async () => { observer.close(); await browser.close(); });
+  const rows = [];
+  const stop = observer.record((row) => { rows.push(`${row.requestId} ${row.path} ${row.held}`); });
+  browser.announce("R1");
+  browser.pause("F1", "R1");
+  setTimeout(() => browser.pauseAt("F2", "R1", "http://other.test", "/api/xorigin"), 500);
+  setTimeout(() => browser.redirected("R1", "/api/xorigin"), 520);
+  setTimeout(() => browser.responded("R1"), 1_200);
+  await observer.flush(undefined, 3_000);
+  stop();
+  assert.deepEqual(rows, ["R1 /api/order pending", "R1 /api/order allowed", "R1#2 /api/xorigin pending", "R1#2 /api/xorigin allowed"]);
+});
+
+test("a denied request is not waited for after its decision", async (t) => {
+  const { browser, observer } = await rig(t);
+  browser.announce("R1");
+  browser.pause("F1", "R1");
+  const start = Date.now();
+  await observer.flush(undefined, 2_000);
+  assert.ok(Date.now() - start < 500, `the flush returned at the denial (${Date.now() - start} ms)`);
+});
+
 test("a redirect hop lost with the network service is not told as not sent: its first hop went out", async (t) => {
   const { browser, observer, lost } = await rig(t, effectDecider("allow"));
   browser.announce("R1");
