@@ -1,7 +1,7 @@
 // A workflow's decisions and steps under its spend cap, at the mechanism (decision-cap.ts, budget.ts):
 //  - OpenRouter's catalog down for a moment mid-run: the price is read again and the decision goes; down for good, the
-//    request fails unsent as a connection error, which the node's attempts take, never a stop of the cap's that ends the
-//    run spend_cap_reached;
+//    request fails unsent as a connection error and the decision node fails (decision nodes have no attempts loop), never
+//    a stop of the cap's that ends the run spend_cap_reached;
 //  - a decision an earlier process asked and never saw answered is escalated unsent by the driver: it holds nothing and
 //    never waits for a raise;
 //  - a model node's failure takes a refusal kept with no path of its own only while that node runs alone.
@@ -36,7 +36,7 @@ test("OpenRouter's catalog down for a moment mid-run: the price is read again an
   assert.deepEqual([await outcome(judge, params()), seen.stops], [["sent", "answered"], []]);
 });
 
-test("OpenRouter's catalog down for good mid-run: the decision fails unsent as a connection error the node's attempts take, never a stop of the cap's", { timeout: 30_000 }, async (t) => {
+test("OpenRouter's catalog down for good mid-run: the decision fails unsent as a connection error, failing its decision node (no attempts loop), never a stop of the cap's", { timeout: 30_000 }, async (t) => {
   t.after(() => useSpend(undefined));
   useSpend({ cap: 1, spent: () => 0, add: () => undefined });
   let reads = 0;

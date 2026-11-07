@@ -20,7 +20,8 @@
 //     and per output token for DECISION_OUTPUT_TOKENS a question (expected), or the catalog's most output (strict: none
 //     listed and its output priced is no bound, and is not sent). A model the catalog does not price is not sent. A
 //     catalog that cannot be read is read again (CATALOG_TRIES); one still down fails the request unsent, as a connection
-//     error the node's own attempts take, never as a refusal of the cap, which would end the run.
+//     error (DecisionProviderError "connection"), and the decision node fails (decision nodes have no attempts loop):
+//     never a refusal of the cap (CapStop), which would end the run spend_cap_reached.
 import type { DecisionProvider, WorkflowDeps } from "@parcha/agentrun-dsl";
 import { chargedCost, DecisionProviderError } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
@@ -52,7 +53,8 @@ export const CATALOG_TRIES = 3;
 const CATALOG_RETRY_MS = [500, 1_500];
 
 /** `model`'s price from `priced`'s catalog, read up to CATALOG_TRIES times: a catalog still down then fails the request
- *  as a connection error, unsent (DecisionProviderError), which the node's attempts take as any provider's outage. */
+ *  unsent, as a connection error (DecisionProviderError "connection"), and the decision node fails (decision nodes have
+ *  no attempts loop), as on any provider's outage: never a CapStop. */
 async function catalogPrice(priced: { priceOf(model: string): Promise<DecisionModelPrice | null> }, model: string, signal: AbortSignal | undefined): Promise<DecisionModelPrice | null> {
   for (let tries = 1; ; tries += 1) {
     try {
