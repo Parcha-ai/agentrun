@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
-import { Harness, createRegistry, defineExtension, defineTask } from '@earendil-works/pi-durable';
+import { AgentDoc, Harness, MemoryStorage, createRegistry, defineExtension, defineTask } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import * as recovery from '@parcha/agentrun-dsl/recovery';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
@@ -354,4 +354,27 @@ test('a real store: a fork made under a task is a pi.conversation line from reco
   const fork = live.find((line) => line.data.id === Number(created.fork.id));
   assert.deepEqual(fork.data, { id: Number(created.fork.id), parent: { conversationId: Number(created.root.id), at: Number(created.entry.id) }, owner: { conversationId: Number(created.root.id), taskId: Number(created.task) } }, 'the fork\'s line is its record: parent and owner');
   assert.deepEqual(live.find((line) => line.data.id === Number(created.loose.id)).data, { id: Number(created.loose.id), parent: { conversationId: Number(created.root.id), at: Number(created.entry.id) } }, 'an ownerless fork keeps its parent and has no owner');
+});
+
+// pi 1.5 ends a commit observer `failed` with "session closed" on a normal close too; the Session's own end (`closed`,
+// tagged by kind) tells a close from a store failure. A demo detaches its recorder after the run closed its Harness.
+test('a recorder stopped after a normal close of its Session stops quietly: the close is no recording failure', async () => {
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
+  const recorded = [];
+  const stop = recordCommits(harness, { gen: 1, write: (lines) => { recorded.push(...lines); } });
+  await harness.root(ctx, {});
+  await harness.close(ctx);
+  await stop();
+  assert.ok(recorded.length > 0, 'the commits before the close were recorded');
+});
+
+test('a recorder whose Session failed on its store throws the store\'s error at its stop', async () => {
+  const storage = new MemoryStorage();
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
+  const stop = recordCommits(harness, { gen: 1, write: () => {} });
+  const root = await harness.root(ctx, {});
+  storage.commit = async () => { throw new Error('the disk is gone'); };
+  await harness.commit(async (tx) => { (await tx.doc(AgentDoc, root.id)).thinkingLevel = 'high'; }, ctx).catch(() => undefined);
+  assert.equal((await harness.closed).kind, 'failed', 'the Session failed');
+  await assert.rejects(stop(), /the disk is gone/);
 });

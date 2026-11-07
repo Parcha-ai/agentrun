@@ -111,3 +111,19 @@ test("a document change the stream cannot follow ends it failed, never stale: pi
   const end = await Promise.race([stream.closed, new Promise((resolve) => setTimeout(() => resolve("still open"), 500))]);
   assert.deepEqual(end, { reason: "failed" }, "the stream ends failed once it cannot follow a document");
 });
+
+test("a run that starts and ends while the stream is held before start() reaches it whole: its run_start and run_end, as each commit made them", async (t) => {
+  const { harness, root } = await opened();
+  t.after(() => harness.close(ctx));
+  // As the door's GET /events?inputs=1 does: the stream is attached, then something is awaited before start().
+  const stream = await watchEvents(harness, root.id, ctx);
+  await (await root.submit({ type: "input", content: "hi" }, ctx)).wait(ctx);
+  await harness.waitForIdle(ctx);
+  const events: { type: string }[] = [];
+  stream.start(async (batch) => void events.push(...batch));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const types = events.map((event) => event.type);
+  for (const type of ["run_start", "turn_start", "turn_end", "run_end"]) assert.ok(types.includes(type), `${type} in ${types.join(",")}`);
+  assert.ok(types.indexOf("run_start") < types.indexOf("run_end"), types.join(","));
+  await stream.stop();
+});
