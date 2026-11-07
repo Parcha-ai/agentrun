@@ -10,6 +10,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -30,6 +31,22 @@ import { until } from "./home-launch-support.ts";
 const context = BACKGROUND_CONTEXT;
 const root = mkdtempSync(join(tmpdir(), "pi-transport-launch-ptrace-"));
 afterAll(() => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+// Nothing a test here started outlives the file: every box it made is destroyed, and a destroy ends what its launches
+// started, a program deaf to SIGTERM included. Checked by working directory in /proc, not by time.
+afterAll(() => {
+	const left: string[] = [];
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name)) continue;
+		let cwd = "";
+		try {
+			cwd = readlinkSync(`/proc/${name}/cwd`);
+		} catch {
+			continue;
+		}
+		if (cwd.startsWith(root) && !/^ Z/.test(statOf(Number(name)))) left.push(`${name} ${cwd}`);
+	}
+	expect(left).toEqual([]);
+});
 
 /** The launcher with its ptrace file pointed at `file`: the one line a test copy changes (no environment can change it). */
 function scriptMeasuring(file: string): string {
