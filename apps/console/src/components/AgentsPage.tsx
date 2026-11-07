@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
 import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
-import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
+import { type Agent, createBody, editBody, isStarter, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
@@ -107,10 +107,17 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
         let saved;
         try {
           if (!agent && made.current) {
-            // Made, and the move to its page cancelled: the kept edits are a revision of that agent, on its current one.
+            // Made, and the move to its page cancelled: the kept edits are a revision of that agent, made on the revision the
+            // Create made. Another save since (another tab) is not written over: the form says so and stays.
             const { agent: now, etag: t } = await v2.getAgent(made.current.agent_id);
-            const body = editBody(now, fields, note);
-            if (!body.unchanged) { const { unchanged: _u, ...send } = body; await v2.updateDefinition(now.agent_id, send, t); }
+            if (now.revision !== made.current.revision) return { kind: "other" as const, message: "This agent changed since it was created here, so these edits were not saved. Open its page to see its current revision." };
+            // A workflow agent from a starter (Decision, Workflow): what this form still holds (its name, its description) is
+            // set at creation, so there is nothing to save; its page opens. An agentic one keeps its own harness when the
+            // form was switched to a starter meanwhile.
+            if (now.kind !== "workflow") {
+              const body = editBody(now, isStarter(fields.harness) ? { ...fields, harness: now.definition.harness } : fields, note);
+              if (!body.unchanged) { const { unchanged: _u, ...send } = body; await v2.updateDefinition(now.agent_id, send, t); }
+            }
             if (!shown.current) return null;
             editor?.leaveSaved();
             go(agentHash(now.agent_id, now.kind === "workflow" ? "workflow" : undefined));
