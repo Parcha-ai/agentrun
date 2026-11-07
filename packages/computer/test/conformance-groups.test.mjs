@@ -223,7 +223,10 @@ test("a linux computer with computerd as PID 1, as Docker declares, skips every 
 	assert.equal(report.core, "pass", formatReport(report));
 	assert.deepEqual(report.undeclared, ["screen", "stream", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "apps.ui_tree", "extend"]);
 	const text = formatReport(report).trimEnd().split("\n");
-	assert.equal(text.at(-1), "core PASS 2/2 · 9 Core cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
+	assert.equal(text.at(-1), "core PASS 2/2 · 9 optional cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
+	// A case its kind does not require is never filed under core: a linux computer's report has no core screen line.
+	assert.deepEqual(text.filter((line) => /^core (screen|input|touch|apps) /.test(line)), [], text.join("\n"));
+	assert.ok(text.some((line) => /^optional screen +screenshot-size +- 1$/.test(line)), text.join("\n"));
 	assert.ok(text.includes("  - screen.screenshot-size: the provider does not declare screen"), text.join("\n"));
 });
 
@@ -306,7 +309,9 @@ test("a Core case whose group the kind requires fails when it is not declared; a
 	assert.deepEqual(statuses(optional), { "input.click-lands": "pass", "touch.tap": "skip", "apps.ui-tree-shape": "skip", "screen.stream": "skip" });
 	assert.equal(optional.core, "pass", formatReport(optional));
 	assert.deepEqual(optional.undeclared, ["stream", "input.touch", "apps.ui_tree"]);
-	assert.match(formatReport(optional), /core PASS 1\/1 · 2 Core cases skipped, not declared · full 0\/1/);
+	assert.match(formatReport(optional), /core PASS 1\/1 · 2 optional cases skipped, not declared · full 0\/1/);
+	assert.match(formatReport(optional), /^core input +click-lands +✓ 1$/m, "a group its kind requires stays under core");
+	assert.match(formatReport(optional), /^optional touch +tap +- 1$/m);
 });
 
 test("a phone that declares neither files nor apps.ui_tree skips the touch cases: no way to observe the effect", async () => {

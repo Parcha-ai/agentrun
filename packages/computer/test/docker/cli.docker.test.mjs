@@ -21,6 +21,6 @@ describe("the conformance CLI on Docker", { skip: LIVE ? false : "set AGENTRUN_C
 		for (const group of ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps"]) assert.match(stdout, new RegExp(`^core ${group} `, "m"));
 		assert.match(stdout, /^full lifetime /m);
 		// Docker declares no screen, input, touch or apps: those Core cases are skipped, out of Core's count, and counted.
-		assert.match(stdout, /^core PASS (\d+)\/\1 · 9 Core cases skipped, not declared · full \d+\/\d+/m);
+		assert.match(stdout, /^core PASS (\d+)\/\1 · 9 optional cases skipped, not declared · full \d+\/\d+/m);
 	});
 });
