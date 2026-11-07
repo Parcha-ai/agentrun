@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
-import type { HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
+import type { CommitResult, HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
 import type { AcquireOptions, Claim, RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
@@ -291,9 +291,12 @@ export async function storeHead(store: StoreHeadSource): Promise<number> {
 }
 
 /**
- * `storage` with `before` run ahead of every commit (it may throw to refuse it), every resolved commit's sequence
- * reported to `after`, every rejected commit's error to `failed`, and its close to `closing`; everything else delegates
- * unchanged.
+ * `storage` with `before` run ahead of every commit (it may throw to refuse it), each durable batch's sequence reported
+ * to `after`, every rejected commit's error to `failed`, and its close to `closing`; everything else delegates
+ * unchanged. pi 1.5 commits in batches (group commit): one call stores several, each an ordinary atomic commit with
+ * its own seq, which pi's `receive(index, seq)` reports once per durable batch. `after` takes that same seq, so it
+ * hears each ordinary commit's seq as it did when a call was one commit. A batch Durable refuses comes back in the
+ * result (`refused`), not as a rejection, as a refused commit's StorageRejected never was a FencedError for `failed`.
  */
 function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Seq): void; failed(error: unknown): void; closing?(): void }): Storage {
   return new Proxy(storage, {
@@ -305,17 +308,17 @@ function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Se
         };
       }
       if (key === "commit") {
-        return async (writes: readonly StorageWrite[], context: Context) => {
+        return async (batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, context: Context): Promise<CommitResult> => {
           hooks.before();
-          let seq: Seq;
           try {
-            seq = await target.commit(writes, context);
+            return await target.commit(batches, (index, seq) => {
+              receive(index, seq);
+              hooks.after(seq);
+            }, context);
           } catch (error) {
             hooks.failed(error);
             throw error;
           }
-          hooks.after(seq);
-          return seq;
         };
       }
       const value: unknown = Reflect.get(target, key, target);
