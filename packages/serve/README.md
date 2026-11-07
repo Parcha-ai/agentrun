@@ -816,10 +816,10 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 
 | Tool | What it does | Needs | A workflow's model node may name it, a call node run it |
 | --- | --- | --- | --- |
-| `read` | Read a file in the run's `work/` | nothing | yes, no |
+| `read` | Read a file in the run's `work/`; in a box, also an image (png, jpg, gif, webp, by its bytes) at any absolute path in the box, such as one rendered to `/tmp`, read through the box and never from the host | nothing | yes, no |
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
-| `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
+| `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 120 s when the call names no timeout and at most 600 s (a longer one runs at 600 s and says so; longer work is `bash_background`) | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command, tty?}` in, `tty: true` for a terminal. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
 | `bash_output` | Read a background process's output from a byte offset: `{id, offset?, max_bytes?}` in (at most 48 KiB a call), its state, exit code, the log's size and the next offset out | an agentic definition whose place is a sandbox | no, no |
 | `bash_input` | Write to a running background process's stdin: `{id, text, close?}` (at most 64 KiB a call) | an agentic definition whose place is a sandbox | no, no |
@@ -1026,7 +1026,7 @@ saying why. Kernel's browsers run headless, and keep no downloads, so a run on K
 run's process over its pipe, as the rest do. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
-reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
+reads at once included. There is no recording. The owner watches the browser live, read-only (below). When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at their vendor. An agent's browser stays signed in from one run to the next
 ([saved sign-ins](#saved-sign-ins)).
 
@@ -1047,6 +1047,26 @@ its new `usage`), never a new row. Prices are by provider (pi-browser's provider
 A variable gives the provider's price in US dollars an hour (a contract rate; the minimum stays). A provider with no price,
 or a variable that is not a non-negative decimal, has no price: its time is booked as an unknown cost, and under a cap
 every browser call is refused. Under a cap the browser's time is held before it runs (see [Spend cap](#spend-cap)).
+
+#### The browser's live view
+
+The owner watches a run's browser live from the console, read-only: the same view for every vendor (pi-browser's own viewer,
+a screencast of the page the agent is on), never the vendors' own live-view links, which stay in the run's process. As a
+session opens, the run's process serves its viewer on a loopback port of its own and hands it to the server in one file in
+the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes when that
+session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's view. `GET /v2/runs/{id}/browser`
+answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server with its token in the fragment),
+`{state: "none"}` when the run has a browser but no session is open, and `{state: "off", reason}` when it has none: its agent
+has no `browser` tool, or its browser resolves unavailable here (the tool plane's words, `a local Chrome is not set up on this
+server`, or for Kernel with no key, that it needs a Kernel key). It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
+script may hold, is `403`. The viewer's page and its WebSocket are under `/v2/runs/{id}/browser/live/`, proxied to that run's
+port alone: the page is framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'` everywhere
+else), and the WebSocket is taken only from this server's own origin (as the request reaches it, or the public address,
+`AGENTRUN_PUBLIC_URL`, for a TLS proxy that rewrites `Host`) with the owner's session, and on a loopback address only at
+one of its names, as every route is (a rebound name is refused, whatever its `Origin`). One viewer at a time: a second is
+refused (`viewer_in_use`). The viewer drops input before the browser (`held read_only`); a browser with no page yet (Kernel's
+headless one starts with none) shows "No page yet" until one opens. The token dies with the session: the answer says `none`
+and the old link opens nothing. The token is in no record, timeline row, run view, run file, home, log or the model's context.
 
 ### Saved sign-ins
 
@@ -1541,6 +1561,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
+| `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
@@ -2242,9 +2263,10 @@ Near its cap, a run's model is told once to finish: when what is left (the cap l
 in flight are held at) is under three times the run's typical request, the next request of the run's own model carries
 "About $X left of this run's budget: finish now with your answer." at its end, and the Timeline shows it as the server's
 row ("AgentRun: About $X left …"). The typical request is the median of the run's own model's priced requests after the
-first (the first writes the cache), else that one, else the next request's expected cost; side calls on another model
-and paid tools count in what is left, never in the typical request. Told before the run's own model has a priced request
-(a small cap on a pricey model can be due at its first), the words say the budget instead: "This run's budget is about
+first (the first writes the cache), else that one, else, while nothing is priced, the next request at its input and a
+4,096-token answer (never its whole output allowance: a $1 run on Sonnet 4.5 is not told at its start); side calls on
+another model and paid tools count in what is left, never in the typical request. Told while nothing is priced (a small
+cap, due at the run's first request), the words say the budget instead, on every harness: "This run's budget is about
 $X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
@@ -2474,6 +2496,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
   run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
   context or profile there.
+- A run's live browser view is a full-control credential for its session: its token lives in the run's process, in one 0600
+  file in the run's directory (never `work/`) while the session is open, and in the owner's answer to `GET /runs/{id}/browser`,
+  which takes the owner's password session alone. The viewer is served and its WebSocket taken only under the run's path, from
+  this server's own origin, framed by it alone; its input never reaches the browser; the vendors' own live-view links never leave
+  the run's process.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` names something other than this machine
   (DNS rebinding): `localhost`, `127.0.0.1`, `[::1]`, the `AGENTRUN_PUBLIC_URL` name and each `--allow-host` name are
   served, on any port, so a tunnel (`ssh -L 8080:localhost:7340`) or a proxy in front works; any other name is `403`, a
