@@ -12,8 +12,8 @@ const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
 const decode = (base64) => Buffer.from(base64, "base64").toString("utf8");
-/** The provider's default user: this process's, or 1000:1000 when this process is root. */
-const DEFAULT_USER = process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
+/** The provider's default user: this process's, or 1000:1000 when this process's uid or gid is 0. */
+const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 const NO_CAPABILITIES = "0000000000000000";
 
 describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
@@ -74,6 +74,8 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.equal(inspected.HostConfig.CpuQuota, 200_000);
 		assert.equal(inspected.HostConfig.NanoCpus, 0);
 		assert.deepEqual(Object.keys(inspected.HostConfig.Tmpfs ?? {}).sort(), ["/run/agentrun", "/work"]);
+		assert.ok(inspected.HostConfig.Tmpfs["/work"].split(",").includes("size=2048m"), "/work is half the memory, so filling it is ENOSPC");
+		assert.ok(inspected.HostConfig.Tmpfs["/run/agentrun"].split(",").includes("size=1m"), inspected.HostConfig.Tmpfs["/run/agentrun"]);
 		assert.equal(inspected.Config.WorkingDir, "/work");
 		assert.ok(inspected.Config.Env.includes("HOME=/work"), JSON.stringify(inspected.Config.Env));
 		assert.equal(inspected.HostConfig.AutoRemove, false);
@@ -239,17 +241,18 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 	});
 
 	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async () => {
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 3000, network: "none", labels: { "agentrun.test": "run-command" } });
+		// Long enough for create's checks while other files make computers on a loaded host; the test asserts the end.
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 45_000, network: "none", labels: { "agentrun.test": "run-command" } });
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
-		const bound = Date.now() + 60_000;
+		const bound = Date.now() + 120_000;
 		let state;
 		do {
 			[{ State: state }] = JSON.parse(docker("inspect", created.value.name));
 			if (!state.Running) break;
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		} while (Date.now() < bound);
-		assert.equal(state.Running, false, "still running 60 s after a 3 s lifetime");
+		assert.equal(state.Running, false, "still running 120 s after a 45 s lifetime");
 		assert.equal(state.ExitCode, 0);
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});

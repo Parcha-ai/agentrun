@@ -11,8 +11,8 @@ import { DockerProvider, listProcesses, readAll } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
-/** The provider's default user, which init and so every process runs as: this process's, or 1000:1000 as root. */
-const DEFAULT_USER = process.getuid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
+/** The provider's default user, which init and so every process runs as: this process's, or 1000:1000 when its uid or gid is 0. */
+const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 /** Bounds each wait on a program. The host may be loaded: it is never a claim about speed. */
 const PATIENCE_MS = 30_000;
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
@@ -192,7 +192,9 @@ describe("keep a process running across calls and connections in a Docker comput
 	});
 
 	it("leaves no survivor when a process SIGKILLs its own guard", async () => {
-		const rogue = await call(b, "process.start", { argv: ["sh", "-c", "sleep 305 & echo $$ $!; kill -9 $PPID; wait"] });
+		// It kills its guard only once the start has returned: a guard killed before it reports the pid fails the start.
+		const rogue = await call(b, "process.start", { argv: ["sh", "-c", "read go; sleep 305 & echo $$ $!; kill -9 $PPID; wait"], stdin: true });
+		await call(b, "process.write", { id: rogue.id, data: b64("go\n") });
 		const { text } = await readUntil(b, rogue.id, "stdout", 0, "\n");
 		const pids = text.trim().split(/\s+/).map(Number);
 		assert.equal(pids.length, 2, text);
@@ -213,7 +215,7 @@ describe("keep a process running across calls and connections in a Docker comput
 
 	it("ends at its deadline with a process that ignores TERM still running: init ends every process and exits 0", async () => {
 		// Long enough to connect and start the process on a loaded host; the test asserts the end, not its timing.
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 15_000, network: "none", labels: { "agentrun.test": "processes" } });
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 45_000, network: "none", labels: { "agentrun.test": "processes" } });
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
 		const connected = await provider.connect(created.value);
@@ -227,7 +229,7 @@ describe("keep a process running across calls and connections in a Docker comput
 			if (!state.Running) break;
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		} while (Date.now() < bound);
-		assert.equal(state.Running, false, "still running 120 s after a 15 s lifetime");
+		assert.equal(state.Running, false, "still running 120 s after a 45 s lifetime");
 		assert.equal(state.ExitCode, 0, "init ended the computer, not Docker's SIGKILL");
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});

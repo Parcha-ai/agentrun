@@ -285,6 +285,9 @@ export type Run = {
   log: RowLog;
   /** The run's rows as they come in (before the log names them), with each `ask_person` answer's waiting row. */
   rows: TimelineEvent[];
+  /** The reducer of its door's events that makes those rows (follow): the newest connection's once its snapshot is in,
+   *  the one before it until then. */
+  timeline?: ReturnType<typeof timelineReducer>;
   /** The person's messages the run took, and how each one's turn ended (turns.ts): its end is read from them. */
   turns: Turns;
   /** Its tool calls that waited for a person's approval, read from its store's entries, by id. */
@@ -2136,9 +2139,13 @@ export class Runs {
         noteApprovals(run, entries);
         const redact = this.redactor(run);
         reducer.apply(events.map((e) => (Array.isArray(e.entries) ? { ...e, entries: redactGateMessages(e.entries, redact) } : e.entry !== undefined ? { ...e, entry: redactGateMessages([e.entry], redact)[0] } : e)) as never);
+        // The rows this connection makes, for a stop to read as over at once (stopTurn): only once its snapshot is in.
+        // Until then the last connection's reducer stands, whose rows the run shows; a new one has none yet.
+        if (event === "snapshot") run.timeline = reducer;
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
-        // as the settled read counts it, never one in flight.
-        if (!run.working && stopped(run)) reducer.idle();
+        // as the settled read counts it, never one in flight. Read so from the stop on (stopTurn), not from the turn's
+        // end reaching here: the run reads stopped from then. A message sent since (`submitted`) starts a turn of its own.
+        if (run.submitted === 0 && stopped(run)) reducer.idle();
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.
         const rows = reducer.rows();
@@ -3658,6 +3665,13 @@ export class Runs {
       await this.saveMeta(run).catch(() => undefined);
       this.refresh(run);
       return false;
+    }
+    // The stopped turn is over from here, and the run reads stopped: a request it cut is a charge with no price
+    // (costsofar/1), never one in flight, before the turn's end reaches this server through the door's events.
+    if (run.timeline && run.submitted === 0 && stopped(run)) {
+      run.timeline.idle();
+      const rows = run.timeline.rows();
+      this.take(run, rows, keepCommitted(run.live, rows, run.timeline.isLive));
     }
     this.refresh(run);
     return true;

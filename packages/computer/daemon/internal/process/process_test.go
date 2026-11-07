@@ -819,3 +819,62 @@ func TestACancelRacingAWriteNeverBreaksTheNextWrite(t *testing.T) {
 		}
 	}
 }
+
+// readTo reads a stream from 0 until it has n bytes.
+func readTo(t *testing.T, tbl *process.Table, id, stream string, n int64) {
+	t.Helper()
+	offset := int64(0)
+	deadline := time.Now().Add(patience)
+	for offset < n && time.Now().Before(deadline) {
+		res, err := tbl.Read(context.Background(), process.ReadParams{ID: id, Stream: stream, Offset: off(offset), WaitMs: 1000})
+		if err != nil {
+			t.Fatalf("read %s %s at %d: %v", id, stream, offset, err)
+		}
+		offset = res.NextOffset
+	}
+	if offset < n {
+		t.Fatalf("%s %s gave %d of %d bytes within %v", id, stream, offset, n, patience)
+	}
+}
+
+// The table's rings together hold at most RetainedBytes: past it, the rings of the processes that ended first are let
+// go, never a running process's. The entry stays, with its exit status, and a read of a released ring reports every
+// byte as dropped.
+func TestRetainedOutputIsBoundedByReleasingTheOldestEndedRings(t *testing.T) {
+	const ringBytes, budget = 4096, 10_000
+	tbl := table(t, process.Options{RingBytes: ringBytes, RetainedBytes: budget})
+	fill := []string{"head", "-c", strconv.Itoa(ringBytes), "/dev/zero"}
+	running := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", `head -c "$0" /dev/zero; exec sleep 303`, strconv.Itoa(ringBytes)}})
+	readTo(t, tbl, running.ID, "stdout", ringBytes)
+	var ended []string
+	for range 3 {
+		p := start(t, tbl, process.StartParams{Argv: fill})
+		wait(t, tbl, p.ID)
+		readTo(t, tbl, p.ID, "stdout", ringBytes)
+		readAll(t, tbl, p.ID, "stdout")
+		ended = append(ended, p.ID)
+		if held := process.Held(tbl); held > budget {
+			t.Fatalf("after %s the rings hold %d bytes, over the budget of %d", p.ID, held, budget)
+		}
+	}
+	for i, id := range ended {
+		res, err := tbl.Read(context.Background(), process.ReadParams{ID: id, Stream: "stdout", Offset: off(0)})
+		if err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if i < 2 {
+			if len(res.Data) != 0 || res.Dropped != ringBytes || res.NextOffset != ringBytes || !res.Exited {
+				t.Errorf("%s ended first, so its ring is let go: read %d bytes, dropped %d, next %d, exited %v", id, len(res.Data), res.Dropped, res.NextOffset, res.Exited)
+			}
+			if w := wait(t, tbl, id); w.ExitCode == nil || *w.ExitCode != 0 {
+				t.Errorf("%s keeps its exit status: %+v", id, w)
+			}
+		} else if len(res.Data) != ringBytes || res.Dropped != 0 {
+			t.Errorf("%s ended last and keeps its ring: read %d bytes, dropped %d", id, len(res.Data), res.Dropped)
+		}
+	}
+	res, err := tbl.Read(context.Background(), process.ReadParams{ID: running.ID, Stream: "stdout", Offset: off(0)})
+	if err != nil || len(res.Data) != ringBytes || res.Dropped != 0 || res.Exited {
+		t.Fatalf("the running process keeps its ring: read %d bytes, dropped %d, exited %v, %v", len(res.Data), res.Dropped, res.Exited, err)
+	}
+}

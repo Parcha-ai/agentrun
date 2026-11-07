@@ -175,6 +175,33 @@ test("the route says whether a run has a browser at all: off with why when its a
   assert.deepEqual((await browserOfRun(again, cookieOf(signed), browsed)).json, { state: "off", reason: "kernel is picked, and it needs a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)" });
 });
 
+test("a run whose browser key is deleted while it runs keeps its live viewer: its process holds the key it started with, so the link is still served while the process lives, and off once it ends", { timeout: 180_000 }, async (t) => {
+  const { randomBytes } = await import("node:crypto");
+  // No key in the environment: the browser's key is the saved one alone.
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: join(await scratch(t), "browser.jsonl") }, [...KEYS, "AGENTRUN_SEAL_KEY"]);
+  const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux: BROWSE_ASK });
+  const origin = `http://127.0.0.1:${server.port}`;
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD } });
+  assert.equal(made.status, 201, made.text);
+  const cookie = cookieOf(made);
+  assert.equal((await server.api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" } })).status, 204);
+  assert.equal((await server.api("POST", "/agents", { definition: { id: "keyed", name: "keyed", instructions: "Browse, then ask.", tools: ["browser", "ask_person"] } })).status, 201);
+  const started = await server.api("POST", "/agents/keyed/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const { after } = await follow(server.api, runId, ["input_required"]);
+  const browserNow = async () => (await call(server.port, { path: `/v2/runs/${runId}/browser`, headers: { cookie } })).json;
+  assert.ok(await until(async () => (await browserNow())?.state === "live"), "live while the run's process holds its session");
+  assert.equal((await server.api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
+  const kept = await browserNow();
+  assert.equal(kept.state, "live", `the key deleted, the running viewer is still served: ${JSON.stringify(kept)}`);
+  assert.equal((await server.api("POST", `/runs/${runId}/messages`, { content: "Yes, that is all." })).status, 202);
+  await follow(server.api, runId, ["completed"], { after });
+  const ended = await browserNow();
+  assert.equal(ended.state, "off", "its process gone, with no key here: off");
+  assert.match(ended.reason, /BROWSERBASE_API_KEY/);
+});
+
 test("a malformed run id under the live path is a 404, never a crash: the server answers the next request, for HTTP and for the upgrade", { timeout: 60_000 }, async (t) => {
   const { port } = await serve(t);
   for (const path of ["/v2/runs/%E0%A4%A/browser/live/viewer.js", "/v2/runs/%/browser/live/v/AAAAAAAAAAAAAAAAAAAAAA"]) {
