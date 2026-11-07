@@ -76,6 +76,8 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "Steps the person asks you to follow every time a task comes back are a skill, not a note: keep them as the skill, in",
     "their words and with the exact output format they gave, and do not repeat them in a note.",
     "A job you keep a skill for needs no note beside it.",
+    "A rule for every reply (its format, its tone, what it always includes) is a note, which every later run reads; a skill",
+    "is the steps of one kind of job, read only when that job comes.",
     "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
     "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
     "",
