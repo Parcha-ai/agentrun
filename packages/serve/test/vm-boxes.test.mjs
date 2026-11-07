@@ -277,6 +277,9 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   assert.equal(await (await call(b.run_id, `exec/${lost.exec}/stderr`)).text(), "");
   assert.equal((await call(b.run_id, `exec/${lost.exec}/wait`)).status, 502, "the exit's failure is answered");
   await until(async () => (await (await call(b.run_id, `exec/${lost.exec}/stdin-close`)).json()).ended === true, "the lost program let go");
+  const lateExit = await call(b.run_id, `exec/${lost.exec}/wait`);
+  assert.equal(lateExit.status, 502, "an exit that could not be read still fails once its program was let go, never a code");
+  assert.ok((await lateExit.json()).failure, "with the provider's failure");
   // A reader that goes away lets its program go: what it held is dropped, and the program is no longer the run's to ask.
   const started = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["yes"] });
   assert.equal(started.status, 200);
