@@ -51,7 +51,7 @@ import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
@@ -1547,8 +1547,8 @@ export class Runs {
   }
 
   /** A run's error as its view and the run lists serve it: its message in shown()'s terms. */
-  private servedRunError<E extends { message: string }>(run: Run, error: E): E {
-    return { ...error, message: this.shown(run, error.message) };
+  private servedRunError<E extends { message: string; details?: unknown }>(run: Run, error: E): E {
+    return { ...error, message: this.shown(run, error.message), ...(error.details !== undefined ? { details: cutStrings(error.details, (text) => this.shown(run, text)) } : {}) };
   }
 
   /** A run's review as its view serves it: its reason (an escalation's own words) in shown()'s terms, or withheld as its
@@ -2995,7 +2995,7 @@ export class Runs {
     const said = summary ?? (outcome === "completed" ? answerOfRun(run) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     const line = said ? redactedAnswer(said, this.refusedValues(run)) : said;
     // Kept cut too, as its line is: a later server that can no longer read the pointer back serves it as kept.
-    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refusedValues(run)), ...(run.error.details ? { details: run.error.details } : {}) };
+    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refusedValues(run)), ...(run.error.details ? { details: cutStrings(run.error.details, (text) => redacted(text, this.refusedValues(run))) as { reason: string } } : {}) };
     // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
     // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.
     const endedAt = (run.endedAt ??= new Date().toISOString());
@@ -3930,7 +3930,7 @@ export class Runs {
       ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       // Withheld as load withholds a held run's: its code too, which can be the run's own (errorOfRow).
-      error: failed && (shown === "withheld" ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : { ...failed, message: say(failed.message) }),
+      error: failed && (shown === "withheld" ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : { ...failed, message: say(failed.message), ...(failed.details ? { details: cutStrings(failed.details, say) as { reason: string } } : {}) }),
       review: reviewAt(review && { ...review, reason: say(review.reason) }, row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(typeof meta?.max_cost_usd === "number" ? { overshoot_bound_usd: 0 } : {}), ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,

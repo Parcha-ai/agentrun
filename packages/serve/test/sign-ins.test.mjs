@@ -1511,3 +1511,26 @@ test("an ended run whose serve.json is damaged after it ended is withheld: wheth
   }
   assert.deepEqual([view.status, view.result?.final_answer ?? null], ["completed", null], "it ended as it ended; its words withheld");
 });
+
+test("an error's details are cut as its message is, in a run's view and in the run lists", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, FAUX_BROWSER_DIE_WITH_REF: "1" }, KEYS);
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
+  await follow(first.api, runId, ["failed"], { deadlineMs: 60_000 });
+  const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  await first.close();
+  // Its error's details as a server that did not cut them kept them.
+  const metaFile = join(runDir(first.data, runId), "serve.json");
+  const meta = JSON.parse(await readFile(metaFile, "utf8"));
+  await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: "The browser died.", details: { reason: `held ${ref}` } } })}\n`);
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const listed = [(await api("GET", "/runs")).body, (await api("GET", "/agents/alpha/runs")).body];
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  const relisted = [(await api("GET", "/runs")).body, (await api("GET", "/agents/alpha/runs")).body];
+  assert.deepEqual(view.error.details, { reason: "held [redacted]" });
+  for (const body of [...listed, ...relisted]) assert.deepEqual(body.runs.find((r) => r.run_id === runId).error.details, { reason: "held [redacted]" });
+  for (const shown of [...listed, view, ...relisted]) assert.ok(!JSON.stringify(shown).includes(ref), JSON.stringify(shown));
+});

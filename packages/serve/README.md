@@ -1095,7 +1095,7 @@ picks which one a run gets, never the model.
   one. When the marked pointer can't be read back (it does not open under this server's seal key, live or forgotten,
   or it was forgotten and has since dropped out of the newest 32 kept; for a run handed several, once any was
   dropped), the run is hidden or withheld as above. A run list's row for an ended run the server has not read (from
-  its row and `serve.json` alone) serves its error and review cut the same way, or withholds them in
+  its row and `serve.json` alone) serves its error (its details too) and review cut the same way, or withholds them in
   the same words, and withholds them when its `serve.json` is damaged. Its `held_by` still names a run that holds its
   lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
