@@ -101,6 +101,73 @@ test("pi: a stop's cost reads unknown plus what is known so far as soon as the r
   assert.deepEqual([after.cost.usd, after.cost.so_far_usd, after.cost.unpriced], [null, first, 1], JSON.stringify(after.cost));
 });
 
+/** The server's connections to its runs' event streams: `drop()` ends the open one, as a broken connection does, and
+ *  holds every one opened after it until `release()`, so a reconnect has no snapshot yet. `opened`: how many were. */
+function droppedEvents(t) {
+  const real = globalThis.fetch;
+  let current;
+  let gate;
+  const state = { opened: 0 };
+  globalThis.fetch = async (input, init) => {
+    const res = await real(input, init);
+    if (!String(input instanceof Request ? input.url : input).includes("/events?") || !res.body) return res;
+    state.opened += 1;
+    const reader = res.body.getReader();
+    const held = gate;
+    let controller;
+    const body = new ReadableStream({
+      start: (c) => void (controller = c),
+      async pull(c) {
+        if (held) await held.promise;
+        const { value, done } = await reader.read();
+        if (done) c.close();
+        else c.enqueue(value);
+      },
+      cancel: (reason) => reader.cancel(reason),
+    });
+    current = { controller, reader };
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  };
+  const release = () => {
+    const was = gate;
+    gate = undefined;
+    was?.resolve();
+  };
+  t.after(() => {
+    release();
+    globalThis.fetch = real;
+  });
+  return {
+    state,
+    drop: () => {
+      gate = Promise.withResolvers();
+      const was = current;
+      was?.controller.error(new Error("the connection dropped"));
+      void was?.reader.cancel().catch(() => undefined);
+    },
+    release,
+  };
+}
+
+test("pi: a stop while the server reconnects to the run's events, before the new connection's snapshot, reads stopped with the rows it had, never queued or blank", { timeout: 120_000 }, async (t) => {
+  const events = droppedEvents(t);
+  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const { runId, first } = await piFollowUpInFlight(api, "stop-reconnect");
+  const before = events.state.opened;
+  events.drop();
+  await until("the server reconnects to the run's events", async () => events.state.opened > before, 30_000);
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.state], ["input_required", "idle"], JSON.stringify({ status: run.status, state: run.state, cost: run.cost }));
+  assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, first, 1], JSON.stringify(run.cost));
+  assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: first, unpriced: 1 });
+  // And once the new connection's snapshot is in, the same.
+  events.release();
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const after = await view(api, runId);
+  assert.deepEqual([after.status, after.cost.usd, after.cost.so_far_usd, after.cost.unpriced], ["input_required", null, first, 1], JSON.stringify(after.cost));
+});
+
 test("pi: after a stop read early, the turn's end and the stop's booking arriving later leave the live cost equal to a full re-read from the store", { timeout: 120_000 }, async (t) => {
   const events = heldEvents(t);
   const dir = await scratch(t);
