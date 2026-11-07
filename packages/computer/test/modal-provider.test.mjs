@@ -494,17 +494,36 @@ test("create: a create refused for a failed upload leaves nothing listed when it
 	assert.deepEqual(await listedNames(provider), []);
 });
 
-test("create: an aborted create still waits for the sandbox it ends: the wait does not take the caller's signal", async () => {
-	const { provider, fake } = setup({ timeouts: { releasePollMs: 5 } }, { ...LINGERS, box: { silent: true } });
+test("create: an aborted create terminates the sandbox it made, and its wait for the end takes the caller's signal, so it ends on the abort", async () => {
+	const { provider, fake } = setup({ timeouts: { releaseMs: 5_000, releasePollMs: 5 } }, { lingers: { polls: 1_000 }, box: { silent: true } });
 	const controller = new AbortController();
 	const creating = provider.create(SPEC, { signal: controller.signal });
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	controller.abort();
+	const started = Date.now();
 	const created = await creating;
+	assert.ok(Date.now() - started < 1_000, `create returned ${Date.now() - started} ms after the abort, not after releaseMs`);
 	assert.equal(created.error?.code, "aborted");
-	assert.match(created.error.message, /was terminated/);
-	assert.equal(only(fake).running, false);
-	assert.deepEqual(await listedNames(provider), []);
+	assert.match(created.error.message, /was terminated, and may still be ending \(the wait for .* was aborted/);
+	const made = only(fake);
+	assert.equal(made.terminated, 1, "the terminate itself is sent, abort or not");
+	assert.equal(made.running, true, "Modal had not ended it yet: the wait did not go on after the abort");
+});
+
+test("create: a refused create's wait for its sandbox's end ends when the caller aborts during it", async () => {
+	const { provider, fake } = setup({ timeouts: { releaseMs: 5_000, releasePollMs: 5 } }, { lingers: { polls: 1_000 }, box: { hello: { ...HELLO, version: `${VERSION}-drift` } } });
+	const controller = new AbortController();
+	const creating = provider.create(SPEC, { signal: controller.signal });
+	await new Promise((resolve) => {
+		const check = setInterval(() => {
+			if ([...fake.sandboxes.values()].some((one) => one.terminated >= 1)) resolve(clearInterval(check));
+		}, 5);
+	});
+	controller.abort();
+	const started = Date.now();
+	const created = await creating;
+	assert.ok(Date.now() - started < 1_000, `create returned ${Date.now() - started} ms after the abort, not after releaseMs`);
+	assert.match(created.error.message, /may still be ending \(the wait for .* was aborted/);
 });
 
 test("create: a refused sandbox that does not finish within releaseMs is said to be still ending, with what poll last read", async () => {
