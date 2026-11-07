@@ -24,6 +24,17 @@ const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now w
 const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
 /** The faux harness's notes taken into its requests (FAUX_RECORDS.note), once the run's process has let it go. */
 const notesOf = (data, runId) => entries(data, runId).filter((record) => record.kind === "faux.note").map((record) => record.data.text);
+/** Each note the faux harness took, with the index of the request that carried it (its first request is 0): the note is
+ *  filed as it is admitted, before that request's own record. */
+const noteRequests = (data, runId) => {
+  let requests = 0;
+  const out = [];
+  for (const record of entries(data, runId)) {
+    if (record.kind === "faux.request") requests += 1;
+    else if (record.kind === "faux.note") out.push([requests, record.data.text]);
+  }
+  return out;
+};
 /** The run's messages in order: the person's and the server's own rows. */
 const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
 const WORDS = /^AgentRun: (?:About \$\d+(?:\.\d\d)? left of this run's budget: finish now with your answer|This run's budget is about \$\d+(?:\.\d\d)?, enough for little work: answer as soon as you can)\.$/;
@@ -203,14 +214,22 @@ test("pi on Sonnet 4.5 under $0.10: due at step 0, told in the budget's words, n
   assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")]);
 });
 
-test("claude-agent on Sonnet 4.5 under $0.10: due at step 0 on its first request's estimate, but once that request is priced ($0.01) only the measured typical cost decides: five more cent requests and no wrap-up", { timeout: 120_000 }, async (t) => {
+test("claude-agent on Sonnet 4.5 under $0.10: due at step 0, judged on its first request itself as pi judges it, and told in that request in the budget's words; then nothing more", { timeout: 120_000 }, async (t) => {
   const { data, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 0.1, id: "s45-cc-small" });
   assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
-  assert.deepEqual(rows.map((row) => row.text), [], "no row: $0.04 left at the answer is over 3 times the run's $0.01 requests");
+  // Its first request's step-0 figure, its input and a 4,096-token answer ($0.076), is over a third of $0.10.
+  assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")], "told once, in step 0's words");
   await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [], "and no note in any request");
+  assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.10")]], "in request 1, the request it was judged on");
 });
 
+test("pi and claude-agent on the same model under the same $0.10, the first request due at step 0: the same note, in the same words, in request 1 (parity)", { timeout: 120_000 }, async (t) => {
+  const pi = await sonnetRun(t, { harness: "pi", instructions: "Answer.", cap: 0.1, id: "s45-parity-pi" });
+  const cli = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 0.1, id: "s45-parity-cc" });
+  assert.deepEqual([pi.rows.map((row) => row.text), cli.rows.map((row) => row.text)], [[WRAP_UP_FIRST("$0.10")], [WRAP_UP_FIRST("$0.10")]], "the same words on both");
+  await letGo(cli.data, cli.runId);
+  assert.deepEqual(noteRequests(cli.data, cli.runId).map(([request]) => request), [0], "the CLI's in its first request, as pi's is");
+});
 test("claude-agent on Sonnet 4.5 under $1, five cent requests: no wrap-up (a pin)", { timeout: 120_000 }, async (t) => {
   const { data, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code makes five cent calls.", cap: 1, id: "s45-cc-cents" });
   assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
