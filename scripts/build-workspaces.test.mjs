@@ -27,12 +27,11 @@ test("the order from this repository's package.jsons: every package once, after 
   assert.deepEqual([...order].sort(), packages.map((p) => p.name).sort(), 'every workspace package, once');
   const at = (name) => order.indexOf(name);
   for (const p of packages) for (const dep of p.deps) assert.ok(at(dep) < at(p.name), `${p.name} after ${dep}`);
-  // The ones a stale dist broke: harness after pi-durable-disk and the rest it builds on, decisions and learn after dsl,
+  // The ones a stale dist broke: harness after pi-durable-disk and the rest it builds on, decisions after dsl,
   // pi-agent-learn after pi-git-remote, dsl and pi.
   for (const [later, earlier] of [
     ['@parcha/agentrun-harness', ['@parcha/pi-durable-disk', '@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-transport', '@parcha/pi-vision']],
     ['@parcha/agentrun-decisions', ['@parcha/agentrun-dsl']],
-    ['@parcha/agentrun-learn', ['@parcha/agentrun-dsl']],
     ['@parcha/pi-agent-learn', ['@parcha/pi-git-remote', '@parcha/agentrun-dsl', '@parcha/agentrun-pi']],
   ]) for (const dep of earlier) assert.ok(at(dep) >= 0 && at(dep) < at(later), `${later} after ${dep}: ${order.join(', ')}`);
 });
