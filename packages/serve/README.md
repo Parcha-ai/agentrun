@@ -1495,8 +1495,8 @@ run up, the firing reads `failed` ("The server stopped while setting up the run.
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
-no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. Overlap is `skip` alone:
-a firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
+no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
+firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
 because a firing queued behind a parked run would wait as long as the person does. A firing whose run is refused is `failed`, and a webhook set on this server
 gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
 `webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the

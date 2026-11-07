@@ -16,6 +16,7 @@ import { follow, runDir, serve } from "./support.mjs";
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const NEVER_OPENS = new URL("./fixtures/faux-never-opens.mjs", import.meta.url).pathname;
+const SLOW_EXIT_BROKEN = new URL("./fixtures/faux-broken-slow-exit.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const TOKEN = "door-token-for-the-test";
 const headers = { authorization: `Bearer ${TOKEN}` };
@@ -220,4 +221,45 @@ test("through a run whose door does not answer its launch's nonce: its process i
   assert.equal(said.length, 4, said.join(""));
   assert.match(said[0], /its process \d+'s door did not answer this launch's nonce; it is stopped/);
   assert.match(failed.error.message, /went 4 times before the run ended: its process's door did not answer this launch's nonce$/);
+});
+
+test("through a run whose process fails at its start and is still exiting when its door's proof fails: that one process's own exit fails the run, and it is never stopped or opened again", { timeout: 120_000 }, async (t) => {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  // Its app fails to load, says so in its log, and closes its door; its exit then takes half a second
+  // (faux-broken-slow-exit.mjs). The server's proof of its door is held until that line is in its log, so the proof
+  // comes while the process is exiting, however slow its start is; handed another nonce than its launch checks, its door
+  // fails the proof whether it still answers or not.
+  let failedAtStart = () => false;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname === "/door-proof") {
+      for (const until = Date.now() + 60_000; Date.now() < until && !failedAtStart(); ) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return real(input, init);
+  };
+  t.after(() => (globalThis.fetch = real));
+  const { api, data } = await serve(t, { faux: SLOW_EXIT_BROKEN, fauxHandedNonce: "f".repeat(64) });
+  assert.equal((await api("POST", "/agents", { definition: { id: "broken", name: "broken", instructions: "Answer." } })).status, 201);
+  const run = await api("POST", "/agents/broken/runs", { input: { content: "Answer soon." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  failedAtStart = () => {
+    try {
+      return readFileSync(join(runDir(data, run.body.run_id), "process.log"), "utf8").includes("has no default export");
+    } catch {
+      return false;
+    }
+  };
+  await follow(api, run.body.run_id, ["failed"]);
+  const said = lines.filter((line) => line.includes(run.body.run_id)).join("");
+  assert.doesNotMatch(said, /did not answer this launch's nonce|opening it again/, "never stopped as a process that did not open, nor opened again");
+  const failed = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(failed.error.message, /^The run's process exited \(1\) without releasing the run: .*has no default export/, JSON.stringify(failed.error));
+  const log = readFileSync(join(runDir(data, run.body.run_id), "process.log"), "utf8");
+  assert.equal(log.split("has no default export").length - 1, 1, `one process for the run:\n${log}`);
 });
