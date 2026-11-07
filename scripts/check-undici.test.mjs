@@ -12,11 +12,11 @@ const tree = (disk, codingAgent, browser = '6.29.1') => ({ name: 'workspace', de
 
 test('the tree before the overrides fails at every path that reaches undici 8.10.2', () => {
   assert.deepEqual(staleUndici(tree('8.10.2', '8.10.2')), [
-    '@parcha/agentrun-harness@0.1.0 > @earendil-works/pi-ai@1.5.0 >openai@7.19.0 > undici@8.10.2',
-    '@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 >undici@8.10.2',
+    '@parcha/agentrun-harness@0.1.0 > @earendil-works/pi-ai@1.5.0 > openai@7.19.0 > undici@8.10.2',
+    '@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 > undici@8.10.2',
     '@parcha/pi-durable-disk@0.1.0 > disk@1.9.0 > undici@8.10.2',
   ]);
-  assert.deepEqual(staleUndici(tree('8.12.2', '8.12.1')), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 >undici@8.12.1'], 'one copy left behind is enough');
+  assert.deepEqual(staleUndici(tree('8.12.2', '8.12.1')), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 > undici@8.12.1'], 'one copy left behind is enough');
 });
 
 test('undici 8.12.2 and later, and another major (pi-browser keeps 6), pass', () => {
@@ -25,8 +25,8 @@ test('undici 8.12.2 and later, and another major (pi-browser keeps 6), pass', ()
 });
 
 test('an undici whose version npm cannot report fails', () => {
-  assert.deepEqual(staleUndici(tree('8.12.2', undefined)), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 >undici@?']);
-  assert.deepEqual(staleUndici(tree('8.12.2', '8.12')), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 >undici@8.12']);
+  assert.deepEqual(staleUndici(tree('8.12.2', undefined)), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 > undici@?']);
+  assert.deepEqual(staleUndici(tree('8.12.2', '8.12')), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.5.0 > undici@8.12']);
 });
 
 test('each major has its own floor: 6.29.1, 7.30.1 and 8.12.2; before 6 fails, and 9 or later passes', () => {
