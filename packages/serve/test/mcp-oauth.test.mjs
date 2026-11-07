@@ -835,3 +835,20 @@ test("a loopback MCP server's authorization server may use only the MCP server's
   store.attach(own.origin);
   assert.match((await store.oauthStart("docs", { url: mcp.url })).authorization_url, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
 });
+
+test("pi: a start whose sign-in server never answers its token refresh answers within ten seconds, not the 30 s two full tries took", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  // Access tokens that last two seconds: past their expiry by the run's launch, so the start refreshes first.
+  const { as, mcp } = await fakes(t, { expiresIn: 2 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("slow-as", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  as.hang();
+  const at = Date.now();
+  const made = await api("POST", "/agents/slow-as/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+  const took = Date.now() - at;
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  assert.ok(took < 10_000, `the start answered in ${took} ms`);
+});
