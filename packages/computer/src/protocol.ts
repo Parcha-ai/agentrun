@@ -293,8 +293,18 @@ export type ProcessSignal = "TERM" | "INT" | "KILL" | "HUP";
 
 export interface ProcessSignalParams {
 	id: string;
-	/** Sent to the program's process group. A signal to a process that has ended does nothing. */
+	/**
+	 * INT to a process started with a pty is ^C: it goes to the terminal's foreground process group (the job a shell
+	 * runs in the foreground, or the program when it runs none), and is refused as denied when that group is outside
+	 * the program's session. Every other signal, and INT without a pty, goes to the program's process group. A signal
+	 * to a process that has ended does nothing.
+	 */
 	signal: ProcessSignal;
+}
+
+export interface ProcessSignalResult {
+	/** Set only when INT on a terminal found no foreground group (the program let go of it, or is ending) and went to the program's own group: why. */
+	note?: string;
 }
 
 export interface ProcessResizeParams extends PtySize {
@@ -524,7 +534,7 @@ export interface DaemonMethods {
 	"process.start": { params: ProcessStartParams; result: ProcessStartResult };
 	"process.read": { params: ProcessReadParams; result: ProcessReadResult };
 	"process.write": { params: ProcessWriteParams; result: Empty };
-	"process.signal": { params: ProcessSignalParams; result: Empty };
+	"process.signal": { params: ProcessSignalParams; result: ProcessSignalResult };
 	"process.resize": { params: ProcessResizeParams; result: Empty };
 	"process.list": { params: ProcessListParams; result: ProcessListResult };
 	"process.wait": { params: ProcessWaitParams; result: ProcessExit };
