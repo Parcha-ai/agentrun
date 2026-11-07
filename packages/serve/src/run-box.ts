@@ -445,7 +445,7 @@ export const memoryMbOf = (memory: string): number => {
  *  provider gives it its own way, or refuses); its network the hosts `allow` names, none, or open for a box that locks
  *  its own; its limits, where its provider takes them. What it starts from is its provider's own option. */
 const remoteSpec = (runId: string, allow: readonly string[] | "none" | "open", limits: RemoteLimits = {}): BoxSpec => ({
-  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" || allow === "open" ? allow : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
+  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run", ...(Array.isArray(allow) ? { [NET_LABEL]: netLabelOf(allow) } : {}) }, network: allow === "none" || allow === "open" ? allow : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
   ...(limits.cpus === undefined ? {} : { cpus: limits.cpus }), ...(limits.memoryMb ? { memoryMb: limits.memoryMb } : {}),
   capabilities: ["fuse"],
 });
@@ -497,9 +497,15 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
   let replaced = false;
   const facts = box?.facts();
   // A locked box is kept unless its provider blocks it (it could not reach Archil). A list held by a provider that does
-  // not read it back (its facts name no hosts) is the one it was made with, fixed at its create, so it is kept.
+  // not read it back (its facts name no hosts) is fixed at the box's create: the box is kept only when the label it was
+  // made with (NET_LABEL) names the list asked now, so a narrower setting after a restart remakes it.
   const unread = facts?.allow === undefined && boxes.traits?.egress === "allowlist";
-  const keep = facts?.workspace === BOX_WORK && (locked ? facts?.network !== "none" && facts?.network !== "allowlist" : facts?.network === "none" || (facts?.network === "allowlist" && Array.isArray(allow) && (unread || sameHosts(facts.allow, allow))));
+  const sameList = async (asked: readonly string[]) => {
+    const listed = await boxes.list({ [RUN_LABEL]: run.id, [NET_LABEL]: netLabelOf(asked) }, context);
+    if (!listed.ok) throw listed.error;
+    return listed.value.some((ref) => ref.id === box!.id);
+  };
+  const keep = facts?.workspace === BOX_WORK && (locked ? facts?.network !== "none" && facts?.network !== "allowlist" : facts?.network === "none" || (facts?.network === "allowlist" && Array.isArray(allow) && (unread ? await sameList(allow) : sameHosts(facts.allow, allow))));
   if (box && !keep) {
     // Its writes first, and the folder let go: a box replaced here takes nothing of the run's with it. One that cannot
     // let go is kept, and the call refused, so no tool runs in it.

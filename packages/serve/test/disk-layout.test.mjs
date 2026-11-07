@@ -6,7 +6,7 @@
 // earlier version wrote is refused in words, with no migration. Through the HTTP API on the faux probe model.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -216,6 +216,27 @@ test("the Archil disk adapter: a box mounts its run's work/ alone, through the h
   // A box whose image has no helper its user may run: said, with what to do.
   const bare = notingBox(() => 1);
   await assert.rejects(disk.mount(archil.disk, folder, { ...target, box: bare.box }, "tools"), /the box has no Archil helper its user may run as root at \/usr\/local\/sbin\/agentrun-archil: use an image or snapshot that ships it/);
+});
+
+test("the Archil disk adapter: a later mount leaves what a box's tool user made in work/ as it is (this server may not change another user's file); this server's own inputs are shared at the first", async (t) => {
+  const data = realpathSync(await scratch(t));
+  const folder = "agents/a-0123456789abcdef/runs/r1/work";
+  mkdirSync(join(data, "disk", folder), { recursive: true });
+  writeFileSync(join(data, "disk", folder, "brief.txt"), "brief", { mode: 0o644 });
+  const archil = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "planted-archil-token-0123456789", gid: process.getgid() };
+  const claims = { runClaim: () => ({ epoch: 4, holder: "launch" }) };
+  const { box } = notingBox();
+  const target = { box, path: "/workspace", context: BACKGROUND_CONTEXT };
+  await archilDisk(data, archil, claims).mount(archil.disk, folder, target, "tools");
+  assert.equal(statSync(join(data, "disk", folder, "brief.txt")).mode & 0o7777, 0o660, "the server's input, shared");
+  // The box's tool user writes a file and a folder of its own (umask 022). Here, where every file is this test's, the
+  // next mount is the adapter of a server whose uid is another: what it finds is not its own, as a tool user's is not.
+  mkdirSync(join(data, "disk", folder, "made"), { mode: 0o755 });
+  writeFileSync(join(data, "disk", folder, "made", "out.txt"), "the tool's", { mode: 0o644 });
+  chmodSync(join(data, "disk", folder, "made"), 0o755);
+  await archilDisk(data, archil, claims, { uid: process.getuid() + 1 }).mount(archil.disk, folder, target, "tools");
+  assert.equal(statSync(join(data, "disk", folder, "made")).mode & 0o7777, 0o755, "its folder untouched");
+  assert.equal(statSync(join(data, "disk", folder, "made", "out.txt")).mode & 0o7777, 0o644, "its file untouched");
 });
 
 test("the Archil disk adapter: a sync in a box with nothing mounted fails (its tools' writes would not reach the disk); an unmount there has let go", async (t) => {

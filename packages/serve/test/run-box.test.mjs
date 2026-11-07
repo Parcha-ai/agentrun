@@ -306,6 +306,34 @@ test("a remote box found at its run's next call: one with no network is kept whe
   assert.deepEqual(calls, [["mount", "closed"], ["unmount", "listed"], ["mount", "made-1"], ["unmount", "open"], ["mount", "made-2"]]);
 });
 
+test("a remote box whose provider holds its list but reads none back is kept only while the list it was made with is the one asked: a narrower setting after a restart makes it again", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const { calls, folder } = await remoteFolder();
+  const runDir = await scratch(t);
+  const boxesMade = [];
+  const destroyed = [];
+  let found;
+  const boxes = {
+    traits: { egress: "allowlist", egressWords: "enforced by the provider's CIDR allowlist" },
+    // Its facts say a list, never which: what it was made with is in its labels alone.
+    list: async (labels) => ({ ok: true, value: found && Object.entries(labels).every(([k, v]) => found.labels[k] === v) ? [{ id: found.id, labels: found.labels }] : [] }),
+    attach: async (id) => ({ ok: true, value: found && found.id === id ? found : undefined }),
+    create: async (spec) => {
+      const id = `made-${boxesMade.length + 1}`;
+      boxesMade.push(spec.network);
+      found = { id, labels: { ...spec.labels }, facts: () => ({ provider: "fake", workspace: "/workspace", network: "allowlist" }), destroy: async () => ((destroyed.push(id), found?.id === id && (found = undefined)), { ok: true, value: undefined }) };
+      return { ok: true, value: found };
+    },
+  };
+  const wide = ["192.0.2.0/24", "198.51.100.0/24"];
+  const narrow = ["192.0.2.0/24"];
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: wide, folder }), { id: "made-1", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: [...wide].reverse(), folder }), { id: "made-1", made: false }, "the same list, in any order: kept");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: narrow, folder }), { id: "made-2", made: true, replaced: true }, "narrowed: made again");
+  assert.deepEqual([boxesMade, destroyed], [[{ allow: wide }, { allow: narrow }], ["made-1"]]);
+  assert.deepEqual(calls.filter(([verb]) => verb === "unmount").map(([, id]) => id), ["made-1"], "it let go of the folder first");
+});
+
 test("a turn's end never wakes a box its provider stopped: a woken box has no firewall and no mount, and the run's next call makes it ready instead", async (t) => {
   const { syncRemoteBox } = await import("../dist/run-box.js");
   const { calls, folder } = await remoteFolder();

@@ -136,8 +136,13 @@ rules() {
 }
 
 lockwith() {
-  # $1 the binary, $2 the addresses, $3 their prefix length: applied, then read back whole.
+  # $1 the binary, $2 the addresses, $3 their prefix length: applied, then read back whole. A box locked before (a found
+  # box, locked again) has its chain flushed and refilled: for that while, a guard first in OUTPUT drops the tool user's
+  # every packet, so a tool program left running never meets an open network. The guard goes only once the read-back
+  # passes; a lock that fails keeps it, closed.
   t=$1
+  guard="-m owner --uid-owner $uid -j DROP"
+  "$t" -w -I OUTPUT 1 $guard || lockfail "$t cannot guard the tool user while it locks"
   "$t" -w -N "$CHAIN" 2>/dev/null || "$t" -w -F "$CHAIN" || lockfail "$t cannot make its chain"
   n=0
   while "$t" -w -C OUTPUT -j "$CHAIN" 2>/dev/null; do
@@ -152,6 +157,11 @@ lockwith() {
   done || lockfail "$t refused a rule"
   [ "$("$t" -w -S "$CHAIN")" = "$(rules "$t" "$2" "$3")" ] || lockfail "$t reads back other rules than it was given"
   [ "$("$t" -w -S OUTPUT | sed -n 2p)" = "-A OUTPUT -j $CHAIN" ] || lockfail "$t does not jump to its chain first"
+  n=0
+  while "$t" -w -C OUTPUT $guard 2>/dev/null; do
+    n=$((n + 1))
+    [ "$n" -le 8 ] && "$t" -w -D OUTPUT $guard || lockfail "$t cannot lift its guard"
+  done
 }
 
 netlock() {

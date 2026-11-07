@@ -605,6 +605,8 @@ of one saved before is refused 409 `agent_not_runnable`.
   holds, as it holds the boxes' keys; no run's process gets it). `AGENTRUN_ARCHIL_GID` (default 2510) is the group the
   box's tool user and this server's user share: Archil keeps a file's uid and gid as they are, with no mapping between
   machines, so each run's `work/` is that group's, `2770`, and every folder above it this server's user's alone (`0700`).
+  At each mount the server shares what is its own in `work/` (folders `2770`, files the group's too). What a box's tool
+  user made there is left as it is: it was made in the shared tree, and this server may not change another user's file.
   This server's user must be in that group.
 - **This server's mount.** The operator mounts the disk at `<data>/disk`, conditional, before the server starts; the
   server runs nothing as root and only checks the mount table. With systemd, or `/etc/fstab`:
@@ -645,7 +647,9 @@ of one saved before is refused 409 `agent_not_runnable`.
   8100 to the region's mount endpoint alone (resolved at the lock), and TCP 32050 to any address: the file servers,
   whose addresses the endpoint gives only at the mount (the one wide rule, root's alone). IPv6 is locked when the box
   has it (any address in `/proc/net/if_inet6`, `::1` included); a box with none has no IPv6 rules to lock. The rules
-  are read back whole. A box with no `iptables` (or no `ip6tables` while it has IPv6), whose root has
+  are read back whole. A box locked again (one found after a restart) keeps a guard first in OUTPUT, dropping the tool
+  user's every packet, while its chain is flushed and refilled; the guard goes once the read-back passes, and a lock
+  that fails keeps it. A box with no `iptables` (or no `ip6tables` while it has IPv6), whose root has
   no `CAP_NET_ADMIN`, or whose rules read back otherwise keeps no run folder: the tool call says why, and the box goes.
   The snapshot installs `iptables`. Reaching the package registries again through a proxy in the box comes next.
 - **The token never reaches a tool.** It goes into the box only on the helper's fd 0, which hands it to the archil

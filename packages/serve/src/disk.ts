@@ -86,7 +86,7 @@ const BOX_FOLDER = /^agents\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/runs\/[A-Za-z0-9][
  *  runs' claims. A mount is in a box alone: the folder, checked through the server's own mount (below the disk, no link),
  *  is given to the shared group (0o2770, setgid), then the box's helper mounts it, or, once revoke named its run, forces
  *  the hold of a box that is gone off it. `FolderHeld` (archil.ts) when another client holds it. */
-export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "runClaim">): DiskAdapter {
+export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "runClaim">, { uid = process.getuid?.() ?? -1 }: { /** For tests: the uid this server runs as, whose files alone it shares. */ uid?: number } = {}): DiskAdapter {
   const disk = join(data, DISK_DIR);
   // The runs whose folder the next mount takes back by force: a box that held it is gone.
   const revoked = new Set<string>();
@@ -104,7 +104,7 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
       // The box's tool user and this server's share the group (Archil keeps ids as they are); no one else enters. Every
       // folder above it, up to the agent's, is this server's user's alone, so the shared group reaches work/ and nothing
       // beside it (the run's store, another run).
-      await shareTree(path, archil.gid);
+      await shareTree(path, archil.gid, uid);
       for (const above of [join(path, ".."), join(path, "..", ".."), join(path, "..", "..", "..")]) await chmod(above, 0o700);
       // A box whose provider does not hold its network locks it itself, before anything of the run's is in it.
       if (target.lockNetwork) await helper(target.box, archil, "netlock", target.context);
@@ -134,17 +134,22 @@ export function archilDisk(data: string, archil: Archil, claims: Pick<Claims, "r
   };
 }
 
-/** `dir` and everything in it given to group `gid` for the box's tool user, before a box holds it: each folder 2770
- *  (setgid, so what is made in it stays the group's), each file its owner's bits for the group too and none for others
- *  (an input the server copied in, 0644, becomes 0660). A link is never followed, and stays as it is. */
-async function shareTree(dir: string, gid: number): Promise<void> {
+/** What this server put in `dir` (uid `uid`'s own), and `dir` itself, given to group `gid` for the box's tool user,
+ *  before a box holds it: each folder 2770 (setgid, so what is made in it stays the group's), each file its owner's bits
+ *  for the group too and none for others (an input the server copied in, 0644, becomes 0660). What a box's tool user
+ *  made there in an earlier box is its own, made in the shared tree, and left as it is, its folders unwalked: this
+ *  server may not change another user's file, and a mount that tried would fail. A link is never followed, and stays as
+ *  it is. */
+async function shareTree(dir: string, gid: number, uid: number): Promise<void> {
+  if ((await lstat(dir)).uid !== uid) return;
   await chown(dir, -1, gid);
   await chmod(dir, 0o2770);
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) await shareTree(path, gid);
+    if (entry.isDirectory()) await shareTree(path, gid, uid);
     else if (entry.isFile()) {
-      const { mode } = await lstat(path);
+      const { mode, uid: owner } = await lstat(path);
+      if (owner !== uid) continue;
       await chown(path, -1, gid);
       await chmod(path, (mode & 0o700) | ((mode & 0o700) >> 3));
     }

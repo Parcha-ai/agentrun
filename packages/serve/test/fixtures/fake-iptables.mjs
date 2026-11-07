@@ -2,7 +2,8 @@
 // needs: its getent, its /proc/self/status, and `connect`, which a tool runs to reach a host as the firewall would let
 // it. No real iptables, getent or network is touched. The rules live in files of `dir`: `<name>.OUTPUT` (the OUTPUT
 // chain's rules, after its policy) and `<name>.chain.<chain>` (a chain's own); `<name>.tamper`, when present, makes
-// `-S <chain>` read back one rule fewer than was given (a read-back that differs).
+// `-S <chain>` read back one rule fewer than was given (a read-back that differs); `<name>.probe`, when present, is run
+// (with sh, its output appended to `<name>.probe.log`) right after a flush: what a tool meets in that moment.
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -17,7 +18,7 @@ out='${at}.OUTPUT'
 chain() { printf '%s' '${at}.chain.'"$1"; }
 case "$1" in
   -N) [ -e "$(chain "$2")" ] && { echo "chain exists" >&2; exit 1; }; : > "$(chain "$2")" ;;
-  -F) [ -e "$(chain "$2")" ] || exit 1; : > "$(chain "$2")" ;;
+  -F) [ -e "$(chain "$2")" ] || exit 1; : > "$(chain "$2")"; [ -e '${at}.probe' ] && sh '${at}.probe' >> '${at}.probe.log' 2>&1; true ;;
   -C) shift; grep -qxF -- "-A $*" "$out" 2>/dev/null ;;
   -D) shift; [ -e "$out" ] && grep -vxF -- "-A $*" "$out" > "$out.next"; mv "$out.next" "$out" 2>/dev/null; true ;;
   -I) shift; c=$1; shift 2; { printf '%s\\n' "-A $c $*"; cat "$out" 2>/dev/null; } > "$out.next"; mv "$out.next" "$out" ;;
@@ -54,10 +55,11 @@ export function fakeStatus(dir, netAdmin = true) {
 }
 
 /**
- * `connect <host> <port>` as a tool runs it, a new connection of the tool user: its packet walks the box's chain (`v4`
- * or, for an IPv6 host, `v6`: the chain files the netlock wrote) in order, and the first rule that matches it decides,
- * as the kernel's would. Loopback (127.*, localhost, ::1) is the `-o lo` interface. With no chain, it connects. It
- * models the firewall the netlock applied, for a box whose programs all run as one user here.
+ * `connect <host> <port>` as a tool runs it, a new connection of the tool user: its packet walks OUTPUT (the file beside
+ * the chain file `v4`, or for an IPv6 host `v6`) in order, the jump into the box's chain walking that chain's rules,
+ * and the first rule that matches it decides, as the kernel's would. Loopback (127.*, localhost, ::1) is the `-o lo`
+ * interface. With no OUTPUT rules, it connects. It models the firewall the netlock applied, for a box whose programs
+ * all run as one user here.
  */
 export function fakeConnect(dir, v4, uid, v6 = v4) {
   const path = join(dir, "connect");
@@ -65,13 +67,23 @@ export function fakeConnect(dir, v4, uid, v6 = v4) {
 case "$1" in 127.*|localhost|::1) lo=1 ;; *) lo=0 ;; esac
 case "$1" in *:*) rules='${v6}' ;; *) rules='${v4}' ;; esac
 refused() { echo "connect: $1:$2 refused by the box's firewall" >&2; exit 1; }
-if [ -e "$rules" ]; then
+out="\${rules%.chain.AGENTRUN-NET}.OUTPUT"
+chain() {
+  [ -e "$rules" ] || return 0
   while IFS= read -r rule; do
     case "$rule" in
       "-A AGENTRUN-NET -m owner --uid-owner ${uid} -j DROP") refused "$1" "$2" ;;
       "-A AGENTRUN-NET -o lo -j ACCEPT") [ "$lo" = 1 ] && { echo connected; exit 0; } ;;
     esac
   done < "$rules"
+}
+if [ -e "$out" ]; then
+  while IFS= read -r rule; do
+    case "$rule" in
+      "-A OUTPUT -j AGENTRUN-NET") chain "$1" "$2" ;;
+      "-A OUTPUT -m owner --uid-owner ${uid} -j DROP") refused "$1" "$2" ;;
+    esac
+  done < "$out"
 fi
 echo connected
 `);

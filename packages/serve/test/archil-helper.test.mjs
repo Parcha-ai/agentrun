@@ -243,6 +243,23 @@ test("netlock: the tool user's drop is the chain's first rule, so a tool reaches
   }
 });
 
+test("netlock again on a locked box: the tool user stays refused while the chain is flushed and refilled; the guard goes once the read-back passes, and stays when it fails", async (t) => {
+  const b = await box(t);
+  const uid = process.getuid();
+  assert.equal(b.run(["netlock", REGION], "").status, 0);
+  const connect = fakeConnect(b.dir, join(b.dir, "iptables.chain.AGENTRUN-NET"), uid, join(b.dir, "ip6tables.chain.AGENTRUN-NET"));
+  // What a tool program left running meets right after each flush, for IPv4 and IPv6.
+  for (const [name, host] of [["iptables", "127.0.0.1"], ["ip6tables", "::1"]]) writeFileSync(join(b.dir, `${name}.probe`), `'${connect}' ${host} 2280 >/dev/null 2>&1 && echo "${host} reached" || echo "${host} refused"\n`);
+  const again = b.run(["netlock", REGION], "");
+  assert.equal(again.status, 0, again.stderr);
+  for (const [name, host] of [["iptables", "127.0.0.1"], ["ip6tables", "::1"]]) assert.deepEqual(readFileSync(join(b.dir, `${name}.probe.log`), "utf8").split("\n").filter(Boolean), [`${host} refused`], `${name}: refused in the flush`);
+  for (const name of ["iptables", "ip6tables"]) assert.deepEqual(readFileSync(join(b.dir, `${name}.OUTPUT`), "utf8").split("\n").filter(Boolean), ["-A OUTPUT -j AGENTRUN-NET"], `${name}: the guard is lifted`);
+  // A lock whose read-back differs fails, and keeps the tool user's guard: closed.
+  writeFileSync(join(b.dir, "iptables.tamper"), "");
+  assert.equal(b.run(["netlock", REGION], "").status, 4);
+  assert.ok(readFileSync(join(b.dir, "iptables.OUTPUT"), "utf8").split("\n").includes(`-A OUTPUT -m owner --uid-owner ${uid} -j DROP`), "the guard stays");
+});
+
 test("netlock in a box with no IPv6: the IPv4 rules alone, and no ip6tables needed", async (t) => {
   const b = await box(t);
   writeFileSync(join(b.dir, "if_inet6"), "");
