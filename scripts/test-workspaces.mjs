@@ -35,7 +35,7 @@ if (unknown.length || (baseAt >= 0 && !baseRef)) fail(`usage: node scripts/test-
 const SEED = {
   '@parcha/agentrun-serve': 260, '@parcha/agentrun-dsl': 172, '@parcha/pi-transport': 121, '@parcha/pi-browser': 83,
   '@parcha/agentrun-harness-codex': 76, '@parcha/pi-vision': 59, '@parcha/agentrun-pi': 52,
-  '@parcha/agentrun-harness-claude': 33, '@parcha/pi-durable-disk': 31, '@parcha/agentrun-learn': 26,
+  '@parcha/agentrun-harness-claude': 33, '@parcha/pi-durable-disk': 31,
   '@parcha/pi-durable-agent': 10.5, '@parcha/agentrun-jev': 6, '@parcha/agentrun-kernel': 3,
   '@parcha/agentrun-decisions': 3,
 };
