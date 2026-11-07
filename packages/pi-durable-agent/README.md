@@ -150,8 +150,7 @@ acme/                        the agent home
   runs/<run id>/             a pi-durable-disk run directory
     store/run.sqlite         that run's pi-durable store; the host opens its Harness on it
     work/                    that run's files, with the agent's skills under .agents/skills/
-    run.json, owner.lock,    written by pi-durable-disk when it runs the run (and commands/ on a local
-    tmp/                     directory); carryBack reads only the store
+    tmp/, commands/          written by pi-durable-disk when it runs the run; carryBack reads only the store
 ```
 
 `runPaths(home, runId)` gives a run's `dir`, `storePath` and `workspace`. To run it under pi-durable-disk, start it with

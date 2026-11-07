@@ -71,11 +71,11 @@ test("run and status take a local directory only: the Archil flags are unknown o
   assert.match(status.err, /^Unknown option '--disk'/);
 });
 
-// The run.json lease: the lease itself, its watchdog, owner.lock, the seal's run.json side and the ./lease entry.
+// The lease: its file, its watchdog, owner.lock, the seal and the ./lease entry.
 const GONE_LEASE_ROOT = ["StoreBehindSealError", "leaseParkTarget"];
 const GONE_LEASE_INTERNALS = ["isLeaseFresh", "parseRunRecord", "RUN_JSON"];
 
-test("the ./lease entry is gone, and no entry exports the lease, the seal or run.json's readers", async () => {
+test("the ./lease entry is gone, and no entry exports the lease, the seal or the lease file's readers", async () => {
   assert.equal(pkg.exports["./lease"], undefined);
   assert.ok(!existsSync(`${ROOT}src/lease.ts`), "no lease entry module");
   assert.ok(!existsSync(`${ROOT}src/watchdog.ts`), "no lease watchdog");

@@ -9,10 +9,11 @@ is listed in [CHANGELOG.md](CHANGELOG.md) when it ships.
 ## What it is
 
 - **A run is one directory.** It holds pi's SQLite store (`store/run.sqlite`: the conversation and every task), the agent's
-  workspace (`work/`) and `run.json` (its status, generation and holder). [Layout of a run](docs/reference.md#layout-of-a-run).
-- **One process at a time holds it.** A second open on this machine is refused. The process that opens a run keeps a lease
-  on it, and a holder that lost it cannot write any more.
-- **Release and open.** `release()` seals the run, and the instance ends: returning from `onOpen` after `await run.release()` is
+  workspace (`work/`); the store also keeps the run's record (its status, generation and holder). [Layout of a
+  run](docs/reference.md#layout-of-a-run).
+- **One process at a time holds it.** The store's own lock refuses a second open on this machine, and a process whose
+  store or claim fails is fenced and cannot write any more.
+- **Release and open.** `release()` records where the run stands, and the instance ends: returning from `onOpen` after `await run.release()` is
   enough (the examples call `process.exit(0)`, which is fine too). The next process to open the directory is the next generation: it reopens
   the store, and pi-durable resumes the conversation and its tasks from the last commit.
 - **One machine.** The directory is the claim, so it keeps a second process on this machine off the run and nothing else.
@@ -215,9 +216,9 @@ for pi, the one just before pi's own admission. Only a new admission is read for
 answers its record, whatever has parked since.
 
 With a hook, `POST /submit` (whose `whenBusy` defaults to `followUp`, as pi's) goes through, in this order: the bearer
-token (401); the lease (503 `OPENING`, `PARKING`, `RELEASED`), so nothing reaches the hook once the lease is lost; the
+token (401); the run's state (503 `OPENING`, `PARKING`, `RELEASED`), so nothing reaches the hook once the run is fenced; the
 admission, one `door.input` entry in the root conversation holding the requestId, the content and its status, written
-through the run's fenced commit (a lease lost before it lands fails it, and the hook is not called); then `hook.submit`,
+through the run's fenced commit (a fence before it lands fails it, and the hook is not called); then `hook.submit`,
 once per requestId, bounded at `doorTimeouts.submitMs` (30 s). Each status change is a `door.status` entry on the same
 requestId, and the last one is the record's status. A requestId already admitted answers its status and never calls the
 hook again, in this process or the next: the record is in the store, and a lookup is one indexed read per entry.
@@ -239,14 +240,14 @@ store when the run has no live door.
 | `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting; or the record was admitted by an earlier instance, or before the lease was lost, and no call here carries it | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
 
 A late answer to an `UNKNOWN` submit is never dropped: the door writes the real outcome (`ACCEPTED`, `REJECTED_BUSY`, or
-`FAILED` if it threw) on the same requestId, unless the lease is gone by then (the fenced commit fails, and the record
+`FAILED` if it threw) on the same requestId, unless the run is fenced by then (the fenced commit fails, and the record
 stays `UNKNOWN`). An abort that loses the race to delivery so ends `ACCEPTED`.
 
-A record whose instance died, or lost its lease, between the admission and the hook's outcome was dispatched or not,
+A record whose instance died, or was fenced, between the admission and the hook's outcome was dispatched or not,
 nobody knows: it is `UNKNOWN`, and final, since no later outcome can come from a dead or fenced instance. A retry
-answers it `UNKNOWN` ("admitted by an earlier instance, or before the lease was lost: whether the hook took it is
+answers it `UNKNOWN` ("admitted by an earlier instance, or before the run was fenced: whether the hook took it is
 unknown") as soon as no call in this instance carries it, and each open writes a `door.status` `UNKNOWN` for every such
-record through the fenced commit, so the store and the events say it too. A lease lost between the admission and the
+record through the fenced commit, so the store and the events say it too. A fence between the admission and the
 call writes it at once when the commit can still land. No incarnation submits an `ADMITTED` or `UNKNOWN` record again.
 
 `POST /abort` calls `hook.abort` (bounded) and answers `{ result: "aborted" | "idle" }`. `GET /status`'s `busy` is
@@ -260,17 +261,17 @@ way, above all the ways the door cannot see (its harness child dies, its turn er
 pairs a `run_start` itself only at the points it controls: when `hook.submit` throws after it, when a second
 `run_start` comes first, when an abort leaves the hook idle, when the door stops, and before a stream's `end`.
 
-The door stops when the instance ends: a drain on SIGTERM, a fence (the lease is lost, and another instance may take
+The door stops when the instance ends: a drain on SIGTERM, a fence (another instance may take
 the run) and a park. It aborts the hook, bounded, kills the process group of every harness child the hook registered
 with `ctx.adopt(pid)` (start the child `detached`) and still alive, and pairs an open `run_start`, so the instance
-never exits with one of those children alive, and a fenced run's child never acts on without the lease.
+never exits with one of those children alive, and a fenced run's child never acts on after the fence.
 
 The admission is the journal of [`spec/receipts/Receipts.tla`](../../spec/receipts/Receipts.tla) for one effect per
 requestId, with the same invariants: Admit is the `door.input` commit (`I1_AdmitBeforeDispatch`), Dispatch is the one
 `hook.submit` per requestId (`I3_OneDispatchPerKey`), Settle is the outcome on the same record
 (`I7_ReceiptsNeverErased`), and `UNKNOWN` is an outcome nobody knows, never dispatched again.
-[`spec/receipts/Door.tla`](../../spec/receipts/Door.tla) checks the door's journal itself, across restarts, a lost
-lease and a late resolve.
+[`spec/receipts/Door.tla`](../../spec/receipts/Door.tla) checks the door's journal itself, across restarts, a fence
+and a late resolve.
 
 ## The low-level API
 
@@ -285,8 +286,8 @@ reference. [Library](docs/reference.md#library) describes each in full.
 | `localPlace({ app })` | Where one run lives and how its instance starts and ends, for a supervisor of your own ([Places](docs/reference.md#places-where-a-runs-instance-starts-and-ends)) | [place-outcome](examples/place-outcome/) |
 | `PlaceOutcome` | How a runner ended: the run's `status` (`complete` or `failed`), its `generation`, and the app's `record` or `code` and `message`, and the `models` it used | [place-outcome](examples/place-outcome/) |
 
-Also exported: `serveRun`, parking, `readLocalRunStatus`, and the typed errors. `@parcha/pi-durable-disk/lease` is the narrow
-entry for a host that owns its Harness; `@parcha/pi-durable-disk/internals` has no compatibility promise.
+Also exported: `serveRun`, parking, `readLocalRunStatus` (a run's record, once no process holds it), and the typed
+errors. `@parcha/pi-durable-disk/internals` has no compatibility promise.
 
 ## Reference
 

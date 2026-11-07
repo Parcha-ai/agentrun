@@ -33,7 +33,7 @@ export type AppOptions = OpenDurableRunOptions["harness"] & {
   onOpen?(run: DurableRun): void | Promise<void>;
   /** pi's `root()` options for when `serve` creates the root conversation (its agent: model, extensions). */
   root?: Parameters<Harness["root"]>[1];
-  /** Record a parking run's wake (park.ts `ParkOptions.wake`); default run.json `sleeping` with `wakeAt`. */
+  /** Record a parking run's wake (park.ts `ParkOptions.wake`); default the record's `sleeping` with `wakeAt`. */
   wake?(run: DurableRun, at: number | null): Promise<void>;
   /**
    * A harness of the app's own behind `serve`'s door, instead of pi's root conversation: see "The door hook" in the

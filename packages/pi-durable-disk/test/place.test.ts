@@ -44,7 +44,7 @@ const scratch = () => {
 after(() => scratches.forEach((s) => s.remove()));
 
 describe("localPlace", () => {
-  it("a process kill SIGKILLs the instance's group; the next runner resumes the run with its own order, and with no outcome line the outcome is run.json's", { timeout: 120_000 }, async () => {
+  it("a process kill SIGKILLs the instance's group; the next runner resumes the run with its own order, and with no outcome line the outcome is the record's", { timeout: 120_000 }, async () => {
     const root = scratch();
     const place = localPlace({ app: APP })({ paths: pathsAt(root) });
     assert.equal(place.name, "local");
@@ -60,7 +60,7 @@ describe("localPlace", () => {
     await place.kill(first, "process");
     const killed = await first.exited;
     assert.deepEqual([killed.exit, killed.signal], ["SIGKILL", "SIGKILL"]);
-    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["failed", 1], "no line: run.json as the killed instance left it (running), in the run's word: not delivered");
+    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["failed", 1], "no line: the record as the killed instance left it (running), in the run's word: not delivered");
     await waitFor("the sleeper to die with its group", () => !alive(sleeper), 5_000);
 
     const { runner } = await place.recover(first, "process", { gen: 2, env: { PLACE_ORDER: "two", PLACE_SILENT: "1" } });
@@ -68,7 +68,6 @@ describe("localPlace", () => {
     assert.equal(done.exit, 0, done.stderr);
     assert.deepEqual(done.outcome, { status: "complete", generation: 2, code: null, record: { order: "two" } }, "done with the record from the detail of the last status: complete");
     assert.equal(readFileSync(join(root, "work", "gen-2"), "utf8"), "two");
-    assert.deepEqual([(await place.status!()).record?.status, (await place.status!()).record?.generation], ["done", 2]);
   });
 
   it("the outcome line wins; a box kill takes the run's boxes once though the supervisor kills and recovers the same runner; release kills what still runs", { timeout: 120_000 }, async () => {
@@ -105,7 +104,7 @@ describe("localPlace", () => {
 });
 
 describe("localPlace outcome", () => {
-  it("run.json's outcome is in the run's word: complete when done with a delivered record, failed for done with none or a failed run", { timeout: 120_000 }, async () => {
+  it("the record's outcome is in the run's word: complete when done with a delivered record, failed for done with none or a failed run", { timeout: 120_000 }, async () => {
     const cases = [
       [{}, "complete"],
       [{ PLACE_NO_RECORD: "1" }, "failed"],
@@ -137,7 +136,7 @@ describe("place outcome models", () => {
     else assert.deepEqual((outcome as { models?: unknown }).models, want, name);
   };
 
-  it("localPlace: the outcome line's models only when they are a plain object of strings, and run.json's on a failed run that printed none", { timeout: 240_000 }, async () => {
+  it("localPlace: the outcome line's models only when they are a plain object of strings, and the record's on a failed run that printed none", { timeout: 240_000 }, async () => {
     for (const [name, models, want] of cases) {
       const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
       const env: Record<string, string> = { PLACE_FINISH: "1", ...(models === undefined ? {} : { PLACE_MODELS: JSON.stringify(models) }) };
@@ -148,7 +147,7 @@ describe("place outcome models", () => {
     const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
     const failed = await (await place.start({ gen: 1, env: { PLACE_FINISH: "1", PLACE_SILENT: "1", PLACE_FAIL: "1", PLACE_MODELS: JSON.stringify(MODELS) } })).exited;
     assert.equal(failed.outcome?.status, "failed", failed.stderr);
-    assert.deepEqual(failed.outcome?.models, MODELS, "a failed run used models too: run.json's detail carries them");
+    assert.deepEqual(failed.outcome?.models, MODELS, "a failed run used models too: the record's detail carries them");
   });
 });
 
@@ -171,10 +170,13 @@ describe("localPlace cleanup", () => {
     assert.equal(calls, 2, "taken once");
   });
 
-  it("release reaps the run's commands only under its owner lock: while another process holds the run they are its own", { timeout: 120_000 }, async () => {
+  it("release reaps the run's commands only while no process holds the run's store: while another holds it they are its own", { timeout: 120_000 }, async () => {
     const root = scratch();
     mkdirSync(join(root, "commands"), { recursive: true });
-    const holder = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/hold-owner-lock.ts", import.meta.url)), root], { stdio: ["ignore", "pipe", "inherit"] });
+    mkdirSync(join(root, "store"), { recursive: true });
+    // A process that holds the run's store as a run's process does: its exclusive lock, taken by a write, kept until it dies.
+    const HOLD = `const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(process.argv[1]); db.exec("PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS t (x)"); db.exec("INSERT INTO t VALUES (1)"); process.stdout.write("held\\n"); setInterval(() => {}, 60_000);`;
+    const holder = spawn(process.execPath, ["--no-warnings", "-e", HOLD, join(root, "store", "run.sqlite")], { stdio: ["ignore", "pipe", "inherit"] });
     after(() => void (holder.exitCode === null && holder.kill("SIGKILL")));
     await new Promise<void>((ok, fail) => {
       holder.stdout!.setEncoding("utf8").on("data", (d: string) => (d.includes("held") ? ok() : d.includes("refused") && fail(new Error(d))));
@@ -255,7 +257,7 @@ describe("a place's run files (readRunFile, listRunFiles): its own run, read onl
     await assert.rejects(place.readRunFile!("box-ids.internal/sub"), code("NOT_A_FILE"), "a directory");
     for (const bad of ["", "/etc/passwd", "../outside.json", "a/../b", "bad name"]) await assert.rejects(place.readRunFile!(bad), code("INVALID_PATH"), JSON.stringify(bad));
     const gone = localPlace({ app: "app.ts" })({ paths: pathsAt(join(dirname(root), "no-such-run")) });
-    await assert.rejects(gone.readRunFile!("run.json"), code("RUN_MISSING"));
+    await assert.rejects(gone.readRunFile!("web.json"), code("RUN_MISSING"));
     await assert.rejects(gone.listRunFiles!(""), code("RUN_MISSING"));
   });
 });
