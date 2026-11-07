@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "./commands.generated.mjs";
-import { FLAGS, REQUEST_MS, WAIT, followTimeline, waitRun } from "./follow.mjs";
+import { FLAGS, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { SECRETS, guarded } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
 
@@ -425,7 +425,7 @@ async function command(entry, argv, env, io) {
   // wait's requests is.
   const began = Date.now();
   const bound = timeout ?? REQUEST_MS;
-  const started = await request(client, { ...req, signal: AbortSignal.timeout(Math.ceil(bound)) });
+  const started = await request(client, { ...req, signal: AbortSignal.timeout(timerMs(bound)) });
   if (started.late) {
     const said = `The server did not answer the start within ${bound / 1000} s; it may have started the run: look for it with \`agentrun runs list --agent ${args[0]}\`.`;
     if (timeout === undefined) throw new Exit(3, said);

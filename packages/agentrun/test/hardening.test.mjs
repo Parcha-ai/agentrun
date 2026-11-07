@@ -205,3 +205,17 @@ test("login writes the whole config or none of it: a short write is written on, 
   assert.deepEqual(readFileSync(config), before, "the old config is as it was");
   assert.deepEqual(readdirSync(join(dir, ".config", "agentrun")), ["config.json"], "no temporary file left");
 });
+
+test("runs start --wait --timeout past Node's longest timer (30 days) waits as it says, not a millisecond", async (t) => {
+  const { env } = scratch(t);
+  const json = (res, body) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+  const server = await listener(t, (request, res) => {
+    if (request.method === "POST") return json(res, { run_id: "r1", status: "queued" });
+    if (request.url.startsWith("/v2/runs/r1/timeline")) return json(res, { status: "completed", final: true, rows: [], drop: [], next_after: 1, has_more: false, unchanged: false });
+    return json(res, { run_id: "r1", status: "completed" });
+  });
+  const started = await cli(env, ["runs", "start", "demo", "--body", '{"input":{"content":"hi"}}', "--wait", "--timeout", "2592000", "--base-url", server.base]);
+  assert.equal(started.code, 0, started.err);
+  assert.equal(JSON.parse(started.out).status, "completed");
+  assert.doesNotMatch(started.err, /TimeoutOverflowWarning/);
+});
