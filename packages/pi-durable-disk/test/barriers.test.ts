@@ -129,8 +129,8 @@ describe("syncNow", () => {
 
 type Table = { barriers: Record<string, Omit<BarrierRow, "store"> & { store: string }>; stores: Record<string, StoreRow>; preconditions?: Record<string, { done: boolean; what: string }> };
 
-/** The files that are the sync primitive itself: they hold `syncNow`'s definition and its pragmas, and open no store. */
-const PRIMITIVES = new Set(["pi-durable-disk/src/barriers.ts", "pi-transport/src/home/sync-now.ts"]);
+/** The file that is the sync primitive itself: it holds `syncNow`'s definition and its pragmas, and opens no store. */
+const PRIMITIVES = new Set(["pi-durable-disk/src/barriers.ts"]);
 /** What opens a store read-write, or sets how one syncs: a `new DatabaseSync(` counts unless its options say readOnly. */
 const OPENS = /openArchilStore\(|openNodeSqliteStorage\(|openNodeSqliteDatabase\(|PRAGMA synchronous\b|profilePragmas\(|new DatabaseSync\((?![^;]*readOnly:\s*true)/;
 /** What a store with no effects must never do: run a tool or a model on it. */

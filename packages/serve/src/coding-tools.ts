@@ -46,7 +46,21 @@ export type CodingSource = { readonly extension: Extension; readonly tools: read
 /** The environment a boxed tool's call runs on: the run's box's (run-box.ts). `note` writes a row on the run's timeline
  *  while the box is being had (its image still coming). `hostWork`: the run's own work/ on this machine, the source the
  *  box binds at BOX_WORK; `bound`, whether the box's provider binds it there (Docker does). */
-export type BoxedEnv = { env(context: Context, note?: (summary: string) => Promise<void>): Promise<unknown>; hostWork?: string; bound?(): Promise<boolean>; leftEnded?(context: Context): Promise<void> };
+export type BoxedEnv = { env(context: Context, note?: (summary: string) => Promise<void>): Promise<unknown>; hostWork?: string; bound?(): Promise<boolean>; leftEnded?(context: Context): Promise<void>; /** Once, what the model is told of a box this process made in place of an earlier one's (run-box.ts BOX_REPLACED_NOTE). */ replaced?(): string | undefined };
+
+/** A call's answer with what `box` has to tell the model first, once (its box replaced since the run's last process),
+ *  asked once the box is had: its first line, in the output an answer with no content of its own is made of, and a text
+ *  part before each model field the tool gives (content, output). */
+export async function withBoxNote<T>(box: Pick<BoxedEnv, "replaced">, output: (chunk: string) => void, call: () => Promise<T>): Promise<T> {
+  const note = box.replaced?.();
+  if (!note) return call();
+  output(`${note}\n`);
+  const result = await call();
+  // Before each of the answer's model fields it gives: content, and output, which pi 1.2 and later reads.
+  const fields = result as { content?: unknown; output?: unknown } | null;
+  const told = (blocks: unknown) => (Array.isArray(blocks) ? [{ type: "text", text: note }, ...blocks] : blocks);
+  return fields && (Array.isArray(fields.content) || Array.isArray(fields.output)) ? { ...result, ...(Array.isArray(fields.content) ? { content: told(fields.content) } : {}), ...(Array.isArray(fields.output) ? { output: told(fields.output) } : {}) } : result;
+}
 
 /** A failed call's error with what the file environment said, where pi's message gives only its code (edit's "Error
  *  code: permission_denied."), so the model reads why and what it can do. */
@@ -168,11 +182,12 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
       // process left has its left commands killed first, so none of them changes work/ under these tools.
       if (here && !SHELL_TOOLS.includes(tool.name) && (await box.bound?.()) === true) {
         await box.leftEnded?.(context);
-        return tool.execute(given as typeof args, { ...api, env: here as typeof api.env }, context).catch((error: unknown) => Promise.reject(withCause(error)));
+        return withBoxNote(box, api.output, () => tool.execute(given as typeof args, { ...api, env: here as typeof api.env }, context).catch((error: unknown) => Promise.reject(withCause(error))));
       }
       // A row the box's wait writes goes on the run's root, as a host's phase (pi-durable-agent's timeline shows it).
       const note = (summary: string) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary } })), context);
-      return tool.execute(given as typeof args, { ...api, env: (await box.env(context, note)) as typeof api.env }, context);
+      const env = await box.env(context, note);
+      return withBoxNote(box, api.output, () => tool.execute(given as typeof args, { ...api, env: env as typeof api.env }, context));
     },
   })));
   // The permission gate (allow, ask, deny) wraps this source: the one call it takes, whichever of the two lands second.

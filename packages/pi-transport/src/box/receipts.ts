@@ -97,8 +97,8 @@ export type BoxReceipts = {
 	/**
 	 * `provider` with every box it makes on the ledger. The box ends when it is destroyed through it, when its `status`
 	 * says it ended, or when `attach` finds it gone (a box ended by its lifetime, under the run): a sweep that ends a
-	 * leaked box through it is the third. Hand the wrapped providers to everything that makes boxes (a box place, the
-	 * transport's hands pools through `TransportHost.providers`). A provider this ledger already wraps is returned as it
+	 * leaked box through it is the third. Hand the wrapped providers to everything that makes boxes (the transport's
+	 * hands pools through `TransportHost.providers`). A provider this ledger already wraps is returned as it
 	 * is: a box is on the ledger once, with one label and one receipt.
 	 */
 	wrap(provider: BoxProvider): BoxProvider;
