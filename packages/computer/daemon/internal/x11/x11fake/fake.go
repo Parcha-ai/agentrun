@@ -1,6 +1,8 @@
 // Package x11fake is a fake X server for tests, written against the X Window System Protocol (X11R7.7) and the XTEST
 // extension protocol: it answers the connection setup and the requests a client sends, and records what it got. No X
 // server is needed. Start serves one end of a pipe; Listen serves a local display, which a client dials by its DISPLAY.
+// Its keyboard map is a server's: ChangeKeyboardMapping changes it, and every change, a client's or another program's
+// (Rebind), sends every connection a MappingNotify.
 package x11fake
 
 import (
@@ -109,7 +111,8 @@ type Server struct {
 	// MinKeycode, MaxKeycode and ScanlinePad are what the setup announces: MinKey, MaxKey and 32 unless set.
 	MinKeycode, MaxKeycode, ScanlinePad byte
 	NoXTest                             bool
-	// Keymap is the keysyms, PerCode a keycode, from MinKey; nil is a map with no keysym at all.
+	// Keymap is the keysyms, PerCode a keycode, from MinKey; nil is a map with no keysym at all. Once a client
+	// connects, read it with Keys.
 	Keymap  []uint32
 	PerCode int
 	Image   func(x, y, w, h int) []byte
@@ -126,12 +129,30 @@ type Server struct {
 	authData  []byte
 	requests  []Request
 	byteOrder byte
+	sessions  []*session
+}
+
+// session is one connection the fake serves: its writes, one at a time, and the sequence number of its last request.
+type session struct {
+	mu   sync.Mutex
+	conn net.Conn
+	seq  uint16
+}
+
+func (s *session) write(out []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.conn.Write(out)
+	return err
 }
 
 func newServer(configure func(*Server)) *Server {
 	f := &Server{PerCode: 2, MinKeycode: MinKey, MaxKeycode: MaxKey, ScanlinePad: 32}
 	if configure != nil {
 		configure(f)
+	}
+	if f.Keymap == nil {
+		f.Keymap = make([]uint32, (int(MaxKey)-int(MinKey)+1)*f.PerCode)
 	}
 	return f
 }
@@ -195,6 +216,42 @@ func (f *Server) Got() []Request {
 	return append([]Request(nil), f.requests...)
 }
 
+// Keys is the keysyms the keyboard map gives code now.
+func (f *Server) Keys(code byte) []uint32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	at := (int(code) - MinKey) * f.PerCode
+	return append([]uint32(nil), f.Keymap[at:at+f.PerCode]...)
+}
+
+// Rebind is another program changing the keyboard map: code gives syms from now on, and every connection is sent a
+// MappingNotify for it.
+func (f *Server) Rebind(code byte, syms ...uint32) {
+	f.mu.Lock()
+	at := (int(code) - MinKey) * f.PerCode
+	clear(f.Keymap[at : at+f.PerCode])
+	copy(f.Keymap[at:at+f.PerCode], syms)
+	f.mu.Unlock()
+	f.notify(code, 1)
+}
+
+// notify sends every connection a MappingNotify for count keycodes from first.
+func (f *Server) notify(first byte, count byte) {
+	f.mu.Lock()
+	sessions := append([]*session(nil), f.sessions...)
+	f.mu.Unlock()
+	for _, s := range sessions {
+		s.mu.Lock()
+		e := make([]byte, 32)
+		e[0] = 34 // MappingNotify
+		le.PutUint16(e[2:], s.seq)
+		e[4] = 1 // MappingKeyboard
+		e[5], e[6] = first, count
+		_, _ = s.conn.Write(e)
+		s.mu.Unlock()
+	}
+}
+
 // Setup is what the client's connection setup sent: its byte order, and its authorization's name and data.
 func (f *Server) Setup() (order byte, name string, data []byte) {
 	f.mu.Lock()
@@ -234,6 +291,10 @@ func (f *Server) serve(conn net.Conn) {
 	if _, err := conn.Write(f.setupReply()); err != nil {
 		return
 	}
+	s := &session{conn: conn}
+	f.mu.Lock()
+	f.sessions = append(f.sessions, s)
+	f.mu.Unlock()
 	var seq uint16
 	for {
 		h := make([]byte, 4)
@@ -246,6 +307,9 @@ func (f *Server) serve(conn net.Conn) {
 			return
 		}
 		seq++
+		s.mu.Lock()
+		s.seq = seq
+		s.mu.Unlock()
 		r := Request{Seq: seq, Opcode: h[0], Data: h[1], Body: body}
 		f.mu.Lock()
 		f.requests = append(f.requests, r)
@@ -255,7 +319,7 @@ func (f *Server) serve(conn net.Conn) {
 		}
 		if f.Misbehave != nil {
 			if out := f.Misbehave(r); out != nil {
-				_, _ = conn.Write(out)
+				_ = s.write(out)
 				_ = conn.Close()
 				return
 			}
@@ -266,16 +330,19 @@ func (f *Server) serve(conn net.Conn) {
 				e[1] = code
 				le.PutUint16(e[2:], seq)
 				e[10] = r.Opcode
-				if _, err := conn.Write(e); err != nil {
+				if err := s.write(e); err != nil {
 					return
 				}
 				continue
 			}
 		}
 		if out := f.answer(r); out != nil {
-			if _, err := conn.Write(out); err != nil {
+			if err := s.write(out); err != nil {
 				return
 			}
+		}
+		if r.Opcode == 100 && len(r.Body) >= 4 { // ChangeKeyboardMapping
+			f.notify(r.Body[0], r.Data)
 		}
 	}
 }
@@ -321,15 +388,28 @@ func (f *Server) answer(r Request) []byte {
 		x, y := int(int16(le.Uint16(r.Body[4:]))), int(int16(le.Uint16(r.Body[6:])))
 		w, h := int(le.Uint16(r.Body[8:])), int(le.Uint16(r.Body[10:]))
 		return Reply(r.Seq, 24, le.AppendUint32(nil, Visual), f.Image(x, y, w, h))
+	case 100: // ChangeKeyboardMapping: per keysyms for each of count keycodes from first, as many as the map keeps
+		first, per, count := int(r.Body[0]), int(r.Body[1]), int(r.Data)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for i := 0; i < count && per > 0 && 4+4*per*(i+1) <= len(r.Body); i++ {
+			at := (first + i - MinKey) * f.PerCode
+			if at < 0 || at+f.PerCode > len(f.Keymap) {
+				break
+			}
+			clear(f.Keymap[at : at+f.PerCode])
+			for j := 0; j < per && j < f.PerCode; j++ {
+				f.Keymap[at+j] = le.Uint32(r.Body[4+4*(per*i+j):])
+			}
+		}
+		return nil
 	case 101: // GetKeyboardMapping
 		first, count := int(r.Body[0]), int(r.Body[1])
 		from := (first - MinKey) * f.PerCode
-		keymap := f.Keymap
-		if keymap == nil {
-			keymap = make([]uint32, (MaxKey-MinKey+1)*f.PerCode)
-		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		var extra []byte
-		for _, sym := range keymap[from : from+count*f.PerCode] {
+		for _, sym := range f.Keymap[from : from+count*f.PerCode] {
 			extra = le.AppendUint32(extra, sym)
 		}
 		return Reply(r.Seq, byte(f.PerCode), nil, extra)

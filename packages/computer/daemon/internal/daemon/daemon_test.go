@@ -597,3 +597,38 @@ func TestDeadlineExtendIsRefusedPastTheMaximumOrWithoutOne(t *testing.T) {
 		t.Fatalf("with no maximum: %+v", r)
 	}
 }
+
+// Once init has decided its deadline came, it ends the computer: a deadline.extend from then on, while it ends every
+// process, is refused in words. It never answers with a moved deadline that init then does not keep.
+func TestDeadlineExtendIsRefusedOnceInitIsEnding(t *testing.T) {
+	start := time.Now()
+	deadline := start.Add(3 * time.Second)
+	in := startInitWith(t, deadline, start.Add(time.Hour))
+	c := dial(t, in.socket)
+	// A program that says when it is asked to end and keeps running: init's shutdown waits KillGrace for it.
+	var deaf started
+	c.ok("process.start", map[string]any{"argv": []string{"sh", "-c", `trap "echo ending" TERM; echo up; while :; do sleep 0.05; done`}}, &deaf)
+	c.readUntil(deaf.ID, "up")
+	c.readUntil(deaf.ID, "ending")
+	moved := time.Now().Add(30 * time.Minute)
+	r := c.call("deadline.extend", map[string]any{"at": moved.UTC().Format(time.RFC3339Nano)})
+	select {
+	case err := <-in.ended:
+		in.ended <- err
+		if err != nil {
+			t.Fatalf("init at its deadline: %v: %s", err, in.log)
+		}
+	case <-time.After(2 * patience):
+		if r.Error == nil {
+			// Init kept the moved deadline: an answer it honours.
+			return
+		}
+		t.Fatalf("init refused the extension and did not end: %s", in.log)
+	}
+	if r.Error == nil {
+		t.Fatalf("deadline.extend answered %s while init was ending, and init still ended at its old deadline: %s", r.Result, in.log)
+	}
+	if !strings.Contains(r.Error.Message, "ending") || !strings.Contains(r.Error.Message, "deadline") {
+		t.Errorf("deadline.extend while init was ending was refused, but not in words: %q (%s)", r.Error.Message, r.Error.Data.Kind)
+	}
+}
