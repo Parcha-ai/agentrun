@@ -6,6 +6,7 @@
 // records. claude-agent runs the real pinned CLI against a scripted Anthropic endpoint on loopback (no key, no network),
 // codex the real adapter against its stand-in for Codex's app-server and a faux gateway on loopback.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
@@ -171,8 +172,16 @@ test("on claude-agent's real adapter, a learned call allowed and then cut off wi
   process.kill(holder.pid, "SIGKILL");
   await first.close();
   const second = await serve(t, { learning: "on", faux: undefined, accounts: true, data: first.data });
-  const { rows } = await follow(second.api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
-  const ended = (await second.api("GET", `/runs/${runId}`)).body;
+  // Both servers share one data directory, and the first's after-hook (registered first, run first: node:test runs them
+  // in order) removes it: the second is closed here, its run's processes with it, before any hook runs.
+  let rows;
+  let ended;
+  try {
+    ({ rows } = await follow(second.api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 }));
+    ended = (await second.api("GET", `/runs/${runId}`)).body;
+  } finally {
+    await second.close();
+  }
   assert.ok(["completed", "failed"].includes(ended.status), `the run ends, never waiting on the cut node: ${JSON.stringify([ended.status, ended.pending])}`);
   assert.equal(nodeSeen, 1, "the node's request reached the provider once: never run again");
   const node = entries(first.data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
@@ -187,4 +196,11 @@ test("on claude-agent's real adapter, a learned call allowed and then cut off wi
   const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
   assert.equal(resumed?.summary, "AgentRun: learned_workflow ran once you allowed it, and failed", JSON.stringify(resumed));
   assert.match(resumed.text, /Its result:\ninterrupted: the process running it stopped before it reported an outcome/, resumed.text);
+  // Nothing outlives the test: with both servers closed, no process is this test process's child (the ps that looks is
+  // left out), and none names the runs' data (a run's process, or a harness CLI reparented when its parent died).
+  const left = () => execFileSync("ps", ["-eo", "pid=,ppid=,args="]).toString().split("\n").map((line) => line.trim()).filter(Boolean)
+    .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(first.data)))
+    .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
+  for (const deadline = Date.now() + 15_000; left().length && Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 200)));
+  assert.deepEqual(left(), [], "no process of the test's runs outlives it");
 });
