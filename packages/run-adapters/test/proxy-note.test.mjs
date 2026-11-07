@@ -63,10 +63,14 @@ test('the note goes after everything the client sent: the forwarded body is the 
 test('a token count and a small-model side call take no note; the next main-model request takes it, once', async (t) => {
   const p = await proxied(t, withNote);
   await p.send(client, '/v1/count');
-  await p.send({ ...client, model: 'small-model' });
+  const title = { model: 'small-model', messages: [{ role: 'user', text: 'Give this conversation a title of a few words, about the report the person asked for.' }] };
+  await p.send(title);
   assert.deepEqual(p.taken, [], 'no note asked for: a free route, and a request on another model');
   await p.send(client);
   await p.send(client);
+  const own = p.asked[1].inputTokensMaxWithoutNote;
+  assert.notEqual(p.asked[0].inputTokensMax, own, 'the side call measures apart from the main request');
+  assert.deepEqual(p.takenWith.map((r) => r.inputTokensMax), [own, own], 'each take is measured on the main request itself, never on the side call before it');
   assert.deepEqual(p.forwarded.map((b) => b.messages.at(-1).role), ['user', 'user', 'note', 'user'], 'the main request after them carries it, the next does not');
   assert.deepEqual(p.asked.map((r) => r.noted ?? false), [false, true, false], 'only the admission of the request that carries it says it does');
 });

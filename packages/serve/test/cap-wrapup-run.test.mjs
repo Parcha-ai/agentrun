@@ -359,3 +359,19 @@ test("claude-agent on Sonnet 4.5 under $0.10, its process killed after the wrap-
   await letGo(data, runId);
   assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.06")]);
 });
+
+test("claude-agent on the faux harness: a side call that comes first (the harness's own title request) neither takes the note nor is judged as the request taking it: the session's first request carries it, judged at step 0 on its own bound (a pin)", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("side-first-h", { harness: "claude-agent", instructions: "Wrap up after a side call comes first." }))).status, 201);
+  // Input at $100 a million, output free. Request 0's step-0 figure, its own 1,000-token input, is $0.10, over a third of
+  // $0.29; the side call's 100 tokens ($0.01) are not, so a take judged on the side call would tell nothing. Request 1
+  // takes no note: $0.2795 is left, over 3 x the typical $0.01 (request 0's alone: a side call's cost is not counted) and
+  // over 2 x its least, priced after request 0 on its own model, never after the side call on another.
+  const runId = (await api("POST", "/agents/side-first-h/runs", { input: { content: "go" }, max_cost_usd: 0.29 })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$0.29")], "one row, in step 0's words");
+  await letGo(data, runId);
+  assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.29")]], "in the session's first request, once");
+});
