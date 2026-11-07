@@ -56,9 +56,9 @@ export type WorkflowToolHost = {
 
 /** The draft a conversation last inspected or loaded, and its input. */
 type Draft = { workflow: Json; input: { [key: string]: Json } };
-const DraftDoc = defineDocFamily<Draft, null>({ kind: "agentrun.draft", version: 1, scope: "session", family: true, initial: () => ({ workflow: null, input: {} }) });
+const DraftDoc = defineDocFamily<Draft, null>({ kind: "agentrun.draft", version: 1, scope: "session", family: true, initial: () => ({ workflow: null, input: {} }), checkpointWhen: () => false });
 /** How many times `again` asked for a fresh run of one draft and input in a conversation: the newest run's number. */
-const RunsDoc = defineDocFamily<{ generation: number }, null>({ kind: "agentrun.runs", version: 1, scope: "session", family: true, initial: () => ({ generation: 0 }) });
+const RunsDoc = defineDocFamily<{ generation: number }, null>({ kind: "agentrun.runs", version: 1, scope: "session", family: true, initial: () => ({ generation: 0 }), checkpointWhen: () => false });
 const json = <T = Json>(value: unknown): T => (value === undefined ? null : JSON.parse(JSON.stringify(value))) as T;
 /** What a result that ends no run says, so the model cannot report one. */
 const NO_RUN = "no workflow ran";

@@ -3,14 +3,16 @@
 // work/ back at each turn's end and once more before the run's end is recorded, then destroys it. The run's process holds no key: its Daytona calls
 // go through the server's box relay, which sends on only the calls a run's tools make of that run's own box.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_RELAY_FILE, relayFetch, startBoxRelay } from "../dist/box-relay.js";
 import { BOX_ENV, BOX_SYNC_FILE, DEFAULT_BOX_ALLOW, runBox } from "../dist/run-box.js";
+import { BOX_WORK } from "../dist/place.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
@@ -582,20 +584,44 @@ test("a run's relay call takes only that run's own token: run A's process, with 
   await follow(api, a.run_id, ["input_required"], { deadlineMs: 120_000 });
   await follow(api, b.run_id, ["input_required"], { deadlineMs: 120_000 });
   const boxOf = (id) => [...fake.sandboxes.values()].find((s) => s.labels["agentrun.run"] === id).id;
-  // The token run A's process was handed: its own file when it has one, else the server-wide one.
-  const own = join(runDir(data, a.run_id), "door-token");
-  const tokenA = readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
+  const [boxA, boxB] = [boxOf(a.run_id), boxOf(b.run_id)];
+  // The token each run's process was handed: its own file when it has one, else the server-wide one.
+  const tokenOf = (id) => {
+    const own = join(runDir(data, id), "door-token");
+    return readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
+  };
+  const [tokenA, tokenB] = [tokenOf(a.run_id), tokenOf(b.run_id)];
   const relayUrl = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8")).url;
-  const asA = (run) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${tokenA}`, "x-agentrun-target": `${fake.url}/sandbox/${boxOf(run)}` } });
-  // Each turn's end pulls its box, and a read of the files waits for that pull: once both are done, nothing else asks
-  // run B's box.
+  const relayed = (token, run, target) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${token}`, "x-agentrun-target": target } });
+  // A read of a sandbox, and a toolbox read of a file only run A's calls name: what reaches Daytona from run A carries
+  // that name, and no call of run B's does.
+  // In the box's work/ (BOX_WORK), a path the fake maps into each sandbox's own directory, never one of this machine's.
+  const mark = `${BOX_WORK}/run-a-only-${randomUUID()}.txt`;
+  const read = (box) => `${fake.url}/sandbox/${box}`;
+  const marked = (box) => `${fake.toolboxUrl}/${box}/files/download?path=${encodeURIComponent(mark)}`;
+  const carriesMark = (box) => (r) => r.path.includes(box) && new URLSearchParams(r.query).get("path") === mark;
+  // The file is in both boxes, so a call that reached either would be answered.
+  for (const box of [boxA, boxB]) {
+    mkdirSync(dirname(fake.pathOf(box, mark.slice(1))), { recursive: true });
+    await writeFile(fake.pathOf(box, mark.slice(1)), "only run A names this file");
+  }
   await fileList(api, a.run_id);
   await fileList(api, b.run_id);
   const before = fake.requests.length;
-  const theirs = await asA(b.run_id);
-  assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box: ${theirs.status}`);
-  assert.deepEqual(fake.requests.slice(before).filter((r) => r.path.includes(boxOf(b.run_id))).map((r) => `${r.method} ${r.path}`), [], "run B's box was never asked");
-  assert.equal((await asA(a.run_id)).status, 200, "run A's own box answers its own token");
+  // Run B goes on using its own box meanwhile, as a late call of its own at its turn's end does.
+  const bItself = relayed(tokenB, b.run_id, read(boxB));
+  // Run A, with its token: on run B's relay path, and on its own path naming run B's box.
+  for (const [run, target] of [[b.run_id, read(boxB)], [b.run_id, marked(boxB)], [a.run_id, read(boxB)], [a.run_id, marked(boxB)]]) {
+    const theirs = await relayed(tokenA, run, target);
+    // A read that reached run B's box would answer 200: the box is there.
+    assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box (${run === a.run_id ? "its own path" : "run B's path"}, ${target}): ${theirs.status}`);
+  }
+  assert.equal((await bItself).status, 200, "run B's own call reaches its own box");
+  assert.deepEqual(fake.requests.slice(before).filter(carriesMark(boxB)).map((r) => `${r.method} ${r.path}${r.query}`), [], "run B's box was never asked by run A");
+  // The name is seen when a call is sent on: run A's own box, asked the same way, gets it.
+  assert.equal((await relayed(tokenA, a.run_id, read(boxA))).status, 200, "run A's own box answers its own token");
+  await relayed(tokenA, a.run_id, marked(boxA));
+  assert.equal(fake.requests.slice(before).filter(carriesMark(boxA)).length, 1, "run A's marked call reaches its own box");
 });
 
 test("the relay: the door token only; a run it holds only; only that run's own sandbox, for a read and its toolbox's programs and files; the key goes nowhere else", async (t) => {

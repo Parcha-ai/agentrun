@@ -160,6 +160,11 @@ registry, pass the same one to both sides: `const gates = createDrivingGates({ i
 
 `drivingGates(tag).viewing()` is true for as long as an authenticated viewer is connected to that session, even when the person sits still longer than the 3 s driving window (a person mid-sign-in): the host's own custody reads it before it releases a session on its own. A custom registry's gates implement `viewing()` and `setViewing(on)`; the live view sets it on a viewer's hello and clears it when that viewer leaves or the session is released.
 
+`readOnly: true` makes the view watch-only: every input, navigation and dialog answer a viewer sends is dropped on the server, before the browser (`held read_only`, and
+one that keeps sending is closed), its `ready` carries `readOnly: true` and the page shows "view only" with its controls off; a watching viewer never sets `viewing`, so it
+keeps no session open. A browser with no page to show (a headless one that starts with none, or whose last page closed) sends `no_page`, and the page says "No page yet"
+until one opens.
+
 Limits: JS dialogs show with accept and dismiss. A file chooser and downloads are not supported.
 
 ## Saved sign-ins
