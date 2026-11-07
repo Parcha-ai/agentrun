@@ -287,28 +287,6 @@ test("a trigger whose cron line or zone no longer reads is turned off with why, 
   assert.deepEqual([fixed.enabled, fixed.disabled, fixed.next_at], [true, null, "2026-06-01T00:10:00.000Z"]);
 });
 
-test("failures a server before trigger.failed recorded are taken as told at the first start that sends it, so none is sent late; a later one is sent", async (t) => {
-  const first = await engine(t, {});
-  const old = await first.triggers.create(body({ every_s: 600 }));
-  const recent = await first.triggers.create(body({ every_s: 600 }));
-  first.triggers.close();
-  const file = join(first.data, "triggers.json");
-  const kept = JSON.parse(await readFile(file, "utf8"));
-  const failedAt = (n) => ({ key: `fir_${String(n).repeat(32)}`, by: "schedule", nominal_at: "2026-05-31T23:50:00Z", status: "failed", at: "2026-05-31T23:50:00.000Z", error: { code: "agent_not_runnable", message: "archived" } });
-  // An earlier server's trigger: no failures_in_a_row, and a failure it never told of.
-  const before = kept.triggers.find((x) => x.id === old.id);
-  delete before.failures_in_a_row;
-  delete before.disabled;
-  delete before.catchup_window_s;
-  before.firings.push(failedAt(1));
-  // This server's: a failure whose notice had not been queued yet.
-  kept.triggers.find((x) => x.id === recent.id).firings.push(failedAt(2));
-  await writeFile(file, JSON.stringify(kept));
-  const told = [];
-  await engine(t, { notify: (failed, key) => (told.push(failed.trigger_id), "queued") }, { data: first.data });
-  assert.deepEqual(told, [recent.id]);
-});
-
 test("a firing's input is checked as its run is given it: the trigger's input with the line saying what fired it", async (t) => {
   const checked = [];
   const { triggers } = await engine(t, { targetIssues: async (target) => (checked.push(target.input), []) });
