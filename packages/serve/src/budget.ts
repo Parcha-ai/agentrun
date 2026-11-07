@@ -14,6 +14,7 @@
 // A refusal no raise fixes (a model or decision with no price, a spend no one knows) is no pause: `cap-stopped.json`
 // keeps its words and node, the step throws CapStop, which no collecting map takes for an item's failure, and the server
 // ends the run failed with `spend_cap_reached` in those words.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CAP_TOLERANCE, type CapRefusal, type RunSpend, SPEND_CAP_REACHED } from "./cap.js";
@@ -79,11 +80,19 @@ const raisedIn = (root: string): number | undefined => {
 };
 
 /** The run's waits for a raise, in its process: `spend` is the run's spend (cap.ts), `holdMs` how long a pause keeps the
- *  process, `letGo` what lets it go. `active()` counts the steps in flight (app.ts wraps each node, call and decision
- *  with `step`); a pause lets the process go only when every one of them is waiting. */
+ *  process, `letGo` what lets it go. `step` counts the steps in flight (app.ts wraps each node, call and decision
+ *  with it), a step run inside another (a model node's verification decision) as part of that one; a pause lets the
+ *  process go only when every one of them is waiting, a step whose nested decision waits counting as waiting. */
 export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOLD_MS, letGo }: { holdMs?: number; letGo: () => void }) {
   let waiting = 0;
+  /** The steps in flight that run on their own (a node, a call, a decision), not inside another step: a step run inside
+   *  one (a model node's verification decision) is that step's work, never one more in flight. */
   let active = 0;
+  /** The outermost step each piece of work runs in. */
+  const outermost = new AsyncLocalStorage<symbol>();
+  /** The outermost steps with a wait for a raise under way (a nested decision's wait counts for its outer step), each
+   *  once whatever number of its waits: the process lets go only once every step in flight is one of these. */
+  const waitingSteps = new Map<symbol, number>();
   let since: number | undefined;
   let gone = false;
   /** Each step's refusal no raise fixes, by its execution path (record). */
@@ -98,12 +107,13 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
     return spend.cap > capUsd + CAP_TOLERANCE;
   };
   return {
-    /** `fn`, counted as a step in flight while it runs. */
+    /** `fn`, counted as a step in flight while it runs, unless it runs inside another step (its work, counted there). */
     step<P, R>(fn: (params: P) => Promise<R>): (params: P) => Promise<R> {
       return async (params) => {
+        if (outermost.getStore() !== undefined) return fn(params);
         active += 1;
         try {
-          return await fn(params);
+          return await outermost.run(Symbol("step"), () => fn(params));
         } finally {
           active -= 1;
         }
@@ -122,6 +132,9 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
       if (raisedAbove(refusal.capUsd)) return true;
       if (cancelled() || signal?.aborted) return false;
       waiting += 1;
+      // The step this wait holds: its outermost step's (a wait outside any step stands for itself).
+      const step = outermost.getStore() ?? Symbol("wait");
+      waitingSteps.set(step, (waitingSteps.get(step) ?? 0) + 1);
       since ??= Date.now();
       const path = at?.path ?? undefined;
       const mine = path === undefined ? undefined : held.get(path) ?? held.set(path, { total: 0 }).get(path)!;
@@ -140,7 +153,7 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
           if (raisedAbove(refusal.capUsd)) return (raised = true);
           if (cancelled() || signal?.aborted) return false;
           // Held long enough, with nothing in flight but waits: the process goes, and its run with it, resumable.
-          if (!gone && since !== undefined && Date.now() - since >= holdMs && active <= waiting) {
+          if (!gone && since !== undefined && Date.now() - since >= holdMs && active <= waitingSteps.size) {
             gone = true;
             letGo();
           }
@@ -148,6 +161,9 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
         }
       } finally {
         waiting -= 1;
+        const left = (waitingSteps.get(step) ?? 1) - 1;
+        if (left > 0) waitingSteps.set(step, left);
+        else waitingSteps.delete(step);
         if (mine?.from !== undefined) {
           mine.total += Date.now() - mine.from;
           mine.from = undefined;
