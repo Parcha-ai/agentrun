@@ -181,7 +181,10 @@ export const LEARNING_LABEL = "learning";
  *  when it gives none), and what the user said in the run as the grader reads it (each message cut of the host's
  *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[] };
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
+/** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
+ *  source: never what the user said. */
+export type Triggered = { source: string; text: string };
 
 /** A run's pin, in its directory: written once, when the run is made, and never changed by a resume. */
 export const LEARNING_PIN = "learning.json";
@@ -190,7 +193,7 @@ export const LEARNED_DIR = ".learning";
 /** What the run's end-of-run turn answered, and what the user said in the run, kept in the run's directory as the run
  *  settles (learning-run.ts beforeSettle), where the host alone reads it: what propose.ts checks. */
 export const LEARNING_TURN = "learning-turn.json";
-export type Turn = { answer: string; asked: string[] };
+export type Turn = { answer: string; asked: string[]; triggered?: Triggered[] };
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
  *  it learned anything.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
@@ -763,7 +766,9 @@ export async function keepTurn(runDir: string, turn: Turn): Promise<void> {
 /** The turn a run's directory keeps (keepTurn). One that is not there, or out of shape, throws. */
 export async function readTurn(runDir: string): Promise<Turn> {
   const turn = JSON.parse(await readFile(join(runDir, LEARNING_TURN), "utf8")) as unknown;
-  if (!isObject(turn) || typeof turn.answer !== "string" || !Array.isArray(turn.asked) || !turn.asked.every((message) => typeof message === "string")) throw new Error(`the run's ${LEARNING_TURN} is not a turn`);
+  const triggered = isObject(turn) ? turn.triggered : undefined;
+  const triggeredOk = triggered === undefined || (Array.isArray(triggered) && triggered.every((one) => isObject(one) && typeof one.source === "string" && typeof one.text === "string"));
+  if (!isObject(turn) || typeof turn.answer !== "string" || !Array.isArray(turn.asked) || !turn.asked.every((message) => typeof message === "string") || !triggeredOk) throw new Error(`the run's ${LEARNING_TURN} is not a turn`);
   return turn as Turn;
 }
 

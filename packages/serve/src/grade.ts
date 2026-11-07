@@ -212,13 +212,13 @@ async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost
  *  prompt and under the same bound, each ask counted once in `cost`; two such answers are a drop that could not be read,
  *  with the last answer as it came (`unread`, for the caller to cut of secrets and keep). Rejects only when `signal` (the
  *  server closing) aborts it: nothing is decided then. */
-export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; files?: NoteText[]; asked?: readonly string[]; gradeModel?: string; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
+export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; files?: NoteText[]; asked?: readonly string[]; triggered?: readonly { source: string; text: string }[]; gradeModel?: string; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
   const { runId, agent, main, proposed, env, signal } = input;
   const files = input.files ?? [];
   const cost: GradeCost = { usd: 0, tokens: { ...NO_TOKENS } };
   try {
     const { gradePrompt, parseVerdict, UNREADABLE_REASON } = await import("./learn/index.js");
-    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed, ...(files.length ? { files } : {}), ...(input.asked ? { asked: input.asked } : {}) });
+    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed, ...(files.length ? { files } : {}), ...(input.asked ? { asked: input.asked } : {}), ...(input.triggered ? { triggered: input.triggered } : {}) });
     const grader = await graderModel(env, agent, cost, input.gradeModel);
     const ask = () => bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
     // The items with their texts: a note the run marked risky waits whatever the grader says (parseVerdict).

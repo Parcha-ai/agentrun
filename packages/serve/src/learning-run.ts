@@ -164,9 +164,12 @@ const nameOf = (file: string, text: string) => {
  *  ANSWER_MAX, which the parser refuses; and each message the person sent the run before the turn, whole, in order. */
 function turnOf(run: Run): Turn {
   const answer = [...(run.turnText ?? new Map<number, string>())].sort(([a], [b]) => a - b).map(([, text]) => text).filter(Boolean).join("\n\n");
-  // From the run's store, whole (runs.ts noteTurns): a timeline row cuts a message at 2,000 characters.
-  const asked = [...(run.said ?? new Map<number, string>())].filter(([id]) => !reflects(run.meta.reflect, id)).sort(([a], [b]) => a - b).map(([, text]) => text);
-  return { answer: answer.length > ANSWER_MAX ? answer.slice(0, ANSWER_MAX + 1) : answer, asked };
+  // From the run's store, whole (heard.ts): a timeline row cuts a message at 2,000 characters. A trigger's input that
+  // its owner did not write is never what the user said: it goes apart, by its source.
+  const heard = [...(run.hearing?.heard ?? new Map())].filter(([id]) => !reflects(run.meta.reflect, id)).sort(([a], [b]) => a - b).map(([, said]) => said);
+  const asked = heard.filter((said) => said.source === undefined).map(({ text }) => text);
+  const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
+  return { answer: answer.length > ANSWER_MAX ? answer.slice(0, ANSWER_MAX + 1) : answer, asked, ...(triggered.length ? { triggered } : {}) };
 }
 
 /** One side of an agent's impact: how many runs, their median time to the answer, the median of their job's own cost
@@ -433,7 +436,7 @@ export class LearningRuns {
       });
     }
     // Kept now, or never to be: the person's words, whole, are let go (a finished run is held for the server's life).
-    if (keeping || (run.meta.learning?.state !== "seeded" && run.meta.learning?.state !== "reflecting")) run.said = undefined;
+    if (keeping || (run.meta.learning?.state !== "seeded" && run.meta.learning?.state !== "reflecting")) run.hearing = undefined;
     await this.noteRead(run);
   }
 
@@ -823,7 +826,7 @@ export class LearningRuns {
         const { instructions, harness, model, thinking } = known.revision.body;
         const env = this.hostEnv();
         const gradeModel = gradeModelOf(env, this.options.gradeModel);
-        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
+        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { ...checkedOut, cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("error" in judged) {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);

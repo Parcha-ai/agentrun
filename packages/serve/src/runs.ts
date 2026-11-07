@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, type EntryLike, isMessageRow, isUserEntry, MESSAGE_ORIGIN, type MessageOrigin, originMatcher, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -28,6 +28,7 @@ import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpSe
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
+import { Hearing } from "./heard.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { rowPaths } from "./workspace-paths.js";
@@ -307,12 +308,9 @@ export type Run = {
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
-  /** What the person said to the run, whole, by store entry: its first message and each one sent to it after, read from
-   *  the store's user entries (a timeline row cuts a message at 2,000 characters), the server's own messages left out.
-   *  Learning's grader reads them, the end-of-run turn's left out (learning-run.ts). */
-  said?: Map<number, string>;
-  /** Reads which user entries the server wrote, across the run's stream, as the timeline does (originMatcher). */
-  saidBy?: (entry: EntryLike) => MessageOrigin | undefined;
+  /** What was said to it, whole, by store entry, as its learning's grader reads it (heard.ts): the person's words, and a
+   *  trigger's input apart by its source. */
+  hearing?: Hearing;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by the holder its row names. */
   orphan?: number;
@@ -501,16 +499,10 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
     if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" && typeof data.leastCapUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, leastCapUsd: data.leastCapUsd, ...(typeof data.boundUsd === "number" && data.boundUsd > 0 ? { boundUsd: data.boundUsd } : {}) } : undefined;
-    // What the person said, whole, by entry, each entry once (a snapshot sends them again): a user entry the server did
-    // not write, or the person's own words in one it did (a declined approval). Its text parts only: an image or a file
-    // the message carries is no words. Kept only while the run's learning has yet to keep it (seeded or reflecting): a
-    // run that does not learn holds none, and learning-run.ts beforeSettle lets them go once kept.
-    const by = (run.saidBy ??= originMatcher())(value as EntryLike);
+    // What was said to the run, whole, by entry (heard.ts): kept only while its learning has yet to keep it (seeded or
+    // reflecting), so a run that does not learn holds none, and learning-run.ts beforeSettle lets it go once kept.
     const learning = run.meta.learning?.state;
-    if ((learning === "seeded" || learning === "reflecting") && isUserEntry(value as EntryLike) && !run.said?.has(value.id)) {
-      const words = by === undefined ? userText((value as EntryLike).model?.[0]) : by.kind === "server" && by.reason === "approval_declined" ? by.said.trim() : undefined;
-      if (words !== undefined) (run.said ??= new Map()).set(value.id, words);
-    }
+    if (learning === "seeded" || learning === "reflecting") (run.hearing ??= new Hearing()).note(value);
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
@@ -791,23 +783,25 @@ const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
  *  roomRefusal: what is left of its cap cannot buy the next request's least, which a higher cap would send), and nothing
  *  came since. The run then waits for its cap to be raised (input_required, `pending.kind` budget), never failed; a
  *  refusal no cap fixes (an unknown spend, no price) still fails it (decide). Undefined for any other run. */
-const refusedAt = (run: Run): string | undefined => {
-  if (run.kind !== "agentic" || run.cancel || run.submitted > 0 || run.turns.open > 0 || stopped(run)) return undefined;
+const refusedAt = (run: Run, { inFlight = true }: { inFlight?: boolean } = {}): string | undefined => {
+  // `inFlight: false`: a message counted but not yet shown does not move the run past its refusal (one that may not
+  // answer its person reads the pause through it).
+  if (run.kind !== "agentic" || run.cancel || (inFlight && run.submitted > 0) || run.turns.open > 0 || stopped(run)) return undefined;
   const end = run.turns.end();
   return end?.status === "failed" ? roomRefusal(end.error) : undefined;
 };
 /** The pause a run stands at, by its refusal's own start mark (its entry), so no row shown after it moves it; a store
  *  with no such mark keys it to the refusal's row. Undefined when it stands at no refusal for room. */
-const pauseOf = (run: Run): string | undefined => {
-  if (refusedAt(run) === undefined) return undefined;
+const pauseOf = (run: Run, read: { inFlight?: boolean } = {}): string | undefined => {
+  if (refusedAt(run, read) === undefined) return undefined;
   if (run.capMark !== undefined) return `mark:${run.capMark}`;
   const row = meaningful(run.rows)?.id;
   return row === undefined ? undefined : `row:${row}`;
 };
 /** Its cap was raised since the refusal it stands at (a raise names that pause): it waits for its follow-up then, not
  *  for a raise (input_required, idle). */
-const raisedSince = (run: Run): boolean => {
-  const pause = pauseOf(run);
+const raisedSince = (run: Run, read: { inFlight?: boolean } = {}): boolean => {
+  const pause = pauseOf(run, read);
   return pause !== undefined && run.meta.cap_raised?.some((raise) => raise.pause === pause) === true;
 };
 /** The follow-up a raise of the pause it stands at asked for and that has not gone yet: one per pause. */
@@ -828,7 +822,17 @@ function processIdentity(pid: number | undefined): string | undefined {
     return String(pid);
   }
 }
-const pausedAt = (run: Run): string | undefined => (raisedSince(run) ? undefined : refusedAt(run));
+const pausedAt = (run: Run, read: { inFlight?: boolean } = {}): string | undefined => (raisedSince(run, read) ? undefined : refusedAt(run, read));
+/** Whether the run waits on its person: a tool call parked for its owner's approval, a pause at its cap, or a question
+ *  (ask_person) its turn ended on. Read from the run itself, so a message in flight (which reads working) hides none. */
+const waitsOnPerson = (run: Run): boolean => {
+  if (run.kind !== "agentic") return false;
+  if (waitingApproval(run) !== undefined || pausedAt(run, { inFlight: false }) !== undefined) return true;
+  const { status, state } = statusOf(run);
+  return status === "input_required" && state === "waiting";
+};
+/** The refusal of a message that may not answer a person, as the door's WAITING is read: a trigger's firing is skipped. */
+const waitingRefusal = () => new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
 /** Raised at the pause it stands at, and that raise's follow-up still to go (continuationOf): the run goes on without a
  *  person, once the follow-up opens its next process (resumeRaised). */
 const raisedToGo = (run: Run): boolean => raisedSince(run) && continuationOf(run) !== undefined;
@@ -3450,10 +3454,13 @@ export class Runs {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
-    // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
-    // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
-    // nothing else is sent, so no second turn races the parked call.
-    const read = run.kind === "agentic" ? waitingApproval(run) : undefined;
+    // A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else,
+    // as the door refuses it (WAITING): it never declines a parked approval, nor answers a question or a cap's pause.
+    if (!answers && waitsOnPerson(run)) throw waitingRefusal();
+    // A person's message while a tool call waits for approval declines it, with the message as the reason (as Claude Code
+    // takes what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn,
+    // and nothing else is sent, so no second turn races the parked call.
+    const read = run.kind === "agentic" && answers ? waitingApproval(run) : undefined;
     if (read) {
       await this.personsTurn(run);
       // Read again after that wait, with nothing awaited from here to the decline's own write: an answer, a stop or a
@@ -3499,7 +3506,7 @@ export class Runs {
     const working = status === "queued" || (status === "working" && state === "working");
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     // A message that may not answer (a trigger's): one that would is refused here, past every wait, before it is sent.
-    if (mode === "answer" && !answers) throw new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
+    if (mode === "answer" && !answers) throw waitingRefusal();
     const messageId = requestId ?? `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     // A follow-up to a run the person stopped, whose process has gone: its turn had ended, so the process this message
     // starts resumes nothing. With its process live the message starts none, and a relaunch after that process dies
@@ -3511,6 +3518,9 @@ export class Runs {
       // After every wait, and once the count above holds the run from ending (so no end-of-run turn is asked from here):
       // one asked while this message waited for the run's end wrote its origin then, after any earlier removal.
       await this.personsTurn(run);
+      // Read again after the last wait, with nothing awaited from here to the door: a call parked or a cap paused
+      // meanwhile is still never answered by it (the door's own check also refuses a parked call or a question).
+      if (!answers && (waitingApproval(run) !== undefined || pausedAt(run, { inFlight: false }) !== undefined)) throw waitingRefusal();
       await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, origin ?? (answers ? this.messageOrigin?.(run.id, content) : undefined), answers);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
