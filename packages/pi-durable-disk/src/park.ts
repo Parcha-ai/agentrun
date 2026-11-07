@@ -1,7 +1,7 @@
 // Sleep parking: an instance whose live work is only sleeping releases its claim instead of holding a host through the
 // wait, and a deploy drains before it stops. After every commit the run's tasks are classified; when every task that
 // could run is in a retry or poll wait longer than the threshold, the wake is recorded (run.json `sleeping` with
-// `wakeAt`) and only then is the run released. The supervisor starts a sleeping run at its `wakeAt` (`ensureRunning`)
+// `wakeAt`) and only then is the run released. Its host starts a sleeping run again at its `wakeAt`,
 // and pi's own timer sleeps whatever is left of the wait. A run with no live work parks idle (`wakeAt` null) when the
 // deployment has a waker for it (a request through serve). The lifecycle follows Rivet's pi actor, written for a claim.
 import type { Context, JsonValue } from "@earendil-works/chord";

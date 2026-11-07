@@ -86,7 +86,7 @@ export type TriggerDisabled = { at: string; reason: "auto_paused" } | { at: stri
 /** A schedule (GET /v2/triggers): `next_at` null when it is paused or has no time left; `last_firing` null until it fires.
  *  `failures_in_a_row`: its failed firings since the last start; `disabled`: why the server turned it off itself, null
  *  while it is on or a person paused it. */
-export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; overlap: "skip"; last_firing: Firing | null; failures_in_a_row: number; disabled: TriggerDisabled | null };
+export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; last_firing: Firing | null; failures_in_a_row: number; disabled: TriggerDisabled | null };
 /** A create's or an edit's body: the parts the form holds. */
 export type TriggerInput = { name?: string; enabled?: boolean; source?: TriggerSource | { kind: "schedule"; every_s: number; start_at?: string }; target?: TriggerTarget };
 /** A question the run asked a person (ask_person): a message answers it. */

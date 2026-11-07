@@ -56,7 +56,7 @@ export const TOOLS = [
 function localClaim(ref: RunRef, place: RunPlace): Claim {
   let fence: { cause: unknown } | undefined;
   return {
-    ref, disk: ref.disk, root: place.root, work: place.work, store: place.store, reused: false, forced: false, timings: { mountMs: 0, verifyMs: 0 },
+    ref, disk: ref.disk, root: place.root, work: place.work, store: place.store,
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
@@ -205,7 +205,7 @@ export async function session(options: { dir: string; input: Input; record?: str
   const registry = createRegistry();
   for (const extension of [ArchilCodingTools, nodes.extension, tool.extension, capGuard]) registry.install(extension);
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
-    mountToken: 'unused', acquire: async ({ ref }: { ref: RunRef }) => localClaim(ref, place), claimDir: (root: string) => openClaimDir(root, { fstype: null }),
+    acquire: async ({ ref }: { ref: RunRef }) => localClaim(ref, place), claimDir: (root: string) => openClaimDir(root),
     harness: { registry, models: parts.host!.models!.catalog }, env: runEnv,
     ...(host.record?.attach ? { beforeResume: async ({ harness, storage, head, context, generation }: { harness: unknown; storage: unknown; head: number; context: unknown; generation: number }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context } as never); } } : {}),
   } as never);

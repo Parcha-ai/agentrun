@@ -758,7 +758,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `HOST_PHASE` | The entry kind a host writes for a step of its own, in its words (`{summary}`), such as a box waiting for its image: one `phase` row with the summary's first line, cut at the summary cap, stored and live alike. It is no request and no cost; one with no summary shows nothing |
 | `MESSAGE_ORIGIN` | The entry kind (`agentrun.message_origin`, `{ origin, text }`) a host writes just before a message the server wrote, whose user entry carries no data of its own (pi's): it names the next user entry in its conversation whose text is exactly `text`, once. One with `withdrawn: true` takes back the last open marker of the same text and origin (its input was refused). The model never reads it: it carries no model message |
 | `originOf(value)` | `value` as a `MessageOrigin`, or `undefined` when it is not one: `{kind: "server", reason}` (`said` too for `approval_declined`), or `{kind: "trigger", trigger_id, source, owner}`, a trigger's input (a non-empty id, a source of `TRIGGER_SOURCES`: `schedule`, `webhook`, `slack`, `github`, and a boolean `owner`, true when the words are the trigger's owner's) |
-| `messageOrigins(entries)` | The user entries the server wrote, each with its origin: its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text. The Timeline reads them with the same rule: such an entry is a `phase` row, "AgentRun: <its first line>", with `origin: "server"`, never a "You:" `user_message`; an `approval_declined` one is the person's words (`said`) as their own `user_message` row, beside the server's `phase` row, which also has `origin: "server"` and an id ending in `:server`; a trigger's is a `phase` row, "Trigger <trigger_id>: <its first line>", with `origin: "trigger"` |
+| `messageOrigins(entries)` | The user entries the server wrote, each with its origin: its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text. The Timeline reads them with the same rule: such an entry is a `phase` row, "AgentRun: <its first line>", with `origin: "server"`, never a "You:" `user_message`; an `approval_declined` one is the person's words (`said`) as their own `user_message` row, beside the server's `phase` row, which also has `origin: "server"` and an id ending in `:server`; a trigger's is a `phase` row, "Trigger <trigger_id>: <its first line>", with `origin: "trigger"` and `trigger: {id, source, owner}` (its origin's, `trigger_id` as `id`) |
 | `originMatcher()` | A reader for entries in order: it returns, for each user entry, its origin (its own `data.origin`, else the first open `MESSAGE_ORIGIN` marker with its exact text), and `undefined` for a person's own message. `messageOrigins` reads with it; a host that walks entries as they stream (and keeps what each user entry said) uses it directly |
 | `isUserEntry(entry)` | Whether an entry is a user-role message the Timeline shows: a pi user entry, or a host's user entry |
 | `TRIGGER_SOURCES` | What can fire a trigger, as a `trigger` origin's `source` names it: `schedule`, `webhook`, `slack`, `github` |
@@ -853,28 +853,19 @@ replaced (`seed.prior`). It acts only while that start is still the run's (its r
 touches only leases exactly as it set them, so an undo retried after the run id was prepared again, or after the run went
 on, changes nothing and returns `{ undone: false }`.
 
-Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
+Binding the seed to pi-durable-disk looks like this (a host's code, not part of this package). A home on a local
+directory needs no `access`: the package reads its own files.
 
 ```js
-import { openDurableRun, readReleased, withClaim } from "@parcha/pi-durable-disk";
-import { carryBack, prepareRun, seedRun } from "@parcha/pi-durable-agent";
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
+import { carryBack, prepareRun, runPaths, seedRun } from "@parcha/pi-durable-agent";
 
-const access = {
-  claim: (fn) => withClaim({ control, disk, region, path: "agent" }, ({ root }) => fn(root)),
-  runStore: async (run) => {
-    const { bytes } = await readReleased({ control, path: run.path }, "store/run.sqlite", { sqlite: true });
-    const file = join(tmp, `${run.runId}.sqlite`);
-    await writeFile(file, bytes);
-    return file;
-  },
-};
-
-const seed = await prepareRun(home, { host: "worker-1", sha, access });
-const run = await openDurableRun({ disk, region, id: seed.runId }, { harness, seed: (dir) => seedRun(dir, seed) });
-// (a run that will never start: await undoPrepare(home, seed, { access }) gives its leases back)
+const seed = await prepareRun(home, { host: "worker-1", sha });
+const run = await openDurableRun({ disk: "local", region: "local", id: seed.runId }, { ...localRun(runPaths(home, seed.runId).dir), harness, seed: (dir) => seedRun(dir, seed) });
+// (a run that will never start: await undoPrepare(home, seed) gives its leases back)
 // ... the run works, then:
 await run.release();
-await carryBack(home, { runId: seed.runId }, { outcome: "completed", access });
+await carryBack(home, { runId: seed.runId }, { outcome: "completed" });
 ```
 
 `seed` runs inside the first claim of a new run, before its Harness opens the store; a throw fails the open with

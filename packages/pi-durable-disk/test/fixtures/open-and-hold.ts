@@ -9,7 +9,6 @@ import { fakeClaim, localClaimDir, localRef } from "../_run-support.ts";
 const [root, id] = process.argv.slice(2);
 const ref = localRef(id!);
 const run = await openDurableRun(ref, {
-  mountToken: "local",
   acquire: async () => fakeClaim(root!, ref),
   claimDir: localClaimDir,
   harness: { models: createModels(), registry: createRegistry() },

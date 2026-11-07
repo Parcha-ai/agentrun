@@ -5,7 +5,37 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { DaemonClient } from "./client.js";
-import type { ComputerCapabilities, ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, Refusal } from "./provider.js";
+import {
+	COMPUTER_LABEL,
+	CPU_PERIOD_US,
+	DAEMON_IN_COMPUTER,
+	DEADLINE_LABEL,
+	DEFAULT_CPUS,
+	DEFAULT_MEMORY_MB,
+	DEFAULT_PIDS,
+	type DockerHost,
+	type DockerInspect,
+	drift,
+	helloDrift,
+	hostOf,
+	inspectDrift,
+	networkOf,
+	tmpfsOf,
+	WORK,
+} from "./drift.js";
+import type {
+	AttachedComputer,
+	CallContext,
+	ComputerCapabilities,
+	ComputerConnection,
+	ComputerInfo,
+	ComputerProvider,
+	ComputerRef,
+	ComputerSpec,
+	NetworkPolicy,
+	NetworkSpec,
+	Refusal,
+} from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
 export interface DockerProviderOptions {
@@ -14,24 +44,15 @@ export interface DockerProviderOptions {
 	/** The docker CLI. */
 	docker?: string;
 	/** Who a computer runs as when its spec does not say: uid or uid:gid, in numbers. Default: this process's uid:gid, or
-	 *  1000:1000 when this process is root. Root is refused here: a computer runs as root only when its spec asks. */
+	 *  1000:1000 when its uid or gid is 0. Root and root's group are refused here: a computer runs as either only when
+	 *  its spec asks. */
 	user?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-/** Where the daemon is mounted in each computer, read-only. */
-const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
-/** The computer's home and default workdir: a tmpfs its user owns, since a non-root user can write nowhere else. */
-const WORK = "/work";
-const COMPUTER_LABEL = "agentrun.computer";
-const DEADLINE_LABEL = "agentrun.computer.deadline";
 const NAME = /^computer-[0-9a-f]{12}$/;
-/** Serve's box sizes, when the spec names none. */
-const DEFAULT_CPUS = 2;
-const DEFAULT_MEMORY_MB = 4096;
-const DEFAULT_PIDS = 1024;
-/** CPUs are a CFS quota of each 100 ms, as serve gives them: Docker refuses a --cpus above its own CPU count. */
-const CPU_PERIOD_US = 100_000;
+/** A container id, whole or its first 12 or more hex digits. */
+const ID = /^[0-9a-f]{12,64}$/;
 /** A user in numbers, uid or uid:gid; (uid_t)-1 is no user. */
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
@@ -41,11 +62,24 @@ const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
+/** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
+const INSPECT_BATCH = 50;
+/** Only the fields list() reads, in inspect's own shape: a whole inspect is kilobytes a container, and execFile's
+ *  output is capped. */
+const LIST_FORMAT =
+	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Config":{"Labels":{{json .Config.Labels}}},' +
+	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}}}';
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
 const NUL = "a NUL byte cannot be passed to docker run";
 const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
+/** Docker cannot move a container with no network onto one, nor take one off a network without a restart. */
+const FIXED = "a Docker computer's network is fixed at create; create a new computer";
+/** Only the fields hostOf reads, as JSON. */
+const INFO_FORMAT =
+	'{"Architecture":{{json .Architecture}},"SecurityOptions":{{json .SecurityOptions}},"MemoryLimit":{{json .MemoryLimit}},' +
+	'"SwapLimit":{{json .SwapLimit}},"PidsLimit":{{json .PidsLimit}},"CPUCfsQuota":{{json .CPUCfsQuota}},"CPUCfsPeriod":{{json .CPUCfsPeriod}}}';
 
 interface Ran {
 	exitCode: number;
@@ -53,13 +87,13 @@ interface Ran {
 	stderr: string;
 }
 
-interface Inspected {
-	State?: { Running?: boolean; Status?: string; ExitCode?: number; Error?: string };
-}
-
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const noSuchContainer = (stderr: string) => /no such container/i.test(stderr);
+const nameOf = (report: DockerInspect) => (report.Name ?? "").replace(/^\//, "");
+/** Only a container this provider made counts: its label, and a name of its making. */
+const ours = (report: DockerInspect) => report.Config?.Labels?.[COMPUTER_LABEL] === "1" && NAME.test(nameOf(report));
+const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : JSON.stringify(policy));
 
 export class DockerProvider implements ComputerProvider {
 	readonly id = "docker";
@@ -67,6 +101,8 @@ export class DockerProvider implements ComputerProvider {
 	readonly #daemonPath: string;
 	readonly #docker: string;
 	readonly #user: string;
+	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
+	#host: DockerHost | undefined;
 
 	constructor({ daemonPath, docker = "docker", user }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
@@ -74,14 +110,22 @@ export class DockerProvider implements ComputerProvider {
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
+		if (given.endsWith(":0")) {
+			throw new Error(`the provider's user ${user} is in root's group (gid 0); a computer is in group 0 only when its spec asks, such as user "${given}"`);
+		}
 		this.#user = given;
 	}
 
 	capabilities(): ComputerCapabilities {
-		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files"] };
+		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"] };
 	}
 
+	/** The spec's refusals, and the host's once create, attach or host() has read it. */
 	check(spec: ComputerSpec): Refusal[] {
+		return [...this.#checkSpec(spec), ...(this.#host?.problems ?? []).map((message) => ({ field: "host", message }))];
+	}
+
+	#checkSpec(spec: ComputerSpec): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = spec as unknown as Record<string, unknown>;
@@ -131,19 +175,25 @@ export class DockerProvider implements ComputerProvider {
 		}
 		if (this.#daemonPath.includes(",")) return fail("invalid", `the daemon path ${this.#daemonPath} has a comma, which a Docker mount cannot hold`);
 		if (signal?.aborted) return fail("aborted", "create was aborted before Docker was called");
+		const host = await this.host({ signal });
+		if (!host.ok) return host;
+		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`];
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
-		args.push("--label", `${DEADLINE_LABEL}=${deadline}`);
+		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 		const user = userOf(spec.user) ?? this.#user;
-		const [uid, gid] = user.split(":");
-		args.push("--user", user, "--tmpfs", `${WORK}:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`, "--env", `HOME=${WORK}`);
+		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
+		args.push("--user", user, "--env", `HOME=${WORK}`);
+		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
+		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
+		args.push("--ipc", "private", "--cgroupns", "private");
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
 		// Memory and swap together are the memory: swap never adds to it.
-		const memory = `${spec.memoryMb ?? DEFAULT_MEMORY_MB}m`;
+		const memory = `${memoryMb}m`;
 		args.push("--memory", memory, "--memory-swap", memory);
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		args.push("--workdir", spec.workdir ?? WORK);
@@ -156,25 +206,123 @@ export class DockerProvider implements ComputerProvider {
 			await this.#run(["rm", "--force", "--volumes", name]);
 			return started.ok ? fail("docker", `docker run failed: ${started.value.stderr.trim()}`) : started;
 		}
-		const inspected = await this.#run(["inspect", "--type", "container", "--format", "{{json .}}", name]);
-		let state: Inspected["State"];
-		if (inspected.ok && inspected.value.exitCode === 0) {
-			try {
-				state = (JSON.parse(inspected.value.stdout) as Inspected).State;
-			} catch {
-				state = undefined;
-			}
-		}
+		const ref = { id: started.value.stdout.trim(), name };
+		// From here the computer exists: every step takes the caller's signal, and an abort deletes the computer.
+		const inspected = await this.#inspect([name], signal);
+		if (signal?.aborted) return this.#abandon(ref);
+		const report = inspected.ok ? inspected.value[0] : undefined;
+		const state = report?.State;
 		if (state?.Running !== true) {
 			await this.#run(["rm", "--force", "--volumes", name]);
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
-		return ok({ id: started.value.stdout.trim(), name });
+		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, signal);
+		// Fail closed: no create returns ok once its signal has aborted.
+		if (signal?.aborted) return this.#abandon(ref);
+		if (checked.ok) return ok(ref);
+		// Fail closed: a computer that is not what was declared, or that cannot show it is, does not outlive create.
+		const removed = await this.release(ref, "delete");
+		const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
+		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
+	}
+
+	/** Deletes a computer whose create was aborted after docker run; the delete itself is not signalled. */
+	async #abandon(ref: ComputerRef): Promise<Result<never>> {
+		const removed = await this.release(ref, "delete");
+		const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
+		return fail("aborted", `create was aborted after docker run; the computer ${ref.name} ${after}`);
+	}
+
+	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
+	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, host: DockerHost, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
+		const opened = await this.#open(ref, signal);
+		if (!opened.ok) return opened;
+		await opened.value.close();
+		const found = drift(spec, report, opened.value.hello, this.#expected(host, deadline, user));
+		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
+	}
+
+	#expected(host: DockerHost, deadline: string, user: string) {
+		const { arch, apparmor, selinux } = host;
+		return { version: VERSION, capabilities: this.capabilities().daemon, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
+	}
+
+	/** The Docker host's architecture and enforcement (hostOf), read by docker info once per provider. */
+	async host({ signal }: CallContext = {}): Promise<Result<DockerHost>> {
+		if (this.#host) return ok(this.#host);
+		const ran = await this.#run(["info", "--format", INFO_FORMAT], signal);
+		if (!ran.ok) return ran;
+		if (ran.value.exitCode !== 0) return fail("docker", `docker info failed: ${ran.value.stderr.trim()}`);
+		let info: unknown;
+		try {
+			info = JSON.parse(ran.value.stdout);
+		} catch {
+			return fail("docker", `docker info wrote what is not JSON: ${ran.value.stdout.slice(0, 200)}`);
+		}
+		this.#host = hostOf(info as Parameters<typeof hostOf>[0]);
+		return ok(this.#host);
+	}
+
+	/**
+	 * The drift check of a computer attach did not make: the spec it was made with, read back from its own report and
+	 * held to what check() allows, then inspect and, when it runs, hello, as at create. A computer that passes is
+	 * returned with that spec.
+	 */
+	async #attached(report: DockerInspect, signal?: AbortSignal): Promise<Result<AttachedComputer>> {
+		const ref = { id: report.Id ?? "", name: nameOf(report) };
+		const host = await this.host({ signal });
+		if (!host.ok) return host;
+		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		const config = report.Config ?? {};
+		const limits = report.HostConfig ?? {};
+		const found: string[] = [];
+		const network = networkOf(report);
+		if (typeof network !== "string") found.push(`network: ${"other" in network ? network.other : JSON.stringify(network)}, which this provider never makes`);
+		const deadline = config.Labels?.[DEADLINE_LABEL] ?? "";
+		const at = Date.parse(deadline);
+		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {
+			found.push(`deadline: the label ${DEADLINE_LABEL} reads ${JSON.stringify(deadline)}, not the ISO time create writes`);
+		} else if (at > Date.now() + MAX_LIFETIME_MS + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
+		const spec = {
+			image: config.Image,
+			lifetimeMs: 1,
+			network: typeof network === "string" ? network : "none",
+			cpus: typeof limits.CpuQuota === "number" ? limits.CpuQuota / CPU_PERIOD_US : limits.CpuQuota,
+			memoryMb: typeof limits.Memory === "number" ? limits.Memory / (1024 * 1024) : limits.Memory,
+			pids: limits.PidsLimit,
+			workdir: config.WorkingDir,
+			user: config.User,
+		} as ComputerSpec;
+		found.push(...this.#checkSpec(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
+		const user = userOf(config.User) ?? String(config.User);
+		const expected = this.#expected(host.value, deadline, user);
+		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !line.startsWith("network:")));
+		if (report.State?.Running === true) {
+			const opened = await this.#open(ref, signal);
+			if (!opened.ok) return opened;
+			await opened.value.close();
+			found.push(...helloDrift(opened.value.hello, expected));
+		}
+		if (found.length > 0) {
+			return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
+		}
+		const { image, network: read, cpus, memoryMb, pids, workdir } = spec;
+		return ok({ ...ref, spec: { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at) } });
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
+		const opened = await this.#open(ref);
+		if (!opened.ok) return opened;
+		const found = helloDrift(opened.value.hello, { version: VERSION, capabilities: this.capabilities().daemon });
+		if (found.length === 0) return opened;
+		await opened.value.close();
+		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${found.join("; ")}`);
+	}
+
+	/** One connection to the computer's daemon, after hello, unchecked. */
+	async #open(ref: ComputerRef, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
 		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { stdio: ["pipe", "pipe", "pipe"] });
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
@@ -191,19 +339,86 @@ export class DockerProvider implements ComputerProvider {
 			await exited;
 			clearTimeout(timer);
 		};
-		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: AbortSignal.timeout(HELLO_TIMEOUT_MS) });
+		const timeout = AbortSignal.timeout(HELLO_TIMEOUT_MS);
+		const either = signal ? AbortSignal.any([signal, timeout]) : timeout;
+		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: either });
 		if (!hello.ok) {
 			await close();
+			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${ref.name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${ref.name} did not answer hello within ${HELLO_TIMEOUT_MS / 1000} s`);
 			if (hello.error.code !== "gone") return hello;
 			const words = stderr.trim() || hello.error.message;
 			return fail(noSuchContainer(words) ? "not_found" : "docker", `cannot reach the daemon in ${ref.name}: ${words}`);
 		}
-		if (!hello.value.capabilities.includes("exec")) {
-			await close();
-			return fail("unsupported", `the daemon in ${ref.name} (version ${hello.value.version}) does not offer exec`);
-		}
 		return ok({ client, hello: hello.value, close });
+	}
+
+	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
+		const given = (typeof ref === "object" && ref !== null ? ref : {}) as { id?: unknown; labels?: unknown };
+		if ((given.id === undefined) === (given.labels === undefined)) return fail("invalid", "attach takes { id } or { labels }, one of them");
+		if (given.id !== undefined) {
+			const id = given.id;
+			if (typeof id !== "string" || !(NAME.test(id) || ID.test(id))) {
+				return fail("invalid", `${String(id)} is neither a Docker computer's name (computer-<12 hex digits>) nor a container id (12 to 64 hex digits)`);
+			}
+			const found = await this.#inspect([id], signal);
+			if (!found.ok) return found;
+			const [report] = found.value;
+			// Docker resolves a name before an id prefix, so what it found must be what was asked for.
+			const same = report !== undefined && (NAME.test(id) ? nameOf(report) === id : report.Id?.startsWith(id) === true);
+			if (!same || !ours(report) || typeof report.Id !== "string") return fail("not_found", `no Docker computer has the id ${id}`);
+			return this.#attached(report, signal);
+		}
+		const problem = filterProblem(given.labels);
+		if (problem) return fail("invalid", problem);
+		const labels = given.labels as Record<string, string>;
+		if (Object.keys(labels).length === 0) return fail("invalid", "attach by labels needs at least one label");
+		const listed = await this.list(labels, { signal });
+		if (!listed.ok) return listed;
+		const matches = listed.value.map((info) => info.ref);
+		const words = JSON.stringify(labels);
+		if (matches.length === 0) return fail("not_found", `no Docker computer has the labels ${words}`);
+		if (matches.length > 1) return fail("invalid", `${matches.length} computers match the labels ${words}: ${matches.map((m) => m.name).join(", ")}`);
+		const match = matches[0] as ComputerRef;
+		const found = await this.#inspect([match.id], signal);
+		if (!found.ok) return found;
+		const [report] = found.value;
+		if (report === undefined || report.Id !== match.id || !ours(report)) return fail("not_found", `no Docker computer has the labels ${words}`);
+		return this.#attached(report, signal);
+	}
+
+	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+		const problem = filterProblem(labels);
+		if (problem) return fail("invalid", problem);
+		const args = ["ps", "-a", "--no-trunc", "--filter", `label=${COMPUTER_LABEL}=1`];
+		for (const [key, value] of Object.entries(labels)) args.push("--filter", `label=${key}=${value}`);
+		const ran = await this.#run([...args, "--format", "{{.ID}}"], signal);
+		if (!ran.ok) return ran;
+		if (ran.value.exitCode !== 0) return fail("docker", `docker ps failed: ${ran.value.stderr.trim()}`);
+		const ids = ran.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+		const infos: ComputerInfo[] = [];
+		for (let at = 0; at < ids.length; at += INSPECT_BATCH) {
+			// A computer removed between ps and inspect is left out.
+			const found = await this.#inspect(ids.slice(at, at + INSPECT_BATCH), signal, LIST_FORMAT);
+			if (!found.ok) return found;
+			infos.push(...found.value.filter(ours).map(infoOf));
+		}
+		return ok(infos);
+	}
+
+	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
+		if (!NAME.test(ref?.name)) return fail("invalid", `${ref?.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
+		if (policy !== undefined && policy !== "none" && policy !== "open") {
+			const allow = typeof policy === "object" && policy !== null && "allow" in policy;
+			return fail("refused", allow ? `${ALLOWLIST}; ${FIXED}` : `${FIXED}; a network is "none" or "open"`);
+		}
+		const found = await this.#inspect([ref.name], signal);
+		if (!found.ok) return found;
+		const [report] = found.value;
+		if (report === undefined || !ours(report)) return fail("not_found", `no Docker computer is named ${ref.name}`);
+		const current = networkOf(report);
+		if (policy === undefined || policy === current) return ok(current);
+		return fail("refused", `${FIXED}: ${ref.name} has network ${policyWords(current)}, not ${policy}`);
 	}
 
 	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
@@ -214,6 +429,24 @@ export class DockerProvider implements ComputerProvider {
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode === 0 || noSuchContainer(ran.value.stderr)) return ok(undefined);
 		return fail("docker", `docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
+	}
+
+	/** Inspects containers by name or id, whole or only the fields a format names; one that is gone is left out. */
+	async #inspect(keys: string[], signal?: AbortSignal, format = "{{json .}}"): Promise<Result<DockerInspect[]>> {
+		const ran = await this.#run(["inspect", "--type", "container", "--format", format, ...keys], signal);
+		if (!ran.ok) return ran;
+		const { exitCode, stdout, stderr } = ran.value;
+		const errors = stderr.split("\n").filter((line) => line.trim() !== "" && !noSuchContainer(line));
+		if (exitCode !== 0 && errors.length > 0) return fail("docker", `docker inspect failed: ${errors.join("; ")}`);
+		const found: DockerInspect[] = [];
+		for (const line of stdout.split("\n").filter((line) => line.trim() !== "")) {
+			try {
+				found.push(JSON.parse(line) as DockerInspect);
+			} catch {
+				return fail("docker", `docker inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
+			}
+		}
+		return ok(found);
 	}
 
 	#run(args: string[], signal?: AbortSignal): Promise<Result<Ran>> {
@@ -237,6 +470,27 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	return undefined;
 }
 
+/** Why labels cannot be a docker ps filter, or undefined when they can. */
+function filterProblem(labels: unknown): string | undefined {
+	if (typeof labels !== "object" || labels === null || Array.isArray(labels)) return "labels must map names to strings";
+	for (const [key, value] of Object.entries(labels)) {
+		if (typeof value !== "string") return `the label ${key} must be a string`;
+		if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: a NUL byte cannot be passed to docker`;
+		if (key === "" || key.includes("=")) return `the label name "${key}" must be non-empty and have no "="`;
+	}
+	return undefined;
+}
+
+/** A computer as list() reports it. The deadline counts only as the provider writes it, an ISO time. */
+function infoOf(report: DockerInspect): ComputerInfo {
+	const labels = { ...(report.Config?.Labels ?? {}) };
+	const written = labels[DEADLINE_LABEL];
+	const at = written === undefined ? Number.NaN : Date.parse(written);
+	const deadline = Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
+	const state = report.State?.Running === true ? "running" : "stopped";
+	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report) };
+}
+
 /** "uid:gid" for a user in numbers (a uid alone is its own gid, never root's group 0), or undefined when it is not one. */
 function userOf(value: unknown): string | undefined {
 	const match = typeof value === "string" ? USER.exec(value) : null;
@@ -245,10 +499,10 @@ function userOf(value: unknown): string | undefined {
 	return uid <= MAX_ID && gid <= MAX_ID ? `${uid}:${gid}` : undefined;
 }
 
-/** This process's uid:gid, or 1000:1000 when it is root or has no uid. */
+/** This process's uid:gid, or 1000:1000 when either is 0 (root, or root's group) or unknown. */
 function defaultUser(): string {
-	const uid = process.getuid?.();
-	return uid === undefined || uid === 0 ? "1000:1000" : `${uid}:${process.getgid?.() ?? uid}`;
+	const [uid, gid] = [process.getuid?.(), process.getgid?.()];
+	return uid === undefined || gid === undefined || uid === 0 || gid === 0 ? "1000:1000" : `${uid}:${gid}`;
 }
 
 /** The mode of a regular file, or undefined when there is none. */

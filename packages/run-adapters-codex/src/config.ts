@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/config.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 001-code-mode-host, 004-names, 006-comments, 013-agents-off
+// Changed by Parcha, patches: 001-code-mode-host, 004-names, 006-comments, 013-agents-off, 018-apply-patch-off
 /**
  * The `config.toml` a session's `CODEX_HOME` gets: the model and its
  * provider (the session's model proxy), and Codex's built-in tools and side
@@ -31,8 +31,9 @@ export const BUILTINS_OFF: Record<string, boolean> = {
   computer_use: false,
   in_app_browser: false,
   // Code mode's JavaScript runtime (no Node, no file system, no network): the only way a code-mode model such as luna
-  // calls a tool. Its nested tools are the dynamic tools plus Codex's own apply_patch and MCP resource readers, which
-  // run nothing here (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled.
+  // calls a tool. Its nested tools are the dynamic tools plus Codex's own MCP resource readers, which run nothing here
+  // (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.enabled, its apply_patch by
+  // the harness's model catalog (catalog.ts).
   code_mode_host: true,
   tool_suggest: false,
   skill_search: false,
@@ -147,10 +148,11 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
  * the model (`model`). Also what would swap the binary or shell that does the
  * sandboxing, send traffic outside the log (`otel`, `chatgpt_base_url`), grant
  * permission profiles, keep history or snapshots outside the rollout, or read
- * a file the app names (`RESERVED_CONFIG_SUFFIXES`).
+ * a file the app names (`model_catalog_json`, `RESERVED_CONFIG_SUFFIXES`).
  */
 export const RESERVED_CONFIG_KEYS: readonly string[] = Object.freeze([
   'model',
+  'model_catalog_json',
   'model_provider',
   'model_providers',
   'base_url',

@@ -8,10 +8,12 @@ import (
 	"io"
 	"log"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
@@ -32,7 +34,7 @@ func call(t *testing.T, line string) reply {
 	t.Helper()
 	cr, cw := io.Pipe()
 	sr, sw := io.Pipe()
-	server := rpc.NewServer(methods.Handlers("0.0.0-test"), log.New(io.Discard, "", 0))
+	server := rpc.NewServer(methods.Handlers("0.0.0-test", process.NewTable(process.Options{})), log.New(io.Discard, "", 0))
 	go func() {
 		_ = server.Serve(context.Background(), cr, sw)
 		_ = cr.Close()
@@ -71,7 +73,7 @@ func TestHello(t *testing.T) {
 	if r.Error != nil || json.Unmarshal(r.Result, &hello) != nil {
 		t.Fatalf("hello failed: %+v", r)
 	}
-	if hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Arch != runtime.GOARCH || len(hello.Capabilities) != 2 || hello.Capabilities[0] != "exec" || hello.Capabilities[1] != "files" {
+	if hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Arch != runtime.GOARCH || strings.Join(hello.Capabilities, ",") != "exec,files,processes" {
 		t.Fatalf("hello %+v", hello)
 	}
 }
@@ -125,5 +127,13 @@ func TestExecRunRefusesBadParams(t *testing.T) {
 		if r.Error == nil || r.Error.Code != rpc.CodeInvalidParams || r.Error.Data.Kind != "invalid" {
 			t.Errorf("%s: want invalid params, got %+v", name, r)
 		}
+	}
+}
+
+func TestExecRunNamesTheSignalWithoutSIG(t *testing.T) {
+	r := call(t, `{"jsonrpc":"2.0","id":5,"method":"exec.run","params":{"argv":["sh","-c","kill -KILL $$"],"timeoutMs":5000}}`)
+	var res map[string]any
+	if r.Error != nil || json.Unmarshal(r.Result, &res) != nil || res["signal"] != "KILL" || res["exitCode"] != nil {
+		t.Fatalf("exec.run result %s %+v", r.Result, r.Error)
 	}
 }

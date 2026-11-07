@@ -13,18 +13,18 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
 import type { HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
-import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
+import type { AcquireOptions, Claim, RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
 import { BoxUnavailableError, EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
-import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
+import { BARRIER, syncNow, type SyncTarget } from "./barriers.ts";
+import { openArchilStore, type ArchilStore, type Profile, type Synchronous } from "./store.ts";
 import { LeaseWatchdog } from "./watchdog.ts";
 import {
   currentHolder,
   DEFAULT_HEARTBEAT_MS,
   DEFAULT_LEASE_EXPIRY_MS,
   DEFAULT_LEASE_MARGIN_MS,
-  keepStartMark,
   openClaimDir,
   persistRecord,
   readRunRecord,
@@ -123,17 +123,6 @@ export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | 
 
 export interface OpenRunLeaseOptions {
   /**
-   * The mount token from the host driver (reusable, 24 h); travels only on the archil wrapper's stdin, never in an
-   * environment. Required to mount an Archil disk (the default `acquire`); a run whose `acquire` is replaced (a local
-   * directory: `localRun`) needs none, and its `acquire` is handed an empty token.
-   */
-  readonly mountToken?: string;
-  /** Default /mnt/archil. */
-  readonly mountRoot?: string;
-  /** Mount with `--force`: the takeover fallback when the supervisor could not revoke. */
-  readonly force?: boolean;
-  readonly host?: ArchilHost;
-  /**
    * The host driver's handle, written as run.json's `holder` with this process's pid and `since` added; `driver`
    * defaults to `local`, `host` and `bootId` to this machine's. The supervisor hands it back to the driver to stop it.
    */
@@ -163,14 +152,11 @@ export interface OpenRunLeaseOptions {
   readonly context?: Context;
   /** Each lifecycle step as it completes, with its duration. */
   readonly onStep?: (step: OpenStep | ReleaseStep, ms: number) => void;
-  /** Replaceable for tests: how the claim is taken (default `acquire`). */
-  readonly acquire?: (options: AcquireOptions) => Promise<Claim>;
+  /** How the claim is taken: `localRun(root)`'s, a directory on this machine. */
+  readonly acquire: (options: AcquireOptions) => Promise<Claim>;
   /** Replaceable for fault injection: how `run.json` is written (default `persistRecord`). */
   readonly persist?: PersistRecord;
-  /**
-   * Replaceable for tests: how the claim's root is held open (default `openClaimDir(root)`, which requires the root to be
-   * the mount point of an Archil mount). A run root on a local directory passes `(root) => openClaimDir(root, { fstype: null })`.
-   */
+  /** Replaceable for tests: how the claim's root is held open (default `openClaimDir(root)`). */
   readonly claimDir?: (root: string) => Promise<ClaimDir>;
   /** Replaceable for tests: the monotonic clock the self-fence measures with, in ms (default `performance.now`). */
   readonly clock?: () => number;
@@ -217,6 +203,8 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
   readonly env?: (claim: Claim) => RunEnv;
   /** Wraps the raw database inside the store's fence (instrumentation, fault injection). */
   readonly decorateStore?: (database: SqliteDatabase) => SqliteDatabase;
+  /** The store's `synchronous` level; default the journal's (JOURNAL_SYNCHRONOUS in store.ts). */
+  readonly synchronous?: Synchronous;
   /**
    * Awaited once the Harness is open (its registry installed) and the run is live, before the Harness resumes: no
    * resumed task takes a step until it settles, and what it admits (a submission, a write) is committed before anything
@@ -255,6 +243,11 @@ export interface BeforeResume {
    */
   readonly previous: RunRecord | null;
   readonly claim: RunClaim;
+  /**
+   * The run's store as a barrier takes it (`syncNow`, barriers.ts): for a host that guards the effects a resumed task
+   * sends, before its own onOpen. For the barrier only; the store's writes are the Harness's.
+   */
+  readonly syncTarget: SyncTarget;
   /** The store the Harness was opened over, read-only: four reads on an object of their own, and no way to a write. */
   readonly storage: StoreReads;
   /**
@@ -289,7 +282,7 @@ export interface RunClaim {
   readonly work: string;
   readonly store: string;
   readonly fenced: boolean;
-  /** `archil sync` of the mount: the workspace is durable before a result commits and before a terminal status; a failure fences the run. */
+  /** The claim's barrier, before a result commits and before a terminal status: it refuses once the claim is fenced (a failure fences the run). On a local directory it syncs nothing beyond the store's own commits. */
   barrier(): Promise<void>;
 }
 
@@ -339,7 +332,7 @@ export interface RunLease {
   fenceSettled(): Promise<void>;
   /** Write a status transition. `done` and `failed` run the barrier first, so a terminal status never names workspace files that are not durable. */
   setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
-  /** `archil sync` of the mount: the workspace is durable before a result commits and before a terminal status; a failure fences. */
+  /** The claim's barrier, before a result commits and before a terminal status: it refuses once the claim is fenced; a failure fences. On a local directory it syncs nothing beyond the store's own commits. */
   barrier(): Promise<void>;
   /**
    * After the app closed every Harness and store connection: `cleanup`, barrier, seal `run.json` with the store's last
@@ -468,8 +461,7 @@ export interface StoreHeadSource {
  * exclusive locking mode): its read meets the holder's lock. A store that is free is taken for that read and let go;
  * its close checkpoints what a previous incarnation left in its WAL, as the open that follows may. Read-write: in an
  * exclusive locking mode a read takes a write lock, which a read-only descriptor cannot. No file: nothing holds it.
- * Local directories only (a run under its host's epoch is one): an Archil run's store must never be opened read-write
- * from anywhere but its holder, since a read-write open from another client flips that mount read-only.
+ * A local directory's store only.
  */
 export function assertStoreFree(file: string): void {
   if (!existsSync(file)) return;
@@ -734,15 +726,7 @@ class Lease implements RunLease {
     if (seed !== undefined && fresh) {
       await step("seed", async () => {
         await this.#dir!.assertMounted();
-        // While a new run seeds it has no `run.json` heartbeat, and a supervisor keeps a start in its grace only while its
-        // start mark is younger than the grace: the mark is kept fresh until the seed ends, through the held claim directory.
-        // A seeder that dies stops, and the grace runs out as for any start.
-        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs, claim.root);
-        try {
-          await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
-        } finally {
-          await stop();
-        }
+        await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
         await this.#dir!.assertMounted();
         await claim.barrier();
       });
@@ -1047,23 +1031,9 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, 
   } catch (error) {
     throw new RunError("INVALID_ARGUMENT", `holder ${JSON.stringify(options.holder)}: ${(error as Error).message}`, { cause: error });
   }
-  // A run under its host's epoch is a local directory's (localRun): its open probes its store read-write
-  // (assertStoreFree), which an Archil mount must never see from anywhere but its holder.
-  if (options.epoch !== undefined && options.acquire === undefined) {
-    throw new RunError("INVALID_ARGUMENT", "a run under its host's epoch is a local directory's: pass localRun(root)");
-  }
-  if (options.acquire === undefined && !options.mountToken) {
-    throw new RunError("INVALID_ARGUMENT", "mountToken is required to mount an Archil disk; a run on a local directory passes localRun(root) instead");
-  }
-  const claim = await step("acquire", () =>
-    (options.acquire ?? acquire)({
-      ref,
-      token: options.mountToken ?? "",
-      ...(options.mountRoot === undefined ? {} : { mountRoot: options.mountRoot }),
-      ...(options.force === undefined ? {} : { force: options.force }),
-      ...(options.host === undefined ? {} : { host: options.host }),
-    }),
-  );
+  // A run is a local directory's: its claim comes from localRun(root).
+  if (typeof options.acquire !== "function") throw new RunError("INVALID_ARGUMENT", "a run is a local directory: pass localRun(root)");
+  const claim = await step("acquire", () => options.acquire({ ref }));
   const lease = new Lease(ref, claim, options, context);
   try {
     await lease.open(step, holder, afterClaim);
@@ -1139,6 +1109,7 @@ class Run implements DurableRun {
         onFenced: (error) => void lease.fence(error),
         ...(this.#options.keepWal ? { keepWal: true } : {}),
         ...(this.#options.decorateStore === undefined ? {} : { decorate: this.#options.decorateStore }),
+        ...(this.#options.synchronous === undefined ? {} : { synchronous: this.#options.synchronous }),
       }),
     );
     // Both refusals here are terminal: the run is marked `failed`, keeping its seal, so the supervisor stops on it.
@@ -1163,7 +1134,7 @@ class Run implements DurableRun {
       // between the open and the hook, since the Harness has not resumed.
       await step("before-resume", async () => {
         const head = (await storeHead(this.#store!)) as Seq;
-        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, previous: lease.previous, claim: lease.claim, storage: storeReads(storage), head });
+        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, previous: lease.previous, claim: lease.claim, syncTarget: this.#store!, storage: storeReads(storage), head });
       });
     }
     await step("resume", () => this.#harness!.resume());
@@ -1183,8 +1154,16 @@ class Run implements DurableRun {
 
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
     if (!this.#lease.fenced && (this.#released || this.#releasing)) throw new RunError("RUN_RELEASED", `run ${this.ref.id} is released`);
+    // What the run committed is durable before a status says where it stands: under a host's epoch the status is a
+    // commit of the store, synced after it; otherwise it is run.json, written after the sync. A fenced run's store takes
+    // no write, and its barrier would refuse the `failed` the lease still records: a fenced run syncs nothing.
+    const sync = () => (this.#lease.fenced ? Promise.resolve() : syncNow(this.#store!, BARRIER.runStatus));
+    if (this.#lease.epoch === undefined) await sync();
     await this.#lease.setStatus(status, detail, options);
-    if (this.#lease.epoch !== undefined) await this.#keepStatus(this.#lease.record);
+    if (this.#lease.epoch !== undefined) {
+      await this.#keepStatus(this.#lease.record);
+      await sync();
+    }
   }
 
   /** Under a host's epoch: the run's record, written in its store (its one row of RUN_STATUS_TABLE); a failed write fences. */
@@ -1212,6 +1191,9 @@ class Run implements DurableRun {
     await step("close", async () => {
       try {
         await this.#harness!.close(this.#context);
+        // A close that checkpoints synced the WAL; one that keeps it (keepWal) left it as it was: what the run committed,
+        // its release record among it, is durable before the claim is sealed and let go.
+        if (this.#options.keepWal) await syncNow(this.#store!, BARRIER.runRelease);
       } catch (error) {
         throw this.#lease.fence(asFenced(error, "closing the Harness"));
       }
