@@ -31,6 +31,7 @@ const html = `<!doctype html>
   <div id="dialog-box">
     <p id="dialog-kind"></p>
     <p id="dialog-message"></p>
+    <p id="dialog-held" hidden>Take over to answer.</p>
     <input id="dialog-prompt" type="text" hidden aria-label="Answer">
     <div id="dialog-buttons"><button id="dialog-accept" type="button">OK</button><button id="dialog-dismiss" type="button">Cancel</button></div>
   </div>
@@ -53,7 +54,7 @@ body { display: flex; flex-direction: column; }
 #drive.agent { color: #f0b429; }
 #drive.person { color: #6cc070; }
 .view-only #screen, .not-held #screen { cursor: not-allowed; }
-#bar #hands { background: #1f4d2b; border-color: #2f6b3d; }
+#bar #hands { background: #1f4d2b; border-color: #2f6b3d; position: relative; z-index: 2; }
 #bar #hands.holding { background: #5a3b00; border-color: #7a5410; }
 #hands[hidden] { display: none; }
 #notice { padding: 6px 10px; background: #5a3b00; color: #ffe2a8; }
@@ -63,8 +64,9 @@ body { display: flex; flex-direction: column; }
 #screen:focus, #stage:focus-within #screen { box-shadow: 0 0 0 2px #3b82f6; }
 #still { padding: 6px 12px; background: #3a3a1a; color: #f3e9a8; border-bottom: 1px solid #5a5a2a; }
 #sink { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; overflow: hidden; pointer-events: none; font-size: 16px; }
-#dialog { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; }
-#dialog[hidden], #notice[hidden], #dialog-prompt[hidden] { display: none; }
+#dialog { position: fixed; inset: 0; z-index: 1; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; }
+#dialog[hidden], #notice[hidden], #dialog-prompt[hidden], #dialog-held[hidden] { display: none; }
+#dialog-held { margin: 0 0 12px; color: #ffe2a8; }
 #dialog-box { background: #222; border: 1px solid #555; border-radius: 6px; padding: 16px; width: min(28em, 90vw); }
 #dialog-kind { margin: 0 0 6px; color: #aaa; text-transform: uppercase; font-size: 12px; }
 #dialog-message { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -146,6 +148,9 @@ const js = `"use strict";
     // A view-only viewer's controls stay off (viewOnly); a take-over one's are on only while it holds the browser, a page's
     // dialog's among them, so no button looks live that cannot act.
     if (takeOver) CONTROLS.forEach(function (id) { $(id).disabled = !holding; });
+    // Take over sits above a page's dialog (the rest of the bar stays under it), so a dialog that came before the take
+    // never keeps the owner from taking over; it says how to answer it.
+    $("dialog-held").hidden = !(takeOver && !holding);
   }
   handsEl.addEventListener("click", function () {
     if (!ready || !takeOver || ws.readyState !== 1) return;

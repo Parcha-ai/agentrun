@@ -700,3 +700,40 @@ test("no_page clears the canvas and drops the frame waiting; a decode begun befo
   assert.ok(await until(async () => (await pixel())[2] > 200), "a frame after no_page is drawn");
   assert.equal(await notice(), "", "and takes 'No page yet' down");
 });
+
+test("a page's dialog opened before the owner takes over never covers Take over: it stays visible and clickable, says to take over to answer, and once held the owner answers the dialog", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-dialog-take", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const viewer = await openTab(attached.sdkCdpUrl, `${web.base}/v/${web.id}#t=${TOKEN}`);
+  tabs.push(viewer);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "idle", takeOver: true, held: false });
+  web.send({ type: "dialog", kind: "confirm", message: "Leave this page?" });
+  assert.ok(await until(() => viewer.evaluate(`!document.getElementById("dialog").hidden`)), "the dialog shows");
+  // What a click at an element's centre lands on: the element itself, or something covering it.
+  const onTop = (id) => viewer.evaluate(`(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return at && at.id; })()`);
+  const press = async (id) => {
+    const box = await viewer.evaluate(`(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await viewer.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+    await viewer.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  };
+  assert.equal(await viewer.evaluate(`document.getElementById("hands").hidden ? null : document.getElementById("hands").textContent`), "Take over");
+  assert.equal(await onTop("hands"), "hands", "Take over is not covered by the dialog");
+  assert.deepEqual(await viewer.evaluate(`["dialog-accept", "dialog-dismiss"].map((id) => document.getElementById(id).disabled)`), [true, true], "not holding: the dialog cannot be answered");
+  assert.match(await viewer.evaluate(`document.getElementById("dialog").textContent`), /Take over to answer/);
+  await press("hands");
+  assert.ok(await until(() => web.received.some((m) => m.type === "take")), "Take over, pressed over the dialog, sends take");
+  web.send({ type: "hold", held: true });
+  assert.ok(await until(async () => (await viewer.evaluate(`["dialog-accept", "dialog-dismiss"].map((id) => document.getElementById(id).disabled)`)).every((off) => !off)), "held: the dialog's buttons are on");
+  assert.equal(await onTop("dialog-accept"), "dialog-accept");
+  await press("dialog-accept");
+  assert.ok(await until(() => web.received.some((m) => m.type === "dialog" && m.accept === true)), "the owner answered the dialog");
+});
