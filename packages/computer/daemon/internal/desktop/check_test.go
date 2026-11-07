@@ -90,7 +90,11 @@ func TestCheckOnX11RefusesWhatX11CannotDo(t *testing.T) {
 	refused(t, `[{"type":"wait","ms":1},{"type":"type","text":"bell \u0007"}]`, x11Groups, 1, rpc.KindInvalid)
 	refused(t, `[{"type":"type","text":"a\r\n"}]`, x11Groups, 0, rpc.KindInvalid)
 	refused(t, `[{"type":"type","text":`+fmt.Sprintf("%q", strings.Repeat("a", desktop.MaxTypeRunes+1))+`}]`, x11Groups, 0, rpc.KindLimit)
-	refused(t, `[{"type":"key","keys":["a"],"repeat":1001}]`, x11Groups, 0, rpc.KindLimit)
+	// MAX_KEY_REPEAT (protocol.ts) is 100: 101 is refused, 100 runs.
+	refused(t, `[{"type":"key","keys":["a"],"repeat":101}]`, x11Groups, 0, rpc.KindLimit)
+	if f := check(t, `[{"type":"key","keys":["a"],"repeat":100}]`, x11Groups); f != nil {
+		t.Fatalf("repeat 100: %+v", f)
+	}
 	refused(t, `[{"type":"scroll","dy":10001,"unit":"clicks"}]`, x11Groups, 0, rpc.KindLimit)
 	refused(t, `[{"type":"wait","ms":-1}]`, x11Groups, 0, rpc.KindInvalid)
 	for _, ok := range []string{
