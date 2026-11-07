@@ -155,8 +155,6 @@ end, and fails if a box is left. All three run from the repository root at the h
     `child.ts`), `src/hands/**`, or `test/box-*daytona*.live.test.ts`.
   - **Modal:** the diff touches `src/box/modal.ts`, the shared box code, `src/hands/**`, or
     `test/*modal*.live.test.ts`.
-  - A change under `src/home/**` runs the Docker check (the home suites are Docker files) and, when the change moves
-    a session between providers, Daytona and Modal too.
 - **Command:**
 
   ```bash

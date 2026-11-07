@@ -34,7 +34,12 @@ describe("the package's entries", () => {
 	});
 
 	it("keep the entries serve and the harness import", () => {
-		for (const entry of ["@parcha/pi-transport", "@parcha/pi-transport/hands", "@parcha/pi-transport/sync", "@parcha/pi-transport/box/docker"]) {
+		for (const entry of [
+			"@parcha/pi-transport",
+			"@parcha/pi-transport/hands",
+			"@parcha/pi-transport/sync",
+			"@parcha/pi-transport/box/docker",
+		]) {
 			expect(resolved(entry)).toMatch(/^file:/);
 		}
 	});

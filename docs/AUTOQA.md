@@ -267,8 +267,7 @@ the run's files go to. It gives back:
   `mounts` (Docker, as bind mounts); every other provider refuses a spec with any as `unsupported`.
 - `@parcha/pi-transport/sync`: the safe extractor (`extractTar`, `openExtractor`, `removeEntries`) and the sync layer
   (`seedDir`/`pullDir`, `seedAgentHome`/`pullAgentHome`, `HOST_OWNED_HOME`), each answering with a receipt.
-- Not in the seam: `@parcha/pi-transport/home` (its checkpoint vault and store checks included), `./launch` and
-  `./place`. Serve imports none of them; they are deprecated and removed in 0.1.0-beta.31.
+- Not in the seam: `./launch`. Serve does not import it; it is deprecated, to be removed.
 - Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
