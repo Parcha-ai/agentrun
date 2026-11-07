@@ -1581,9 +1581,16 @@ export class Runs {
 
   /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): this
    *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
-   *  server's own tokens. */
+   *  server's own tokens and the secrets it makes (ownSecrets: each webhook trigger's, read now, so a rotation is cut at
+   *  once). */
   private refusedValues(run: Run): string[] {
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(run.handed ?? []), this.options.token, this.options.doorToken];
+    return [...this.serverSecrets(), ...(run.handed ?? [])];
+  }
+
+  /** The values this server holds, whatever run: its secrets wherever its launcher put them and the keys saved on it, its
+   *  own tokens, and the secrets it makes (ownSecrets). */
+  private serverSecrets(): string[] {
+    return [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
@@ -3086,7 +3093,7 @@ export class Runs {
     const at = new Date().toISOString();
     const meta: RunMeta = {
       // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
-      title: clip(redacted(options.title.trim().replace(/\s+/g, " "), [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken]), 80),
+      title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
       created_at: at,
       input: options.input,
       place: options.place,
