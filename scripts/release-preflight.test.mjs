@@ -75,7 +75,7 @@ async function recordPackages(root) {
   const refused = settled.find((outcome) => outcome.status === 'rejected');
   if (refused) throw refused.reason;
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, adapters: true, harness: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, client: true, adapters: true, harness: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -109,8 +109,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-pi-durable-agent-${version}.tgz`, `parcha-pi-git-remote-${version}.tgz`, `parcha-pi-agent-learn-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-pi-durable-agent-${version}.tgz`, `parcha-pi-git-remote-${version}.tgz`, `parcha-pi-agent-learn-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -228,7 +228,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');

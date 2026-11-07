@@ -25,7 +25,7 @@ export { ownVersionPackages };
 const releaseVersion = (directory, manifest, workspaceVersion) => (ownVersionPackages.includes(directory) ? manifest.version : workspaceVersion);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
-export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, adapters: true, harness: true, network: 'prohibited' };
+export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, client: true, adapters: true, harness: true, network: 'prohibited' };
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
 const here = dirname(fileURLToPath(import.meta.url));
