@@ -865,7 +865,6 @@ export function statusOf(run: Run): { status: Status; state: State } {
   return { status: "working", state: "idle" };
 }
 
-/** The trigger a serve.json says started its run, as read back: `{id, firing_key}`, or null. */
 /** A run's first message's origin as its serve.json keeps it. A run with a trigger (`trigger`, read from the same file)
  *  always has a trigger's: the kept one when it names that trigger and has the owner its source makes it (true for a
  *  schedule alone), else that trigger's with owner false, so a forged or lost origin never reads as the person's or the
@@ -880,6 +879,7 @@ function inputOriginOf(stored: unknown, trigger: RunTrigger | null): MessageOrig
   return { kind: "trigger", trigger_id: trigger.id, source, owner: false };
 }
 
+/** The trigger a serve.json says started its run, as read back: `{id, firing_key}`, or null. */
 function triggerOf(meta: Partial<RunMeta> | null): RunTrigger | null {
   const trigger = meta?.trigger as unknown;
   return isObject(trigger) && typeof trigger.id === "string" && typeof trigger.firing_key === "string" ? { id: trigger.id, firing_key: trigger.firing_key } : null;
