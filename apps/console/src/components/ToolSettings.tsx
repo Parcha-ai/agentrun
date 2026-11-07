@@ -117,10 +117,22 @@ export function Resolves({ value, prefix, tool }: { value: string | undefined; p
 /** What a capability resolves to on each harness, one line each. */
 export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORDER.map((h) => <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} tool={choice.name} />)}</>;
 
+/** A catalog tool's permission as the server applies it to an agent that sets none (tool-gate.ts permissionFrom): the
+ *  server's setting for the tool, else for every tool of its MCP server (`mcp:<server>/*`), else ask; any of allow, ask
+ *  and deny (tool-plane.ts permissionsOf). Undefined for any other tool: capabilities list those. */
+export function catalogGate(name: string, server: ToolSettings): ToolGate | undefined {
+  const mcp = /^mcp:([^/]+)\/.+$/.exec(name);
+  if (!mcp && !name.startsWith("monid.")) return undefined;
+  const keys = mcp ? [name, `mcp:${mcp[1]}/*`] : [name];
+  const set = keys.map((k) => server[k]?.permission).find((p): p is Permission => p === "allow" || p === "ask" || p === "deny");
+  const permission = set ?? "ask";
+  return { name, permission, default_permission: permission, permissions: ["allow", "ask", "deny"] };
+}
+
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], focus, callTools, value, issues, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], serverSettings, focus, callTools, value, issues, onChange }: {
   agent: Agent | null;
   /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
@@ -129,6 +141,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   choices: readonly ToolChoice[];
   /** Each tool's permission on this server (capabilities'): the default of a granted tool's here. */
   gates?: readonly ToolGate[];
+  /** The server's own tool settings (GET /v2/settings/tools), once read: the default of a catalog tool granted here and
+   *  not saved yet, which neither capabilities nor the agent's read list. */
+  serverSettings?: ToolSettings;
   /** A tool to focus the permission of as this opens (a legacy name at its settings key's row). */
   focus?: string;
   /** A workflow agent's: the tools its call nodes call (callNodeTools). Its rows are those alone, each with a permission as
@@ -143,14 +158,18 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   const granted = new Set(tools);
   const offered = choices.filter((c) => granted.has(c.name) || !c.available);
   // Each granted tool's permission, the server's in force its default: as capabilities list it, else as the agent's read
-  // gave it (a catalog tool, monid.<tool> or mcp:<server>/<tool>, which capabilities don't list).
+  // gave it (a catalog tool, monid.<tool> or mcp:<server>/<tool>, which capabilities don't list), else, for a catalog tool
+  // granted and not saved yet, as the server would apply it (catalogGate).
   const accountsOff = gates.some((g) => g.ask_needs === "password");
   const read = (name: string) => agent?.tools?.find((x) => x.name === name);
   const permitted = callTools ? callTools.flatMap((name) => gates.filter((g) => g.name === name)) : [...new Set(tools)].flatMap((name): ToolGate[] => {
     const listed = gates.find((g) => g.name === name);
     if (listed) return [listed];
     const x = read(name);
-    if (!x?.permissions?.length || !x.default_permission) return [];
+    if (!x?.permissions?.length || !x.default_permission) {
+      const fresh = serverSettings && catalogGate(name, serverSettings);
+      return fresh ? [{ ...fresh, ...(accountsOff ? { ask_needs: "password" as const } : {}) }] : [];
+    }
     return [{ name, permission: x.permission ?? x.default_permission, default_permission: x.default_permission, permissions: x.permissions, ...(accountsOff && x.permissions.includes("ask") ? { ask_needs: "password" as const } : {}) }];
   });
   const rows = toolRows(offered, permitted, [...gates.map((g) => g.name), ...choices.map((c) => c.name)]);

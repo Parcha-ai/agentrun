@@ -7,6 +7,7 @@ import { type Agent, toolOffers } from "@/lib/agentForm";
 import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import { toolGates } from "@/lib/toolSettings";
+import type { ToolSettings } from "@/lib/v2";
 
 // A catalog tool (an MCP server's `mcp:<server>/<tool>`, monid's `monid.<tool>`) ticked in the Tools step and not saved
 // yet: its row in "This agent's tool settings" is there at once, with the permission the server would apply as its
@@ -92,7 +93,7 @@ describe("the Tools step, a catalog tool ticked and not saved yet", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     const gates = toolGates(GATES.map((g) => ({ ...g, ask_needs: "password" })));
-    const render = (serverSettings: Record<string, unknown>) => act(() => root!.render(createElement(AgentToolSettings, { agent: null, harness: "pi", tools: ["read", "monid.search"], choices: [], gates, serverSettings, value: {}, issues: {}, onChange: () => {} })));
+    const render = (serverSettings: ToolSettings) => act(() => root!.render(createElement(AgentToolSettings, { agent: null, harness: "pi", tools: ["read", "monid.search"], choices: [], gates, serverSettings, value: {}, issues: {}, onChange: () => {} })));
     render({});
     const select = () => host.querySelector<HTMLSelectElement>('select[aria-label="monid.search permission"]');
     expect([...(select()?.options ?? [])].map((o) => [o.textContent, o.disabled])).toEqual([["allow", false], ["ask (default)", true], ["deny", false]]);
