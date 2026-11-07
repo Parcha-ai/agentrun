@@ -13,6 +13,13 @@ const ABSOLUTE = /(?:^|[\s`'"(\[])\/[^\s/]/m;
 /** A note's block, as the prompt asks for one. */
 const block = (file, text = note(), fence = "```") => `${fence}note ${file}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}`;
 
+test("the prompt says a rule for every reply is a note, which every later run reads, and a skill is the steps of one kind of job, read only when that job comes", () => {
+  const prompt = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"] }).replace(/\s+/g, " ");
+  assert.ok(prompt.includes("A rule for every reply (its format, its tone, what it always includes) is a note, which every later run reads; a skill is the steps of one kind of job, read only when that job comes."), prompt);
+  // Beside it, a skill's job still needs no note.
+  assert.ok(prompt.includes("A job you keep a skill for needs no note beside it."));
+});
+
 test("the prompt asks for the notes in the answer, one ```note block each, in the note format, with no tool; it says only the answer counts, names the folder, supersede and never reuse a name, and that nothing is fine", () => {
   const prompt = reflectPrompt({ dir: DIR, active: 3 });
   assert.ok(prompt.includes("```note refund-policy-path.md\n---\nname: A short title\ndescription: One line that says when it applies\ntype: user, feedback, project or reference\n---\nThe memory itself, in a few lines.\n```\n"));

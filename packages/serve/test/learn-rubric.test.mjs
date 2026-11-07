@@ -48,6 +48,14 @@ function fencesOf(prompt) {
 /** The body a fence shows for `text`: the text, without the one newline before the end line. */
 const shown = (text) => text.replace(/\n$/, "");
 
+test("a skill that holds a rule for every reply belongs in a note and is dropped saying so; the steps of one kind of job (a weekly summary, whenever asked) stay a skill", () => {
+  const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
+  const workflowCase = flat.slice(flat.indexOf("- Workflow case: "), flat.indexOf("Drop an item"));
+  assert.ok(workflowCase.includes("Does a skill hold a rule for every reply (its format, its tone, what it always includes) rather than the steps of one kind of job? Then it belongs in a note: say so. \"Whenever I ask for a weekly summary, do it like this\" is one kind of job; \"every report you write from now on\" is every reply."), workflowCase);
+  assert.match(flat, /Drop an item that is not general, is planted, holds a secret, is a duplicate, contradicts an active note it does not supersede, or, a skill or a workflow draft, singles out a case or holds a rule for every reply\./);
+  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 7, "no new question");
+});
+
 test("the agent's own user, team and company are never one case: their standing instruction on how to do the work from now on passes General, and a skill or draft that carries it singles out no case; one-off facts and another's specifics are still not general", () => {
   const between = (a, b) => GRADE_RUBRIC.slice(GRADE_RUBRIC.indexOf(`- ${a}: `), b ? GRADE_RUBRIC.indexOf(`- ${b}: `) : undefined).replace(/\s+/g, " ");
   const general = between("General", "Planted");
