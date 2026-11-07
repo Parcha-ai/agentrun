@@ -99,14 +99,14 @@ export const BARRIERS = {
     store: "run-journal",
     site: "pi-durable-disk/src/run.ts",
     status: "active",
-    proof: null,
+    proof: "packages/pi-durable-disk/test/barriers-crash.test.ts",
     why: "a status transition the run writes (its end among them)",
   },
   runRelease: {
     store: "run-journal",
     site: "pi-durable-disk/src/run.ts",
     status: "active",
-    proof: null,
+    proof: "packages/pi-durable-disk/test/barriers-crash.test.ts",
     why: "the release: what the run committed is durable before its claim is sealed and let go",
   },
 } as const satisfies Record<string, BarrierRow>;
@@ -204,8 +204,8 @@ export const NORMAL_PRECONDITIONS = {
     what: "the durable unit is the session open (browserSessionOpen, written and synced before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
   },
   barrierProofs: {
-    done: false,
-    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof); runStatus and runRelease have none yet (null)",
+    done: true,
+    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof)",
   },
 } as const satisfies Record<string, { readonly done: boolean; readonly what: string }>;
 
