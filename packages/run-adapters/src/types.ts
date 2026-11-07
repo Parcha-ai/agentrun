@@ -104,9 +104,9 @@ export interface SessionWriter {
    *  `open` of the key has resolved. */
   append(records: readonly SessionRecord[]): Promise<void>;
   /** Make every record appended so far survive a lost box, not only a dead process: the kernel calls it after an
-   *  effect's start and before the effect runs. A writer whose appends are durable already leaves it out. A wrapper
-   *  passes it on (serialWriter), or the barrier is lost. */
-  sync?(): Promise<void>;
+   *  effect's start and before the effect runs. A writer whose appends are durable already resolves at once. A wrapper
+   *  passes it on (serialWriter): a writer without one is refused at the first effect that needs it. */
+  sync(): Promise<void>;
 }
 
 /** What one session is. */

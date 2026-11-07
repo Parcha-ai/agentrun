@@ -535,7 +535,7 @@ test("an opencode turn whose stop lands while send() is still recording the prom
   const reached = new Promise((resolve) => { held = resolve; });
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => {
     if (records.some((r) => r.kind === "kernel.submission" && r.data?.text === "go")) { held(); await gate; }
     return inner.append(records);
   } };
@@ -732,7 +732,7 @@ function holdingWriter(inner, match) {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   let done = false;
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => {
     for (const r of records) if (r.kind === "kernel.submission" && typeof r.data?.text === "string") ids.set(r.data.text, r.data.id);
     if (!done && records.some((r) => match(r, ids))) { done = true; held(); await gate; }
     return inner.append(records);

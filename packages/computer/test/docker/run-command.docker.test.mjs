@@ -97,7 +97,7 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 		connection = connected.value;
 		assert.equal(connection.hello.os, "linux");
 		assert.equal(connection.hello.arch, arch);
-		assert.deepEqual(connection.hello.capabilities, ["exec", "files", "processes"]);
+		assert.deepEqual([connection.hello.kind, connection.hello.groups], ["linux", ["exec", "files", "processes"]]);
 	});
 
 	it("has no interface but lo with network none", async () => {

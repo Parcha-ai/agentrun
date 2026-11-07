@@ -285,11 +285,12 @@ func TestAProcessOutlivesItsConnectionAndTwoConnectionsShareOneTable(t *testing.
 	in := startInit(t)
 	a := dial(t, in.socket)
 	var hello struct {
-		Capabilities []string `json:"capabilities"`
+		Kind   string   `json:"kind"`
+		Groups []string `json:"groups"`
 	}
 	a.ok("hello", map[string]any{"client": "test"}, &hello)
-	if strings.Join(hello.Capabilities, ",") != "exec,files,processes" {
-		t.Fatalf("capabilities %v", hello.Capabilities)
+	if hello.Kind != "linux" || strings.Join(hello.Groups, ",") != "exec,files,processes" {
+		t.Fatalf("hello %+v", hello)
 	}
 	var p started
 	a.ok("process.start", map[string]any{"argv": []string{"sh", "-c", "i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done"}}, &p)

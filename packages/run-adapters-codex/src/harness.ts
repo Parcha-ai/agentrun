@@ -262,7 +262,7 @@ export class RolloutTailError extends Error {
 
 function testGuard(): void {
   if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-harness-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
-  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
+  if (!process.env.NODE_TEST_CONTEXT) throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
   if (process.env.NODE_ENV === 'production') throw new TypeError('agentrun-harness-codex: a stand-in app-server refuses to run in production');
 }
 

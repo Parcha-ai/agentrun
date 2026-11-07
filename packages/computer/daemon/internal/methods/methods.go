@@ -14,18 +14,22 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
-// Capabilities is what this daemon offers, as hello reports it.
-var Capabilities = []string{"exec", "files", "processes"}
+// Groups is what this daemon offers, as hello reports it: the groups of src/protocol.ts it answers.
+var Groups = []string{"exec", "files", "processes"}
+
+// Kind is what a computer with this daemon is, as hello reports it. A daemon with no display is a linux computer.
+const Kind = "linux"
 
 type HelloParams struct {
 	Client string `json:"client"`
 }
 
 type HelloResult struct {
-	Version      string   `json:"version"`
-	OS           string   `json:"os"`
-	Arch         string   `json:"arch"`
-	Capabilities []string `json:"capabilities"`
+	Version string   `json:"version"`
+	OS      string   `json:"os"`
+	Kind    string   `json:"kind"`
+	Arch    string   `json:"arch"`
+	Groups  []string `json:"groups"`
 }
 
 type ExecRunParams struct {
@@ -45,7 +49,7 @@ const maxTimeoutMs = 24 * 60 * 60 * 1000
 func Handlers(version string, table *process.Table) map[string]rpc.Handler {
 	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
-			return HelloResult{Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: Capabilities}, nil
+			return HelloResult{Version: version, OS: runtime.GOOS, Kind: Kind, Arch: runtime.GOARCH, Groups: Groups}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil

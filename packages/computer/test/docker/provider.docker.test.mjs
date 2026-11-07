@@ -72,6 +72,7 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 			assert.equal(attached.value.spec.image, "alpine:3.20", id);
 			assert.match(attached.value.spec.user, /^\d+:\d+$/, id);
 			assert.notEqual(attached.value.spec.user.split(":")[0], "0", `${id}: the provider's default user is not root`);
+			assert.equal(attached.value.spec.kind, "linux", `${id}: the kind its daemon's hello reports`);
 		}
 	});
 

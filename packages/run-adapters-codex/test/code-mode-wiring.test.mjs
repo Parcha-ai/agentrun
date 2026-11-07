@@ -75,7 +75,7 @@ async function cutOff({ js, keep = () => true, after = (_seen, n) => [say(n)], t
     return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const writer = await store.open(spec.key);
-  const filtered = { key: writer.key, read: () => writer.read(), append: (records) => writer.append(records.filter(keep)) };
+  const filtered = { key: writer.key, sync: () => writer.sync(), read: () => writer.read(), append: (records) => writer.append(records.filter(keep)) };
   const died = new AbortController();
   const a = await adapter(fetch).open(spec, { writer: filtered, models: MODELS, signal: died.signal, onEvent: () => {} });
   await a.send('pay');
