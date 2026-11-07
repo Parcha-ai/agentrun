@@ -97,10 +97,17 @@ test("an image over read's bound is refused, and the box sends at most one byte 
   assert.deepEqual(sent, [READ_IMAGE_MAX_BYTES + 1], "the box sent max + 1 bytes of the 6 MB, no more");
 });
 
-test("read outside work/ stays confined for anything but an image: a text file in /tmp, a file named .png that is not one, a host path", async () => {
-  const { source } = fileBox({ "/tmp/notes.txt": Buffer.from("secret"), "/tmp/fake.png": Buffer.from("not an image at all") });
+test("an image path the box can't read, or whose bytes are no image, is refused in words of its own, not as outside the workspace", async () => {
+  const { source } = fileBox({ "/tmp/fake.png": Buffer.from("not an image at all") });
   const read = source.tools.find((tool) => tool.name === "read");
-  for (const path of ["/tmp/notes.txt", "/tmp/fake.png", "/etc/hostname", "~/a.png", "file:///tmp/a.png"]) {
+  await assert.rejects(read.execute({ path: "/tmp/missing.png" }, api(), {}), (error) => error.message === "/tmp/missing.png could not be read in the box" && error.name !== "PathOutsideWorkError");
+  await assert.rejects(read.execute({ path: "/tmp/fake.png" }, api(), {}), (error) => error.message === "/tmp/fake.png is not an image" && error.name !== "PathOutsideWorkError");
+});
+
+test("read outside work/ stays confined for anything but an image: a text file in /tmp, a host path", async () => {
+  const { source } = fileBox({ "/tmp/notes.txt": Buffer.from("secret") });
+  const read = source.tools.find((tool) => tool.name === "read");
+  for (const path of ["/tmp/notes.txt", "/etc/hostname", "~/a.png", "file:///tmp/a.png"]) {
     await assert.rejects(read.execute({ path }, api(), {}), { name: "PathOutsideWorkError" }, path);
   }
 });

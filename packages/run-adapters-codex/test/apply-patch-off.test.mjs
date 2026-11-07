@@ -3,11 +3,21 @@
 // (15 dead calls in 7 of 29 benchmark runs), and Codex 0.164 has no feature that removes it. Its model catalog's
 // `apply_patch_tool_type` does: the session's machine hands Codex its own bundled catalog (`codex debug models --bundled`)
 // with that one field null for every model (`model_catalog_json`). developer-messages.test.mjs checks the pinned binary,
-// through the adapter, offers none.
+// through the adapter, offers none. A binary that gives no catalog is never silent: the machine's notes say why.
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
 import { MODEL_CATALOG_FILE, patchlessCatalog, withoutApplyPatch } from '../dist/catalog.js';
 import { checkConfig } from '../dist/config.js';
+import { localMachine } from '../dist/host/machine.js';
+import { CODEX_ROUTES, gatewayHandler } from '../dist/host/process.js';
+
+const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-catalog-'));
+after(() => rmSync(ROOT, { recursive: true, force: true }));
+let n = 0;
+const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 
 const entry = (slug, extra = {}) => ({ slug, display_name: slug, apply_patch_tool_type: 'freeform', shell_type: 'unified_exec', tool_mode: 'code_mode_only', ...extra });
 const dirs = { home: '/vm/home', tmp: '/vm/tmp', own: '/vm/cache/codex-catalog' };
@@ -42,25 +52,67 @@ test("the catalog is read from the session's own binary, in a CODEX_HOME of its 
   assert.equal(MODEL_CATALOG_FILE, 'model-catalog.json');
   const bundled = JSON.stringify({ models: [entry('gpt-6-luna'), entry('gpt-6-sol')] }, null, 2);
   const c = codex(bundled);
-  const logged = [];
-  const bin = { command: '/opt/codex-a', log: (msg) => logged.push(msg) };
-  const bytes = await patchlessCatalog(c.spawn, bin, dirs, new AbortController().signal);
+  const bin = { command: '/opt/codex-a' };
+  const read = await patchlessCatalog(c.spawn, bin, dirs, new AbortController().signal);
   assert.deepEqual(c.spawned.map((s) => [s.command, ...s.args]), [['/opt/codex-a', 'debug', 'models', '--bundled']]);
   assert.deepEqual([c.spawned[0].env.CODEX_HOME, c.spawned[0].cwd], ['/vm/cache/codex-catalog', '/vm/cache/codex-catalog'], "not the session's CODEX_HOME");
-  assert.deepEqual(JSON.parse(new TextDecoder().decode(bytes)).models.map((x) => [x.slug, x.apply_patch_tool_type]), [['gpt-6-luna', null], ['gpt-6-sol', null]]);
-  assert.deepEqual(logged, []);
+  assert.equal(read.why, undefined);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(read.bytes)).models.map((x) => [x.slug, x.apply_patch_tool_type]), [['gpt-6-luna', null], ['gpt-6-sol', null]]);
   // The same binary again: its catalog, not a second read.
-  assert.equal(await patchlessCatalog(c.spawn, bin, dirs, new AbortController().signal), bytes);
+  assert.equal((await patchlessCatalog(c.spawn, bin, dirs, new AbortController().signal)).bytes, read.bytes);
   assert.equal(c.spawned.length, 1);
   assert.throws(() => checkConfig({ model_catalog_json: '/tmp/mine.json' }), /config\.model_catalog_json is set by the harness/);
 });
 
-test("a binary that gives no catalog gives none, and says so in the log: the session runs on Codex's own", async () => {
+test("a binary that gives no catalog gives a reason instead, never silence; it is not remembered, so the next drive tries again", async () => {
   const c = codex('usage: codex app-server --stdio', 2);
-  const logged = [];
-  assert.equal(await patchlessCatalog(c.spawn, { command: '/opt/codex-b', log: (msg) => logged.push(msg) }, dirs, new AbortController().signal), undefined);
-  assert.match(logged.join('\n'), /bundled model catalog could not be read/);
-  // Not remembered: the next drive tries again.
+  const read = await patchlessCatalog(c.spawn, { command: '/opt/codex-b' }, dirs, new AbortController().signal);
+  assert.equal(read.bytes, undefined);
+  assert.match(read.why, /^Codex's own apply_patch stays listed: its bundled model catalog could not be read \(exit code 2: error: unknown subcommand\)/);
   await patchlessCatalog(c.spawn, { command: '/opt/codex-b' }, dirs, new AbortController().signal);
   assert.equal(c.spawned.length, 2);
+});
+
+const route = { routes: CODEX_ROUTES, models: { model: 'luna-test' }, credential: () => 'provider-secret', target: 'https://provider.invalid' };
+const hooks = { beforeRequest: async () => {}, afterRequest: async () => {} };
+/** A stand-in binary in `dir`: `script` is its shell body. */
+const binaryIn = (dir, script) => {
+  const path = join(dir, 'codex-stub');
+  writeFileSync(path, `#!/bin/sh\n${script}\n`);
+  chmodSync(path, 0o755);
+  return path;
+};
+
+test("on the machine: a binary that fails --bundled leaves Codex's catalog and config alone, and the machine's notes say why", async () => {
+  const dir = scratch();
+  const command = binaryIn(dir, 'echo "error: unexpected argument --bundled" >&2; exit 2');
+  const machine = await localMachine({ dir: join(dir, 'session'), env: { PATH: process.env.PATH }, proxy: { hooks, tools: [] }, catalog: { command } })({ ctx: { runId: 'r1' }, model: gatewayHandler(route) });
+  try {
+    assert.equal(machine.notes.length, 1, JSON.stringify(machine.notes));
+    assert.match(machine.notes[0], /^Codex's own apply_patch stays listed: its bundled model catalog could not be read \(exit code 2: error: unexpected argument --bundled\)/);
+    assert.match(machine.notes[0], /no environment to run in/);
+    const config = { features: {} };
+    machine.configure?.(config);
+    assert.equal(config.model_catalog_json, undefined);
+    assert.equal(existsSync(join(machine.dirs['codex-home'], MODEL_CATALOG_FILE)), false);
+  } finally {
+    await machine.close();
+  }
+});
+
+test("on the machine: a binary that gives its catalog has no note, and Codex's config names the catalog in codex-home", async () => {
+  const dir = scratch();
+  const catalog = join(dir, 'bundled.json');
+  writeFileSync(catalog, JSON.stringify({ models: [entry('luna-test')] }, null, 2));
+  const command = binaryIn(dir, `[ "$1 $2 $3" = "debug models --bundled" ] || exit 9; cat '${catalog}'`);
+  const machine = await localMachine({ dir: join(dir, 'session'), env: { PATH: process.env.PATH }, proxy: { hooks, tools: [] }, catalog: { command } })({ ctx: { runId: 'r2' }, model: gatewayHandler(route) });
+  try {
+    assert.deepEqual(machine.notes, []);
+    const config = { features: {} };
+    machine.configure?.(config);
+    assert.equal(config.model_catalog_json, join(machine.dirs['codex-home'], MODEL_CATALOG_FILE));
+    assert.deepEqual(JSON.parse(readFileSync(config.model_catalog_json, 'utf8')).models.map((m) => m.apply_patch_tool_type), [null]);
+  } finally {
+    await machine.close();
+  }
 });
