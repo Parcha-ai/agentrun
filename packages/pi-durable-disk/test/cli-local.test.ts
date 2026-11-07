@@ -9,8 +9,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli.ts";
-import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
-import { processTableHooks, type ProcessTable } from "../src/process-table.ts";
+import { processTable, processTableHooks, thisBoot, type ProcessTable } from "../src/process-table.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -158,14 +157,14 @@ describe("the CLI on a local directory", () => {
     const live = spawn("sleep", ["60"], { stdio: "ignore" });
     try {
       const pid = live.pid ?? 0;
-      const ticks = procStartTicks(pid)!;
+      const ticks = processTable().snapshot().info(pid)!.start;
       const runJson = (heartbeatAgoMs: number, startTicks: number) => ({
         run: "orders",
         status: "running",
         generation: 3,
         sealedSeq: null,
         wakeAt: null,
-        holder: { driver: "local", host: hostname(), bootId: currentBootId(), pid, since: new Date().toISOString(), startTicks },
+        holder: { driver: "local", host: hostname(), bootId: thisBoot(), pid, since: new Date().toISOString(), startTicks },
         heartbeatAt: new Date(Date.now() - heartbeatAgoMs).toISOString(),
         updatedAt: new Date().toISOString(),
         detail: null,

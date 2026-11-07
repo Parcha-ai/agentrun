@@ -105,7 +105,6 @@ function setup(
     faux: scripted.faux,
     open: () =>
       openDurableRun(ref, {
-        mountToken: "unused",
         acquire: async () => {
           claim.log.push("acquire");
           return claim;
@@ -779,7 +778,7 @@ describe("the owner lock", () => {
     const dir = scratchRoot("lock");
     try {
       const first = await setup(dir.root).open();
-      const second = setup(dir.root, { claim: { reused: true } });
+      const second = setup(dir.root);
       const refused = await second.open().then(() => null, (error: unknown) => error);
       assert.ok(refused instanceof HeldError, String(refused));
       assert.equal(refused.holder, "owner-lock");

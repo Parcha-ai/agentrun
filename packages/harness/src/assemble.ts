@@ -69,7 +69,7 @@ export async function placeAt(root?: string, id: string = RUN_KEY): Promise<RunP
 function localClaim(ref: RunRef, place: RunPlace): Claim {
   let fence: { cause: unknown } | undefined;
   return {
-    ref, disk: ref.disk, root: place.root, work: place.work, store: place.store, reused: false, forced: false, timings: { mountMs: 0, verifyMs: 0 },
+    ref, disk: ref.disk, root: place.root, work: place.work, store: place.store,
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
@@ -116,7 +116,7 @@ export type Composed = {
 export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
   const composed = await compose(place, host, job, options);
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
-    mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
+    acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root),
     harness: { registry: composed.registry, models: composed.models }, env: options.env ?? runEnv,
     ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
   });

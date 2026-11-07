@@ -6,7 +6,6 @@ import { constants } from "node:fs";
 import { open, readFile, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { Worker } from "node:worker_threads";
 import type { JsonValue } from "@earendil-works/chord";
 import { EXIT_DATAERR, FencedError, ownWriteFenced, PdaError } from "./errors.ts";
 import { fdPath, hold } from "./held-fd.ts";
@@ -203,144 +202,10 @@ export async function writeRunRecord(root: string | ClaimDir, record: RunRecord,
   }
 }
 
-// ---- the supervisor's start mark --------------------------------------------------------------------------------------
-
-/**
- * The supervisor's record of its last start of a run, in the run's directory: the generation the instance will write,
- * when, by whom, and the failed starts right before it (`failures`; `lastExit`, what the decision saw of the last one).
- */
-export const START_MARK = "start.json";
-export type StartMark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
-
-/** A start mark's text as a mark, or null when it is not one (an unreadable mark gives no grace). */
-export function parseStartMark(text: string): StartMark | null {
-  try {
-    const v = JSON.parse(text) as Partial<StartMark>;
-    if (!Number.isSafeInteger(v.generation) || (v.generation as number) < 1 || typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) return null;
-    const failures = Number.isSafeInteger(v.failures) && (v.failures as number) >= 0 ? (v.failures as number) : 0;
-    const lastExit = typeof v.lastExit === "string" ? v.lastExit : null;
-    return { generation: v.generation as number, at: v.at, by: typeof v.by === "string" ? v.by : null, failures, lastExit };
-  } catch {
-    return null;
-  }
-}
-
-// The keeper's code is plain CommonJS in a string, started with `eval: true` and no inherited Node flags, as the lease
-// watchdog's is (src/watchdog.ts says why). One refresh at a time, all synchronous: a stop (the message) is handled only
-// between two refreshes, so none is still writing once the thread has exited. It writes only while `dir` is still the
-// directory it first saw (its device and inode, read on this thread, so a stalled mount never holds the caller's): a path
-// that names another (a descriptor number reused) or none is never written, and the keeper stops. A rewrite that fails is
-// checked the same way, so a directory that moved between the check and the write is reported as moved, not as a failed
-// write. Its first failure goes to the main thread, once.
-const KEEPER_SOURCE = `"use strict";
-const fs = require("node:fs");
-const path = require("node:path");
-const { parentPort, workerData } = require("node:worker_threads");
-const { dir, name, everyMs } = workerData;
-const file = path.join(dir, name);
-let first;
-let stopped = false;
-let reported = false;
-const report = (message) => {
-  if (reported) return;
-  reported = true;
-  parentPort.postMessage(message);
-};
-// Why dir is no longer the directory the keeper first saw, or null while it is (the first call records it).
-function moved() {
-  let now;
-  try {
-    now = fs.statSync(dir, { bigint: true });
-  } catch (error) {
-    return "its directory cannot be reached (" + (error.code || error.message) + "), so it is no longer the directory the keeper started on";
-  }
-  first ??= { dev: now.dev, ino: now.ino };
-  return now.dev === first.dev && now.ino === first.ino ? null : "its directory is no longer the directory the keeper started on";
-}
-function refresh() {
-  if (stopped) return;
-  const away = moved();
-  if (away) {
-    stopped = true;
-    return report(away);
-  }
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return; // no mark: nothing to keep
-    return report("reading it failed (" + (error.code || error.message) + ")");
-  }
-  let mark;
-  try {
-    mark = JSON.parse(text);
-  } catch {
-    return; // not a mark: nothing to keep
-  }
-  if (mark === null || typeof mark !== "object" || mark.generation !== 1 || typeof mark.at !== "string" || !Number.isFinite(Date.parse(mark.at))) return;
-  try {
-    const temp = file + ".tmp";
-    const fd = fs.openSync(temp, "w", 0o644);
-    try {
-      fs.writeSync(fd, JSON.stringify({ ...mark, at: new Date().toISOString() }));
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(temp, file);
-    const handle = fs.openSync(dir, "r");
-    try {
-      fs.fsyncSync(handle);
-    } finally {
-      fs.closeSync(handle);
-    }
-  } catch (error) {
-    // The directory may have moved after the check above: then that is the reason, and the keeper stops.
-    const away = moved();
-    if (away) {
-      stopped = true;
-      return report(away);
-    }
-    report("rewriting it failed (" + (error.code || error.message) + ")");
-  }
-}
-const timer = setInterval(refresh, everyMs);
-refresh();
-parentPort.once("message", () => {
-  clearInterval(timer);
-  parentPort.close();
-});
-`;
-
-/**
- * Keeps a supervisor's start mark for generation 1 in `dir` fresh: its `at` rewritten every `everyMs` (temp file, fsync,
- * rename, fsync the directory), the rest of it as the supervisor wrote it; nothing is made when there is none. On a thread of
- * its own, so a caller whose thread is blocked (a synchronous import) is kept fresh too. Only while `dir` is the directory
- * the keeper first saw there. Best effort: a failure leaves the mark as it was, and the first one is a process warning
- * (`PDA_START_MARK`) naming `label`; the grace then runs out as for any start. Returns the stop, which resolves once the
- * thread has exited, so no write outlives it.
- */
-export function keepStartMark(dir: string, everyMs: number, label = dir): () => Promise<void> {
-  const warn = (why: string) =>
-    process.emitWarning(`the start mark of ${label} is no longer kept fresh: ${why}; a supervisor's start grace runs out as for any start`, { code: "PDA_START_MARK" });
-  const worker = new Worker(KEEPER_SOURCE, { eval: true, workerData: { dir, name: START_MARK, everyMs }, execArgv: [] });
-  worker.on("message", (why: string) => warn(why));
-  worker.on("error", (error) => warn(`its thread failed (${error.message})`));
-  worker.unref();
-  const exited = new Promise<void>((resolve) => worker.once("exit", () => resolve()));
-  return () => {
-    worker.ref();
-    worker.postMessage("stop");
-    return exited;
-  };
-}
-
 // ---- the claim directory ----------------------------------------------------------------------------------------------
 
 /** The FencedError code of a claim root that is no longer the mount the instance opened (unmounted, lazily or not). */
 export const CLAIM_UNMOUNTED = "CLAIM_UNMOUNTED";
-/** The file system type of an Archil mount in the mount table. */
-export const ARCHIL_FSTYPE = "fuse.archil";
 
 /**
  * A run root held open as a directory for the life of the instance. `at` is `/proc/self/fd/<n>`, a path the kernel
@@ -369,13 +234,6 @@ export interface ClaimDir {
 
 export interface OpenClaimDirOptions {
   /**
-   * The root must be the mount point of a mount of this type whose device is the opened directory's (default
-   * `fuse.archil`). Null skips the mount table: a run root on a local directory, for tests.
-   */
-  readonly fstype?: string | null;
-  /** Default `/proc/self/mountinfo`. */
-  readonly mountinfo?: string;
-  /**
    * `at` is the root's path, not `/proc/self/fd/<n>`: the default on macOS, which has none. A write is checked against the
    * held directory first (`assertMounted`), but a root renamed and replaced between that check and the write gets the
    * write. For a local directory only.
@@ -390,29 +248,10 @@ export function deviceName(dev: bigint): string {
   return `${major}:${minor}`;
 }
 
-const unescapeMount = (s: string) => s.replace(/\\([0-7]{3})/g, (_, o: string) => String.fromCharCode(parseInt(o, 8)));
-
-/** Every mount at `mountpoint` in a mountinfo table: its device and its type. */
-function mountsAt(table: string, mountpoint: string): Array<{ dev: string; fstype: string }> {
-  const found: Array<{ dev: string; fstype: string }> = [];
-  for (const line of table.split("\n")) {
-    const f = line.split(" ");
-    const separator = f.indexOf("-", 6);
-    if (separator < 0 || f.length < separator + 2) continue;
-    if (unescapeMount(f[4]!) === mountpoint) found.push({ dev: f[2]!, fstype: f[separator + 1]! });
-  }
-  return found;
-}
-
 const unmounted = (message: string, cause?: unknown) => new FencedError(message, { code: CLAIM_UNMOUNTED, cause });
 
-/**
- * Open `root` as the claim's directory. With an `fstype` (default `fuse.archil`), the mount table must list a mount of
- * that type at `root` on the device of the directory just opened; otherwise, and when the root cannot be opened, a
- * FencedError CLAIM_UNMOUNTED (exit 75).
- */
+/** Open `root` as the claim's directory; a root that cannot be opened is a FencedError CLAIM_UNMOUNTED (exit 75). */
 export async function openClaimDir(root: string, options: OpenClaimDirOptions = {}): Promise<ClaimDir> {
-  const fstype = options.fstype === undefined ? ARCHIL_FSTYPE : options.fstype;
   let handle: FileHandle;
   try {
     handle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY);
@@ -422,15 +261,6 @@ export async function openClaimDir(root: string, options: OpenClaimDirOptions = 
   let held: { dev: bigint; ino: bigint };
   try {
     held = await handle.stat({ bigint: true });
-    if (fstype !== null) {
-      const table = await readFile(options.mountinfo ?? "/proc/self/mountinfo", "utf8");
-      const dev = deviceName(held.dev);
-      const mounts = mountsAt(table, root);
-      if (!mounts.some((m) => m.fstype === fstype && m.dev === dev)) {
-        const listed = mounts.map((m) => `${m.fstype} on ${m.dev}`).join(", ") || "nothing";
-        throw unmounted(`the claim root ${root} is on device ${dev}, not a ${fstype} mount there (the mount table lists ${listed})`);
-      }
-    }
   } catch (error) {
     await handle.close().catch(() => undefined);
     throw error instanceof FencedError ? error : unmounted(`checking the claim root ${root} failed: ${(error as Error).message}`, error);
