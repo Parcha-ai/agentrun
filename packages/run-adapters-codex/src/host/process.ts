@@ -1,13 +1,40 @@
 // The process-harness names the copied Codex harness imports: the copied layer from @parcha/agentrun-kernel/process,
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
+import { toolBridge as kernelToolBridge, type ToolBridge, type ToolBridgeOptions } from "@parcha/agentrun-kernel/process";
+import type { ToolImage } from "@parcha/agentrun-kernel";
 import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
 export {
-  boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, toolBridge, toolKey, transcriptOf,
+  boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, toolKey, transcriptOf,
 } from "@parcha/agentrun-kernel/process";
 export type { BuiltinStart, ToolResult, TranscriptEntry } from "@parcha/agentrun-kernel/process";
+
+/** The kernel's tool bridge, keeping each call's images by its call id until the answer to Codex takes them
+ *  (`takeImages`, code-mode.ts): the harness answers Codex with a result's text, and code mode's request handler adds
+ *  the images as `inputImage` items. */
+export interface ImageBridge extends ToolBridge {
+  takeImages(callId: string): readonly ToolImage[] | undefined;
+}
+
+export function toolBridge(ctx: Parameters<typeof kernelToolBridge>[0], tools: Parameters<typeof kernelToolBridge>[1], options?: ToolBridgeOptions): ImageBridge {
+  const bridge = kernelToolBridge(ctx, tools, options);
+  const images = new Map<string, readonly ToolImage[]>();
+  return {
+    ...bridge,
+    call: async (name, args, callId, signal) => {
+      const result = await bridge.call(name, args, callId, signal);
+      if (callId && result.images?.length) images.set(callId, result.images);
+      return result;
+    },
+    takeImages: (callId) => {
+      const taken = images.get(callId);
+      images.delete(callId);
+      return taken;
+    },
+  };
+}
 
 /** A child's line protocol: one JSON value per line out, lines in. */
 export interface LineChannel {
