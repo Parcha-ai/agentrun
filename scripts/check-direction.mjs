@@ -134,6 +134,16 @@ function literalsIn(file, text) {
 
 const lineOf = (text, index) => text.slice(0, index).split('\n').length;
 
+/** A tsconfig's `paths` targets, each resolved as TypeScript does: against `baseUrl` when set, else the file's own
+ *  directory. Map of the target as written to its absolute path. */
+function pathTargets(file, text) {
+  if (!/(^|[\\/])tsconfig[^\\/]*\.json$/.test(file)) return new Map();
+  const options = ts.parseConfigFileTextToJson(file, text).config?.compilerOptions ?? {};
+  const base = resolve(dirname(file), typeof options.baseUrl === 'string' ? options.baseUrl : '.');
+  const targets = Object.values(options.paths ?? {}).flat().filter((target) => typeof target === 'string');
+  return new Map(targets.map((target) => [target, resolve(base, target)]));
+}
+
 /** Every edge from one workspace to another: { file, line, from, to, via }. */
 export async function edges(root, layers = LAYERS) {
   const all = await workspaces(root);
@@ -152,11 +162,13 @@ export async function edges(root, layers = LAYERS) {
     for (const file of await sourceFiles(join(root, dir))) {
       const text = await readFile(file, 'utf8');
       const rel = posix(relative(root, file));
+      const aliases = pathTargets(file, text);
       // A string with no space in it: a module specifier, a path or a file name. Prose has spaces, so it never matches.
       for (const { value, line } of literalsIn(file, text)) {
         if (!value || /\s/.test(value)) continue;
         let to;
-        if (/^\.\.?\//.test(value)) to = owner(resolve(dirname(file), value));
+        if (aliases.has(value)) to = owner(aliases.get(value));
+        else if (/^\.\.?\//.test(value)) to = owner(resolve(dirname(file), value));
         else if (surfaces.has(dir) && dataFiles.has(value)) to = layers.server[0];
         else to = byName.get(value) ?? byName.get(value.split('/').slice(0, value.startsWith('@') ? 2 : 1).join('/'));
         if (to && to !== dir) found.push({ file: rel, line, from: dir, to, via: value });

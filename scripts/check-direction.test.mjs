@@ -55,6 +55,7 @@ test('every way to reach a package is an edge', async () => {
     'a constant later imported': ['packages/p/src/a.mjs', 'const NAME = "@x/k";'],
     'a relative path into another package': ['packages/k/src/a.ts', "import { s } from '../../s/src/index.ts';"],
     'a tsconfig path alias': ['apps/c/tsconfig.json', '{ "compilerOptions": { "paths": { "@s/*": ["../../packages/s/src/*"] } } }'],
+    'a tsconfig path alias under a baseUrl': ['apps/c/tsconfig.json', '{ /* the root as the base */ "compilerOptions": { "baseUrl": "../..", "paths": { "@s/*": ["packages/s/src/*"] } } }'],
     'a dependency': ['packages/k/package.json', JSON.stringify({ name: '@x/k', dependencies: { '@x/g': '1.0.0' } })],
     'a peer dependency': ['packages/k/package.json', JSON.stringify({ name: '@x/k', peerDependencies: { '@x/s': '1.0.0' } })],
     "a surface naming the server's data file": ['apps/c/src/cli.mjs', 'readFileSync(join(data, ".token"));'],
