@@ -21,6 +21,15 @@ const (
 	failEnv   = "NOCGO_TEST_FAIL"
 )
 
+// The build the test below makes sets these, by the nocgo_probe tag (probe_tag_test.go) and by -ldflags -X, so the
+// child can say whether its own build carried them.
+var (
+	taggedProbe bool
+	ldflagProbe = "unset"
+)
+
+const ldflagVar = "github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo_test.ldflagProbe"
+
 func TestThisTestRunsWithoutCgo(t *testing.T) {
 	nocgo.Require(t)
 	if nocgo.Cgo {
@@ -34,7 +43,7 @@ func TestChildReport(t *testing.T) {
 	if report == "" {
 		t.Skip("run by TestRunRebuildsATestBinaryWithCgoWithoutIt, in the binary nocgo.Run builds")
 	}
-	line := fmt.Sprintf("cgo=%t child=%s CGO_ENABLED=%s args=%s\n", nocgo.Cgo, os.Getenv(nocgo.ChildEnv), os.Getenv("CGO_ENABLED"), strings.Join(os.Args[1:], " "))
+	line := fmt.Sprintf("cgo=%t child=%s CGO_ENABLED=%s tag=%t ldflag=%s args=%s\n", nocgo.Cgo, os.Getenv(nocgo.ChildEnv), os.Getenv("CGO_ENABLED"), taggedProbe, ldflagProbe, strings.Join(os.Args[1:], " "))
 	if err := os.WriteFile(report, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +52,8 @@ func TestChildReport(t *testing.T) {
 	}
 }
 
-// A test binary of this package built with cgo runs its tests in one without, with its arguments and environment, and
-// exits with that one's code.
+// A test binary of this package built with cgo runs its tests in one without, built with the same -tags and -ldflags,
+// with its arguments and environment, and exits with that one's code.
 func TestRunRebuildsATestBinaryWithCgoWithoutIt(t *testing.T) {
 	nocgo.Require(t)
 	tool, err := exec.LookPath("go")
@@ -57,7 +66,7 @@ func TestRunRebuildsATestBinaryWithCgoWithoutIt(t *testing.T) {
 	}
 	dir := t.TempDir()
 	withCgo := filepath.Join(dir, "with-cgo.test")
-	build := exec.Command(tool, "test", "-c", "-o", withCgo, ".")
+	build := exec.Command(tool, "test", "-c", "-o", withCgo, "-tags", "nocgo_probe", "-ldflags", "-X "+ldflagVar+"=carried", ".")
 	build.Env = append(os.Environ(), "CGO_ENABLED=1")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("CGO_ENABLED=1 go test -c: %v: %s", err, out)
@@ -85,8 +94,8 @@ func TestRunRebuildsATestBinaryWithCgoWithoutIt(t *testing.T) {
 		return code, string(line), out.String()
 	}
 	code, line, out := run(false)
-	if code != 0 || !strings.HasPrefix(line, "cgo=false child=1 CGO_ENABLED=0 args=-test.run=^TestChildReport$ -test.v") {
-		t.Fatalf("passing: exit %d, report %q; want exit 0 from a binary without cgo, given the same arguments; output:\n%s", code, line, out)
+	if code != 0 || !strings.HasPrefix(line, "cgo=false child=1 CGO_ENABLED=0 tag=true ldflag=carried args=-test.run=^TestChildReport$ -test.v") {
+		t.Fatalf("passing: exit %d, report %q; want exit 0 from a binary without cgo, built with the same -tags and -ldflags and given the same arguments; output:\n%s", code, line, out)
 	}
 	if !strings.Contains(out, "--- PASS: TestChildReport") {
 		t.Errorf("the child's output did not come through: %s", out)
