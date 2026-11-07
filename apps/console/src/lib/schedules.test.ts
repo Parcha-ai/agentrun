@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, capWords, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
+import { bodyOf, capWords, disabledWords, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
 import type { Firing, Trigger } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
 const trigger = (over: Partial<Trigger> = {}): Trigger => ({
   id: "trg_1", name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" },
   target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
-  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z", last_firing: null, ...over,
+  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z", last_firing: null, failures_in_a_row: 0, disabled: null, ...over,
 });
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_1", by: "schedule", nominal_at: "2026-11-05T09:30:00Z", status: "started", at: "2026-11-05T09:30:01Z", run_id: null, reason: null, error: null, ...over });
 
@@ -23,6 +23,23 @@ describe("a schedule's when, in words", () => {
     vi.stubEnv("TZ", "UTC");
     expect(whenWords({ kind: "schedule", every_s: 300, start_at: "2026-11-04T00:00:00Z" })).toBe("Every 5 minutes");
     expect([60, 90, 3600, 7200, 5400, 86400].map(span)).toEqual(["minute", "90 seconds", "hour", "2 hours", "90 minutes", "24 hours"]);
+  });
+});
+
+// The server turns a schedule off itself after a failure streak, or when its source no longer reads (serve's
+// trigger.disabled): the schedule says why, not just that it is off.
+describe("why a schedule turned itself off", () => {
+  // The count that turned it off is the server's threshold (capabilities' failures_to_pause), not the streak now: a
+  // failed Run now after the shutdown raises the streak, a successful one resets it, and neither changes why.
+  it("says the threshold that turned it off, or that its source can't be read; nothing for one a person paused", () => {
+    const off = { at: "2026-11-05T09:00:00Z", reason: "auto_paused" as const };
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 5, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 6, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 0, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 6, disabled: off }))).toBe("Turned off after failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } }))).toBe("Turned off: its source can't be read (unknown time zone Mars/Base).");
+    expect(disabledWords(trigger({ enabled: false, disabled: null }))).toBeNull();
+    expect(disabledWords(trigger({ enabled: false }))).toBeNull();
   });
 });
 

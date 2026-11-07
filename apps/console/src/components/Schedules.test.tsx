@@ -12,7 +12,7 @@ import type { Firing, Trigger } from "@/lib/v2";
 const NIGHTLY: Trigger = {
   id: "trg_1", name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" },
   target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
-  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z",
+  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z", failures_in_a_row: 0, disabled: null,
   last_firing: { key: "fir_a", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "skipped", at: "2026-11-04T09:30:01Z", run_id: null, reason: "The last run is still working.", error: null },
 };
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_x", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "started", at: "2026-11-04T09:30:01Z", run_id: null, reason: null, error: null, ...over });
@@ -86,7 +86,8 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, min
   root = createRoot(host);
   const went: string[] = [];
   const agentName = (id: string) => (id === "triage" ? "Triage" : id);
-  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery, ...(refreshMs ? { refreshMs } : {}) })));
+  // failuresToPause: the server's threshold for turning a schedule off (capabilities' features.triggers.failures_to_pause).
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery, failuresToPause: 5, ...(refreshMs ? { refreshMs } : {}) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -119,6 +120,14 @@ describe("the schedules list", () => {
     expect(rows[1].textContent).toContain("Not fired yet");
     await t.click(/^New schedule$/);
     expect(t.went).toEqual(["#/schedules/new"]);
+  });
+  it("says a schedule that turned itself off, and why, apart from one a person paused", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const t = await open(server({ triggers: [off] }).v2, {});
+    const row = t.host.querySelector("[data-schedule]")!;
+    expect(row.textContent).toContain("Turned off");
+    expect(row.textContent).toContain("Turned off after 5 failures in a row.");
+    expect(row.textContent).not.toContain("Paused");
   });
   // A schedule fires while its page is open: the page reads again on its own, so a new firing shows with no reload.
   it("reads the schedules again while it is open", async () => {
@@ -268,6 +277,45 @@ describe("one schedule", () => {
     expect(t.text()).toContain("next Nov 5, 1:30 AM");
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
     expect(t.text()).not.toContain("UTC");
+  });
+  it("says why it turned itself off, and Resume turns it on again by enabled alone", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const { v2, calls } = server({ triggers: [off] });
+    const t = await open(v2, { schedule: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off after 5 failures in a row. Resume turns it on again.");
+    await t.click(/^Resume$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ enabled: true }]);
+  });
+  it("says a source that can't be read", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } };
+    const t = await open(server({ triggers: [off] }).v2, { schedule: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off: its source can't be read (unknown time zone Mars/Base). Edit its when, then Resume.");
+  });
+  it("marks a firing that caught up a time missed while the server was down", async () => {
+    const firings = { trg_1: [firing({ key: "f1", status: "started", run_id: "r1", catch_up: true }), firing({ key: "f0", status: "started", run_id: "r0" })] };
+    const t = await open(server({ firings }).v2, { schedule: "trg_1" });
+    const rows = [...t.host.querySelectorAll("[data-firing]")];
+    expect(rows[0].textContent).toContain("On schedule, caught up late");
+    expect(rows[1].textContent).not.toContain("caught up");
+  });
+  // A late firing that did not start a run (skipped, failed, due) keeps the note beside its own outcome.
+  it("marks a caught-up firing whatever came of it", async () => {
+    const firings = { trg_1: [
+      firing({ key: "f3", status: "skipped", reason: "The last run is still working.", catch_up: true }),
+      firing({ key: "f2", status: "failed", error: { code: "agent_not_runnable", message: "No model." }, catch_up: true }),
+      firing({ key: "f1", status: "due", catch_up: true }),
+    ] };
+    const t = await open(server({ firings }).v2, { schedule: "trg_1" });
+    const rows = [...t.host.querySelectorAll("[data-firing]")].map((r) => r.textContent ?? "");
+    expect(rows[0]).toContain("Skipped: The last run is still working. · caught up late");
+    expect(rows[1]).toContain("Failed: No model. · caught up late");
+    expect(rows[2]).toContain("Due · caught up late");
+  });
+  // The count that turned it off stays the server's threshold when a failed Run now after it raises the streak.
+  it("keeps saying the threshold that turned it off after more failures", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 6, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const t = await open(server({ triggers: [off] }).v2, { schedule: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off after 5 failures in a row. Resume turns it on again.");
   });
   it("reads its firings again while it is open, so a timed firing and its run show with no reload", async () => {
     const firings: Record<string, Firing[]> = {};

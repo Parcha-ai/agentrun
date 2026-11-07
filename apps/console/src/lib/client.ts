@@ -54,7 +54,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 /** `limits`: this server's own (the largest upload, the most files a run names); absent on an older server. */
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. Absent on an older server. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number } }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and

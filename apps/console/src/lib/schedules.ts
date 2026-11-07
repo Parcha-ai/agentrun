@@ -37,6 +37,17 @@ export function whenWords(source: TriggerSource): string {
   return `Every ${span(source.every_s)}`;
 }
 
+/** Why the server turned a schedule off itself (`disabled`): a failure streak, or a source it can't read; null for one
+ *  that is on, or that a person paused. The streak is named by the server's threshold (`failuresToPause`, capabilities'
+ *  features.triggers.failures_to_pause), the count that turned it off: the schedule's streak now keeps moving after (a
+ *  failed Run now raises it, a successful one resets it). */
+export function disabledWords(t: Pick<Trigger, "disabled">, failuresToPause?: number): string | null {
+  const off = t.disabled;
+  if (!off) return null;
+  if (off.reason === "source_unreadable") return `Turned off: its source can't be read (${off.detail}).`;
+  return failuresToPause ? `Turned off after ${failuresToPause} failures in a row.` : "Turned off after failures in a row.";
+}
+
 /** Dollars: "$2.00", "$0.50"; an amount finer than a cent as given ("$0.005"). */
 export const dollars = (usd: number) => `$${Number.isInteger(Math.round(usd * 1e6) / 1e4) ? usd.toFixed(2) : String(usd)}`;
 /** A cost cap: "$2.00 a run", "$0.50 a run"; a cap finer than a cent as given ("$0.005 a run"). */
