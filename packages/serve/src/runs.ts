@@ -283,7 +283,8 @@ export type Run = {
   log: RowLog;
   /** The run's rows as they come in (before the log names them), with each `ask_person` answer's waiting row. */
   rows: TimelineEvent[];
-  /** The reducer of its door's events that makes those rows (follow), while a connection to its process stands. */
+  /** The reducer of its door's events that makes those rows (follow): the newest connection's once its snapshot is in,
+   *  the one before it until then. */
   timeline?: ReturnType<typeof timelineReducer>;
   /** The person's messages the run took, and how each one's turn ended (turns.ts): its end is read from them. */
   turns: Turns;
@@ -2046,8 +2047,6 @@ export class Runs {
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
     const reducer = timelineReducer({ path: rowPaths(run.dir), redact: this.redactor(run), redactLive: (text) => redactedLive(text, this.refusedValues(run)) });
-    // The rows this connection makes, for a stop to read as over at once (stopTurn).
-    run.timeline = reducer;
     // `inputs=1`: the snapshot carries pi's newest input submissions, the settlements its turns end on (turns.ts).
     const up = await fetch(new URL(`/events?inputs=1&skip=${encodeURIComponent(REFLECT_REQUEST)}`, door), { signal, headers: { ...this.headers(run), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
@@ -2083,6 +2082,9 @@ export class Runs {
         noteApprovals(run, entries);
         const redact = this.redactor(run);
         reducer.apply(events.map((e) => (Array.isArray(e.entries) ? { ...e, entries: redactGateMessages(e.entries, redact) } : e.entry !== undefined ? { ...e, entry: redactGateMessages([e.entry], redact)[0] } : e)) as never);
+        // The rows this connection makes, for a stop to read as over at once (stopTurn): only once its snapshot is in.
+        // Until then the last connection's reducer stands, whose rows the run shows; a new one has none yet.
+        if (event === "snapshot") run.timeline = reducer;
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
         // as the settled read counts it, never one in flight. Read so from the stop on (stopTurn), not from the turn's
         // end reaching here: the run reads stopped from then. A message sent since (`submitted`) starts a turn of its own.
