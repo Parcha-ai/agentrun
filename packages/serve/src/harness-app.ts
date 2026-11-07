@@ -36,7 +36,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, type NoteRequest, RUNNER_RECORDS, type SessionPort, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, type NoteRequest, RUNNER_RECORDS, type SessionPort, type SessionSpec, TurnParked, type TurnStatus } from "@parcha/agentrun-kernel";
 import { foldSession, INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { failureText } from "@parcha/agentrun-kernel/process";
 import { BARRIER, syncNow, type DoorContext, type DoorEvent, type DoorHook, type DurableRun } from "@parcha/pi-durable-disk";
@@ -325,7 +325,7 @@ export function adapterRun(
   // which names the call whose result still ends the parked turn: an allow that lands while the harness is still
   // recording that result leaves it, so the turn is interrupted as it would be without the allow.
   let approved = false;
-  const PARKED = new Error("the turn ended: a tool call waits for a person's approval");
+  const PARKED = new TurnParked("the turn ended: a tool call waits for a person's approval");
   // Each call's arguments, by its id, for a park named by tool and arguments (endsTurn).
   const argsOf = new Map<string, unknown>();
   /** Results of calls whose answer is not on the root yet, by call id: written right after the entry that holds the call

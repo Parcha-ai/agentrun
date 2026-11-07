@@ -1,11 +1,11 @@
 package execrun
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -29,14 +29,24 @@ type Program struct {
 // Guarded is a program running under its guard.
 type Guarded struct {
 	// Pid is the program's, not the guard's.
-	Pid       int
-	guard     *exec.Cmd
+	Pid   int
+	guard *exec.Cmd
+	// controlMu holds the control pipe for one command at a time, a signal to a named group until it is answered.
 	controlMu sync.Mutex
 	control   *os.File
-	done      chan struct{}
-	final     guardStatus
-	reported  bool
+	seq       uint64
+	// awaiting is the seq of the signal to a named group that waits for its answer, 0 when none does; follow hands
+	// that answer to answered and drops any other, a late one for a signal that stopped waiting.
+	answerMu sync.Mutex
+	awaiting uint64
+	answered chan groupSignalled
+	done     chan struct{}
+	final    guardStatus
+	reported bool
 }
+
+// groupAnswerTimeout bounds the wait for the guard's answer to a signal to a named group.
+var groupAnswerTimeout = 2 * time.Second
 
 // guards is every guard this process started and has not yet reaped, so init's sweep can tell a guard from an orphan.
 // Start holds the lock from the fork until the guard is recorded.
@@ -257,17 +267,33 @@ func cutShort(ctx context.Context, program string, code *int, signal string) err
 	return rpc.Errorf(rpc.KindAborted, "the start of %s was cancelled before its program ran; nothing it started is left", program)
 }
 
-// follow reads the guard's status lines, the program's pid and then how it ended, then reaps the guard.
+// follow reads the guard's status lines, the program's pid, answers to signals to named groups, and then how it ended,
+// then reaps the guard.
+// maxStatusLine bounds one status line from the guard; a real one is a few hundred bytes.
+const maxStatusLine = 64 << 10
+
 func (g *Guarded) follow(status *os.File, started chan<- struct{}) {
-	dec := json.NewDecoder(io.LimitReader(status, 64<<10))
-	for {
+	// One status a line, each at most maxStatusLine; the stream itself has no total, since every signal to a named group
+	// adds an answer. A line past the bound ends the reading, as a malformed one does.
+	lines := bufio.NewScanner(status)
+	lines.Buffer(make([]byte, 0, 4096), maxStatusLine)
+	for lines.Scan() {
 		var s guardStatus
-		if dec.Decode(&s) != nil {
+		if json.Unmarshal(lines.Bytes(), &s) != nil {
 			break
 		}
 		if s.Pid != 0 && g.Pid == 0 {
 			g.Pid = s.Pid
 			close(started)
+			continue
+		}
+		if s.Signalled != nil {
+			g.answerMu.Lock()
+			if g.awaiting != 0 && s.Signalled.Seq == g.awaiting {
+				g.answered <- *s.Signalled
+				g.awaiting = 0
+			}
+			g.answerMu.Unlock()
 			continue
 		}
 		g.final, g.reported = s, true
@@ -299,25 +325,79 @@ func (g *Guarded) Exit() (code *int, signal string, reported bool) {
 	return g.final.ExitCode, "", true
 }
 
-// Signal has the guard send sig to the process group group, or to the program's when group is 0. Once the program has
-// ended it does nothing.
-func (g *Guarded) Signal(sig syscall.Signal, group int) error {
+// Signal has the guard send sig to the program's group. Once the program has ended it does nothing.
+func (g *Guarded) Signal(sig syscall.Signal) error {
 	g.controlMu.Lock()
 	defer g.controlMu.Unlock()
 	if g.control == nil {
 		return nil
 	}
-	data, _ := json.Marshal(guardCommand{Signal: int(sig), Group: group})
-	if _, err := g.control.Write(append(data, '\n')); err != nil {
-		// Only the guard reads the control pipe, so a failed write means it has ended or is ending.
-		select {
-		case <-g.done:
-			return nil
-		case <-time.After(cleanupTimeout):
-			return fmt.Errorf("cannot reach the guard of process %d: %w", g.Pid, err)
-		}
+	if err := g.command(guardCommand{Signal: int(sig)}); err != nil && !g.ended(cleanupTimeout) {
+		return fmt.Errorf("cannot reach the guard of process %d: %w", g.Pid, err)
 	}
 	return nil
+}
+
+// SignalGroup has the guard send sig to the process group group, which the caller found in the program's session, and
+// returns once the guard says whether it did: the guard checks the group again right before it signals it, and sends
+// nothing to a group with no process left in that session. Sent is false, with why, when the guard did not send it,
+// or the program ended first. A guard that does not answer within groupAnswerTimeout is an error.
+func (g *Guarded) SignalGroup(sig syscall.Signal, group int) (sent bool, why string, err error) {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
+	if g.control == nil {
+		return false, programEnded(sig, group), nil
+	}
+	g.seq++
+	answered := make(chan groupSignalled, 1)
+	g.answerMu.Lock()
+	g.awaiting, g.answered = g.seq, answered
+	g.answerMu.Unlock()
+	defer func() {
+		g.answerMu.Lock()
+		g.awaiting, g.answered = 0, nil
+		g.answerMu.Unlock()
+	}()
+	if err := g.command(guardCommand{Signal: int(sig), Group: group, Seq: g.seq}); err != nil {
+		if g.ended(cleanupTimeout) {
+			return false, programEnded(sig, group), nil
+		}
+		return false, "", fmt.Errorf("cannot reach the guard of process %d: %w", g.Pid, err)
+	}
+	timer := time.NewTimer(groupAnswerTimeout)
+	defer timer.Stop()
+	select {
+	case a := <-answered:
+		return a.Sent, a.Reason, nil
+	case <-g.done:
+		// follow hands over every answer the guard wrote before it closes done.
+		select {
+		case a := <-answered:
+			return a.Sent, a.Reason, nil
+		default:
+			return false, programEnded(sig, group), nil
+		}
+	case <-timer.C:
+		return false, "", rpc.Errorf(rpc.KindTimeout, "the guard of process %d did not say within %v whether it sent %s to group %d, so it may or may not have", g.Pid, groupAnswerTimeout, signalName(sig), group)
+	}
+}
+
+// command writes c to the control pipe; controlMu is held.
+func (g *Guarded) command(c guardCommand) error {
+	data, _ := json.Marshal(c)
+	_, err := g.control.Write(append(data, '\n'))
+	return err
+}
+
+// ended waits up to within for the guard to end. Only the guard reads the control pipe, so a write that failed means it
+// has ended or is ending.
+func (g *Guarded) ended(within time.Duration) bool {
+	select {
+	case <-g.done:
+		return true
+	case <-time.After(within):
+		return false
+	}
 }
 
 // Stop asks the guard to end the program and everything under it: SIGTERM, then SIGKILL KillGrace later.

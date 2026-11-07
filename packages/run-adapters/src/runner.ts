@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
-import { HarnessRunError, SessionFenced } from "./errors.js";
+import { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 import { bookRequest, type Ended } from "./booking.js";
 import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
@@ -137,7 +137,8 @@ export interface ModelPortOptions {
   /** How a record is written (default: the writer's append, which a newer open fences). */
   append?: (records: SessionRecord[]) => Promise<void>;
   /** The attempt has stopped: the error a new paid request is refused with. Told the request's host label, for a host
-   *  that admits its own requests (ModelRequest.host) while the harness's own are held. */
+   *  that admits its own requests (ModelRequest.host) while the harness's own are held. A `TurnParked` refuses new
+   *  requests but is no stop of the booking: a paid request whose cost can't be recorded meanwhile still stops it. */
   stopped?: (request: { host?: string }) => Error | undefined;
   /** A pause is draining the attempt: the error a new paid request is refused with, while the attempt itself goes on. A
    *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
@@ -347,9 +348,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted. Asked
         // with the request's own host label, as its admission was: a stop that holds only the harness's own requests (a
-        // parked turn's) never hides the failure from the host's.
+        // parked turn's) never hides the failure from the host's. A turn parked on a call (TurnParked) is no stop of the
+        // booking, so it stops here too; a stop that ended it already wins.
         const host = hosts.get(turn);
-        if (!options.stopped?.(host === undefined ? {} : { host })) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        const stop = options.stopped?.(host === undefined ? {} : { host });
+        if (!stop || stop instanceof TurnParked) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
         throw error;
       }
       answered.add(turn);
