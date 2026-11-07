@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ModalProvider, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, ModalProvider, sweep } from "../dist/index.js";
 import * as modal from "../dist/modal.js";
 import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
 
@@ -77,20 +77,26 @@ test("the constructor refuses, in words, what would make a computer it cannot vo
 	assert.deepEqual(fake.calls, [], "no SDK call");
 });
 
-test("capabilities: a VM whose lifetime Modal enforces, network none or open with no read-back, a daemon with exec, files and processes", () => {
+test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none or open with no read-back, exec, files and processes", () => {
 	const { provider, fake } = setup();
 	assert.equal(provider.id, "modal");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
+		kind: "linux",
 		lifetime: "vendor",
 		network: ["none", "open"],
 		networkReadBack: false,
 		isolation: "vm",
 		os: "linux",
-		daemon: ["exec", "files", "processes"],
+		daemon: "pid1",
+		groups: ["exec", "files", "processes"],
+		maxLifetimeMs: DAY_MS,
 		user: ["root", "uid"],
 		release: ["delete"],
 	});
+	assert.deepEqual(kindRefusals(provider.capabilities()), []);
+	assert.equal(provider.extend, undefined, "no extend()");
+	assert.equal(provider.stream, undefined, "no stream()");
 	assert.deepEqual(fake.calls, []);
 });
 
@@ -110,8 +116,14 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	for (const lifetimeMs of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, "600000"]) {
 		assert.deepEqual(refused({ ...SPEC, lifetimeMs }), ["lifetimeMs"], `lifetimeMs ${String(lifetimeMs)}`);
 	}
-	assert.deepEqual(refused({ ...SPEC, lifetimeMs: DAY_MS + 1 }), ["lifetimeMs"]);
-	assert.match(words({ ...SPEC, lifetimeMs: DAY_MS + 1 }, "lifetimeMs"), /24 hours/);
+	for (const lifetimeMs of [undefined, 0, 1.5, DAY_MS + 1]) {
+		assert.deepEqual(
+			provider.check({ ...SPEC, lifetimeMs }).filter((r) => r.field === "lifetimeMs"),
+			checkLifetime(lifetimeMs, provider.capabilities()),
+			`lifetimeMs ${String(lifetimeMs)}: the shared rule's words`,
+		);
+	}
+	assert.match(words({ ...SPEC, lifetimeMs: DAY_MS + 1 }, "lifetimeMs"), /at most 1 day \(86400000 ms\)/);
 	assert.deepEqual(refused({ ...SPEC, network: { allow: ["8.8.8.0/24"] } }), ["network"]);
 	assert.match(words({ ...SPEC, network: { allow: ["8.8.8.0/24"] } }, "network"), /cannot be read back/);
 	assert.match(words({ ...SPEC, network: { allow: ["8.8.8.0/24"] } }, "network"), /bypass/);
@@ -279,7 +291,9 @@ test("create: drift in the daemon's hello terminates the sandbox and refuses, fi
 	assert.equal((await driftedCreate({ box: { hello: { ...HELLO, version: `${VERSION}-drift` } } }, /version/)).code, "refused");
 	await driftedCreate({ box: { hello: { ...HELLO, arch: "arm64" } } }, /arch/);
 	await driftedCreate({ box: { hello: { ...HELLO, os: "windows" } } }, /os/);
-	await driftedCreate({ box: { hello: { ...HELLO, capabilities: ["exec", "files"] } } }, /processes/);
+	await driftedCreate({ box: { hello: { ...HELLO, groups: ["exec", "files"] } } }, /groups lack processes/);
+	await driftedCreate({ box: { hello: { ...HELLO, groups: [...HELLO.groups, "screen"] } } }, /offers groups screen/);
+	await driftedCreate({ box: { hello: { ...HELLO, kind: "desktop" } } }, /kind desktop, expected linux/);
 });
 
 test("create: a sandbox whose kernel is gVisor's is refused as another runtime", async () => {
@@ -541,13 +555,14 @@ test("lifetime: maxLifetimeMs caps what check takes, in words; Modal's timeout i
 	const make = (maxLifetimeMs) => () => new ModalProvider({ sdk: fake.sdk, app: APP, daemonPath: BINARY_PATH, maxLifetimeMs });
 	for (const bad of [0, -1, 1.5, DAY_MS + 1, "1800000"]) assert.throws(make(bad), /maxLifetimeMs/, String(bad));
 	const capped = make(30 * 60_000)();
+	assert.equal(capped.capabilities().maxLifetimeMs, 30 * 60_000, "the instance's cap is the one it declares");
 	assert.deepEqual(capped.check({ ...SPEC, lifetimeMs: 30 * 60_000 }), []);
 	const refusals = capped.check({ ...SPEC, lifetimeMs: 30 * 60_000 + 1 });
-	assert.deepEqual(refusals.map((r) => r.field), ["lifetimeMs"]);
-	assert.match(refusals[0].message, /at most 30 minutes \(1800000 ms\)/);
+	assert.deepEqual(refusals, checkLifetime(30 * 60_000 + 1, capped.capabilities()));
+	assert.match(refusals[0].message, /at most 30 min \(1800000 ms\)/);
 	const refused = await capped.create({ ...SPEC, lifetimeMs: 60 * 60_000 });
 	assert.equal(refused.error?.code, "refused");
-	assert.match(refused.error.message, /lifetimeMs: .*30 minutes/);
+	assert.match(refused.error.message, /lifetimeMs: .*30 min/);
 	assert.deepEqual(fake.calls, [], "refused before any SDK call");
 	const created = await capped.create({ ...SPEC, lifetimeMs: 29 * 60_000 + 500 });
 	assert.equal(created.ok, true, JSON.stringify(created));
@@ -720,7 +735,7 @@ test("attach by id: the spec as recorded and as the daemon reads it back, the dr
 	assert.equal(attached.ok, true, JSON.stringify(attached));
 	assert.deepEqual(attached.value, {
 		...ref,
-		spec: { image: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 2048, workdir: "/opt/app", deadline: new Date(deadline) },
+		spec: { image: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 2048, workdir: "/opt/app", deadline: new Date(deadline), kind: "linux" },
 	});
 	assert.equal(fake.execRuns.length, 1, "the probe ran");
 	assert.equal(fake.stdinClosed, 1);
@@ -1122,7 +1137,7 @@ test("the conformance module caps every computer's lifetime at 30 minutes, refus
 		assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: 30 * 60_000 }), []);
 		const refusals = provider.check({ ...SPEC, lifetimeMs: 30 * 60_000 + 1000 });
 		assert.deepEqual(refusals.map((r) => r.field), ["lifetimeMs"]);
-		assert.match(refusals[0].message, /at most 30 minutes/);
+		assert.match(refusals[0].message, /at most 30 min \(1800000 ms\)/);
 		const refused = await provider.create({ ...SPEC, lifetimeMs: 2 * 60 * 60_000 });
 		assert.equal(refused.error?.code, "refused");
 		assert.deepEqual(fake.calls, []);

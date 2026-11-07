@@ -21,7 +21,7 @@ export const ENTRYPOINT_MARK = "# agentrun-computer: entrypoint";
 export const UPLOAD_MARK = "# agentrun-computer: upload";
 /** A command that is the provider's script: sh -c <script> sh <args>. */
 const isScript = (command, mark) => command?.[0] === "sh" && command[1] === "-c" && typeof command[2] === "string" && command[2].startsWith(`${mark}\n`);
-export const HELLO = { version: VERSION, os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] };
+export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 /** What computerd probe reports in a VM sandbox: Modal's docs show `uname -srn` there as "Linux modal 7.2.6". */
 export const VM_KERNEL = "7.2.6";
 /** What gVisor reports (guide/troubleshooting: "4.19.0-gvisor"). */
