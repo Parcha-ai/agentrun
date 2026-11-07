@@ -305,3 +305,20 @@ func TestProbeRefusesATargetThatIsNotHostAndPort(t *testing.T) {
 		}
 	}
 }
+
+// probe --diagnose tries its own fixed public targets and nothing else, so it is never run here (no test reaches past
+// this machine); its checks are tested in internal/probe against this machine's own listeners. Here: it takes no other
+// argument, and --connect beside it is refused.
+func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
+	for _, args := range [][]string{
+		{"probe", "--diagnose", "--connect", "example.com:443"},
+		{"probe", "--connect", "example.com:443", "--diagnose"},
+		{"probe", "--diagnose", "example.com:443"},
+		{"probe", "--diagnose", "--diagnose"},
+	} {
+		code, stdout, stderr := computerdOut(t, 30*time.Second, args...)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "--diagnose") {
+			t.Errorf("computerd %q: exit %d, stdout %q, stderr %q; want exit 2, nothing on stdout and a refusal that names --diagnose", args, code, stdout, stderr)
+		}
+	}
+}

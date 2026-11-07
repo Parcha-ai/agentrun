@@ -105,7 +105,8 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *  - install: exit code of the install script (default 0);
  *  - initFails: words init writes to stderr before it exits 1 (no daemon listens);
  *  - notListening: how many bridges find no daemon listening before one does;
- *  - box: what the daemon reports, over the defaults (hello, uid, gid, status fields, kernel, reached, display);
+ *  - box: what the daemon reports, over the defaults (hello, uid, gid, status fields, kernel, reached, display), and
+ *    what `computerd probe --diagnose` prints (diagnosis), or diagnose: "fails" (exit 1) or "garbage" (not JSON);
  *  - display: "ok" (Xvfb brings the display up after one hello), "never" (the server runs, the display never comes),
  *    "dies" (the server exits 1 at once);
  *  - lingers: { reads, lists }: after a kill, getInfo still reads it running for `reads` reads, and list still lists it
@@ -224,6 +225,12 @@ export function fakeE2B({
 		if (method === "exec.run") {
 			const argv = params.argv;
 			const out = (text, exitCode = 0) => result({ exitCode, stdout: Buffer.from(text).toString("base64"), stderr: "", timedOut: false, truncated: false });
+			if (argv[0] === DAEMON && argv[1] === "probe" && argv[2] === "--diagnose") {
+				if (sb.box.diagnose === "fails") return result({ exitCode: 1, stdout: "", stderr: Buffer.from("computerd: probe: a diagnosis failed\n").toString("base64"), timedOut: false, truncated: false });
+				if (sb.box.diagnose === "garbage") return out("not a diagnosis\n");
+				const diagnosis = sb.box.diagnosis ?? { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, verdict: "none", results: [] };
+				return out(`${JSON.stringify(diagnosis)}\n`);
+			}
 			if (argv[0] === DAEMON && argv[1] === "probe") {
 				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
 				const reached = sb.box.reached ?? (sb.allowInternetAccess === false ? [] : targets);
