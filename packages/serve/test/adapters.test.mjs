@@ -5,27 +5,28 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeModel, claudeModelId, claudeOf, claudeProvider, codexOf, codexProvider, HarnessUnavailable, priceOf, startedByNpx, startReason } from "../dist/adapters.js";
+import { claudeOf, codexOf, priceOf, startedByNpx, startReason } from "../dist/adapters.js";
 import { linkHarnesses } from "./support.mjs";
 import * as adapters from "../dist/adapters.js";
 import * as files from "../dist/files.js";
 import { HARNESS_INSTALLS, installLine } from "../dist/harness-install.js";
 const CLAUDE_LOCK = HARNESS_INSTALLS["claude-agent"].lock;
 import { fileURLToPath } from "node:url";
+import { anthropicModelId, HarnessUnavailable, modelOn, providerFor } from "../dist/provider.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
 
 test("codex's provider: OpenAI with its key; a gateway at its base, also given as base/v1; and why not otherwise", () => {
-  const direct = codexProvider({ OPENAI_API_KEY: "k-1" }, openai);
+  const direct = providerFor("openai-responses", { OPENAI_API_KEY: "k-1" }, openai, "codex");
   assert.deepEqual([direct.origin, direct.credential()], ["https://api.openai.com", "k-1"]);
   for (const base of ["http://127.0.0.1:4000", "http://127.0.0.1:4000/", "http://127.0.0.1:4000/v1"]) {
-    const gateway = codexProvider({ AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: "gw" }, { provider: "agent-model", modelId: "x" });
+    const gateway = providerFor("openai-responses", { AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: "gw" }, { provider: "agent-model", modelId: "x" }, "codex");
     assert.deepEqual([gateway.origin, gateway.credential()], ["http://127.0.0.1:4000", "gw"], base);
   }
-  assert.equal(codexProvider({ AGENT_MODEL_BASE_URL: "https://host.example/proxy/v1" }, openai).origin, "https://host.example/proxy", "a gateway under a path keeps it");
-  assert.throws(() => codexProvider({}, openai), refused(/OPENAI_API_KEY/));
-  assert.throws(() => codexProvider({ ANTHROPIC_API_KEY: "a" }, { provider: "anthropic", modelId: "claude-x" }), refused(/codex runs OpenAI models/));
+  assert.equal(providerFor("openai-responses", { AGENT_MODEL_BASE_URL: "https://host.example/proxy/v1" }, openai, "codex").origin, "https://host.example/proxy", "a gateway under a path keeps it");
+  assert.throws(() => providerFor("openai-responses", {}, openai, "codex"), refused(/OPENAI_API_KEY/));
+  assert.throws(() => providerFor("openai-responses", { ANTHROPIC_API_KEY: "a" }, { provider: "anthropic", modelId: "claude-x" }, "codex"), refused(/codex runs OpenAI models/));
 });
 
 test("codex's price is the catalog's per million tokens, cached input at its own rate; a model with no price is unknown", () => {
@@ -37,17 +38,17 @@ test("codex's price is the catalog's per million tokens, cached input at its own
 test("claude-agent's provider: Anthropic Messages only, at ANTHROPIC_BASE_URL's base or api.anthropic.com, with its key; serve's gateway neither disables it nor ever receives its requests", () => {
   const anthropic = { provider: "anthropic", modelId: "claude-haiku-4-5" };
   const key = `not-a-secret-${"a"}`;
-  const direct = claudeProvider({ ANTHROPIC_API_KEY: key }, anthropic);
+  const direct = providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key }, anthropic, "claude-agent");
   assert.deepEqual([direct.origin, direct.credential()], ["https://api.anthropic.com", key]);
-  assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://127.0.0.1:5000/" }, anthropic).origin, "http://127.0.0.1:5000");
+  assert.equal(providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://127.0.0.1:5000/" }, anthropic, "claude-agent").origin, "http://127.0.0.1:5000");
   // The other harnesses' gateway beside it: Claude still runs, at its own endpoint, never the gateway's.
   for (const [own, origin] of [[{}, "https://api.anthropic.com"], [{ ANTHROPIC_BASE_URL: "http://127.0.0.1:5000" }, "http://127.0.0.1:5000"]]) {
-    const beside = claudeProvider({ ANTHROPIC_API_KEY: key, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000", AGENT_MODEL_API_KEY: "gw", ...own }, anthropic);
+    const beside = providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000", AGENT_MODEL_API_KEY: "gw", ...own }, anthropic, "claude-agent");
     assert.deepEqual([beside.origin, beside.credential()], [origin, key]);
   }
-  assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "https://host.example/api" }, anthropic).origin, "https://host.example/api", "an endpoint under a path keeps it");
-  assert.throws(() => claudeProvider({}, anthropic), refused(/ANTHROPIC_API_KEY/));
-  assert.throws(() => claudeProvider({ ANTHROPIC_API_KEY: key }, { provider: "openai", modelId: "gpt-5.4-mini" }), refused(/claude-agent runs Anthropic models/));
+  assert.equal(providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "https://host.example/api" }, anthropic, "claude-agent").origin, "https://host.example/api", "an endpoint under a path keeps it");
+  assert.throws(() => providerFor("anthropic-messages", {}, anthropic, "claude-agent"), refused(/ANTHROPIC_API_KEY/));
+  assert.throws(() => providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key }, { provider: "openai", modelId: "gpt-5.4-mini" }, "claude-agent"), refused(/claude-agent runs Anthropic models/));
 });
 
 test("the model id codex is given is the one model.ts chose: OpenAI's own id direct, the gateway's whole name through a gateway", async (t) => {
@@ -64,18 +65,18 @@ test("the model id codex is given is the one model.ts chose: OpenAI's own id dir
 });
 
 test("the model id claude-agent sends and prices is Anthropic's own: dots as dashes, as a gateway such as OpenRouter names its models with dots", () => {
-  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-sonnet-5.5" }), "claude-sonnet-5-5", "OpenRouter's name, as Anthropic's id");
-  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-sonnet-5-5" }), "claude-sonnet-5-5", "Anthropic's own id, unchanged");
-  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-haiku-4.5" }), "claude-haiku-4-5");
-  assert.equal(claudeModelId({ provider: "other", modelId: "a.b" }), "a.b", "another provider's id is never rewritten");
+  assert.equal(anthropicModelId({ provider: "anthropic", modelId: "claude-sonnet-5.5" }), "claude-sonnet-5-5", "OpenRouter's name, as Anthropic's id");
+  assert.equal(anthropicModelId({ provider: "anthropic", modelId: "claude-sonnet-5-5" }), "claude-sonnet-5-5", "Anthropic's own id, unchanged");
+  assert.equal(anthropicModelId({ provider: "anthropic", modelId: "claude-haiku-4.5" }), "claude-haiku-4-5");
+  assert.equal(anthropicModelId({ provider: "other", modelId: "a.b" }), "a.b", "another provider's id is never rewritten");
 });
 
-test("claude-agent's model is one provider and the model's own id: the doubled anthropic/anthropic/<model> is refused, naming the form to use", () => {
-  assert.deepEqual(claudeModel({}, "anthropic/claude-sonnet-5.5"), { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } }, "the run's model is Anthropic's own id, for every lookup of it");
-  const doubled = claudeModel({}, "anthropic/anthropic/claude-sonnet-5.5");
+test("claude-agent's model is one provider and the model's own id: the doubled anthropic/anthropic/<model> is refused, naming the form to use", async () => {
+  assert.deepEqual((await modelOn("anthropic-messages", {}, "anthropic/claude-sonnet-5.5", "claude-agent")), { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } }, "the run's model is Anthropic's own id, for every lookup of it");
+  const doubled = (await modelOn("anthropic-messages", {}, "anthropic/anthropic/claude-sonnet-5.5", "claude-agent"));
   assert.equal(doubled.host, false, "the revision's own model: a refusal at save, which no host setting fixes");
   assert.match(doubled.why, /name it anthropic\/claude-sonnet-5\.5\./);
-  assert.equal(claudeModel({ AGENT_MODEL: "anthropic/anthropic/claude-haiku-4.5" }, undefined).host, true, "the host's default: a setting of the host");
+  assert.equal((await modelOn("anthropic-messages", { AGENT_MODEL: "anthropic/anthropic/claude-haiku-4.5" }, undefined, "claude-agent")).host, true, "the host's default: a setting of the host");
 });
 
 test("a gateway base with a path: codex sends to <base>/v1/responses and claude-agent to <base>/v1/messages, a trailing /v1 taken once, so one OpenRouter-style base serves both", () => {
@@ -89,8 +90,8 @@ test("a gateway base with a path: codex sends to <base>/v1/responses and claude-
     ["https://gw.example/api/v1", "https://gw.example/api"],
     ["https://gw.example/api/v1/", "https://gw.example/api"],
   ]) {
-    assert.equal(codexProvider({ AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: key }, { provider: "agent-model", modelId: "x" }).origin, joined, `codex, ${base}`);
-    assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: base }, anthropic).origin, joined, `claude-agent, ${base}`);
+    assert.equal(providerFor("openai-responses", { AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: key }, { provider: "agent-model", modelId: "x" }, "codex").origin, joined, `codex, ${base}`);
+    assert.equal(providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: base }, anthropic, "claude-agent").origin, joined, `claude-agent, ${base}`);
   }
 });
 
@@ -114,12 +115,12 @@ test("a gateway base that could send a key somewhere else than it reads is refus
     " https://gw.example/api",
     "not a url",
   ]) {
-    assert.throws(() => codexProvider({ AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: key }, { provider: "agent-model", modelId: "x" }), refused(/AGENT_MODEL_BASE_URL/), `codex, ${base}`);
-    assert.throws(() => claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: base }, anthropic), refused(/ANTHROPIC_BASE_URL/), `claude-agent, ${base}`);
+    assert.throws(() => providerFor("openai-responses", { AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: key }, { provider: "agent-model", modelId: "x" }, "codex"), refused(/AGENT_MODEL_BASE_URL/), `codex, ${base}`);
+    assert.throws(() => providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: base }, anthropic, "claude-agent"), refused(/ANTHROPIC_BASE_URL/), `claude-agent, ${base}`);
   }
   // A loopback gateway may be plain http (a local server, or a test's).
-  assert.equal(codexProvider({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/api/v1" }, { provider: "agent-model", modelId: "x" }).origin, "http://127.0.0.1:4000/api");
-  assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://localhost:5000" }, anthropic).origin, "http://localhost:5000");
+  assert.equal(providerFor("openai-responses", { AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/api/v1" }, { provider: "agent-model", modelId: "x" }, "codex").origin, "http://127.0.0.1:4000/api");
+  assert.equal(providerFor("anthropic-messages", { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://localhost:5000" }, anthropic, "claude-agent").origin, "http://localhost:5000");
 });
 
 /** An installed SDK as claudeOf loads it (harness-install.ts loadSdk): a test's, which no adapter here runs. */
@@ -181,12 +182,11 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
   assert.deepEqual(given.slice(1).map((options) => "skills" in options), [false, false], "none: no option, so the adapter keeps its Skill tool off");
 });
 
-test("claude-agent's check of skills is the installed adapter's own skillProblems; none where the package is not installed", async () => {
+test("claude-agent's check of skills is the adapter's own skillProblems; none where it has no check of its own (the package is a dependency of serve, so it is never missing)", async () => {
   const { claudeSkillCheck } = await import("../dist/adapters.js");
   const real = await import("@parcha/agentrun-harness-claude");
   assert.equal(await claudeSkillCheck(async () => real), real.skillProblems, "the adapter's own function, not a copy");
   assert.equal(await claudeSkillCheck(), real.skillProblems, "by default, the package installed beside serve");
-  assert.equal(await claudeSkillCheck(() => Promise.reject(new Error("Cannot find package"))), undefined, "not installed: no check, so every skill stays inlined");
   assert.equal(await claudeSkillCheck(async () => ({ ...real, skillProblems: undefined })), undefined, "an adapter with no check of its own: none");
 });
 

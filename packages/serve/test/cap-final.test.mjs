@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agent, follow, responsesEndpoint, runDir, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -64,7 +65,7 @@ test("pi: a refusal whose cap and model id hold retry digits is final: the reque
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a refusal whose words hold retry digits is final: one request sent, no second attempt, and the run pauses at its cap`, { timeout: 90_000 }, async (t) => {
     // The first request costs $0.3502: $0.0793 is left of $0.4295, under the least of one more ($0.1024).
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     assert.equal((await api("POST", "/agents", agent(`digits-${harness}`, { harness, instructions: "Spend 0.3502 on the first request." }))).status, 201);
     const from = Date.now();
     const started = await api("POST", `/agents/digits-${harness}/runs`, { input: { content: "go" }, max_cost_usd: CAP });

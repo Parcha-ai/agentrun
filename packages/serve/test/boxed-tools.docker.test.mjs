@@ -19,6 +19,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { follow, runDir, serve, withEnv } from "./support.mjs";
 import { DEFAULT_DOCKER_IMAGE, RECIPE_HASH, RECIPE_LABEL } from "../dist/box-image.js";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const LIVE = process.env.AGENTRUN_SERVE_LIVE_DOCKER === "1";
 /** The build of the default box image on real Docker: a few minutes and the network, so a run asks for it by name. */
@@ -154,7 +155,7 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
 
 test("live Docker (claude-agent, codex on the faux harness): bash writes out.txt in the box through the host tools, with no key or token there", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1", timeout: 300_000 }, async (t) => {
   withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker", AGENTRUN_DOCKER_IMAGE: PULLED });
-  const server = await serve(t, { faux: PROBE, fauxHarness: FAUX_HARNESS });
+  const server = await serve(t, { faux: PROBE, harnessTable: fauxTable(FAUX_HARNESS) });
   const { api, data } = server;
   for (const harness of ["claude-agent", "codex"]) {
     const calls = [{ call: "bash", args: { command: "printf hi > out.txt" } }, { call: "bash", args: { command: `${ENV_PROBE}; tr '\\0' '\\n' < /proc/1/environ` } }];

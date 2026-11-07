@@ -11,13 +11,14 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { agent, follow, runDir, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 // Under the faux harness claude-agent and codex run one path (the id is only a label), so codex stands for both.
 const harness = "codex";
 
 test(`${harness}: two tool calls in one answer, then the closing answer: the run completes, each call shows before its result under the answer that asked for it, none interrupted`, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const id = `two-${harness}`;
   assert.equal((await api("POST", "/agents", agent(id, { harness, instructions: "Write two files in one answer.", tools: ["read", "write", "edit"] }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Write the word alpha to a.md and the word beta to b.md." } });
@@ -48,7 +49,7 @@ test(`${harness}: two tool calls in one answer, then the closing answer: the run
 });
 
 test("claude-agent: two tool calls that end before their answer is paid: their results are stored first, and each still reads as its call's, once, none interrupted, and the run's metrics count two calls, none failed", async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("streamed", { harness: "claude-agent", instructions: "Write two files while answering.", tools: ["read", "write", "edit"] }))).status, 201);
   const started = await api("POST", "/agents/streamed/runs", { input: { content: "Write the word alpha to a.md and the word beta to b.md." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));

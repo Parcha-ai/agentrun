@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const CLOCK = new URL("./fixtures/faux-clock.mjs", import.meta.url).href;
@@ -29,7 +30,7 @@ async function ran(api, id, harness) {
 }
 
 test("pi, claude-agent and codex all get the same first line in their system prompt: today's date in UTC and where the workspace is, before the instructions", { timeout: 150_000 }, async (t) => {
-  const { api } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+  const { api } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
   const firsts = {};
   const wanted = {};
   for (const harness of HARNESSES) {
@@ -46,7 +47,7 @@ test("pi, claude-agent and codex all get the same first line in their system pro
 
 for (const harness of HARNESSES) {
   test(`a ${harness} run resumed on a later day is told that day: the line is made for each turn, never kept from the first`, { timeout: 150_000 }, async (t) => {
-    const first = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const first = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const { api, data } = first;
     const before = dayOf(Date.now());
     const { runId, prompt } = await ran(api, `resumed-${harness}`, harness);
@@ -54,7 +55,7 @@ for (const harness of HARNESSES) {
     // The server and the run's process end; the next server's process for the run lives on a later day.
     await first.close();
     withEnv(t, { NODE_OPTIONS: `--import=${CLOCK}`, DATE_LINE_NOW: LATER });
-    const next = await serve(t, { data, faux: SYSTEM, fauxHarness: SYSTEM });
+    const next = await serve(t, { data, faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     assert.equal((await next.api("POST", `/runs/${runId}/messages`, { content: "And today?" })).status, 202);
     await follow(next.api, runId, ["completed"], { deadlineMs: 55_000 });
     const resumed = await answer(next.api, runId);

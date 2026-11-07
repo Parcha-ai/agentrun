@@ -10,6 +10,7 @@ import { metersIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
 import { agent, client, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -80,7 +81,7 @@ for (const harness of ["claude-agent", "codex"]) {
   }
 
   test(`${harness}: a turn stopped mid-request, with nothing after, reads $0.002 so far and 1 charge with no price while its process is alive, as a settled read would`, { timeout: 120_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const runId = await secondOut(api, `stop-live-${harness}`, join(await scratch(t), "go"));
     assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
     await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
@@ -93,7 +94,7 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 
   test(`${harness}: a run cancelled mid-request reads $0.002 so far and 1 charge with no price`, { timeout: 120_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const runId = await secondOut(api, `cancel-${harness}`, join(await scratch(t), "go"));
     assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
     await follow(api, runId, ["cancelled"], { deadlineMs: 60_000 });

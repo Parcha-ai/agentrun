@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { DatabaseSync } from "node:sqlite";
 import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv, jsonIn, writtenJson } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -24,7 +25,7 @@ test("a follow-up whose turn ended showing nothing, its process killed before th
   const dir = await scratch(t);
   const [arm, held] = [join(dir, "arm"), join(dir, "held")];
   withEnv(t, { TURN_END_ARM: arm, TURN_END_HELD: held });
-  const { api, data } = await serve(t, { fauxHarness: CUT });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(CUT) });
   assert.equal((await api("POST", "/agents", agent("unended", { harness: "claude-agent", instructions: "The second turn answers nothing." }))).status, 201);
   const { body } = await api("POST", "/agents/unended/runs", { input: { content: "hi" } });
   const runId = body.run_id;
@@ -65,7 +66,7 @@ async function queuedRelaunch(t, armed, reaching, holds) {
   const data = join(dir, "agents");
   const [arm, held, gate, first, last] = [join(dir, "arm"), join(dir, "held"), join(dir, "gate"), join(dir, "first"), join(dir, "last")];
   withEnv(t, { TURN_END_ARM: arm, TURN_END_HELD: held, TURN_END_GATE: gate });
-  const options = { data, port: 0, faux: FAUX, fauxHarness: CUT, fauxWeb: WEB_HOLD, drainTimeout: "5s" };
+  const options = { data, port: 0, faux: FAUX, harnessTable: fauxTable(CUT), fauxWeb: WEB_HOLD, drainTimeout: "5s" };
   const one = await startServe(options);
   let closed = false;
   t.after(() => (closed ? undefined : one.close()));
@@ -164,7 +165,7 @@ for (const harness of ["claude-agent", "codex"]) {
     // The answer is written (the next request's start writes it); the turn holds with no request open; the process is
     // killed. The next one recovers the open turn, which ends with a request that shows nothing: the turn's answer is the
     // one already on the root, never "".
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const dir = await scratch(t);
     const [go, held] = [join(dir, "go"), join(dir, "held")];
     assert.equal((await api("POST", "/agents", agent(`saved-${harness}`, { harness, instructions: `Answer, then hold until ${go} (signal ${held}), then end showing nothing.` }))).status, 201);

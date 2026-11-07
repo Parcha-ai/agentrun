@@ -17,6 +17,7 @@ import * as learning from "../dist/learning.js";
 import { systemOf } from "../dist/skills.js";
 import { ended, git } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
 const KIB = 1024;
@@ -146,7 +147,7 @@ test("the learned skills' budget is 256 KiB, whatever room the revision's leave:
 });
 
 test("a learned skill named like one of the revision's is the revision's: its SKILL.md and files stay, in the prompt and the work, and the pin names only the others", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+  const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
   const sha = await folderWith(data, "same", asLearned({ cite: { "SKILL.md": skillMd("cite", CANARY), "extra.md": CANARY }, "check-units": { "SKILL.md": UNITS } }));
   const { runId, prompt } = await ranWithCite(api, "same", "pi");
   assert.ok(!prompt.includes(CANARY), prompt);
@@ -159,7 +160,7 @@ test("a learned skill named like one of the revision's is the revision's: its SK
 
 for (const harness of ["pi", "codex"]) {
   test(`a ${harness} run gets the skills its agent learned beside its revision's: each SKILL.md in its prompt, every file in work/.agents/skills/, named in its pin; one held for its owner's OK is not served`, { timeout: 120_000 }, async (t) => {
-    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `skilled-${harness}`;
     const waiting = `---\nname: waiting-skill\ndescription: ${CANARY}\nstatus: pending\n---\nNot approved yet.\n`;
     const sha = await folderWith(data, id, asLearned({ "check-units": { "SKILL.md": UNITS, "reference/units.md": UNITS_TABLE }, "waiting-skill": { "SKILL.md": waiting } }));
@@ -179,7 +180,7 @@ for (const harness of ["pi", "codex"]) {
 
 for (const harness of ["pi", "codex"]) {
   test(`a ${harness} run that reads its files gets its skills on demand: each one's name, what it is for and its SKILL.md's path, the revision's and the learned ones alike, no skill's text; the file is there to read`, { timeout: 120_000 }, async (t) => {
-    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const { api, data } = await serve(t, { faux: SYSTEM, harnessTable: fauxTable(SYSTEM) });
     const id = `ondemand-${harness}`;
     await folderWith(data, id, asLearned({ "check-units": { "SKILL.md": UNITS, "reference/units.md": UNITS_TABLE } }));
     const { runId, prompt } = await ranWithCite(api, id, harness, ["read"]);

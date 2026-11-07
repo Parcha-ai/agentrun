@@ -6,8 +6,10 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.js";
 import { REPLAY } from "./host-tools.js";
 import { type InputIssue, sentence } from "./errors.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { chooseModel, FAUX_ENV, llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
+import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOffers } from "./harness.js";
+import { builtinHarness, harnessOf, onAdapter } from "./harness-table.js";
+import { chooseModel } from "./model.js";
+import { llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
@@ -17,10 +19,10 @@ import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { wireName } from "./catalog.js";
 import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
-import { type McpTool, toolSchemaProblems } from "@parcha/agentrun-kernel";
+import type { McpTool } from "@parcha/agentrun-kernel";
 
 /** The harnesses an agent's MCP tools run on here. */
-export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent", "codex"];
+export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
 
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. */
@@ -43,16 +45,15 @@ export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?
  * cannot drift.
  */
 export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean } | { refused: string } | undefined> {
-  // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
-  // harness with pi's faux model every harness takes that model, and with a real one claude-agent's is its own, as in
-  // production (its session's proxy reaches claude-agent's own provider: adapters.ts fauxProxy).
-  const own = harness === "claude-agent" && !(env[FAUX_HARNESS_ENV] && env[FAUX_ENV]);
-  if (own && !available) return undefined;
-  // codex's is the run's usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (codexRef).
-  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" || harness === "opencode" ? await (await import("./adapters.js")).codexModel(env, ref, harness) : await chooseModel(env, ref, "default", harness);
-  if ("why" in chosen) return chosen;
+  // Its entry chooses (harness-table.ts): one whose model is its own (its facts' ownModel: claude-agent's, never routed
+  // through the other harnesses' gateway) is none where it does not run here; one on the Responses API takes the run's
+  // usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (provider.ts modelOn); pi's is
+  // its own. A test's stand-in chooses as its table entry says.
+  const entry = harnessOf(env, harness);
+  const chosen = entry ? await entry.model(env, ref, available) : await chooseModel(env, ref, "default", harness);
+  if (chosen === undefined || "why" in chosen) return chosen;
   // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
-  if (harness !== DEFAULT_HARNESS && available) {
+  if (entry?.facts && available) {
     const { harnessReason } = await import("./adapters.js");
     const refused = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
     if (refused !== undefined) return { refused };
@@ -66,11 +67,6 @@ export const NOT_SET_UP = "not_set_up_here";
 /** Set to 1 (`--allow-code-nodes`), this server runs workflows' `code` nodes: in the run's process, through the DSL's
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
-
-/** The shapes of a tool's schema Codex drops or retypes (@parcha/agentrun-harness-codex codexSchemaProblems), loaded once;
- *  none where that package is not installed, where codex runs nothing anyway (its offer says why). */
-let codexCheck: Promise<((name: string, schema: unknown) => string[]) | undefined> | undefined;
-const codexToolCheck = () => (codexCheck ??= import("@parcha/agentrun-harness-codex").then((codex) => codex.codexSchemaProblems, () => undefined));
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
@@ -110,12 +106,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
     return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell, and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
-  // Codex's own MCP client builds the model's copy of a server's tool with parse_tool_input_schema (codex-rs
-  // tools/src/mcp_tool.rs at rust-v0.164.0), the parser its host tools go through: a shape it drops or retypes
-  // (codexSchemaProblems, measured on the pinned binary) would offer the model another tool than the one granted, so its
-  // grant is refused here, at the save, as on claude-agent. A bound or a format it only strips is not: the server still
-  // checks it, and its error reaches the model.
-  const codexProblems = revision.kind === "agentic" && harness === "codex" && (revision.tools ?? []).some((tool) => tool.startsWith("mcp:")) ? await codexToolCheck() : undefined;
+  // A harness's own MCP client may drop or retype a shape of a tool's schema (its facts' schemaProblems, measured on its
+  // pinned build): that would offer the model another tool than the one granted, so its grant is refused here, at the
+  // save. A bound or a format it only strips is not: the server still checks it, and its error reaches the model.
+  const schemaProblems = revision.kind === "agentic" ? harnessOf(env, harness)?.facts?.schemaProblems : undefined;
   /** What keeps the grant of `tool`, an `mcp:` name, from running here (the first thing), at `field`; undefined when
    *  nothing does. A remote MCP server's tool runs when its saved snapshot lists it, on a harness that binds them; a
    *  workflow's nodes bind none. The one check of an MCP grant, for an agentic revision's tools and for every tool a
@@ -127,10 +121,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const listedTool = saved && named ? saved.find((t) => t.name === named.tool) : undefined;
     const schema = listedTool?.inputSchema;
     const declared = schema ? mcpHeaderProblem(schema) : undefined;
-    // On claude-agent the CLI drops a tool whose schema fails the kernel's check, or whose root holds anyOf, allOf or
-    // oneOf (harness-claude's check, measured on the pinned CLI), without a word: refused here, not missing at the run.
-    // On codex, a shape its parser drops or retypes (codexProblems above).
-    const dropped = schema && named && harness === "claude-agent" ? [...toolSchemaProblems(`mcp__${named.server}__${named.tool}`, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)][0] : schema && named && codexProblems ? codexProblems(`mcp__${named.server}__${named.tool}`, schema)[0] : undefined;
+    // Refused here, not missing at the run (schemaProblems above).
+    const dropped = schema && named && schemaProblems ? schemaProblems(`mcp__${named.server}__${named.tool}`, schema)[0] : undefined;
     if (!named) return { field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool };
     // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
     if (named.server === "hands") return { field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool };
@@ -163,7 +155,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch, web_search and
       // monid's): any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs
       // without it.
-      else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
+      else if (onAdapter(env, harness) && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);
         unavailable(`definition.tools[${index}]`, revision.tools ?? [], tool);
@@ -187,7 +179,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (blocker) out.push(blocker);
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
-  if (harness !== DEFAULT_HARNESS) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
+  if (onAdapter(env, harness)) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
   const inspection = inspectWorkflow(revision.workflow);
   const { requires } = inspection;

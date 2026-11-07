@@ -105,7 +105,7 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
   const provider = ref && slash > 0 ? ref.slice(0, slash) : undefined;
   const id = ref && slash > 0 ? ref.slice(slash + 1) : undefined;
   // The name as written, else Anthropic's own id for it (dots as dashes, as claude-agent prepares a dotted name:
-  // adapters.ts claudeModelId), the one the run's models hold.
+  // provider.ts anthropicModelId), the one the run's models hold.
   const model = models && provider && id ? (models.getModel(provider, id) ?? (provider === "anthropic" ? models.getModel(provider, id.replaceAll(".", "-")) : undefined)) : undefined;
   if (!models || !model) return { error: `web_search has no model to search on in this run${ref ? ` (${ref})` : ""}` };
   const anthropic = model.api === "anthropic-messages";

@@ -22,6 +22,7 @@ import { MODEL_KEYS } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { git } from "./learn-support.mjs";
 import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url).pathname;
@@ -102,7 +103,7 @@ test("R2 a claude-agent run's learned node request reaches the session's proxy w
   const guard = await guarded(t);
   const key = fake("anthropic");
   withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5", ...guard.env }, [...MODEL_VARS, "NODE_OPTIONS", "NET_GUARD_LOG"]);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const { runId, rows, view } = await ran(api, data, "claude-gated", "claude-agent", { fields: { max_cost_usd: 5 } });
   const sent = gw.requests.filter((r) => r.method === "POST");
   const refusedHosts = () => guard.lines().filter((line) => line.kind === "refused").map((line) => `${line.call} ${line.host}`);
@@ -140,7 +141,7 @@ for (const harness of ["codex", "opencode"]) {
     const guard = await guarded(t);
     const key = fake("gateway");
     withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: key, AGENT_MODEL_PRICE: "1,2,0.5", ...guard.env }, [...MODEL_VARS, "NODE_OPTIONS", "NET_GUARD_LOG"]);
-    const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+    const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
     const { runId, rows, view } = await ran(api, data, `${harness}-gated`, harness);
     const sent = gw.requests.filter((r) => r.method === "POST");
     assert.deepEqual(sent.map((r) => [r.path, r.headers.authorization, r.body?.model]), [["/v1/responses", `Bearer ${key}`, "gpt-test"]], "the node's one request, at the gateway, with its key");
@@ -163,7 +164,7 @@ test("R4 (guard) a capped codex run's learned node is admitted by the session's 
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const { runId, rows, view } = await ran(api, data, "capped-port", "codex", { fields: { max_cost_usd: 0.103 }, ends: ["completed", "failed", "input_required"] });
   assert.deepEqual(gw.requests.filter((r) => r.method === "POST"), [], "the node's request never left");
   assert.deepEqual(entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL), [], "refused before its record: the session wrote none");
@@ -176,7 +177,7 @@ test("R4 a capped codex run's harness counts its learned node on the one total: 
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   // The node's request goes through the session's proxy, whose policy says its least output: codex's
   // responsesOutputLeast (run-adapters-codex policy.ts), 1,024 answer tokens + the reasoning allowance of the effort it
   // names = 9,216 tokens, at $100 a million = $0.9216, as for the harness's own reasoning requests. The harness's first
@@ -215,7 +216,7 @@ globalThis.fetch = (input, init) => {
 `);
   const key = fake("openrouter");
   withEnv(t, { OPENROUTER_API_KEY: key, NODE_OPTIONS: `--import=${pathToFileURL(hook).href}`, OR_TEST_GATEWAY: gw.url }, [...MODEL_VARS, "NODE_OPTIONS", "OR_TEST_GATEWAY"]);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const { runId, rows } = await ran(api, data, "claude-openrouter", "claude-agent", { model: "openrouter/anthropic/claude-sonnet-4.5" });
   const sent = gw.requests.filter((r) => r.method === "POST");
   assert.deepEqual(sent.map((r) => [r.path, r.headers.authorization]), [["/api/v1/messages", `Bearer ${key}`]], `the node's one request, at OpenRouter's Messages endpoint: ${JSON.stringify(sent.map((r) => [r.path, r.body?.model]))}`);
@@ -228,7 +229,7 @@ test("R7 (guard) a call the harness's answer asks for beside learned_workflow st
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "1,2,0.5" }, MODEL_VARS);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const { runId, rows, view } = await ran(api, data, "beside", "codex", { ask: "Use the learned workflow answer on What is six times seven, and write note.md in the same answer." });
   assert.equal(view.status, "completed", JSON.stringify(view));
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
@@ -251,7 +252,7 @@ test("R8 (guard) learned_workflow's description and input schema are as #1727 le
   assert.deepEqual([tool.description, tool.parameters], [SAID, SCHEMA], "pi's tool");
   const opened = join(await scratch(t), "opened.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS) });
   for (const harness of ["claude-agent", "codex"]) {
     await ran(api, data, `said-${harness}`, harness);
     const given = readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.learned).at(-1)?.learned;
@@ -298,7 +299,7 @@ test("R10 (guard) the harness's next request after a node request on the same mo
   t.after(() => gw.close());
   // Sonnet's prices, as grown() bills its requests: the gateway's model is the session's, the node's and the harness's.
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "2,10,0.2,2.5" }, MODEL_VARS);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const ownHeld = (runId) => entries(data, runId, ["runner.request"]).filter((entry) => entry.host === undefined).map((entry) => entry.heldUsd);
   const plain = await ran(api, data, "grown-plain", "codex", { fields: { max_cost_usd: 5 }, ask: "Grow three requests." });
   const beside = await ran(api, data, "grown-beside", "codex", { fields: { max_cost_usd: 5 }, ask: "Grow three requests, the second running the learned workflow answer on What is six times seven." });
@@ -312,7 +313,7 @@ test("R12 a learned node's request is a side call of the session (#1831): its ru
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "0,100,0,0" }, MODEL_VARS);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   // A $1.50 cap: the harness's $0.40 request leaves $1.10. The note is due when what is left is under three times the
   // typical $0.40 = $1.20, and the node's least ($0.9216: codex's responsesOutputLeast, 9,216 tokens at $100 a million)
   // still fits, so a cap in $1.32-$1.60. The node's request is then the session's next on its model, which would take

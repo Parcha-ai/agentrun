@@ -18,6 +18,7 @@ import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
 import { client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -155,7 +156,7 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
 
 test("demo (claude-agent, codex): the faux harness's bash, write and read run in the run's Daytona box; an absolute path under its cwd is the box's same file; out.txt comes back", { timeout: 240_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
-  const { api, data } = await onDaytona(t, fake, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await onDaytona(t, fake, { harnessTable: fauxTable(FAUX_HARNESS) });
   withEnv(t, { AGENTRUN_TEST_DATA: realpathSync(data) });
   for (const harness of ["claude-agent", "codex"]) {
     const calls = [

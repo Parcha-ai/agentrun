@@ -13,6 +13,7 @@ import { test } from "node:test";
 import * as disk from "@parcha/pi-durable-disk";
 import * as timeline from "@parcha/pi-durable-agent/timeline";
 import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -45,7 +46,7 @@ const userTexts = (data, runId) => storeEntries(data, runId).filter((e) => e.mod
 
 for (const harness of ["pi", "claude-agent", "opencode"]) {
   test(`${harness}: a follow-up the server writes (its submit's origin) shows as the server's row, "AgentRun: …", never "You: …"; the model reads its very text`, { timeout: 120_000 }, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
     const id = `origin-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, harness === "pi" ? { tools: [] } : { harness, instructions: `Hold the answer until ${go}.`, tools: ["fetch_page"] }))).status, 201);
@@ -72,7 +73,7 @@ for (const harness of ["pi", "claude-agent", "opencode"]) {
 }
 
 test("pi: a caller's request id never collides with the marker a server message writes: after the server's \"foo\", an input the caller names \"foo:origin\" reaches the model, its submission done and its answer there", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("origin-ids", { tools: [] }))).status, 201);
   const run = await api("POST", "/agents/origin-ids/runs", { input: { content: `Hold the answer until ${go}.` } });
@@ -95,7 +96,7 @@ test("pi: a caller's request id never collides with the marker a server message 
 });
 
 test("the door refuses an origin that is not the server's, and writes nothing for it", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("origin-bad", { tools: [] }))).status, 201);
   const runId = (await api("POST", "/agents/origin-bad/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
@@ -110,7 +111,7 @@ test("the door refuses an origin that is not the server's, and writes nothing fo
 });
 
 test("the door refuses a server origin on an input that may not answer: 400, and no marker written", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("origin-guarded", { tools: [] }))).status, 201);
   const runId = (await api("POST", "/agents/origin-guarded/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
@@ -129,7 +130,7 @@ const EVENT = 'A new event came in.\n\n(From the webhook trigger "inbox", receiv
 
 /** A run that works until `go` is written, with a trigger's guarded message sent to it meanwhile, refused busy. */
 async function busyThenRefused(t, id) {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent(id, { tools: [] }))).status, 201);
   const runId = (await api("POST", `/agents/${id}/runs`, { input: { content: `Hold the answer until ${go}.` } })).body.run_id;

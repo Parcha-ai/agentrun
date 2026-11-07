@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { capBefore, NATIVE_SEARCH_ALLOWANCE_TOKENS, paidCall, useSpend } from "../dist/cap.js";
 import { nativeOptions } from "../dist/adapters.js";
+import { builtinHarness } from "../dist/harness-table.js";
 import { withOverCap } from "../dist/runs.js";
 
 // One request may cost 0.6 of the cap: a 1000-token ceiling at $600 a million output tokens is $0.60, under a $1 cap.
@@ -75,9 +76,10 @@ test("a model serve has no price for is refused under a cap, and only under one;
 test("claude-agent's own search is opened with the stated allowance, 8 searches of 25,000 tokens, which its proxy adds to a search request's bound; codex's own search, live (its adapter books each search); nothing where web_search does not resolve native", () => {
   assert.equal(NATIVE_SEARCH_ALLOWANCE_TOKENS, 200_000);
   const plane = (web_search) => ({ AGENTRUN_SERVE_TOOL_PLANE: JSON.stringify({ web_search }) });
-  assert.deepEqual(nativeOptions("claude-agent", plane("native")), { webSearch: true, webSearchAllowance: 200_000 });
-  assert.deepEqual(nativeOptions("codex", plane("native")), { webSearch: "live" });
-  for (const [harness, env] of [["pi", plane("native")], ["codex", plane("exa-keyless")], ["claude-agent", plane("parallel")], ["codex", {}]]) assert.deepEqual(nativeOptions(harness, env), {}, `${harness} ${JSON.stringify(env)}`);
+  const facts = (harness) => builtinHarness(harness).facts;
+  assert.deepEqual(nativeOptions(facts("claude-agent"), plane("native")), { webSearch: true, webSearchAllowance: 200_000 });
+  assert.deepEqual(nativeOptions(facts("codex"), plane("native")), { webSearch: "live" });
+  for (const [harness, env] of [["opencode", plane("native")], ["codex", plane("exa-keyless")], ["claude-agent", plane("parallel")], ["codex", {}]]) assert.deepEqual(nativeOptions(facts(harness), env), {}, `${harness} ${JSON.stringify(env)}`);
 });
 
 test("the over-cap row: after the usage row, once its booked cost is past the cap, saying by how much; none at or under it, or with no cap or no known cost", () => {
