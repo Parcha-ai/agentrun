@@ -14,10 +14,12 @@ import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./boxes.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { HOOK_TOLERANCE_S } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
 import { LEGACY_NAMES, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
@@ -231,7 +233,17 @@ const MCP_SERVER_VIEW = {
   properties: {
     name: { type: "string" }, url: { type: "string", format: "uri" },
     auth: { type: "object", additionalProperties: false, required: ["type"], properties: { type: { enum: [...MCP_AUTH_TYPES] }, headers: { type: "array", items: { type: "string" }, description: "For `headers`: the names of the headers kept (lowercase), never a value." } } },
-    credential: { enum: ["sealed", "seal_key_missing", "unreadable", null], description: "`sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value." },
+    credential: { enum: ["sealed", "seal_key_missing", "unreadable", "expired", null], description: "`sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again; `expired`: an OAuth sign-in whose refresh the authorization server refused (revoked or expired): sign in again. Null for `auth.type` none. Never a value." },
+    oauth: {
+      type: "object", additionalProperties: false, required: ["scopes", "client"],
+      properties: {
+        expires_at: { type: "string", format: "date-time", description: "When the access token expires; a run's launch refreshes it within 5 minutes of then." },
+        scopes: { type: "array", items: { type: "string" }, description: "The scopes granted." },
+        client_id: { type: "string", description: "The client id this server signs in with (never its secret). A start with no `client_id` signs in again with this client." },
+        client: { enum: ["pre-registered", "metadata-document", "dynamic"], description: "How this server is the authorization server's client: the owner's own client id, this server's client metadata document (CIMD, from a public https address only), or dynamic registration." },
+      },
+      description: "For `auth.type` oauth: the sign-in, never a token.",
+    },
     ...MCP_LISTING,
     prices: MCP_PRICES,
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
@@ -241,7 +253,7 @@ const MCP_SERVER_VIEW = {
 const MCP_AUTH = {
   type: "object", additionalProperties: false, required: ["type"],
   properties: {
-    type: { enum: [...MCP_AUTH_TYPES, "oauth"], description: `\`none\`; \`bearer\` (\`token\`, sent as \`Authorization: Bearer <token>\`); \`headers\` (each named header and its value). \`oauth\` is refused: 422 input_invalid, reason not_yet.` },
+    type: { enum: [...MCP_AUTH_TYPES], description: `\`none\`; \`bearer\` (\`token\`, sent as \`Authorization: Bearer <token>\`); \`headers\` (each named header and its value); \`oauth\`, with no credential in the body: the server is signed in to first (POST /settings/mcp-servers/{name}/oauth/start), and a PUT keeps the sealed token set.` },
     token: { type: "string", minLength: 1, maxLength: 8192 },
     headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192 }, description: "Header names a credential may go in: not Host, Content-Type, Accept, Content-Length, Connection, Transfer-Encoding, Last-Event-ID or an Mcp- header the transport sets." },
   },
@@ -879,9 +891,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/graph": {
     get: {
       operationId: "getRunGraph", tags: ["runs"], summary: "A workflow run's graph, live",
-      description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run.",
+      description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run. 403 `forbidden` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): what its nodes said could repeat the sign-in's pointer, so none of it is served until the sign-in opens again.",
       parameters: [ref("parameters/RunId")],
-      responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 404, 429, 500) },
+      responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 403, 404, 429, 500) },
     },
   },
   "/workflows/validate": {
@@ -993,6 +1005,33 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `With its saved URL and sealed credential. \`added\` and \`removed\` are tool names; \`changed\` names a tool whose title, description, schemas or annotations differ. ${MCP_CONNECTS}`,
       parameters: [MCP_NAME],
       responses: { "200": json(closed({ added: { type: "array", items: { type: "string" } }, removed: { type: "array", items: { type: "string" } }, changed: { type: "array", items: { type: "string" } }, server: MCP_SERVER_VIEW }), "What changed, and the server now."), ...errors(401, 404, 409, 422, 429, 500, 503), ...MCP_FAILED },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/{name}/oauth/start": {
+    post: {
+      operationId: "startMcpOAuth", tags: ["local"], summary: "Start signing in to an MCP server with OAuth: the page the owner opens",
+      description: `Discovers the server's authorization server (RFC 9728, then RFC 8414) with the official MCP SDK, and its client: the \`client_id\` (and \`client_secret\`) given; else, signing in again to the same origin, the client kept from the last sign-in (its secret too); else this server's client metadata document, when this server's address is public https and the authorization server takes one; else dynamic registration. PKCE S256, and the RFC 8707 \`resource\` is the server's URL. Answers \`authorization_url\` for the owner to open; the authorization server sends the browser back to GET /settings/mcp-servers/oauth/callback within 10 minutes. 409 no_sealing_key with no seal key; 409 wrong_origin when the request came to another address than the one the callback is under (\`details.open\` says where to open the console); 424 when discovery or registration fails, or an MCP server off loopback names a private or plain-http endpoint. The answer sets a cookie (one per sign-in, \`SameSite=Lax\`, the callback's path, 10 minutes) that the callback requires.`,
+      parameters: [MCP_NAME],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set." } } } } } },
+      responses: { "200": json(closed({ authorization_url: { type: "string", format: "uri" } }), "The page the owner opens."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/oauth/callback": {
+    get: {
+      operationId: "mcpOAuthCallback", tags: ["local"], summary: "Where the authorization server sends the owner's browser back", security: [{}],
+      description: `Takes no token: its \`state\` (random, used once, 10 minutes, bound to the server's name) and the cookie the start set in the browser that started it (\`SameSite=Lax\`, the callback's path) are the check; without the cookie it is 403 and nothing is exchanged. Exchanges \`code\` with the PKCE verifier kept here, seals the token set (access and refresh tokens, expiry, scopes, the client) bound to the server's name, lists the server's tools as a PUT does and keeps them, then redirects to \`${MCP_SETTINGS_PAGE}?server=<name>&sign_in=ok\` (or \`sign_in=failed&error=<code>\`). 400 for a state that is unknown, used or expired.`,
+      parameters: ["code", "state", "iss", "error"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
+      responses: { "302": { description: "To the console's MCP servers page." }, ...errors(400, 403, 429, 500) },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/oauth/client.json": {
+    get: {
+      operationId: "mcpOAuthClient", tags: ["local"], summary: "This server's OAuth client metadata document", security: [{}],
+      description: "Its own URL is its client id (CIMD): `redirect_uris` is the callback, `token_endpoint_auth_method` none. Readable without a credential, for an authorization server to fetch.",
+      responses: { "200": json({ type: "object" }, "The document."), ...errors(429, 500) },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
@@ -1241,7 +1280,10 @@ const LEARNING_SHORT = {
 
 /** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
  *  `serve/1`. */
+/** consoleurl/1: the console's page of a run or an agent, where a person opens it. */
+const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
 const RUN_FIELDS: Record<string, Json> = {
+  console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
   archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
@@ -1276,7 +1318,9 @@ const PENDING: Json = {
         cap_usd: { type: "number", exclusiveMinimum: 0, description: "The run's cap (`max_cost_usd`)." },
         spent_usd: { type: "number", minimum: 0, description: "What the cap counted as taken when it refused: spent, and held for requests still answering; once the paused process is gone, the store's spend when that is lower (those requests settled). Absent for a refusal written before the figures were kept." },
         needs_usd: { type: "number", minimum: 0, description: "The least the refused request needs. A cap above `spent_usd` + `needs_usd` sends it. Absent with `spent_usd`." },
+        least_cap_usd: { type: "number", exclusiveMinimum: 0, description: "The least cap that sends the refused request: the figure `said` names (\"Raise the cap to at least $X\"), carried from the refusal that wrote those words, so the two never differ. Whole cents, always above `cap_usd`. Absent with `spent_usd`." },
         suggested_cap_usd: { type: "number", exclusiveMinimum: 0, description: "The raise this run is offered: `spent_usd` + 10 × `needs_usd`, rounded up to a whole dollar, and always above `cap_usd`, so `PATCH /runs/{run_id}` with it as `max_cost_usd` is a raise that resumes the run. Absent with `spent_usd`." },
+        overshoot_bound_usd: { type: "number", minimum: 0, description: "The most a cache miss could make the refused request cost beyond `needs_usd` under the run's `cap_mode` expected (its input uncached less its input expected, rounded up to a millionth); 0 under strict, and for a request priced with nothing cached. Absent with `spent_usd`.", "x-agentrun-serve": "capmode/1" },
         said: { type: "string", description: "The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters." },
         at: { type: "string", format: "date-time", description: "When the request was refused." },
       },
@@ -1301,17 +1345,28 @@ const RUN_PLACE: Json = {
   description: "Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server. The Modal sandbox (box `modal`, Modal's default gVisor runtime, not a VM) never has a network: Modal takes a host list, but this server cannot read a sandbox's list back to check that it holds, so each is made blocked, and capabilities.places.boxes says so in its network_reason (unless AGENTRUN_BOX_ALLOW is none).",
   "x-agentrun-serve": "place/1",
 };
+/** capmode/1: how a run's cap prices a request's input. */
+const CAP_MODE: Json = {
+  enum: ["expected", "strict"],
+  description: "How the run's cap (`max_cost_usd`) prices each model request's input. `expected` (the default): the input the previous request of its conversation reported read from or written to the cache, at the cache-read price, when that request ended less than 4 minutes before; the rest of its input (the previous request's input after the cache, and what the conversation grew by since, a token a byte) at the input price, the cache write's when dearer. With no such request, all of it at that price. Output is limited to what the cap leaves, so output never passes it; a cache miss can, by at most the request's bound (its input uncached less its input expected), served as the run's `cost.overshoot_bound_usd` while it is in flight; its real cost is booked, and the timeline says so. `strict`: every input token at the input or cache-write price, the worst case: no request passes the cap, and a run pauses sooner. Only with a cap.",
+  "x-agentrun-serve": "capmode/1",
+};
 /** costsofar/1: a cost no one fully knows, said as what is known and how much is not, with no ceiling claimed. */
 const SO_FAR = {
   so_far_usd: { type: "number", minimum: 0, description: "Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them.", "x-agentrun-serve": "costsofar/1" },
   unpriced: { type: "integer", minimum: 1, description: "Set only while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut).", "x-agentrun-serve": "costsofar/1" },
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
-  Cost: SO_FAR,
+  Cost: {
+    ...SO_FAR,
+    overshoot_bound_usd: { type: "number", minimum: 0, description: "Set when the run has a cap: the most its model requests in flight could cost beyond what its cap holds them at, when one misses the cache (`cap_mode` expected: each one's input uncached less its input expected, rounded up to a millionth). 0 with none in flight, under strict, and for a request priced with nothing cached. The cap never lets output pass it, so this is all a run can go over its cap by.", "x-agentrun-serve": "capmode/1" },
+  },
+  RunCreate: { cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` } },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
   Run: {
     ...RUN_FIELDS,
+    cap_mode: { type: ["string", "null"], enum: ["expected", "strict", null], description: "How the run's cap prices each model request's input (`cap_mode` on its start, else its agent's, else expected; see RunCreate.cap_mode). Null for a run with no cap.", "x-agentrun-serve": "capmode/1" },
     last_progress_at: {
       type: ["string", "null"],
       format: "date-time",
@@ -1332,7 +1387,10 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     trigger: RUN_TRIGGER,
   },
-  InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
+  InputIssue: {
+    code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
+    example: { description: "A value the field accepts, said in `message` too: the operation's documented request body's value there, else the schema's example, const or option, else one made from its type; each is suggested only once the route's own check of the body takes it in place (else the schema, for a value the document gives), so this server never suggests a value it refuses. Absent when there is none. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"Due diligence\"}}`.", "x-agentrun-serve": "explain/1" },
+  },
   RunSummary: {
     ...RUN_FIELDS,
     effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
@@ -1365,8 +1423,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "cappause/1",
     },
     origin: {
-      const: "server",
-      description: "On the row of a message the server wrote into the run (a raised cap's follow-up, an approval's resume): a `phase` row, \"AgentRun: <its first line>\", where a person's message would be a `user_message` one. It counts, as a person's does, as the message its turn took. Absent on every other row.",
+      enum: ["server", "trigger"],
+      description: "On the row of a message the person did not write: `server`, one the server wrote into the run (a raised cap's follow-up, an approval's resume), a `phase` row \"AgentRun: <its first line>\"; `trigger`, a trigger's input (a started run's first message, or a firing's message), a `phase` row \"Trigger <trigger id>: <its first line>\". Either is where a person's message would be a `user_message` row, and counts, as a person's does, as the message its turn took. Absent on every other row.",
       "x-agentrun-serve": "origin/1",
     },
     learning: {
@@ -1395,11 +1453,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_settings: { ...TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+    cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition only: on a workflow's it is 422 not_allowed.` },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
   },
   Agent: {
+    console_url: CONSOLE_URL("agent"),
     tools: AGENT_TOOLS,
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
@@ -1438,7 +1498,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why. A harness whose one run needs more memory than this server has for runs is unavailable, its reason naming the numbers, and its runs are 409 agent_not_runnable.",
-      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer", "default_model", "run_memory_mib", "max_concurrent_runs"], properties: { id: { enum: [...HARNESSES] }, available: { type: "boolean" }, run_memory_mib: { type: "integer", minimum: 1, description: "The memory a run of this harness reserves while its process lives, in MiB, measured. A start is admitted while the runs going and it fit in this server's memory less its own; over that, 429 rate_limited with retry-after, as over `limits.max_concurrent_runs`." }, max_concurrent_runs: { type: "integer", minimum: 0, description: "The most runs of this harness alone at once here: by memory and by the cap on the count, whichever is fewer. 0 when one never fits. `limits.max_concurrent_runs` is pi's, the smallest run." }, default_model: { type: ["string", "null"], description: "The model this server runs for the harness when a definition names none (provider/model-id), or null when it runs none: the harness does not run here, or no default model here runs on it." }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" }, installs: { const: "on_first_use", description: "claude-agent only, while Claude Code is not installed in this server's data: it installs on first use. The first run on it, or the first agent saved on it, installs the Claude Agent SDK at the version AgentRun pins from npm into `<data>/harnesses`, once (every run that needs it waits for that one install); a run shows a `phase` row, `Installing Claude Code (first use)…`, while it does. When npm fails the run fails, and its error names the command that installs it by hand. Absent once it is installed.", "x-agentrun-serve": "firstuse/1" } } },
+      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer", "default_model", "run_memory_mib", "max_concurrent_runs"], properties: { id: { enum: [...HARNESSES] }, available: { type: "boolean" }, run_memory_mib: { type: "integer", minimum: 1, description: "The memory a run of this harness reserves while its process lives, in MiB, measured. A start is admitted while the runs going and it fit in this server's memory less its own; over that, 429 rate_limited with retry-after, as over `limits.max_concurrent_runs`." }, max_concurrent_runs: { type: "integer", minimum: 0, description: "The most runs of this harness alone at once here: by memory and by the cap on the count, whichever is fewer. 0 when one never fits. `limits.max_concurrent_runs` is pi's, the smallest run." }, default_model: { type: ["string", "null"], description: "The model this server runs for the harness when a definition names none (provider/model-id), or null when it runs none: the harness does not run here, or no default model here runs on it." }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" }, installs: { const: "on_first_use", description: "claude-agent and codex only, while that harness's CLI is not installed in this server's data: it installs on first use. The first run on it, or the first agent saved on it, installs the version AgentRun pins (claude-agent: the Claude Agent SDK; codex: Codex) from npm into `<data>/harnesses/<harness>`, by the lock AgentRun ships, once (every run that needs it waits for that one install); a run shows a `phase` row, `Installing Claude Code (first use)…` or `Installing Codex (first use)…`, while it does. When npm fails the run fails, and its error names the command that installs it by hand. Absent once it is installed.", "x-agentrun-serve": "firstuse/1" } } },
       // harness/2: each entry took on its memory and count (run_memory_mib, max_concurrent_runs). A client that validates
       // against harness/1 refuses them, so it is a mark of its own.
       "x-agentrun-serve": "harness/2",
@@ -1493,7 +1553,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
   },
   // decisions/2: the providers took on parallel (and, here, openrouter). A client that validates against decisions/1 refuses it, so the
-  // widening is a mark of its own.
+  // widening is a mark of its own. decisions/3: a provider takes `route` (parallel's, on Parallel's API or OpenRouter), which a
+  // client that validates against decisions/2 refuses.
   "Capabilities/places": {
     default_place: {
       oneOf: [
@@ -1511,9 +1572,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["providers"],
       description: "The decision providers a workflow's typed questions (judge, pick, sift, route, ask) run on, and whether this server runs each: when not, why (`reason`); when it runs in a way an operator should know of, a `note`. `runJudge` is among `adapters` once one runs.",
       properties: {
-        providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev", "parallel", "openrouter"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" } } } },
+        providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev", "parallel", "openrouter"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" }, route: { enum: ["parallel", "openrouter"], description: "parallel's route here: Parallel's own API (PARALLEL_API_KEY), else Parallel's model on OpenRouter (parallel/decisions-fast, on the OpenRouter key)." } } } },
       },
-      "x-agentrun-serve": "decisions/2",
+      "x-agentrun-serve": "decisions/3",
     },
   },
   "Capabilities/models": {
@@ -1522,6 +1583,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     route_prefix: { type: ["string", "null"], description: "With `source` `gateway`, the routing prefix this server puts before the gateway's model ids (`agent-model`): every tier's model and every harness's `default_model` here is the prefix, a slash and the gateway's own id. Null with any other source, where ids are shown whole.", "x-agentrun-serve": "model/2" },
     ready: { type: "boolean", description: "Whether a revision that names no model runs here: the host names a default (`AGENT_MODEL`), or a model provider's key is here, saved (`PUT /settings/tool-keys/{key_id}`, a `model` key) or the server's own, and gives its default model, the first of anthropic, openai, openrouter that has one.", "x-agentrun-serve": "toolkeys/1" },
     needs: { enum: ["key", "model", null], description: "When `ready` is false, what would make it true: `key`, a model provider's key (none is here, or the default model's provider has none); `model`, another default model (`AGENT_MODEL` names one this server does not know). Null when ready.", "x-agentrun-serve": "toolkeys/1" },
+    priced: { type: ["boolean", "null"], description: "Whether that model has a price here, which a run's `max_cost_usd` needs: false for a gateway model (`source` `gateway`) with no `AGENT_MODEL_PRICE` that pi-ai's catalog does not list in any form, whose answers' cost is unknown; a run with `max_cost_usd` on it is refused (409 agent_not_runnable, on `definition.model`), and one without runs with its cost unknown, never $0. Null while `ready` is false: no model, nothing to price.", "x-agentrun-serve": "pricing/1" },
   },
   Features: {
     archive: {
@@ -1578,10 +1640,11 @@ const BLOCKED_DETAILS = {
     denied: { type: "array", items: { type: "string" }, description: "A workflow revision: the tools its call nodes call that are set to deny here." },
     asks: { type: "array", items: { type: "string" }, description: "A workflow revision: the tools its call nodes call that are set to ask here (a catalog tool's default among them). A call node cannot wait for an approval: set the tool to allow for the agent." },
     box: { enum: [...BOX_IDS], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
+    not_grantable: { type: "array", items: { type: "object", additionalProperties: false, required: ["tool", "reason"], properties: { tool: { type: "string" }, reason: { type: "string" } } }, description: "The MCP tools the revision grants that are never granted here (known meta tools, which run other actions by name), each with why. Not in `unbound`: no server setup makes one grantable; remove the grant and use the server's direct tools." },
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },
-    decisions: { type: "object", description: "A workflow revision: each decision provider it needs that this host has not set up, with why and the variables it needs.", additionalProperties: { type: "object", additionalProperties: false, required: ["reason", "needs"], properties: { reason: { type: "string" }, needs: { type: "array", items: { type: "string" } } } } },
+    decisions: { type: "object", description: "A workflow revision: each decision provider it needs that this host has not set up, with why and the keys that would set it up.", additionalProperties: { type: "object", additionalProperties: false, required: ["reason", "needs"], properties: { reason: { type: "string" }, needs: { type: "array", items: { type: "string" }, description: "The variables that would set the provider up. Where it has more than one route, either key is enough (parallel: PARALLEL_API_KEY or OPENROUTER_API_KEY)." } } } },
   },
 };
 const ARCHIVED_DETAILS = {
@@ -1603,6 +1666,27 @@ function contract(): Json {
 
 /** The document: the contract, its operations this server turns off marked with why (`capabilityOf` gives an
  *  operation's capability here, by its operationId), and this server's own routes added and marked. */
+/** A working request body for each operation a client most often writes by hand, by operationId: served as its media type's
+ *  examples, printed by the CLI's help as a `--body`, and sent to the server by a test, so none can stop working. The run
+ *  and the trigger name the agent the first one makes. */
+export const REQUEST_EXAMPLES: Record<string, Record<string, { summary: string; value: Json }>> = {
+  createAgent: {
+    agentic: {
+      summary: "An agent that researches a company on the web",
+      value: { definition: { id: "due-diligence", name: "Due diligence", instructions: "Research the company you are given on the web and write a short brief: what it does, who runs it, red flags, and the sources you read.", tools: ["web_search", "web_fetch"] } },
+    },
+  },
+  createRun: {
+    agentic: { summary: "An agentic agent's run, capped at $1", value: { input: { content: "Research https://stripe.com and write the brief." }, max_cost_usd: 1 } },
+  },
+  createTrigger: {
+    schedule: {
+      summary: "A capped run of an agent every Monday at 09:00 UTC",
+      value: { name: "Weekly brief", source: { kind: "schedule", cron: "0 9 * * 1" }, target: { kind: "start_run", agent_id: "due-diligence", input: { content: "Research https://stripe.com again and say what changed this week." }, max_cost_usd: 1 } },
+    },
+  },
+};
+
 export function openapiDocument(capabilityOf: (operationId: string) => string | undefined): Json {
   const doc = structuredClone(contract()) as Json & { info: Json; paths: Record<string, Record<string, Json>> };
   const unsupported: string[] = [];
@@ -1644,7 +1728,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // A row's usage: the contract's shape, on more rows here than the usage row (pi-durable-agent's timeline, BROWSER_CHARGE).
   const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
   timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
-  const noted = ["DefinitionInput.max_cost_usd", "TimelineRow.usage"];
+  // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
+  const errorBody = schemas.ErrorBody as Json & { properties: Record<string, Json> };
+  errorBody.properties.fields = { ...errorBody.properties.fields, "x-agentrun-serve-note": "Also on `agent_not_runnable` (409) here: each thing that keeps the run from starting, by the field it is about, its reason, its message and the fix when there is one (such as AGENT_MODEL_PRICE for a capped run on a model with no price), as a 422 names each field." };
+  const noted = ["DefinitionInput.max_cost_usd", "TimelineRow.usage", "ErrorBody.fields"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.
@@ -1737,6 +1824,14 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     runStatus["x-agentrun-serve"] = "pause/1";
     fields.push("RunStatus.paused");
   }
+  // runnable/1: a 409 agent_not_runnable's `fields` (server.ts runnable) name what keeps a run from starting, many of them a
+  // setting this host lacks (`not_set_up_here`, runnable.ts NOT_SET_UP), a reason the contract's InputIssue enum lacks.
+  const issueReason = ((schemas.InputIssue as Json).properties as Record<string, Json>).reason as Json & { enum?: string[] };
+  if (Array.isArray(issueReason.enum) && !issueReason.enum.includes(NOT_SET_UP)) {
+    issueReason.enum = [...issueReason.enum, NOT_SET_UP];
+    issueReason["x-agentrun-serve"] = "runnable/1";
+    fields.push(`InputIssue.reason.${NOT_SET_UP}`);
+  }
   // A paid tool's charges (monid's) are a meter of their own on /usage, beside the model's tokens.
   const meter = schemas.Meter as Json & { enum?: string[] };
   if (Array.isArray(meter.enum) && !meter.enum.includes("tools")) {
@@ -1773,12 +1868,25 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     agent_not_runnable: NOT_RUNNABLE_DETAILS, system_file_forbidden: FORBIDDEN_DETAILS,
     auth_required: closed({ auth: { enum: ["bearer", "oauth"], description: "What the MCP server asks for: `oauth` when it names protected-resource metadata, else `bearer`." }, status: { enum: [401, 403] } }),
     upstream_failed: { type: "object", additionalProperties: false, properties: { status: { type: "integer", description: "The MCP server's HTTP status, when it answered one." } } },
+    wrong_origin: closed({ open: { type: "string", format: "uri", description: "Where to open the console to sign in: the address the authorization server sends the browser back to." } }),
   };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {
     for (const [method, op] of Object.entries(item)) {
       (doc.paths[path] ??= {})[method] = { "x-agentrun-serve": true, ...op };
       extensions.push(`${method.toUpperCase()} ${path}`);
+    }
+  }
+  // examples/1: a working body for the operations in REQUEST_EXAMPLES, on the JSON media type; a contract operation that
+  // gains one is changed, and says so.
+  for (const [path, item] of Object.entries(doc.paths)) {
+    for (const [method, op] of Object.entries(item)) {
+      const examples = REQUEST_EXAMPLES[op.operationId as string];
+      if (!examples) continue;
+      (((op.requestBody as Json).content as Json)["application/json"] as Json).examples = structuredClone(examples);
+      if (op["x-agentrun-serve"] !== undefined) continue;
+      op["x-agentrun-serve-changed"] = { ...(op["x-agentrun-serve-changed"] as Json | undefined), requestBody: "examples/1" };
+      if (!changed.includes(`${method.toUpperCase()} ${path}`)) changed.push(`${method.toUpperCase()} ${path}`);
     }
   }
   doc.info["x-agentrun-serve"] = {

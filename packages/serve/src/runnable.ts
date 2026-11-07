@@ -7,7 +7,7 @@ import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.j
 import { REPLAY } from "./host-tools.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
+import { chooseModel, llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
@@ -20,7 +20,7 @@ import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
 import { type McpTool, toolSchemaProblems } from "@parcha/agentrun-kernel";
 
 /** The harnesses an agent's MCP tools run on here. */
-export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent"];
+export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent", "codex"];
 
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. */
@@ -32,8 +32,8 @@ export type RevisionShape =
  *  not bind), `missing` (a bound tool's unset variables), `adapter`, `decision` (a decision provider's unset key), `codeNodes`
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness`, `box` (the place's,
  *  which this server does not have) and `denied` (a tool a workflow's call node calls that is set to deny) name it for a
- *  run's 409 details. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string };
+ *  run's 409 details; `notGrantable` a tool no setup makes grantable (a known MCP meta tool, mcp-meta.ts), with why. */
+export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?: { tool: string; reason: string }; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string; unpriced?: true };
 
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
@@ -65,6 +65,11 @@ export const NOT_SET_UP = "not_set_up_here";
 /** Set to 1 (`--allow-code-nodes`), this server runs workflows' `code` nodes: in the run's process, through the DSL's
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
+
+/** The shapes of a tool's schema Codex drops or retypes (@parcha/agentrun-harness-codex codexSchemaProblems), loaded once;
+ *  none where that package is not installed, where codex runs nothing anyway (its offer says why). */
+let codexCheck: Promise<((name: string, schema: unknown) => string[]) | undefined> | undefined;
+const codexToolCheck = () => (codexCheck ??= import("@parcha/agentrun-harness-codex").then((codex) => codex.codexSchemaProblems, () => undefined));
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
@@ -104,33 +109,49 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
     return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, which has no shell, and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
+  // Codex's own MCP client builds the model's copy of a server's tool with parse_tool_input_schema (codex-rs
+  // tools/src/mcp_tool.rs at rust-v0.164.0), the parser its host tools go through: a shape it drops or retypes
+  // (codexSchemaProblems, measured on the pinned binary) would offer the model another tool than the one granted, so its
+  // grant is refused here, at the save, as on claude-agent. A bound or a format it only strips is not: the server still
+  // checks it, and its error reaches the model.
+  const codexProblems = revision.kind === "agentic" && harness === "codex" && (revision.tools ?? []).some((tool) => tool.startsWith("mcp:")) ? await codexToolCheck() : undefined;
+  /** What keeps the grant of `tool`, an `mcp:` name, from running here (the first thing), at `field`; undefined when
+   *  nothing does. A remote MCP server's tool runs when its saved snapshot lists it, on a harness that binds them; a
+   *  workflow's nodes bind none. The one check of an MCP grant, for an agentic revision's tools and for every tool a
+   *  workflow grants (grantedTools). */
+  const mcpGrant = (field: string, tool: string): Blocker | undefined => {
+    const named = mcpNameOf(tool);
+    const saved = named && mcp?.(named.server);
+    const listed = saved && saved.map((t) => t.name);
+    const listedTool = saved && named ? saved.find((t) => t.name === named.tool) : undefined;
+    const schema = listedTool?.inputSchema;
+    const declared = schema ? mcpHeaderProblem(schema) : undefined;
+    // On claude-agent the CLI drops a tool whose schema fails the kernel's check, or whose root holds anyOf, allOf or
+    // oneOf (harness-claude's check, measured on the pinned CLI), without a word: refused here, not missing at the run.
+    // On codex, a shape its parser drops or retypes (codexProblems above).
+    const dropped = schema && named && harness === "claude-agent" ? [...toolSchemaProblems(`mcp__${named.server}__${named.tool}`, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)][0] : schema && named && codexProblems ? codexProblems(`mcp__${named.server}__${named.tool}`, schema)[0] : undefined;
+    if (!named) return { field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool };
+    // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
+    if (named.server === "hands") return { field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool };
+    // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
+    // the harness's check, since no host setup makes it grantable.
+    if (listedTool?.grantable === false) return { field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, notGrantable: { tool, reason: listedTool.reason! } };
+    // A workflow's nodes bind no MCP tool here (app.ts): its run would go without it, so its grant is refused.
+    if (revision.kind === "workflow") return { field, reason: "not_an_option", message: `${tool}: a workflow's nodes don't bind MCP tools here yet; grant it to an agentic agent.`, host: false, tool };
+    if (!MCP_HARNESSES.includes(harness)) return { field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.slice(0, -1).join(", ")} and ${MCP_HARNESSES.at(-1)} here; on ${harness} MCP tools are not bound yet.`, host: true, tool };
+    if (!listed) return { field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool };
+    if (!listed.includes(named.tool)) return { field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool };
+    if (dropped) return { field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} cannot be offered on ${harness}: ${dropped.replace(/^mcp__\S+: /, "")}.`, host: false, tool };
+    if (declared) return { field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`, host: false, tool };
+    if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) return { field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool };
+    return undefined;
+  };
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
-      // A remote MCP server's tool: one its saved snapshot lists, on a harness that binds them.
       if (tool.startsWith("mcp:")) {
-        const field = `definition.tools[${index}]`;
-        const named = mcpNameOf(tool);
-        const saved = named && mcp?.(named.server);
-        const listed = saved && saved.map((t) => t.name);
-        const listedTool = saved && named ? saved.find((t) => t.name === named.tool) : undefined;
-        const schema = listedTool?.inputSchema;
-        const declared = schema ? mcpHeaderProblem(schema) : undefined;
-        // On claude-agent the CLI drops a tool whose schema fails the kernel's check, or whose root holds anyOf, allOf or
-        // oneOf (harness-claude's check, measured on the pinned CLI), without a word: refused here, not missing at the run.
-        const dropped = schema && named && harness === "claude-agent" ? [...toolSchemaProblems(`mcp__${named.server}__${named.tool}`, schema), ...["anyOf", "allOf", "oneOf"].filter((key) => key in schema).map((key) => `/${key}: the Claude Agent CLI drops a tool whose root has ${key}`)][0] : undefined;
-        if (!named) out.push({ field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool });
-        // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
-        else if (named.server === "hands") out.push({ field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool });
-        // A meta tool runs other actions by name: a grant of it could not name the action (mcp-meta.ts). Refused before
-        // the harness's check, since no host setup makes it grantable.
-        else if (listedTool?.grantable === false) out.push({ field, reason: "not_an_option", message: `${tool} can't be granted: ${listedTool.reason}`, host: false, tool });
-        else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.join(" and ")} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
-        else if (!listed) out.push({ field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool });
-        else if (!listed.includes(named.tool)) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool });
-        else if (dropped) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} cannot be offered on claude-agent: ${dropped.replace(/^mcp__\S+: /, "")}.`, host: false, tool });
-        else if (declared) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`, host: false, tool });
-        else if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) out.push({ field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool });
+        const blocker = mcpGrant(`definition.tools[${index}]`, tool);
+        if (blocker) out.push(blocker);
         return;
       }
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
@@ -151,15 +172,19 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!resolved) return out;
     if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host });
     else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
+    // Under a cap, a model serve has no price for (unpricedModels: a gateway id no price names and the catalog does not
+    // list) cannot be kept to it: the run is refused now, never started and refused at its first request.
+    else if (capped) for (const id of await unpricedModels(env, revision.model, ["default"], harness)) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead tokens) where AgentRun starts, or run without a spend cap.", host: true, unpriced: true });
     return out;
   }
-  // A workflow's own grants hold a known MCP meta tool to the same rule (mcp-meta.ts): refused at the save, never a
-  // workflow that cannot launch.
-  (revision.tools ?? []).forEach((tool, index) => {
-    const named = tool.startsWith("mcp:") ? mcpNameOf(tool) : undefined;
-    const listed = named ? mcp?.(named.server)?.find((t) => t.name === named.tool) : undefined;
-    if (listed?.grantable === false) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} can't be granted: ${listed.reason}`, host: false, tool });
-  });
+  // Every MCP tool a workflow grants, at its top level or on a node, is held to the one check (mcpGrant): refused at the
+  // save, never a workflow whose run goes without it or cannot launch.
+  const granted = await grantedTools(revision);
+  for (const tool of granted.filter((name) => name.startsWith("mcp:"))) {
+    const index = (revision.tools ?? []).indexOf(tool);
+    const blocker = mcpGrant(index >= 0 ? `definition.tools[${index}]` : "definition.workflow", tool);
+    if (blocker) out.push(blocker);
+  }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
   if (harness !== DEFAULT_HARNESS) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
@@ -188,9 +213,12 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   else if (requires.executableCode && env[CODE_NODES_ENV] !== "1") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This server runs no code nodes: start it with --allow-code-nodes (or ${CODE_NODES_ENV}=1) to run this workflow's.`, host: true, codeNodes: true });
   const named = workflowTools(nodes);
   for (const tool of named.nodes) {
+    // An MCP tool is said once, by mcpGrant above.
+    if (tool.startsWith("mcp:")) continue;
     if (!allows(NODE_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${tool}.`, host: false, tool });
   }
   for (const tool of named.calls) {
+    if (tool.startsWith("mcp:")) continue;
     if (!allows(CALL_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
     // A call node is the author's own step, and it cannot wait for an approval: one that calls a tool set to deny, or to
     // ask (which it could never get), would be refused mid-run (app.ts runEffect), so the run never starts.
@@ -198,7 +226,6 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: capabilityOf(tool) });
     else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny ${denyPlace(permissionFrom(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never).from)}.`, host: true, denied: capabilityOf(tool) });
   }
-  const granted = await grantedTools(revision);
   for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {
     unset("definition.workflow", tool);
     unavailable("definition.workflow", granted, tool);

@@ -173,14 +173,15 @@ test("a request whose price is unknown makes the run's cost unknown, never 0", {
 test("a run whose booked spend passes its cap shows by how much on its timeline, once, and ends spend_cap_reached saying so", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   assert.equal((await api("POST", "/agents", agent("over", { harness: "codex", instructions: "Overspend." }))).status, 201);
-  const run = await api("POST", "/agents/over/runs", { input: { content: "hi" }, max_cost_usd: 0.3 });
+  // A cap that is no whole number of cents: its words say it in cents, never as a float's tail.
+  const run = await api("POST", "/agents/over/runs", { input: { content: "hi" }, max_cost_usd: 0.3002094 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["failed"], { deadlineMs: 55_000 });
   const over = rows.filter((row) => row.id.endsWith(":over_cap"));
-  assert.deepEqual(over.map((row) => [row.kind, row.summary]), [["phase", "Spent $0.5000, $0.2000 over the run's cap of $0.3"]]);
+  assert.deepEqual(over.map((row) => [row.kind, row.summary]), [["phase", "Spent $0.50, $0.20 over the run's cap of $0.30"]]);
   assert.equal(usageOf(rows).usd, 0.5, "the usage row it reads: the refused request cost nothing");
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.deepEqual([view.error.code, view.error.message], ["spend_cap_reached", "The run cost $0.5000, $0.2000 over its cap of $0.3."]);
+  assert.deepEqual([view.error.code, view.error.message], ["spend_cap_reached", "The run cost $0.50, $0.20 over its cap of $0.30."]);
 });
 
 test("a request admitted and cut by a crash is booked once, unknown: on resume the cost is unknown and every admitted request counts once", { timeout: 90_000 }, async (t) => {
