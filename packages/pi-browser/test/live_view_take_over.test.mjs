@@ -539,3 +539,21 @@ test("take and give are refused as unknown by a viewer that is not a take-over o
     assert.equal(gates(`ar-run-to-9-${reason}`).held(), false);
   }
 });
+
+test("take-over viewer: a person's command that never returns renews their turn no more once the hand-back's bound lets it go: the agent's next call is not refused", async (t) => {
+  const tag = "ar-run-to-34-1";
+  const clock = fakeClock();
+  const gates = createDrivingGates({ timers: clock.timers, settleMs: 5_000 });
+  const b = await backInFlight(t, tag, gates);
+  await wait(50);
+  clock.tick(5_000);
+  await b.running;
+  assert.deepEqual(b.log, ["history", "agent"], "past the bound the agent went on");
+  // The command still hangs; its keep-alive ticks every second: past the bound it must open no new turn for the person.
+  await wait(2_500);
+  assert.notEqual(gates(tag).state(), "person", "no person-driving window opened after the hand-back");
+  const port = { session: async () => ({ tag, driver: { close: async () => {} }, notice: null }), relaunch: async () => ({ tag }), release: async () => ({ released: true, sessionId: null }) };
+  const next = await drivingGuard(async (_a, p) => { await p.session(); b.log.push("agent again"); return { content: [{ type: "text", text: "ran again" }] }; }, gates)({}, port, {});
+  assert.deepEqual(next.content.map((c) => c.text), ["ran again"], JSON.stringify(next));
+  assert.deepEqual(b.log, ["history", "agent", "agent again"]);
+});

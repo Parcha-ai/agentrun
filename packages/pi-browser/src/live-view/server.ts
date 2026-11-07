@@ -250,12 +250,14 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       if (takeOver && (!isHolding(viewer.gate) || epochOf(viewer.gate) !== item.epoch)) { send(viewer.conn, { type: "held", reason: "not_taken" }); viewer.queued -= 1; return; }
       // Messages wait their turn behind a slow command, so the gate is asked again at delivery: the model may have taken the browser since the message arrived.
       if (viewer.gate.input() === "agent_acting") { send(viewer.conn, { type: "held", reason: "agent_acting" }); viewer.queued -= 1; return; }
-      // The person's turn must not lapse while their own command runs (a navigation can take seconds, the window is 3 s): it is renewed until the command returns.
-      const keep = setInterval(() => { viewer.gate.input(); }, KEEP_DRIVING_MS);
-      keep.unref();
       // The gate knows the command runs: a hand-back meanwhile wakes the agent only once it returns (or is let go, `live` false from then on).
       const command = viewer.gate.command?.();
       const live = (): boolean => command?.live() ?? true;
+      // The person's turn must not lapse while their own command runs (a navigation can take seconds, the window is 3 s): it is renewed until the
+      // command returns, or until the gate lets it go after a hand-back (`live` false): past that a renewal would open a new turn for the person
+      // once the agent's call returns, refusing the agent's calls after they handed the browser back.
+      const keep = setInterval(() => { if (live()) viewer.gate.input(); else clearInterval(keep); }, KEEP_DRIVING_MS);
+      keep.unref();
       try {
         if (message.type === "nav") await viewer.stream.nav(message, live);
         else if (message.type === "dialog") await viewer.stream.dialog(message);
