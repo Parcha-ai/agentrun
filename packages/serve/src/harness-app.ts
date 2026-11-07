@@ -333,11 +333,17 @@ export function adapterRun(
   // close is closed then (closeOnce), never left open by a process that is going.
   let opening: Promise<AdapterSession> | undefined;
   let closing = false;
-  const closedSessions = new WeakSet<AdapterSession>();
-  const closeOnce = async (it: AdapterSession | undefined) => {
-    if (!it || closedSessions.has(it)) return;
-    closedSessions.add(it);
-    await it.close();
+  // One close per session, its promise shared: whichever caller starts it (the door's close, or an open that lands after
+  // it), every caller awaits the same close to its end, and its failure reaches the door (its log line).
+  const closes = new WeakMap<AdapterSession, Promise<void>>();
+  const closeOnce = (it: AdapterSession | undefined): Promise<void> => {
+    if (!it) return Promise.resolve();
+    let done = closes.get(it);
+    if (!done) {
+      done = Promise.resolve().then(() => it.close());
+      closes.set(it, done);
+    }
+    return done;
   };
   let opened: Promise<void> | undefined;
   let openedDone: () => void = () => {};
@@ -939,6 +945,8 @@ export function adapterRun(
       opening = adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       session = await opening;
       // The door closed while it opened (the process is going): this session is closed now, and nothing goes on in it.
+      // `closing` is set by the door's close alone, which awaits this same close (closeOnce) and logs its failure; the open
+      // waits for it too, and does not fail on it a second time.
       if (closing) return void (await closeOnce(session).catch(() => undefined));
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
