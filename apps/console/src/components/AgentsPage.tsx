@@ -6,7 +6,6 @@ import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
-import type { ToolSettings } from "@/lib/v2";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
 
@@ -72,15 +71,6 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.file_unreadable ? "failed" : r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
   };
   useEffect(loadMcp, [v2, caps.mcp]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The server's own tool settings: a catalog tool ticked and not saved yet takes its default from them. Unread, its row
-  // waits for the save, as before.
-  const [serverToolSettings, setServerToolSettings] = useState<ToolSettings | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    // A read that fails (or a client without it) leaves them unread.
-    Promise.resolve().then(() => v2.toolSettings()).then((s) => { if (live) setServerToolSettings(s); }, () => undefined);
-    return () => { live = false; };
-  }, [v2]);
   // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never
   // reads as failed. The page shows the write's own answer; the refresh brings the ETag and the history. When the refresh
   // finds another current revision (made current here, or saved in another tab), the form reloads with it, so a later save
@@ -103,7 +93,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
-    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} permissionGates={gates} serverToolSettings={serverToolSettings} mcpServers={mcpServers} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
+    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {
         let saved;
         try {
