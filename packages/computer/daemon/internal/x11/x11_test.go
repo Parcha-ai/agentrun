@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11/x11fake"
@@ -400,6 +402,202 @@ func TestAnAnnouncedLengthIsBoundedBeforeAnythingIsAllocated(t *testing.T) {
 			}
 			if grew > 64<<20 {
 				t.Errorf("the client allocated %d bytes for a length the server only announced", grew)
+			}
+		})
+	}
+}
+
+// fifo makes a FIFO in a fresh directory. Its cleanup opens the FIFO's other end and closes it, so a reader still
+// blocked opening it (a client that waits for a writer) is let go when the test ends.
+func fifo(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "Xauthority")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = syscall.Close(fd)
+		}
+	})
+	return path
+}
+
+// within runs f, and fails the test when it has not returned within bound.
+func within(t *testing.T, bound time.Duration, what string, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f()
+	}()
+	select {
+	case <-done:
+	case <-time.After(bound):
+		t.Fatalf("%s did not return within %v", what, bound)
+	}
+}
+
+// An Xauthority path is in the computer user's own home, so any program there may put something other than a file at
+// it. What is not a regular file (a FIFO, a device, a symbolic link to either or to anything) is refused in words at
+// once, with nothing read: a FIFO never makes the read wait for a writer, and a device never makes it read without end.
+func TestAnXauthorityThatIsNotARegularFileIsRefusedAtOnce(t *testing.T) {
+	regular := authority(t, [5]any{256, "box", "0", "MIT-MAGIC-COOKIE-1", []byte("0123456789abcdef")})
+	for name, path := range map[string]func(t *testing.T) string{
+		"a FIFO":   fifo,
+		"a device": func(t *testing.T) string { return "/dev/zero" },
+		"a link to a device": func(t *testing.T) string {
+			link := filepath.Join(t.TempDir(), "Xauthority")
+			if err := os.Symlink("/dev/zero", link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		},
+		"a link to a file": func(t *testing.T) string {
+			link := filepath.Join(t.TempDir(), "Xauthority")
+			if err := os.Symlink(regular, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := path(t)
+			before := totalAlloc()
+			var err error
+			within(t, 10*time.Second, "ReadAuthority", func() { _, _, err = x11.ReadAuthority(p, x11.Address{Number: 0}, "box") })
+			if grew := totalAlloc() - before; grew > 16<<20 {
+				t.Errorf("reading %s allocated %d bytes", name, grew)
+			}
+			if err == nil || !strings.Contains(err.Error(), "Xauthority") || !strings.Contains(err.Error(), p) {
+				t.Fatalf("ReadAuthority of %s: %v; want a refusal in words naming the file", name, err)
+			}
+		})
+	}
+}
+
+// An Xauthority file is tens of bytes an entry: one past the most this client reads is refused in words before any of
+// it is read, so a sparse file of a GiB costs nothing.
+func TestAHugeXauthorityIsRefusedBeforeItIsRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Xauthority")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(1 << 30); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	before := totalAlloc()
+	_, _, err = x11.ReadAuthority(path, x11.Address{Number: 0}, "box")
+	if grew := totalAlloc() - before; grew > 16<<20 {
+		t.Errorf("a 1 GiB Xauthority file allocated %d bytes", grew)
+	}
+	if err == nil || !strings.Contains(err.Error(), "Xauthority") || !strings.Contains(err.Error(), "over") {
+		t.Fatalf("ReadAuthority of a 1 GiB file: %v; want a refusal of its size in words", err)
+	}
+}
+
+// A FIFO at $XAUTHORITY does not hang Dial: it is refused, in words, at once.
+func TestDialRefusesAFIFOAsTheXauthorityFileAtOnce(t *testing.T) {
+	_, name := x11fake.Listen(t, nil)
+	path := fifo(t)
+	t.Setenv("XAUTHORITY", path)
+	var err error
+	within(t, 10*time.Second, "Dial", func() {
+		var c *x11.Conn
+		if c, err = x11.Dial(name); err == nil {
+			_ = c.Close()
+		}
+	})
+	if err == nil || !strings.Contains(err.Error(), "Xauthority") {
+		t.Fatalf("Dial with a FIFO as the Xauthority file: %v; want a refusal in words", err)
+	}
+}
+
+// A setup whose scanline pad is not 8, 16 or 32, or whose keycodes are not a range from 8 up, is refused in words:
+// GetImage divides by the pad, and KeyboardMapping counts the keycodes.
+func TestASetupWithABadScanlinePadOrKeycodeRangeIsRefused(t *testing.T) {
+	for name, c := range map[string]struct {
+		configure func(*x11fake.Server)
+		words     string
+	}{
+		"pad 0":             {func(f *x11fake.Server) { f.ScanlinePad = 0 }, "scanline pad"},
+		"pad 7":             {func(f *x11fake.Server) { f.ScanlinePad = 7 }, "scanline pad"},
+		"pad 64":            {func(f *x11fake.Server) { f.ScanlinePad = 64 }, "scanline pad"},
+		"max under min":     {func(f *x11fake.Server) { f.MinKeycode, f.MaxKeycode = 9, 8 }, "keycode"},
+		"min 0":             {func(f *x11fake.Server) { f.MinKeycode = 0 }, "keycode"},
+		"min 7":             {func(f *x11fake.Server) { f.MinKeycode = 7 }, "keycode"},
+		"max 0 and min 255": {func(f *x11fake.Server) { f.MinKeycode, f.MaxKeycode = 255, 0 }, "keycode"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, conn := x11fake.Start(t, c.configure)
+			got, err := x11.Open(conn, x11.Auth{}, 0)
+			if err == nil {
+				_ = got.Close()
+				t.Fatalf("Open accepted a setup with %s", name)
+			}
+			if !strings.Contains(err.Error(), c.words) {
+				t.Fatalf("Open with %s: %v; want a refusal naming the %s", name, err, c.words)
+			}
+		})
+	}
+	// The edges are allowed: one keycode, 8 to 8; and pads of 8 and 16.
+	for name, configure := range map[string]func(*x11fake.Server){
+		"keycodes 8 to 8": func(f *x11fake.Server) { f.MinKeycode, f.MaxKeycode = 8, 8 },
+		"pad 8":           func(f *x11fake.Server) { f.ScanlinePad = 8 },
+		"pad 16":          func(f *x11fake.Server) { f.ScanlinePad = 16 },
+	} {
+		_, conn := x11fake.Start(t, configure)
+		got, err := x11.Open(conn, x11.Auth{}, 0)
+		if err != nil {
+			t.Fatalf("Open with %s: %v", name, err)
+		}
+		_ = got.Close()
+	}
+}
+
+// Each request's reply is bounded by the most it can carry: a reply of a fixed 32 bytes, a GetKeyboardMapping's by its
+// keycodes, a GetImage's by its rectangle. One announced past its request's bound is refused, and the connection
+// closed, before anything is allocated for it, though it is under the bound of the largest request.
+func TestEachRepliesLengthIsBoundedByItsRequest(t *testing.T) {
+	const announced = 256 << 20
+	for name, call := range map[string]struct {
+		opcode byte
+		call   func(c *x11.Conn) error
+	}{
+		"QueryPointer": {38, func(c *x11.Conn) error { _, _, err := c.QueryPointer(); return err }},
+		"GetGeometry":  {14, func(c *x11.Conn) error { _, _, err := c.RootSize(); return err }},
+		"GetKeyboardMapping": {101, func(c *x11.Conn) error {
+			_, err := c.KeyboardMapping()
+			return err
+		}},
+		"GetImage": {73, func(c *x11.Conn) error { _, err := c.GetImage(0, 0, 2, 2); return err }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, conn := x11fake.Start(t, func(f *x11fake.Server) {
+				f.Misbehave = func(r x11fake.Request) []byte {
+					if r.Opcode != call.opcode {
+						return nil
+					}
+					out := []byte{1, 1}
+					out = le.AppendUint16(out, r.Seq)
+					return append(le.AppendUint32(out, announced/4), make([]byte, 24)...)
+				}
+			})
+			c, err := x11.Open(conn, x11.Auth{}, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			before := totalAlloc()
+			err = call.call(c)
+			grew := totalAlloc() - before
+			if err == nil || !strings.Contains(err.Error(), "over the") {
+				t.Errorf("%s answered with %d bytes: %v; want a refusal of the length in words", name, announced, err)
+			}
+			if grew > 16<<20 {
+				t.Errorf("the client allocated %d bytes for a %s reply the server only announced", grew, name)
 			}
 		})
 	}

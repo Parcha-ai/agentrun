@@ -27,8 +27,9 @@ const (
 
 func pad4(n int) int { return (4 - n%4) % 4 }
 
-// setupReply is a successful setup: one screen of Width x Height, depth 24 TrueColor in 32 bits a pixel.
-func setupReply() []byte {
+// setupReply is a successful setup: one screen of Width x Height, depth 24 TrueColor in 32 bits a pixel, with the
+// keycodes and scanline pad the server's fields give.
+func (f *Server) setupReply() []byte {
 	vendor := "fake"
 	var body []byte
 	u32 := func(v uint32) { body = le.AppendUint32(body, v) }
@@ -46,14 +47,14 @@ func setupReply() []byte {
 	u8(0)       // bitmap-format-bit-order
 	u8(32)      // scanline unit
 	u8(32)      // scanline pad
-	u8(MinKey)
-	u8(MaxKey)
+	u8(f.MinKeycode)
+	u8(f.MaxKeycode)
 	u32(0)
 	body = append(body, vendor...)
 	body = append(body, make([]byte, pad4(len(vendor)))...)
 	// formats: depth 1 in 1 bit, depth 24 in 32 bits
-	body = append(body, 1, 1, 32, 0, 0, 0, 0, 0)
-	body = append(body, 24, 32, 32, 0, 0, 0, 0, 0)
+	body = append(body, 1, 1, f.ScanlinePad, 0, 0, 0, 0, 0)
+	body = append(body, 24, 32, f.ScanlinePad, 0, 0, 0, 0, 0)
 	// the screen
 	u32(Root)
 	u32(0x20)     // default colormap
@@ -103,7 +104,11 @@ type Request struct {
 // Server is the fake. Its exported fields are set before a client connects.
 type Server struct {
 	SetupFail string
-	NoXTest   bool
+	// SetupHold runs once the client's setup request is read, before the setup reply, and may block.
+	SetupHold func()
+	// MinKeycode, MaxKeycode and ScanlinePad are what the setup announces: MinKey, MaxKey and 32 unless set.
+	MinKeycode, MaxKeycode, ScanlinePad byte
+	NoXTest                             bool
 	// Keymap is the keysyms, PerCode a keycode, from MinKey; nil is a map with no keysym at all.
 	Keymap  []uint32
 	PerCode int
@@ -124,7 +129,7 @@ type Server struct {
 }
 
 func newServer(configure func(*Server)) *Server {
-	f := &Server{PerCode: 2}
+	f := &Server{PerCode: 2, MinKeycode: MinKey, MaxKeycode: MaxKey, ScanlinePad: 32}
 	if configure != nil {
 		configure(f)
 	}
@@ -212,6 +217,9 @@ func (f *Server) serve(conn net.Conn) {
 	f.authName = string(rest[:nameLen])
 	f.authData = append([]byte(nil), rest[nameLen+pad4(nameLen):nameLen+pad4(nameLen)+dataLen]...)
 	f.mu.Unlock()
+	if f.SetupHold != nil {
+		f.SetupHold()
+	}
 	if f.SetupFail != "" {
 		reason := f.SetupFail
 		out := []byte{0, byte(len(reason))}
@@ -223,7 +231,7 @@ func (f *Server) serve(conn net.Conn) {
 		_, _ = conn.Write(out)
 		return
 	}
-	if _, err := conn.Write(setupReply()); err != nil {
+	if _, err := conn.Write(f.setupReply()); err != nil {
 		return
 	}
 	var seq uint16
