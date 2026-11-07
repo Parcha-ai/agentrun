@@ -599,13 +599,19 @@ function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: App
 const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
   [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
 /** A resume's row as the approval's outcome: what ran, or what was refused. The tool's name and fixed words, and the
- *  note a person typed with a Deny: its first line, redacted whole with the run's redactor (`redact`), then cut. A
- *  declining message adds nothing: it shows as the person's own row. */
+ *  note a person typed with a Deny: its first line, redacted whole with the run's redactor (`redact`) and its links'
+ *  query values elided (scrubUrls), as the row's text is (resumeShows), then cut. A declining message adds nothing: it
+ *  shows as the person's own row. */
 function resumeSays(approval: Approval, given: { decision: string; by?: string; note?: string } | undefined, text: string, redact: (text: string) => string): string {
-  const note = given?.decision === "deny" && given.by !== "message" && given.note ? redact(given.note).split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
-  return `${resumeOutcome(approval, given, text)}${note ? `: ${clip(note, DENY_NOTE_CHARS)}` : ""}`;
+  const note = given?.decision === "deny" && given.by !== "message" && given.note ? scrubUrls(redact(given.note)).split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
+  return `${resumeOutcome(approval, given, text)}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
 }
-/** At most this much of a Deny's note on its resume row's summary; its row's text has the whole of it. */
+/** `text` cut to `max` code points, an ellipsis last when cut: a pair of surrogates is never halved. */
+const clipPoints = (text: string, max: number): string => {
+  const points = Array.from(text);
+  return points.length > max ? `${points.slice(0, max - 1).join("")}…` : text;
+};
+/** At most this many code points of a Deny's note on its resume row's summary; its row's text has the whole of it. */
 const DENY_NOTE_CHARS = 200;
 /** What came of an approval, in fixed words: the head of its resume row's summary and of its text. */
 function resumeOutcome(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
