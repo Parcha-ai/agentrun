@@ -40,6 +40,22 @@ export function cdpDriver(base) {
     await send("Page.enable", {}, sessionId);
     await send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId);
     await send("Network.enable", {}, sessionId);
+    /** The pid of Chrome's network service, its own process; null when Chrome names none. */
+    const networkService = async () => (await send("SystemInfo.getProcessInfo")).processInfo.find((p) => p.type.includes("NetworkService"))?.id ?? null;
+    // When the network service dies (Chrome for Testing 155 sometimes crashes it just after a CORS preflight while Fetch
+    // interception is on, more often under load, sandbox or not), Chrome starts another, and here never ends the requests
+    // the dead one carried: no loadingFailed, no pause, nothing at the server. Its restart is a drop: it is counted, and what
+    // was in flight is forgotten, since nothing will end it.
+    // Checks run one at a time, so one restart is counted once.
+    let service = await networkService().catch(() => null);
+    let restarts = 0;
+    let checking = Promise.resolve();
+    const checkService = () => (checking = checking.then(async () => {
+      const now = await networkService().catch(() => null);
+      if (now === null || now === service) return;
+      if (service !== null) { restarts += 1; inFlight.clear(); for (const wake of settledWaiters.splice(0)) wake(); }
+      service = now;
+    }));
     // `userGesture`: a click carries user activation, as a real one does, so popups open.
     const evaluate = async (expression) => {
       const answer = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true }, sessionId);
@@ -70,15 +86,20 @@ export function cdpDriver(base) {
       /** Returns the moment the browser answers: the request the page starts in it exists, and nothing else has
        *  happened since. */
       fire: (expression) => evaluate(expression),
-      /** How many requests the browser or the network dropped so far (see above). */
-      aborted: () => aborted,
-      /** Resolves once every request the page started (but documents) has ended, or after `ms`. */
+      /** How many drops so far: requests the browser or the network dropped (see above), and restarts of the network service. */
+      drops: async () => { await checkService(); return aborted + restarts; },
+      /** How many times the network service restarted so far. */
+      restarts: async () => { await checkService(); return restarts; },
+      /** Resolves once every request the page started (but documents) has ended, or the network service has restarted (which
+       *  ends none of them), or after `ms`. */
       settled: (ms) => new Promise((resolve) => {
         if (inFlight.size === 0) return resolve();
-        const timer = setTimeout(() => { const at = settledWaiters.indexOf(wake); if (at !== -1) settledWaiters.splice(at, 1); resolve(); }, ms);
-        const wake = () => { clearTimeout(timer); resolve(); };
+        const wake = () => { clearTimeout(timer); clearInterval(poll); const at = settledWaiters.indexOf(wake); if (at !== -1) settledWaiters.splice(at, 1); resolve(); };
+        const timer = setTimeout(wake, ms);
+        const poll = setInterval(() => void checkService(), 500);
         settledWaiters.push(wake);
       }),
+      networkService,
       url: () => evaluate("location.href"),
       snapshot: () => evaluate("document.body ? document.body.innerText : ''"),
       page: async () => ({ url: await evaluate("location.href"), title: await evaluate("document.title"), text: await evaluate("document.body ? document.body.innerText : ''"), html: await evaluate("document.documentElement.outerHTML") }),
