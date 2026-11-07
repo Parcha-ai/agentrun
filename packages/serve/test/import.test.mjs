@@ -543,7 +543,7 @@ test("a webhook trigger's key or the outbound webhook's, pasted into sessions as
   assert.equal((await api("POST", "/agents", agent("target"))).status, 201);
   const trigger = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
-  const outbound = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
   await server.close();
   open = false;
