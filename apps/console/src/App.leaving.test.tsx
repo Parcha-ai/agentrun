@@ -22,24 +22,26 @@ let confirms: string[];
 // The server's tools and places (capabilities): none by default; a test of a new agent's defaults serves some.
 let capsTools: unknown[];
 let capsPlaces: unknown;
+// The server's workflows (capabilities.workflows): a test of a Decision starter serves a decision provider.
+let capsWorkflows: unknown;
 // A Create the test holds open: POST /v2/agents answers only once `release` is called.
 let hold: Promise<void> | null;
 let release: () => void;
 
 beforeEach(() => {
   calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition } };
-  asked = []; confirms = []; answer = false; hold = null; capsTools = []; capsPlaces = undefined; made = null;
+  asked = []; confirms = []; answer = false; hold = null; capsTools = []; capsPlaces = undefined; made = null; capsWorkflows = undefined;
   vi.stubGlobal("confirm", (message: string) => { confirms.push(message); return answer; });
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
     const method = init?.method ?? "GET";
     asked.push(`${method} ${path}`);
     if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-    if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], tools: capsTools, thinking: ["low"], ...(capsPlaces ? { places: capsPlaces } : {}), features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], tools: capsTools, thinking: ["low"], ...(capsPlaces ? { places: capsPlaces } : {}), ...(capsWorkflows ? { workflows: capsWorkflows } : {}), features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (path === "/v2/agents" && method === "POST") {
       const body = JSON.parse(String(init!.body)) as { definition: typeof definition };
       if (hold) await hold;
-      made = { agent_id: "made", kind: "agentic", revision: "m1", revisions: 1, archived_at: null, definition: body.definition };
+      made = { agent_id: "made", kind: "workflow" in body.definition ? "workflow" : "agentic", revision: "m1", revisions: 1, archived_at: null, definition: body.definition };
       return json(201, made);
     }
     if (path === "/v2/agents/made/definition" && method === "PUT" && made) {
@@ -363,5 +365,56 @@ describe("App, an edit made while Create is under way", () => {
     expect(asked).toContain("PUT /v2/agents/made/definition");
     expect(made?.definition.instructions).toBe("Answer, then check the sum.");
     expect(confirms).toEqual([LEAVE]);
+  });
+
+  // A starter (Decision, Workflow) makes a workflow agent: the kept form holds the starter's choice, no harness of the
+  // agent's, and its only edits (name, description) are set at creation. The next click opens the agent made, sending
+  // nothing the server would refuse.
+  for (const starter of ["workflow", "decision"] as const) {
+    it(`after Cancel on a ${starter} starter's Create, the next click opens the agent made, with no second Create and no refused save`, async () => {
+      capsWorkflows = { adapters: ["runJudge"] };
+      hold = new Promise<void>((r) => { release = r; });
+      const page = await open("#/agents/new");
+      await page.wait(() => !!page.instructions(), "the new agent's editor");
+      await page.type(page.host.querySelector("#agent-name"), "Made");
+      await page.click(page.step(/Settings/));
+      await page.click(page.host.querySelector(`input[name="harness"][value="${starter}"]`));
+      await page.click(page.step(/Context/));
+      await act(async () => { page.button(/^Create$/)!.click(); });
+      await page.wait(() => asked.includes("POST /v2/agents"), "the Create is under way");
+      await page.type(page.host.querySelector("#agent-description"), "Picks one.");
+      await act(async () => { release(); });
+      await page.settle(); await page.settle();
+      await page.wait(() => location.hash === "#/agents/new", "Cancel kept the form");
+      await page.click(page.button(/^(Create|Save revision)$/));
+      await page.wait(() => location.hash === "#/agents/made/workflow", "on the made agent's Workflow tab");
+      expect(asked.filter((a) => a === "POST /v2/agents")).toHaveLength(1);
+      expect(asked).not.toContain("PUT /v2/agents/made/definition");
+      expect(confirms).toEqual([LEAVE]);
+    });
+  }
+
+  it("after Cancel, a save made to the agent elsewhere since is never written over: the form says so and stays", async () => {
+    hold = new Promise<void>((r) => { release = r; });
+    const page = await open("#/agents/new");
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    await page.type(page.host.querySelector("#agent-name"), "Made");
+    await page.type(page.instructions(), "Answer.");
+    await act(async () => { page.button(/^Create$/)!.click(); });
+    await page.wait(() => asked.includes("POST /v2/agents"), "the Create is under way");
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await act(async () => { release(); });
+    await page.settle(); await page.settle();
+    await page.wait(() => location.hash === "#/agents/new", "Cancel kept the form");
+    // Another tab saves a revision of the agent made.
+    made = { ...made!, revision: "m2", revisions: 2, definition: { ...made!.definition, instructions: "Answer in French." } };
+    await page.click(page.button(/^(Create|Save revision)$/));
+    await page.settle();
+    expect(asked).not.toContain("PUT /v2/agents/made/definition");
+    expect(asked.filter((a) => a === "POST /v2/agents")).toHaveLength(1);
+    expect(made?.definition.instructions).toBe("Answer in French.");
+    expect(location.hash).toBe("#/agents/new");
+    expect(page.host.textContent).toContain("This agent changed since it was created here");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
   });
 });
