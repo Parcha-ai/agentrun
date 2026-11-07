@@ -39,9 +39,26 @@ import {
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
+/**
+ * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
+ * computerd stays the first process and starts nothing of its own: create gives it DISPLAY, then starts the X server
+ * through it with process.start, as any program, so the server is in its process table and ends with the computer.
+ * The daemon reaches the display once it answers, and hello declares screen, input.pointer and input.keys from then on.
+ */
+export interface DockerDesktopOptions {
+	/** The display the daemon and the X server use, given to the daemon as DISPLAY. Default ":0". */
+	display?: string;
+	/** The X server's argv, run in the computer as its user. Default Xvfb on the display, 1280x800 at 24 bits, no TCP. */
+	server?: readonly string[];
+	/** How long create waits for the display to answer after starting the server. Default 30 s. */
+	timeoutMs?: number;
+}
+
 export interface DockerProviderOptions {
 	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). */
 	daemonPath: string;
+	/** Makes every computer a desktop (kind desktop): its image must have the X server. */
+	desktop?: DockerDesktopOptions;
 	/** The docker CLI. */
 	docker?: string;
 	/** Who a computer runs as when its spec does not say: uid or uid:gid, in numbers. Default: this process's uid:gid, or
@@ -63,6 +80,10 @@ const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
+const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
+const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
+/** How often create asks the daemon whether the display is up yet. */
+const DISPLAY_POLL_MS = 100;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
 /** Only the fields list() reads, in inspect's own shape: a whole inspect is kilobytes a container, and execFile's
@@ -103,12 +124,14 @@ export class DockerProvider implements ComputerProvider {
 	readonly #daemonPath: string;
 	readonly #docker: string;
 	readonly #user: string;
+	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, docker = "docker", user }: DockerProviderOptions) {
+	constructor({ daemonPath, docker = "docker", user, desktop }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#docker = docker;
+		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
@@ -120,13 +143,13 @@ export class DockerProvider implements ComputerProvider {
 
 	capabilities(): ComputerCapabilities {
 		return {
-			kind: "linux",
+			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
 			network: ["none", "open"],
 			isolation: "container",
 			os: "linux",
 			daemon: "pid1",
-			groups: ["exec", "files", "processes"],
+			groups: ["exec", "files", "processes", ...(this.#desktop ? DESKTOP_GROUPS : [])],
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			user: ["root", "uid"],
 		};
@@ -194,6 +217,7 @@ export class DockerProvider implements ComputerProvider {
 		const user = userOf(spec.user) ?? this.#user;
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
+		if (this.#desktop) args.push("--env", `DISPLAY=${this.#desktop.display}`);
 		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
@@ -225,6 +249,15 @@ export class DockerProvider implements ComputerProvider {
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
+		if (this.#desktop) {
+			const shown = await this.#startDisplay(ref, this.#desktop, signal);
+			if (signal?.aborted) return this.#abandon(ref);
+			if (!shown.ok) {
+				const removed = await this.release(ref, "delete");
+				const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
+				return fail(shown.error.code, `the computer ${name} ${after}: ${shown.error.message}`);
+			}
+		}
 		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, signal);
 		// Fail closed: no create returns ok once its signal has aborted.
 		if (signal?.aborted) return this.#abandon(ref);
@@ -240,6 +273,42 @@ export class DockerProvider implements ComputerProvider {
 		const removed = await this.release(ref, "delete");
 		const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
 		return fail("aborted", `create was aborted after docker run; the computer ${ref.name} ${after}`);
+	}
+
+	/**
+	 * Starts the desktop's X server through the daemon (process.start) and waits until hello declares the display: the
+	 * server ending first, or the bound passing, is a failure in words, with the server's own last words.
+	 */
+	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
+		const opened = await this.#open(ref, signal);
+		if (!opened.ok) return opened;
+		const { client } = opened.value;
+		const server = desktop.server.join(" ");
+		try {
+			const started = await client.call("process.start", { argv: [...desktop.server] }, { signal });
+			if (!started.ok) return fail(started.error.code, `the X server (${server}) did not start: ${started.error.message}`);
+			const { id } = started.value;
+			const bound = Date.now() + desktop.timeoutMs;
+			for (;;) {
+				const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal });
+				if (!hello.ok) return hello;
+				if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return ok(undefined);
+				const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal });
+				if (waited.ok && !waited.value.running) {
+					const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal });
+					const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
+					const how = waited.value.signal ? `signal ${waited.value.signal}` : `exit code ${waited.value.exitCode}`;
+					return fail("docker", `the X server (${server}) ended with ${how} before the display ${desktop.display} was up${words ? `: ${words}` : ""}`);
+				}
+				if (Date.now() >= bound) {
+					return fail("timeout", `the display ${desktop.display} was not up within ${desktop.timeoutMs / 1000} s of starting the X server (${server})`);
+				}
+				await new Promise((done) => setTimeout(done, DISPLAY_POLL_MS));
+				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
+			}
+		} finally {
+			await opened.value.close();
+		}
 	}
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
@@ -472,6 +541,17 @@ export class DockerProvider implements ComputerProvider {
 			});
 		});
 	}
+}
+
+/** The desktop options with their defaults, or a throw in words. */
+function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: DockerDesktopOptions): Required<DockerDesktopOptions> {
+	if (typeof display !== "string" || !DISPLAY.test(display)) throw new Error(`the desktop's display ${JSON.stringify(display)} must be a local X display, such as :0`);
+	const argv = server ?? ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
+	if (!Array.isArray(argv) || argv.length === 0 || !argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) || argv[0] === "") {
+		throw new Error("the desktop's server must be a program and its arguments, such as [\"Xvfb\", \":0\"]");
+	}
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error(`the desktop's timeoutMs must be a whole number of milliseconds above 0, not ${timeoutMs}`);
+	return { display, server: [...argv], timeoutMs };
 }
 
 function labelProblem(key: string, value: unknown): string | undefined {

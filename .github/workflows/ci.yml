@@ -478,6 +478,13 @@ jobs:
           cache: false
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - name: Install Xvfb
+        # The daemon's X client and its screen and input methods run against a real X server here; without one they skip.
+        run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+          command -v Xvfb
       - name: The daemon's vet and tests
         working-directory: packages/computer/daemon
         run: go vet ./... && go test ./...

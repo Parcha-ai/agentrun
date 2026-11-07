@@ -61,7 +61,13 @@ type initProcess struct {
 // socketIn makes a fresh directory of mode, as a provider would, and returns a socket path in it.
 func socketIn(t *testing.T, mode os.FileMode) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "run")
+	// Not under t.TempDir(): its name holds the test's, and a socket's path must fit in 108 bytes.
+	base, err := os.MkdirTemp("", "computerd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	dir := filepath.Join(base, "run")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

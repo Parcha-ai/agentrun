@@ -1,0 +1,501 @@
+// Package x11 is a small X11 client in pure Go: the connection setup with an MIT-MAGIC-COOKIE-1 from the Xauthority
+// file, the core requests the daemon's screen and input methods and the desktop fixture need, and the XTEST
+// extension's FakeInput. It is written by hand against the X Window System Protocol (X11R7.7) and the XTEST Extension
+// Protocol 2.2, with no cgo and no dependency, so computerd stays one static binary.
+//
+// A connection is little-endian. Requests are written in order through one buffer; a reader goroutine hands each reply
+// to the request that waits for it, keeps the errors of requests that have no reply for Sync, and queues events only
+// when EnableEvents asked for them.
+package x11
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+var le = binary.LittleEndian
+
+// ErrClosed is wrapped by every error of a connection that has ended.
+var ErrClosed = errors.New("the X connection is closed")
+
+const (
+	// ioTimeout bounds the setup, every write, and the wait for every reply: an X server that stops answering fails the
+	// call instead of hanging it.
+	ioTimeout = 30 * time.Second
+	// flushAt is how much a batch of requests buffers before it is written anyway.
+	flushAt = 64 << 10
+)
+
+// Event types, as in an event's first byte and XTEST's FakeInput.
+const (
+	KeyPress      = 2
+	KeyRelease    = 3
+	ButtonPress   = 4
+	ButtonRelease = 5
+	MotionNotify  = 6
+	FocusIn       = 9
+	Expose        = 12
+	MapNotify     = 19
+	MappingNotify = 34
+)
+
+// Screen is the screen a connection is on.
+type Screen struct {
+	Root          uint32
+	Width, Height int
+	Depth         byte
+	Visual        uint32
+}
+
+type format struct{ bpp, pad int }
+
+// visual is a visual's class and its red, green and blue masks, each as where it starts and how many bits it has.
+type visual struct {
+	class    byte
+	depth    byte
+	channels [3]channel
+}
+
+type channel struct {
+	mask        uint32
+	shift, bits int
+}
+
+type packet struct {
+	data []byte
+	err  error
+}
+
+// Conn is one connection to an X server.
+type Conn struct {
+	sock net.Conn
+
+	screen         Screen
+	minKey, maxKey byte
+	idBase, idMask uint32
+	nextID         uint32
+	imageMSB       bool
+	formats        map[byte]format
+	visuals        map[uint32]visual
+	xtest          byte
+
+	// wmu orders requests: their sequence numbers are the order they are buffered in.
+	wmu sync.Mutex
+	out []byte
+	seq uint16
+
+	mu        sync.Mutex
+	cond      *sync.Cond
+	pending   map[uint16]chan packet
+	errs      []*Error
+	err       error
+	keep      bool
+	events    [][]byte
+	closeOnce sync.Once
+}
+
+// Address is a parsed DISPLAY: [host]:number[.screen].
+type Address struct {
+	Host   string
+	Number int
+	Screen int
+}
+
+// ParseDisplay reads a DISPLAY such as ":0", ":1.0", "unix:2" or "host:10.0".
+func ParseDisplay(name string) (Address, error) {
+	bad := func() (Address, error) {
+		return Address{}, fmt.Errorf("DISPLAY %q is not [host]:display[.screen], such as :0", name)
+	}
+	colon := strings.LastIndex(name, ":")
+	if colon < 0 {
+		return bad()
+	}
+	number, screen, dotted := strings.Cut(name[colon+1:], ".")
+	n, ok := smallNumber(number)
+	if !ok {
+		return bad()
+	}
+	a := Address{Host: name[:colon], Number: n}
+	if dotted {
+		if a.Screen, ok = smallNumber(screen); !ok {
+			return bad()
+		}
+	}
+	return a, nil
+}
+
+func smallNumber(s string) (int, bool) {
+	if s == "" || len(s) > 5 || strings.TrimLeft(s, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil && n < 1<<16
+}
+
+// Dial connects to the X server a DISPLAY names, with the cookie for it in $XAUTHORITY (or ~/.Xauthority) when there
+// is one. A local display is the unix socket /tmp/.X11-unix/X<n>, its abstract name first, as libxcb does on Linux.
+func Dial(name string) (*Conn, error) {
+	addr, err := ParseDisplay(name)
+	if err != nil {
+		return nil, err
+	}
+	dialer := net.Dialer{Timeout: ioTimeout}
+	var sock net.Conn
+	if addr.Host == "" || addr.Host == "unix" {
+		path := fmt.Sprintf("/tmp/.X11-unix/X%d", addr.Number)
+		if sock, err = dialer.Dial("unix", "@"+path); err != nil {
+			sock, err = dialer.Dial("unix", path)
+		}
+	} else {
+		sock, err = dialer.Dial("tcp", net.JoinHostPort(addr.Host, strconv.Itoa(6000+addr.Number)))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("no X server answers at DISPLAY %s: %w", name, err)
+	}
+	auth, err := authFor(addr)
+	if err != nil {
+		_ = sock.Close()
+		return nil, err
+	}
+	c, err := Open(sock, auth, addr.Screen)
+	if err != nil {
+		_ = sock.Close()
+		return nil, fmt.Errorf("the X server at DISPLAY %s: %w", name, err)
+	}
+	return c, nil
+}
+
+func authFor(addr Address) (Auth, error) {
+	path := os.Getenv("XAUTHORITY")
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Auth{}, nil
+		}
+		path = filepath.Join(home, ".Xauthority")
+	}
+	hostname, _ := os.Hostname()
+	auth, _, err := ReadAuthority(path, addr, hostname)
+	return auth, err
+}
+
+// Open runs the connection setup over sock and starts reading it. It takes the screen'th screen.
+func Open(sock net.Conn, auth Auth, screen int) (*Conn, error) {
+	_ = sock.SetDeadline(time.Now().Add(ioTimeout))
+	req := []byte{'l', 0}
+	req = le.AppendUint16(req, 11)
+	req = le.AppendUint16(req, 0)
+	req = le.AppendUint16(req, uint16(len(auth.Name)))
+	req = le.AppendUint16(req, uint16(len(auth.Data)))
+	req = append(req, 0, 0)
+	req = append(req, auth.Name...)
+	req = append(req, make([]byte, pad(len(auth.Name)))...)
+	req = append(req, auth.Data...)
+	req = append(req, make([]byte, pad(len(auth.Data)))...)
+	if _, err := sock.Write(req); err != nil {
+		return nil, fmt.Errorf("the connection setup: %w", err)
+	}
+	head := make([]byte, 8)
+	if _, err := io.ReadFull(sock, head); err != nil {
+		return nil, fmt.Errorf("the connection setup: %w", err)
+	}
+	body := make([]byte, int(le.Uint16(head[6:]))*4)
+	if _, err := io.ReadFull(sock, body); err != nil {
+		return nil, fmt.Errorf("the connection setup: %w", err)
+	}
+	switch head[0] {
+	case 0:
+		reason := body[:min(int(head[1]), len(body))]
+		return nil, fmt.Errorf("the X server refused the connection: %s", strings.TrimSpace(string(reason)))
+	case 2:
+		return nil, fmt.Errorf("the X server asks for more authentication: %s", strings.TrimSpace(strings.TrimRight(string(body), "\x00")))
+	case 1:
+	default:
+		return nil, fmt.Errorf("the X server's setup reply has status %d", head[0])
+	}
+	c := &Conn{sock: sock, pending: map[uint16]chan packet{}, formats: map[byte]format{}, visuals: map[uint32]visual{}}
+	c.cond = sync.NewCond(&c.mu)
+	if err := c.parseSetup(body, screen); err != nil {
+		return nil, err
+	}
+	_ = sock.SetDeadline(time.Time{})
+	go c.read()
+	return c, nil
+}
+
+func (c *Conn) parseSetup(b []byte, want int) error {
+	short := errors.New("the X server's setup reply is cut short")
+	if len(b) < 32 {
+		return short
+	}
+	c.idBase, c.idMask = le.Uint32(b[4:]), le.Uint32(b[8:])
+	vendor := int(le.Uint16(b[16:]))
+	screens, formats := int(b[20]), int(b[21])
+	c.imageMSB = b[22] == 1
+	c.minKey, c.maxKey = b[26], b[27]
+	at := 32 + vendor + pad(vendor)
+	for i := 0; i < formats; i++ {
+		if at+8 > len(b) {
+			return short
+		}
+		c.formats[b[at]] = format{bpp: int(b[at+1]), pad: int(b[at+2])}
+		at += 8
+	}
+	for s := 0; s < screens; s++ {
+		if at+40 > len(b) {
+			return short
+		}
+		scr := Screen{Root: le.Uint32(b[at:]), Width: int(le.Uint16(b[at+20:])), Height: int(le.Uint16(b[at+22:])), Visual: le.Uint32(b[at+32:]), Depth: b[at+38]}
+		depths := int(b[at+39])
+		at += 40
+		for d := 0; d < depths; d++ {
+			if at+8 > len(b) {
+				return short
+			}
+			depth, visuals := b[at], int(le.Uint16(b[at+2:]))
+			at += 8
+			for v := 0; v < visuals; v++ {
+				if at+24 > len(b) {
+					return short
+				}
+				c.visuals[le.Uint32(b[at:])] = newVisual(b[at+4], depth, le.Uint32(b[at+8:]), le.Uint32(b[at+12:]), le.Uint32(b[at+16:]))
+				at += 24
+			}
+		}
+		if s == want {
+			c.screen = scr
+		}
+	}
+	if want < 0 || want >= screens {
+		return fmt.Errorf("the X server has %d screens and no screen %d", screens, want)
+	}
+	return nil
+}
+
+func newVisual(class, depth byte, masks ...uint32) visual {
+	v := visual{class: class, depth: depth}
+	for i, mask := range masks {
+		v.channels[i] = channel{mask: mask}
+		for m := mask; m != 0 && m&1 == 0; m >>= 1 {
+			v.channels[i].shift++
+		}
+		for m := mask >> v.channels[i].shift; m&1 == 1; m >>= 1 {
+			v.channels[i].bits++
+		}
+	}
+	return v
+}
+
+func pad(n int) int { return (4 - n%4) % 4 }
+
+// Screen is the screen this connection took.
+func (c *Conn) Screen() Screen { return c.screen }
+
+// Keycodes is the server's keycode range.
+func (c *Conn) Keycodes() (lowest, highest byte) { return c.minKey, c.maxKey }
+
+// Close ends the connection; every call waiting on it fails with ErrClosed.
+func (c *Conn) Close() error {
+	var err error
+	c.closeOnce.Do(func() { err = c.sock.Close() })
+	return err
+}
+
+// Err is why the connection ended, wrapping ErrClosed, or nil while it is open.
+func (c *Conn) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+// read hands each reply and error to its request, and queues events, until the connection ends.
+func (c *Conn) read() {
+	var failure error
+	for {
+		head := make([]byte, 32)
+		if _, err := io.ReadFull(c.sock, head); err != nil {
+			failure = err
+			break
+		}
+		seq := le.Uint16(head[2:])
+		switch head[0] {
+		case 0:
+			e := &Error{Code: head[1], Seq: seq, Value: le.Uint32(head[4:]), Minor: le.Uint16(head[8:]), Major: head[10]}
+			c.mu.Lock()
+			if ch, ok := c.pending[seq]; ok {
+				delete(c.pending, seq)
+				ch <- packet{err: e}
+			} else {
+				c.errs = append(c.errs, e)
+			}
+			c.mu.Unlock()
+		case 1:
+			extra := make([]byte, int(le.Uint32(head[4:]))*4)
+			if _, err := io.ReadFull(c.sock, extra); err != nil {
+				failure = err
+				break
+			}
+			c.mu.Lock()
+			if ch, ok := c.pending[seq]; ok {
+				delete(c.pending, seq)
+				ch <- packet{data: append(head, extra...)}
+			}
+			c.mu.Unlock()
+		default:
+			if head[0]&0x7f == 35 { // GenericEvent: more bytes follow
+				extra := make([]byte, int(le.Uint32(head[4:]))*4)
+				if _, err := io.ReadFull(c.sock, extra); err != nil {
+					failure = err
+					break
+				}
+			}
+			c.mu.Lock()
+			if c.keep {
+				c.events = append(c.events, head)
+				c.cond.Broadcast()
+			}
+			c.mu.Unlock()
+		}
+		if failure != nil {
+			break
+		}
+	}
+	c.fail(failure)
+	c.mu.Lock()
+	for seq, ch := range c.pending {
+		ch <- packet{err: c.err}
+		delete(c.pending, seq)
+	}
+	c.cond.Broadcast()
+	c.mu.Unlock()
+}
+
+// Seq is the sequence number of the last request buffered.
+func (c *Conn) Seq() uint16 {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.seq
+}
+
+// buffer adds one request, padded to 4 bytes: opcode, data, then body. With a reply it is flushed at once and the
+// reply's channel returned.
+func (c *Conn) buffer(opcode, data byte, body []byte, reply bool) (chan packet, error) {
+	if err := c.Err(); err != nil {
+		return nil, err
+	}
+	body = append(body, make([]byte, pad(len(body)))...)
+	words := (4 + len(body)) / 4
+	if words > 0xffff {
+		return nil, fmt.Errorf("a request of %d bytes is over the core protocol's 256 KiB", words*4)
+	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	c.seq++
+	var ch chan packet
+	if reply {
+		ch = make(chan packet, 1)
+		c.mu.Lock()
+		if c.err != nil {
+			c.mu.Unlock()
+			return nil, c.err
+		}
+		c.pending[c.seq] = ch
+		c.mu.Unlock()
+	}
+	c.out = append(c.out, opcode, data)
+	c.out = le.AppendUint16(c.out, uint16(words))
+	c.out = append(c.out, body...)
+	if reply || len(c.out) >= flushAt {
+		return ch, c.flushLocked()
+	}
+	return ch, nil
+}
+
+// Flush writes every buffered request.
+func (c *Conn) Flush() error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.flushLocked()
+}
+
+func (c *Conn) flushLocked() error {
+	if len(c.out) == 0 {
+		return nil
+	}
+	_ = c.sock.SetWriteDeadline(time.Now().Add(ioTimeout))
+	_, err := c.sock.Write(c.out)
+	c.out = c.out[:0]
+	if err != nil {
+		return c.fail(err)
+	}
+	return nil
+}
+
+// fail closes the connection for why, and returns the error every call gets from then on.
+func (c *Conn) fail(why error) error {
+	_ = c.Close()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil {
+		c.err = fmt.Errorf("%w: %v", ErrClosed, why)
+	}
+	return c.err
+}
+
+// call sends a request with a reply and waits for it.
+func (c *Conn) call(opcode, data byte, body []byte) ([]byte, error) {
+	ch, err := c.buffer(opcode, data, body, true)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case p := <-ch:
+		if p.err != nil {
+			return nil, p.err
+		}
+		return p.data, nil
+	case <-time.After(ioTimeout):
+		return nil, c.fail(fmt.Errorf("the X server did not answer within %v", ioTimeout))
+	}
+}
+
+// Sync waits until the server has handled every request sent before it, with one round trip (GetInputFocus), and
+// returns the errors of requests with no reply since the last Sync.
+func (c *Conn) Sync() ([]*Error, error) {
+	if _, err := c.call(43, 0, nil); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	errs := c.errs
+	c.errs = nil
+	return errs, nil
+}
+
+// Error is an X error.
+type Error struct {
+	Code  byte
+	Seq   uint16
+	Major byte
+	Minor uint16
+	Value uint32
+}
+
+var errorNames = []string{1: "BadRequest", "BadValue", "BadWindow", "BadPixmap", "BadAtom", "BadCursor", "BadFont", "BadMatch", "BadDrawable", "BadAccess", "BadAlloc", "BadColor", "BadGC", "BadIDChoice", "BadName", "BadLength", "BadImplementation"}
+
+func (e *Error) Error() string {
+	name := fmt.Sprintf("X error %d", e.Code)
+	if int(e.Code) < len(errorNames) && errorNames[e.Code] != "" {
+		name = errorNames[e.Code]
+	}
+	return fmt.Sprintf("the X server answered %s to request %d.%d (value %#x)", name, e.Major, e.Minor, e.Value)
+}

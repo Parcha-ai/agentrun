@@ -357,10 +357,10 @@ func TestOnXvfbAShotIsAPNGOfTheScreenWithTheFixturesColors(t *testing.T) {
 }
 
 func TestOnXvfbAShotOverAChunkIsReadInPartsAndDroppedAtEOF(t *testing.T) {
-	defer desktop.SetChunkForTest(1000)()
+	defer desktop.SetChunkForTest(100)()
 	k := onXvfb(t)
 	s, img := k.shoot(nil)
-	if s.Size <= 1000 || len(s.Data) != 1000 || s.EOF {
+	if s.Size <= 100 || len(s.Data) != 100 || s.EOF {
 		t.Fatalf("a %d-byte shot gave %d bytes, eof %v", s.Size, len(s.Data), s.EOF)
 	}
 	if img.Bounds().Dx() != 320 {
@@ -376,7 +376,7 @@ func TestOnXvfbAShotOverAChunkIsReadInPartsAndDroppedAtEOF(t *testing.T) {
 	var first, second shot
 	k.c.ok("screen.shot", map[string]any{}, &first)
 	k.c.ok("screen.shot", map[string]any{}, &second)
-	if r := k.c.call("screen.read", map[string]any{"id": first.ID, "offset": 1000}); r.Error == nil || r.Error.Data.Kind != "not_found" {
+	if r := k.c.call("screen.read", map[string]any{"id": first.ID, "offset": 100}); r.Error == nil || r.Error.Data.Kind != "not_found" {
 		t.Errorf("the first shot after a second: %+v", r)
 	}
 	if r := k.c.call("screen.read", map[string]any{"id": second.ID, "offset": second.Size + 1}); r.Error == nil || r.Error.Data.Kind != "invalid" {
@@ -531,5 +531,26 @@ func TestOnXvfbAPixelScrollIsUnsupportedAndNothingRuns(t *testing.T) {
 	r := k.act(map[string]any{"type": "wait", "ms": 1}, map[string]any{"type": "scroll", "dy": 120, "unit": "px"})
 	if r.Done != 0 || r.Failed == nil || r.Failed.Index != 1 || r.Failed.Kind != "unsupported" {
 		t.Fatalf("a pixel scroll: %+v %+v", r, r.Failed)
+	}
+}
+
+func TestOnXvfbTheKeysymRemapMovesItsKeycodesAndRefusesTooManyAtOnce(t *testing.T) {
+	k := onXvfb(t)
+	var many []rune
+	for r := rune(0x4e00); len(many) < 300; r++ {
+		many = append(many, r)
+	}
+	before := len(k.events())
+	r := k.act(map[string]any{"type": "wait", "ms": 1}, map[string]any{"type": "type", "text": string(many)})
+	if r.Done != 1 || r.Failed == nil || r.Failed.Index != 1 || r.Failed.Kind != "limit" || !strings.Contains(r.Failed.Message, "in parts") {
+		t.Fatalf("300 characters with no key at once: done %d, failed %+v", r.Done, r.Failed)
+	}
+	// In parts of ten, each part moves the keycodes the one before took, and every character arrives.
+	for at := 0; at < 60; at += 10 {
+		k.allRan(map[string]any{"type": "type", "text": string(many[at : at+10])})
+	}
+	events := k.since(before, func(e []event) bool { return len([]rune(text(e))) >= 60 }, "60 characters")
+	if got := text(events); got != string(many[:60]) {
+		t.Fatalf("typed %q, the fixture got %q", string(many[:60]), got)
 	}
 }

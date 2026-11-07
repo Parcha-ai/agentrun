@@ -1,7 +1,7 @@
 // The conformance suite on a Docker desktop (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only): the X11 shim in computerd against
 // Xvfb in test/fixtures/desktop/Dockerfile, with computerd-fixture (daemon/cmd/fixture) as the cases' fixture app. Needs
 // `npm run build` and `npm run build:daemon` first, Go on PATH (for the fixture and the drift case's daemon), and
-// debian:bookworm-slim pulled; the image is built from it. The after hook removes any container with this run's label.
+// alpine:3.20 pulled; the image is built from it. The after hook removes any container with this run's label.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
