@@ -1,6 +1,7 @@
 // A real recording, made on whichever pi this tree runs on: the faux model streams, process 1 is killed mid-stream of turn 0, process 2
-// resumes. The re-asked fold reads pi.live version 1 (pi-durable 1.1.0); on another version it is not measured, and this test fails to
-// say so rather than adapting. The pi-1-2 job runs it on pi 1.2. It needs the store export (`recordCommits`) and skips without it.
+// resumes. The re-asked fold reads pi.live version 1 (pi-durable 1.1.0) only; pi 1.5 writes version 3, so on it the fold says
+// re-asked is NOT MEASURED (null), which this test pins until the fold is measured on 1.5. It needs the store export (`recordCommits`)
+// and skips without it.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -45,7 +46,7 @@ const go = (file, env) => new Promise((resolve) => {
   child.on('close', (code, signal) => resolve({ code, signal, out }));
 });
 
-test('killed mid-stream and resumed: turn 0 is proven re-asked from pi.live, four turns commit, pi.live is version 1', { skip: exported && hook ? false : 'the store export (recordCommits) or the disk package\'s beforeResume hook is not in this build', timeout: 180_000 }, async (t) => {
+test('killed mid-stream and resumed: four turns commit, the run completes, and on pi.live version 3 re-asked reads NOT MEASURED', { skip: exported && hook ? false : 'the store export (recordCommits) or the disk package\'s beforeResume hook is not in this build', timeout: 180_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-midstream-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const backend = new FakeBackend({ start: fakes.start, pages: fakes.pages });
@@ -67,8 +68,9 @@ test('killed mid-stream and resumed: turn 0 is proven re-asked from pi.live, fou
   assert.deepEqual(validateRecording(dir), []);
   const lines = readEvents(dir);
   const versions = new Set(lines.filter((line) => line.kind === 'pi.live').map((line) => line.data?.version));
-  assert.deepEqual([...versions], [1], 'pi.live is data.version 1: another version means the re-asked fold is not measured');
+  assert.deepEqual([...versions], [3], 'pi 1.5 writes pi.live data.version 3');
   const counted = fold(lines);
-  assert.deepEqual([counted.modelTurns.reasked, counted.modelTurns.committed, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, reasks: 1 }, possible: { turns: 0, reasks: 0 } }, 4, 0, 0]);
+  // The fold is measured on version 1 only (apps/viewer counters.ts PI_LIVE_VERSION): on 3 it reads null, never a guess.
+  assert.deepEqual([counted.modelTurns.reasked, counted.modelTurns.committed, counted.repeated, counted.askedTwice], [null, 4, 0, 0]);
   assert.ok(readFileSync(join(dir, 'manifest.json'), 'utf8').includes('@earendil-works/pi-durable'));
 });

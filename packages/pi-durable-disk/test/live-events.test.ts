@@ -127,3 +127,28 @@ test("a run that starts and ends while the stream is held before start() reaches
   assert.ok(types.indexOf("run_start") < types.indexOf("run_end"), types.join(","));
   await stream.stop();
 });
+
+test("commits stored together in one group commit while the stream is held each reach it, in order, with their own document values", async (t) => {
+  const storage = new MemoryStorage();
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const harness = await Harness.open(storage, { models, registry: createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  const model = faux.getModel();
+  const root = await harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
+  const stream = await watchEvents(harness, root.id, ctx);
+  // A slow store: the first commit holds its storage call, so the two after it go out together in the next one, each with
+  // its own seq, published one after the other with no turn between them.
+  const real = storage.commit.bind(storage);
+  storage.commit = (async (...args: Parameters<typeof real>) => { await new Promise((resolve) => setTimeout(resolve, 30)); return real(...args); }) as typeof storage.commit;
+  const level = (thinkingLevel: string) => harness.commit(async (tx) => { (await tx.doc(AgentDoc, root.id)).thinkingLevel = thinkingLevel as never; }, ctx);
+  await Promise.all([level("low"), level("medium"), level("high")]);
+  storage.commit = real;
+  const events: { type: string; agent?: { thinkingLevel?: string } }[] = [];
+  stream.start(async (batch) => void events.push(...(batch as typeof events)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const levels = events.filter((event) => event.type === "agent_changed").map((event) => event.agent?.thinkingLevel);
+  assert.deepEqual(levels, ["low", "medium", "high"], `each held commit's own agent, in order: ${JSON.stringify(events.map((event) => event.type))}`);
+  await stream.stop();
+});
