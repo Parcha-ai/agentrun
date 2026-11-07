@@ -175,6 +175,45 @@ test("a pending note waits until a person acts on it: a retire takes it out of t
   assert.equal((await savedOf(data, runId)).learning.state, "merged");
 });
 
+/** What run `runId` says of its learning on each read: its view, its row in the agent's list, its whole learning and its
+ *  timeline's learning row. */
+async function saysOf(api, runId) {
+  const view = (await api("GET", `/runs/${runId}`)).body.learning;
+  const listed = (await api("GET", "/agents/buyer/runs")).body.runs.find((run) => run.run_id === runId).learning;
+  const whole = (await api("GET", `/runs/${runId}/learning`)).body;
+  const row = (await api("GET", `/runs/${runId}/timeline`)).body.rows.find((one) => one.kind === "learning");
+  return { view, listed, whole, row };
+}
+
+for (const act of ["approve", "retire"]) {
+  test(`a run's learning says a held note waits only while it waits: once its owner ${act === "approve" ? "approves it, the run says it learned it" : "retires it, the run says nothing of it"}, on its view, its list row, its whole learning and its timeline row; its record stays as written`, { timeout: 150_000 }, async (t) => {
+    const server = await learnedPending(t, { accounts: true, openSetup: true });
+    const { api, data, port, runId } = server;
+    const origin = `http://127.0.0.1:${port}`;
+    const before = await saysOf(api, runId);
+    for (const said of [before.view, before.listed, before.whole]) assert.deepEqual(said.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }], "it waits, as written");
+    assert.equal(before.row.summary, "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.");
+    const path = "/v2/agents/buyer/learning/files/paperdepot24-first.md";
+    const etag = (await api("GET", "/agents/buyer/learning/files/paperdepot24-first.md")).headers.get("etag");
+    if (act === "approve") {
+      const cookie = cookieOf(await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } }));
+      assert.equal((await call(port, { method: "POST", path: `${path}/approve`, headers: { ...json, cookie, origin, "if-match": etag }, body: {} })).status, 200);
+    } else assert.equal((await api("POST", "/agents/buyer/learning/files/paperdepot24-first.md/retire", undefined, { "if-match": etag })).status, 200);
+    const after = await saysOf(api, runId);
+    const words = act === "approve" ? "Learned 2 notes: Answer in tables; Buy from PaperDepot24 first" : "Learned: Answer in tables";
+    for (const [where, said] of Object.entries({ view: after.view, listed: after.listed, whole: after.whole })) {
+      assert.ok(!said.pending?.length, `${where}: no longer waits: ${JSON.stringify(said.pending)}`);
+      assert.equal(said.detail.replace(/…$/, ""), words.slice(0, said.detail.replace(/…$/, "").length), `${where}: ${said.detail}`);
+    }
+    assert.deepEqual(after.view.learned.map(({ file }) => file), act === "approve" ? ["answer-in-tables.md", "paperdepot24-first.md"] : ["answer-in-tables.md"]);
+    assert.equal(after.row.summary, words);
+    assert.doesNotMatch(JSON.stringify(after), /waits for your OK|Waiting for your OK/);
+    // The run's record is history: as it merged.
+    const record = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8")).learning;
+    assert.deepEqual(record.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }]);
+  });
+}
+
 test("approving a pending note takes the owner's password session in the console alone: the server's token (what an agent's MCP client or a script holds), and the run's door token are 403, and no credential or a cookie from another origin 401; the console makes it active, in MEMORY.md and the next run, logged as by {user, via: console} without its text; capabilities say approve to that session alone", { timeout: 180_000 }, async (t) => {
   const server = await learnedPending(t, { accounts: true, openSetup: true });
   const { api, data, port, repo } = server;
