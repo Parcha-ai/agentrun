@@ -21,6 +21,7 @@ export const ERROR_STATUS = {
   quote_invalid: 409,
   precondition_failed: 412,
   payload_too_large: 413,
+  request_timeout: 408,
   unsupported_media_type: 415,
   range_not_satisfiable: 416,
   input_invalid: 422,

@@ -14,6 +14,41 @@ import { ID } from "./validate.js";
 
 /** The kernel's one decoy key: what a request is checked against when it names no trigger, or one with no key. */
 const DECOY = `whsec_${randomBytes(32).toString("base64")}`;
+/** How long a hook request's body has to arrive, whole: no token guards this route, so a sender that dribbles its body
+ *  never holds a socket for the server's own, longer request timeout (kept for uploads). */
+export const HOOK_BODY_MS = 30_000;
+
+/** A refusal whose request is cut, not read: answered, then its socket closed (server.ts). */
+export class HookCut extends ApiError {}
+
+/** The body of `req`, at most `max` bytes, within HOOK_BODY_MS. Past the cap (as declared up front, or as counted while
+ *  it streams) it is 413 at once, and past the time 408: nothing more is read, and the socket is closed after the
+ *  answer, never drained. */
+export function readCapped(req: IncomingMessage, max: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const cut = (error: HookCut) => {
+      clearTimeout(timer);
+      req.off("data", onData).off("end", onEnd).off("error", onError);
+      req.pause();
+      reject(error);
+    };
+    const tooLarge = () => cut(new HookCut("payload_too_large", `the body is over ${max} bytes`, { details: { limit: "max_body_bytes" } }, { connection: "close" }));
+    const declared = Number(req.headers["content-length"]);
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > max) return tooLarge();
+      chunks.push(chunk);
+    };
+    const onEnd = () => (clearTimeout(timer), resolve(Buffer.concat(chunks)));
+    const onError = (error: Error) => (clearTimeout(timer), reject(error));
+    const timer = setTimeout(() => cut(new HookCut("request_timeout", `the body did not arrive within ${HOOK_BODY_MS / 1000} s`, {}, { connection: "close" })), HOOK_BODY_MS);
+    if (Number.isFinite(declared) && declared > max) return tooLarge();
+    req.on("data", onData).on("end", onEnd).on("error", onError);
+  });
+}
+
 /** The one answer to every refused request. */
 const REFUSED = "this route needs a request signed by the webhook trigger's secret";
 
@@ -27,7 +62,6 @@ export type PushDeps = {
   scoped(kind: string, scope: string): string[];
   /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
   setting(adapterId: string, scope: string, field: string): string | undefined;
-  readBody(req: IncomingMessage, max: number): Promise<Buffer>;
   /** A refusal, said: its route and why. */
   refused(route: string, reason: string): void;
   say(fields: Record<string, string>): void;
@@ -52,7 +86,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const now = Date.now();
   const early = push.headers?.(req.headers as Headers, now);
   if (early) throw refuse(early);
-  const body = await deps.readBody(req, push.maxBodyBytes);
+  const body = await readCapped(req, push.maxBodyBytes);
   const pathTrigger = own ? undefined : ID.test(name) && deps.hookable(name, adapter.id) ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
   const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, now);

@@ -68,7 +68,7 @@ import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
-import { receivePush } from "./push-handler.js";
+import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
@@ -1828,7 +1828,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
-      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), readBody: bytesOf, refused: authFailed, say: (fields) => log?.(logLine("trigger", fields)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
+      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => log?.(logLine("trigger", fields)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
@@ -2331,6 +2332,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
+      // A request cut before its body was read (push-handler.ts readCapped): its socket goes once the answer is out.
+      if (error instanceof HookCut) res.once("finish", () => req.socket.destroy());
       // A store still busy past a request's wait is home_busy, whichever read or write met it.
       const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
       if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
@@ -2358,6 +2361,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
+  // A request's headers come within 10 s, whatever its route: nothing sends more than a few kilobytes of them. Its body
+  // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
+  // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
+  server.headersTimeout = 10_000;
   const first = options.port ?? DEFAULT_PORT;
   const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
   for (let port = first; ; port++) {
