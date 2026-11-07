@@ -11,7 +11,7 @@ import type { TimelineRow } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-const row = (over: Partial<TimelineRow>): TimelineRow => ({ id: "r", seq: 0, kind: "tool_use", summary: "", text: null, timestamp: "2026-11-05T10:00:00.000Z", tool_name: null, ...over });
+const row = (over: Partial<TimelineRow>): TimelineRow => ({ created_at: "2026-11-05T10:00:00.000Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: "r", seq: 0, kind: "tool_use", summary: "", text: null, timestamp: "2026-11-05T10:00:00.000Z", tool_name: null, ...over });
 function mount(rows: TimelineRow[]) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
