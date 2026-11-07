@@ -7,15 +7,17 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
-import { ApiError } from "./errors.js";
+import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
-import { mintSecret } from "./standard-webhooks.js";
+import { keyBytes, mintSecret } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { isObject } from "./validate.js";
 
 /** What an adapter keeps sealed, and where: `server`, one set for the server; `trigger`, one set per trigger, by its id.
- *  A field with `mint` is a Standard Webhooks secret this server makes (standard-webhooks.ts), shown once. */
-export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true }> };
+ *  A field with `mint` is a Standard Webhooks secret this server makes (standard-webhooks.ts), shown once; any other is
+ *  given (set). `minBytes`: the fewest bytes its value may hold (standard-webhooks.ts keyBytes), MIN_KEY_BYTES for a key
+ *  a request is verified with. */
+export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number }> };
 /** The scope of a server-scoped adapter's settings. */
 export const SERVER_SCOPE = "server";
 
@@ -72,11 +74,24 @@ export class SealedSettings {
   /** A new secret for `scope`'s `field` (one the spec mints), written sealed before it is answered: its only showing. */
   mint(scope: string, field: string): string {
     if (!this.spec.fields[field]?.mint) throw new Error(`${this.adapterId}'s settings mint no ${field}`);
-    this.writable();
     const secret = mintSecret();
-    this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key!, Buffer.from(secret, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
-    (this.opened[scope] ??= {})[field] = secret;
+    this.put(scope, field, secret);
     return secret;
+  }
+
+  /** A given value for `scope`'s `field` (a sender's signing secret, a bot's token), written sealed. One under its
+   *  field's `minBytes` is refused, 422, before anything is written. */
+  set(scope: string, field: string, value: string): void {
+    const spec = this.spec.fields[field];
+    if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
+    if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
+    this.put(scope, field, value);
+  }
+
+  private put(scope: string, field: string, value: string): void {
+    this.writable();
+    this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
+    (this.opened[scope] ??= {})[field] = value;
   }
 
   /** `scope`'s `field`, opened; undefined when it is not set, or does not open here. */

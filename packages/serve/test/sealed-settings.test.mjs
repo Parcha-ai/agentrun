@@ -1,0 +1,51 @@
+// A trigger source's sealed settings (sealed-settings.ts): a given value is kept sealed and read back; one under its
+// field's floor is refused (422) before anything is written; a file that does not read is never written over.
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { SealedSettings, settingsFile } from "../dist/sealed-settings.js";
+import { MIN_KEY_BYTES } from "../dist/standard-webhooks.js";
+
+const spec = { scope: "server", fields: { signing: { minBytes: MIN_KEY_BYTES }, token: {} } };
+
+async function dir(t) {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "sealed-settings-"));
+  t.after(() => rm(data, { recursive: true, force: true }));
+  return data;
+}
+
+test("set keeps a given value sealed and reads it back, here and in the next store; one under its field's floor is refused, 422, and nothing is written", async (t) => {
+  const data = await dir(t);
+  const key = randomBytes(32);
+  const said = [];
+  const store = new SealedSettings(data, "slackish", spec, key, (fields) => said.push(fields));
+  const signing = `whsec_${randomBytes(32).toString("base64")}`;
+  store.set("server", "signing", signing);
+  store.set("server", "token", "a-token-with-no-floor");
+  assert.deepEqual([store.get("server", "signing"), store.get("server", "token")], [signing, "a-token-with-no-floor"]);
+  const file = join(data, settingsFile("slackish"));
+  const written = await readFile(file, "utf8");
+  assert.ok(!written.includes(signing.slice("whsec_".length)) && !written.includes("a-token-with-no-floor"), "only sealed");
+  assert.throws(() => store.set("server", "signing", `whsec_${randomBytes(MIN_KEY_BYTES - 1).toString("base64")}`), (error) => error.code === "input_invalid" && error.extra.fields[0].reason === "too_short");
+  assert.equal(await readFile(file, "utf8"), written, "nothing written for the refused value");
+  assert.equal(store.get("server", "signing"), signing, "the kept value stands");
+  const next = new SealedSettings(data, "slackish", spec, key, (fields) => said.push(fields));
+  assert.deepEqual([next.get("server", "signing"), next.get("server", "token")], [signing, "a-token-with-no-floor"]);
+  assert.deepEqual(said, [], "nothing to say");
+});
+
+test("a settings file that does not read is said, never written over: set and mint are refused, store_unreadable", async (t) => {
+  const data = await dir(t);
+  const file = join(data, settingsFile("slackish"));
+  await writeFile(file, "{ not json");
+  const said = [];
+  const store = new SealedSettings(data, "slackish", { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES }, token: {} } }, randomBytes(32), (fields) => said.push(fields));
+  assert.equal(said[0]?.condition, "trigger_settings_unreadable");
+  assert.throws(() => store.set("trg_1", "token", "a-token"), (error) => error.code === "store_unreadable");
+  assert.throws(() => store.mint("trg_1", "secret"), (error) => error.code === "store_unreadable");
+  store.remove("trg_1");
+  assert.equal(await readFile(file, "utf8"), "{ not json", "byte for byte");
+});

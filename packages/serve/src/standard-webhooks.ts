@@ -6,8 +6,10 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /** How far a request's `webhook-timestamp` may be from this server's clock, either way. */
 export const HOOK_TOLERANCE_S = 300;
-/** The fewest bytes a signing key may have (the spec's secrets are 24 to 64; this server makes 32): a shorter one, an
- *  empty one above all, signs nothing. Every secret a trigger source keeps sealed is held to it. */
+/** The fewest bytes a verification key may have (the spec's secrets are 24 to 64; this server makes 32): a shorter one,
+ *  an empty one above all, signs nothing. It is the floor for keys a request is verified with alone: a sealed setting
+ *  that is such a key declares `minBytes: MIN_KEY_BYTES` (sealed-settings.ts); a token that is no HMAC key (a bot's)
+ *  sets its own floor, or none. */
 export const MIN_KEY_BYTES = 24;
 /** A webhook-id: printable ASCII with no space, as the spec's `msg_...` ids are; it goes into a firing's key and history. */
 const HOOK_ID = /^[\x21-\x7e]{1,255}$/;
@@ -19,6 +21,8 @@ export const mintSecret = (): string => `whsec_${randomBytes(32).toString("base6
 
 /** The bytes a secret signs with. */
 const keyOf = (secret: string): Buffer => Buffer.from(secret.slice("whsec_".length), "base64");
+/** How many bytes `value` holds as a key: a `whsec_` secret's decoded key, any other value's UTF-8. */
+export const keyBytes = (value: string): number => (value.startsWith("whsec_") ? keyOf(value).length : Buffer.byteLength(value, "utf8"));
 
 const hmacOf = (secret: string, id: string, timestamp: string, body: string | Buffer): Buffer =>
   createHmac("sha256", keyOf(secret)).update(`${id}.${timestamp}.`).update(body).digest();
