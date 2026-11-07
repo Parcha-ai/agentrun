@@ -115,3 +115,8 @@ test('a regular expression is not a comment: an import after /[/*]/ is still an 
   assert.equal(withoutComments('const half = total / 2; // a note\nconst r = /a\\/b/;'), 'const half = total / 2;          \nconst r = /a\\/b/;');
   assert.equal(withoutComments('return /[/*]/.test(x) /* gone */;'), 'return /[/*]/.test(x)           ;');
 });
+
+test('a division after a postfix ++ or -- is not a regular expression, so the comment after it is still a comment', async () => {
+  assert.deepEqual(await check({ 'packages/k/src/a.ts': "let count = 4;\nconst ratio = count++ / 2; // import '@x/v';\nconst less = count-- / 2; /* import '@x/v'; */\n" }), []);
+  assert.equal(withoutComments("n++ / 2; // x"), "n++ / 2;     ");
+});

@@ -121,6 +121,7 @@ export function withoutComments(text) {
   let out = '';
   let quote = null;
   let last = '';
+  let before = '';
   let word = '';
   for (let i = 0; i < text.length; i += 1) {
     const c = text[i];
@@ -140,7 +141,9 @@ export function withoutComments(text) {
     }
     // A slash where an expression may start opens a regular expression (after a name, a number or a closing bracket it
     // is a division): its text is copied whole, so a `/*` or `//` inside it is never read as a comment.
-    if (c === '/' && (last === '' || '([{,;:=!&|?+-*%<>~^'.includes(last) || REGEX_AFTER.has(word))) {
+    // A postfix `++` or `--` ends an operand, so the slash after it divides.
+    const postfix = (last === '+' || last === '-') && before === last;
+    if (c === '/' && !postfix && (last === '' || '([{,;:=!&|?+-*%<>~^'.includes(last) || REGEX_AFTER.has(word))) {
       let j = i + 1;
       let inClass = false;
       for (; j < text.length && text[j] !== '\n'; j += 1) {
@@ -151,6 +154,7 @@ export function withoutComments(text) {
       }
       out += text.slice(i, j + 1);
       i = j;
+      before = last;
       last = '/';
       word = '';
       continue;
@@ -159,6 +163,7 @@ export function withoutComments(text) {
     out += c;
     if (/\s/.test(c)) continue;
     word = /[\w$]/.test(c) ? (/[\w$]/.test(last) ? word + c : c) : '';
+    before = last;
     last = c;
   }
   return out;
