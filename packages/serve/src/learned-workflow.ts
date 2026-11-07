@@ -15,7 +15,7 @@
 // Each model request goes through the run's models as a side request (request-start.ts, cap.ts: under the run's cap,
 // marked, and costed on the run's timeline as `learned_workflow`), so what the workflow spends is the run's cost. A call
 // a crash cut off is never run again (`replay: "never"`): it is answered interrupted.
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
 import { sideRequests } from "./cap.js";

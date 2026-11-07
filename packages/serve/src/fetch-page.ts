@@ -12,7 +12,7 @@
 // Every field of a Page is held to a cap (its text, its title, its URL, its links), so one answer is too: serve's
 // host-bounds test holds it to the host's result bound.
 import { pathToFileURL } from "node:url";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`

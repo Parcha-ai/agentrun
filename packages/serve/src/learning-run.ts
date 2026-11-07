@@ -21,10 +21,12 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { statusesOf } from "./learning-routes.js";
+import { cutStrings, redacted } from "./key-refusal.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
-import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
+import { secret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { notKept, said, STOPPED } from "./learning-words.js";
 import { ended, lineNotesOf, type NoteFiles, notesLineOf, notesOf, type Outcome, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
@@ -266,7 +268,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "secrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "serverSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -516,13 +518,13 @@ export class LearningRuns {
     return learning ? { state: learning.state, reason: learning.reason } : null;
   }
 
-  /** The host's secrets as they are now, as a reader cuts them (secretsShown): the ones this server holds, the keys
-   *  saved on it, and its tokens, as the learning routes cut them. Built again only once they change. Every run's view
-   *  and every row of a list asks it, so the saved keys, which are read from their file and opened one by one, are read
-   *  once and kept until a person saves or deletes one (keysChanged). */
+  /** The secrets this server never shows as they are now (serverSecrets), as a reader cuts them (secretsShown), as the
+   *  learning routes cut them. Built again only once they change. Every run's view and every row of a list asks it, so
+   *  the saved keys, which are read from their file and opened one by one, are read once and kept until a person saves
+   *  or deletes one (keysChanged); the rest is read each time. */
   shown(): Shown {
     const saved = (this.saved ??= new Map(SECRET_NAMES.map((name) => [name, this.options.storedKeys?.(name)])));
-    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken, ...(this.options.secrets?.values() ?? [])];
+    const values = this.options.serverSecrets((name) => saved.get(name));
     const key = values.join("\0");
     if (this.cut?.key !== key) this.cut = { key, shown: secretsShown(values) };
     return this.cut.shown;
@@ -531,6 +533,22 @@ export class LearningRuns {
   /** A key was saved on this server or deleted from it: the next view reads them again. */
   keysChanged(): void {
     this.saved = undefined;
+  }
+
+  /** Agent `agentId`'s run's `learning` as it reads now (learning.ts currentLearning): what it held for its owner's OK
+   *  checked against the folder's main (learning-routes.ts statusesOf, one read per commit of main). Its record stays as
+   *  the merge wrote it; one that held nothing is read as it is, with no read of the folder. */
+  async current(agentId: string, learning: Learning | undefined): Promise<Learning | undefined> {
+    if (!holdsForOk(learning)) return learning;
+    return currentLearning(learning, await statusesOf(this.options.agents.dir, agentId));
+  }
+
+  /** `rows` with their learning row as it reads now (current): its words from what it held, checked against main. */
+  async rowsNow(agentId: string, learning: Learning | undefined, rows: readonly TimelineEvent[]): Promise<TimelineEvent[]> {
+    const now = await this.current(agentId, learning);
+    if (now === learning || !now) return [...rows];
+    const [row] = withLearning([], now, this.shown()) as (TimelineEvent & { learning?: unknown })[];
+    return rows.map((one) => (one.kind === "learning" && row ? ({ ...one, summary: row.summary, text: row.text, learning: row.learning } as TimelineEvent) : one));
   }
 
   /** A run's learning as its view shows it (learning.ts learningView), cut of the host's secrets now; `settled`, once
@@ -658,7 +676,7 @@ export class LearningRuns {
     const after = run.lastEntry ?? Math.max(0, ...run.rows.map((row) => entryOf(row.id)).filter(Number.isInteger));
     run.meta.reflect = { outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
     // The job's error, kept for a restart: the turn's is never the run's.
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
+    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refused(run)), ...(run.error.details ? { details: cutStrings(run.error.details, (text) => redacted(text, this.refused(run))) as { reason: string } } : {}) };
     // Its answer is final now: when, and what its job cost, before the end-of-run turn spends any more.
     this.setLearning(run, "reflecting", null, said.reflecting, { answered_at: run.endedAt, job_cost_usd: this.kernel.costOf(run.rows) });
     this.kernel.mark(run);
@@ -877,13 +895,13 @@ export class LearningRuns {
     }
   }
 
-  /** What a run's learning refuses, and cuts from what it says: the secrets this server holds, wherever its launcher put
-   *  them, the keys saved on it, what each launch handed the run, every value its errors and answers never show
-   *  (runs.ts' `handed`: its browser sign-in's pointer among them, read back after a restart), and its own tokens. */
+  /** What a run's learning refuses, and cuts from what it says: every secret this server never shows (serverSecrets),
+   *  what each launch handed the run, and every value its errors and answers never show (runs.ts' `handed`: its browser
+   *  sign-in's pointer among them, read back after a restart). */
   private refused(run: Run): string[] {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), this.options.token, this.options.doorToken, ...(this.options.secrets?.values() ?? []), ...(own ? [own] : [])];
+    return [...this.options.serverSecrets(), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

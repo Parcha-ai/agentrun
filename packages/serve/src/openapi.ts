@@ -4,6 +4,7 @@
 // own routes are added as operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
+import { TRIGGER_SOURCES } from "@parcha/pi-durable-agent/timeline";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
@@ -896,6 +897,18 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 403, 404, 429, 500) },
     },
   },
+  "/runs/{run_id}/browser": {
+    get: {
+      operationId: "getRunBrowser", tags: ["runs"], summary: "Watch the run's browser live: its viewer link, for the owner",
+      description: "The live view of the run's browser session, read-only: `live` with `viewer`, a link on this server (`/v2/runs/{run_id}/browser/live/v/<id>#t=<token>`) to open, or frame, in the console, while a session is open; `none` when the run has a browser but no session is open (or its process is gone); `off` when the run has no browser at all, with `reason`: its agent has no browser tool, or its browser resolves unavailable here (the tool plane's words, as capabilities give them). The token, in the link's fragment, opens that one session's view: it dies when the session is released, and a second viewer of the same session is refused (viewer_in_use). The viewer's page is served under the link's path with `frame-ancestors 'self'`, and its WebSocket is taken only from this server's own origin (or its public address, AGENTRUN_PUBLIC_URL). It takes the owner's password session in the console: never a token, which a run's process, an MCP client or a script may hold (403); no credential is 401. The vendors' own live-view links never leave the run's process.",
+      parameters: [ref("parameters/RunId")],
+      responses: {
+        "200": json({ oneOf: [closed({ state: { const: "off" }, reason: { type: "string", description: "Why the run has no browser, in plain words." } }), closed({ state: { const: "none" } }), closed({ state: { const: "live" }, viewer: { type: "string", description: "The viewer's link on this server, its token in the fragment." } })] }, "The run's live view, none open, or no browser."),
+        ...errors(401, 403, 404, 429, 500),
+      },
+      "x-agentrun-serve": "liveview/1",
+    },
+  },
   "/workflows/validate": {
     post: {
       operationId: "validateWorkflow", tags: ["agents"], summary: "Check a workflow definition without saving it",
@@ -1102,7 +1115,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/sign-ins/{key}": {
     delete: {
       operationId: "forgetSignIn", tags: ["agents"], summary: "Forget one of the agent's saved sign-ins",
-      description: "Deletes the browser vendor's object the sign-in points to (a Browserbase context, a Kernel profile), then the sealed pointer this server kept; GET /agents/{agent_id} lists it no more, and the agent's next run with the browser starts signed out, on a new one. Best effort at the vendor: a delete it does not answer, or refuses, is said in `removed[].message` (`at_vendor: not_deleted`), and the pointer is forgotten all the same. 404 for a key the agent has no sign-in under; 409 `sign_in_held` while a run holds its save lease (`details.held_by`), until that run ends.",
+      description: "Deletes the browser vendor's object the sign-in points to (a Browserbase context, a Kernel profile), then the sealed pointer this server kept; GET /agents/{agent_id} lists it no more, and the agent's next run with the browser starts signed out, on a new one. Best effort at the vendor: a delete it does not answer, or refuses, is said in `removed[].message` (`at_vendor: not_deleted`), and the pointer is forgotten all the same. 404 for a key the agent has no sign-in under; 409 `sign_in_held` while a run holds its save lease (`details.held_by`), and while a run it was handed is still going, its lease let go or not (`details.handed_to`: one waiting for its person, say), until that run ends: what that run says could repeat the pointer, and once it is forgotten a restarted server could not cut it from what the run shows. The message names the run, never the pointer.",
       parameters: [ref("parameters/AgentId"), { name: "key", in: "path", required: true, description: "The sign-in's key, as GET /agents/{agent_id} lists it (`default`).", schema: { type: "string" } }],
       responses: {
         "200": json({ type: "object", additionalProperties: false, required: ["key", "removed"], properties: { key: { type: "string" }, removed: { type: "array", items: { type: "object", additionalProperties: false, required: ["provider", "at_vendor"], properties: { provider: { type: "string" }, at_vendor: { enum: ["deleted", "not_deleted"] }, message: { type: "string" } } } } } }, "Forgotten: what was deleted at each vendor."),
@@ -1427,6 +1440,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "On the row of a message the person did not write: `server`, one the server wrote into the run (a raised cap's follow-up, an approval's resume), a `phase` row \"AgentRun: <its first line>\"; `trigger`, a trigger's input (a started run's first message, or a firing's message), a `phase` row \"Trigger <trigger id>: <its first line>\". Either is where a person's message would be a `user_message` row, and counts, as a person's does, as the message its turn took. Absent on every other row.",
       "x-agentrun-serve": "origin/1",
     },
+    trigger: {
+      ...closed({ id: { type: "string", description: "The trigger's id." }, source: { enum: [...TRIGGER_SOURCES], description: "What fired it, by the trigger's definition." }, owner: { type: "boolean", description: "True when the words are its owner's (a schedule's), false when they came from outside (a webhook's)." } }),
+      description: "On a trigger's row (`origin` `trigger`) alone: the trigger whose input the row is, so a client labels it by its source without reading its summary. Absent on every other row.",
+      "x-agentrun-serve": "origin/1",
+    },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
       description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. Its \`summary\` and \`text\` are its \`detail\` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
@@ -1594,6 +1612,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     thinking: { type: "array", items: { type: "string" }, description: "The thinking levels an agentic revision may name.", "x-agentrun-serve": "serve/1" },
     learning: { enum: [...LEARNING_MODES], description: "This server's learning switch (`--learning`): `on`, a run of an agent whose definition says `learning: true` starts from what its agent learned and adds to it; `off`, no run this server starts does, whatever its agent says, and its `learning` is null.", "x-agentrun-serve": "learning/1" },
+    browser_live: {
+      type: "object", additionalProperties: false, required: ["read_only"],
+      properties: { read_only: { type: "boolean", description: "The viewer watches and never drives: its input is dropped by the run, never sent to the browser." } },
+      description: "The owner watches a run's browser live from the console (GET /runs/{run_id}/browser).",
+      "x-agentrun-serve": "liveview/1",
+    },
     tool_keys: {
       type: "object", additionalProperties: false, required: ["routes", "at_rest"],
       properties: { routes: { type: "boolean" }, at_rest: { enum: ["sealed", "unavailable"] } },
@@ -1601,8 +1625,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
     mcp_client: {
-      type: "object", additionalProperties: false, required: ["routes", "transports", "auth", "at_rest", "harnesses"],
-      properties: { routes: { type: "boolean" }, transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."} },
+      type: "object", additionalProperties: false, required: ["transports", "auth", "at_rest", "harnesses"],
+      properties: { transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { enum: ["sealed", "unavailable"] }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."} },
       description: "/settings/mcp-servers: remote MCP servers over Streamable HTTP, previewed and saved with the auth types listed; a credential kept `sealed` under the seal key the server was handed, `unavailable` with none, when only servers that take no credential are kept.",
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -1793,6 +1817,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   createFile.responses["415"] = ref("responses/UnsupportedMediaType");
   createFile["x-agentrun-serve-changed"] = { requestBody: "upload/2", parameters: "upload/2", responses: "upload/2" };
   changed.push("POST /files");
+  // A hidden run's files are refused, as its graph is: 403 forbidden while the server can't read its browser sign-in.
+  for (const path of ["/runs/{run_id}/files", "/runs/{run_id}/files/{path}"]) {
+    const files = (doc.paths[path] as Json).get as Json & { responses: Record<string, Json> };
+    files.description = `${String(files.description ?? "").trimEnd()}\nHere \`403 forbidden\` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): a page it saved signed in holds what it saw there, so none of its files is listed or read until the sign-in opens again.\n`;
+    const added = files.responses["403"] === undefined;
+    if (added) files.responses["403"] = ref("responses/Forbidden");
+    files["x-agentrun-serve-changed"] = { description: "signins/1", ...(added ? { responses: "signins/1" } : {}) };
+    changed.push(`GET ${path}`);
+  }
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
   const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;
@@ -1889,6 +1922,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     agent_not_runnable: NOT_RUNNABLE_DETAILS, system_file_forbidden: FORBIDDEN_DETAILS,
     auth_required: closed({ auth: { enum: ["bearer", "oauth"], description: "What the MCP server asks for: `oauth` when it names protected-resource metadata, else `bearer`." }, status: { enum: [401, 403] } }),
     upstream_failed: { type: "object", additionalProperties: false, properties: { status: { type: "integer", description: "The MCP server's HTTP status, when it answered one." } } },
+    sign_in_held: { type: "object", additionalProperties: false, minProperties: 1, maxProperties: 1, properties: { held_by: { type: "string", description: "The run that holds the sign-in's save lease." }, handed_to: { type: "string", description: "A run still going that was handed the sign-in (signins/1)." } } },
     wrong_origin: closed({ open: { type: "string", format: "uri", description: "Where to open the console to sign in: the address the authorization server sends the browser back to." } }),
   };
   const extensions: string[] = [];
