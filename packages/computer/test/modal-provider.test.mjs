@@ -91,7 +91,7 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		daemon: "pid1",
 		groups: ["exec", "files", "processes"],
 		maxLifetimeMs: DAY_MS,
-		user: ["root", "uid"],
+		user: ["uid"],
 		release: ["delete"],
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
@@ -103,7 +103,8 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 test("check() takes a spec it can make, with no SDK call", () => {
 	const { provider, fake } = setup();
 	assert.deepEqual(provider.check(SPEC), []);
-	assert.deepEqual(provider.check({ ...SPEC, network: "open", cpus: 0.5, memoryMb: 512, labels: { team: "a", run: "r1" }, workdir: "/opt/app", user: "0" }), []);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open", cpus: 0.5, memoryMb: 512, labels: { team: "a", run: "r1" }, workdir: "/opt/app", user: "65534" }), []);
+	assert.deepEqual(provider.check({ ...SPEC, user: "1000:0" }), [], "root's group, without root, is not root");
 	assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: DAY_MS, user: "65534:65534" }), []);
 	assert.deepEqual(fake.calls, []);
 });
@@ -210,14 +211,58 @@ test("create: open is no network field at all; sizes, user and workdir map onto 
 	assert.deepEqual(fake.calls.find(([name]) => name === "image.dockerfileCommands")[1].at(-1), "WORKDIR /opt/app");
 });
 
-test("create: spec.user is the daemon's --user, root included", async () => {
-	for (const [user, expected] of [["0", "0:0"], ["65534", "65534:65534"], ["70:80", "70:80"]]) {
+test("create: spec.user is the daemon's --user", async () => {
+	for (const [user, expected] of [["65534", "65534:65534"], ["70:80", "70:80"], ["1000:0", "1000:0"]]) {
 		const { provider, fake } = setup();
 		const created = await provider.create({ ...SPEC, user });
 		assert.equal(created.ok, true, `${user}: ${JSON.stringify(created)}`);
 		assert.deepEqual(createdParams(fake).command.slice(-2), ["--user", expected]);
 		assert.equal(JSON.parse(createdParams(fake).tags[SPEC_TAG]).user, expected);
 	}
+});
+
+// Modal's exec of the stdio bridge runs /opt/agentrun/computerd outside the daemon, with Modal's own root capabilities.
+// A root computer user has no capability, yet owns /, /opt and /opt/agentrun, so it could rename another program over
+// that path; no file mode stops uid 0. So a Modal computer never runs as root.
+const ROOT_USERS = ["0", "00", "0:0", "0:1000", "root", "root:0", "root:1000"];
+
+test("check() refuses a root user in words that say why: Modal's exec of the bridge runs outside the daemon, as Modal's root", () => {
+	const { provider, fake } = setup();
+	for (const user of ROOT_USERS) {
+		const refusals = provider.check({ ...SPEC, user });
+		assert.deepEqual(refusals.map((r) => r.field), ["user"], `user ${user}`);
+		const [{ message }] = refusals;
+		assert.match(message, /root/, `user ${user}`);
+		assert.match(message, /outside the daemon/, `user ${user}: says the bridge runs outside the daemon`);
+		assert.match(message, /Modal's own root capabilities/, `user ${user}: says as whom`);
+		assert.match(message, /replace/, `user ${user}: says what a root user could do`);
+	}
+	assert.deepEqual(fake.calls, [], "check made no SDK call");
+});
+
+test("create refuses a root user before any SDK call", async () => {
+	for (const user of ROOT_USERS) {
+		const { provider, fake } = setup();
+		const created = await provider.create({ ...SPEC, user });
+		assert.equal(created.ok, false, `user ${user}`);
+		assert.equal(created.error.code, "refused");
+		assert.match(created.error.message, /^user: .*root.*outside the daemon/);
+		assert.deepEqual(fake.calls, [], `user ${user}: no SDK call`);
+	}
+});
+
+test("connect and attach refuse a computer recorded with a root user, before any exec in it", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded({ user: "0:0" })] });
+	const ref = refOf(fake);
+	const connected = await provider.connect(ref);
+	assert.equal(connected.ok, false);
+	assert.equal(connected.error.code, "refused");
+	assert.match(connected.error.message, /root.*outside the daemon/);
+	const attached = await provider.attach({ id: ref.id });
+	assert.equal(attached.ok, false);
+	assert.equal(attached.error.code, "refused");
+	assert.match(attached.error.message, /root/);
+	assert.equal(fake.names().includes("sandbox.exec"), false, "no exec in a computer whose user is root");
 });
 
 test("create refuses a spec check refuses, and an aborted call, with no SDK call", async () => {
@@ -697,6 +742,48 @@ test("connect refuses a daemon of another version, and closes the connection", a
 	assert.equal(connected.error?.code, "refused");
 	assert.match(connected.error.message, /version/);
 	assert.equal(fake.stdinClosed, 1);
+});
+
+test("connect: a bridge whose exec answers after callMs is closed when it lands", async () => {
+	const { provider, fake } = setup({ timeouts: { callMs: 50 } }, { sandboxes: [seeded()], bridgeMs: 150 });
+	const connected = await provider.connect(refOf(fake));
+	assert.equal(connected.ok, false);
+	assert.equal(connected.error.code, "timeout");
+	assert.equal(fake.stdinClosed, 0, "the bridge has not landed yet");
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	const [late] = only(fake).box.bridges;
+	assert.ok(late, "the bridge landed after connect gave up");
+	assert.equal(fake.stdinClosed, 1, "and its stdin was closed as it landed, so it ends");
+});
+
+test("attach: a bridge whose exec lands after the caller aborted is closed when it lands", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded()], bridgeMs: 150 });
+	const controller = new AbortController();
+	const attaching = provider.attach({ id: refOf(fake).id }, { signal: controller.signal });
+	setTimeout(() => controller.abort(), 50);
+	const attached = await attaching;
+	assert.equal(attached.ok, false);
+	assert.equal(attached.error.code, "aborted");
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	assert.equal(only(fake).box.bridges.length, 1, "the bridge landed after attach gave up");
+	assert.equal(fake.stdinClosed, 1, "and its stdin was closed as it landed");
+});
+
+test("hello's bound covers the bridge's start: a slow exec and a silent daemon fail at helloMs in all, not helloMs + the exec", async () => {
+	const helloMs = 400;
+	const bridgeMs = 300;
+	for (const how of ["connect", "create"]) {
+		const { provider, fake } =
+			how === "connect"
+				? setup({ timeouts: { helloMs } }, { sandboxes: [seeded({ box: { silent: true } })], bridgeMs })
+				: setup({ timeouts: { helloMs } }, { box: { silent: true }, bridgeMs });
+		const started = Date.now();
+		const result = how === "connect" ? await provider.connect(refOf(fake)) : await provider.create(SPEC);
+		const took = Date.now() - started;
+		assert.equal(result.ok, false, how);
+		assert.equal(result.error.code, "timeout", `${how}: ${result.error.message}`);
+		assert.ok(took < helloMs + bridgeMs - 100, `${how} took ${took} ms: hello's ${helloMs} ms began only after the exec's ${bridgeMs} ms`);
+	}
 });
 
 test("connect to a sandbox that has finished is an error", async () => {
