@@ -575,7 +575,16 @@ export function adapterRun(
         if (failMark) throw new Error("the store refused the start mark (a test's seam)");
         await commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }) } })));
       })
-        .then(() => syncNow(run?.store, BARRIER.sideRequestStarted));
+        .then(() => syncNow(run?.store, BARRIER.sideRequestStarted))
+        .catch((error: unknown) => {
+          // A mark that fails refuses the request, which never leaves and ends with no request_end: nothing of it stays in
+          // flight (its hold would make every later request look dearer), and a note it carried is left for the next one.
+          open.delete(event.turn);
+          inFlight.ended(event.turn);
+          sentOf.delete(event.turn);
+          if (wrap.pending?.turn === event.turn) wrap.pending = undefined;
+          throw error;
+        });
     } else {
       open.delete(event.turn);
       inFlight.ended(event.turn);
