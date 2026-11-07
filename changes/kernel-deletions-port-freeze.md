@@ -6,7 +6,7 @@ The code taken from vercel-labs/durable-harness is now AgentRun's own: the port 
 - `AgentAdapter.version` and `AdapterCapabilities.fork` (no adapter forks; a node that asks for `context: "fork"` is refused as before).
 - `DriveContext.config`, and `requires`/`needs` on a host tool and an effect's options; `kernel/types.ts` is no longer pinned to upstream's types.
 - The Codex harness's `codex.spend` ledger and its dollar caps (`sandbox({ budget })`, `GatewayLedger`, the gateway handler's `budget`, `ledger` and `onCap`), which never fired, and its table of removed options.
-- `Box`, `BoxSpec`, `BoxedChild`, `Isolation`, `BoxError` and `boxSlot` (`@parcha/agentrun-kernel/host`), which nothing implemented or used.
+- `Box`, `BoxSpec`, `BoxedChild`, `Isolation` and `boxSlot` (`@parcha/agentrun-kernel/host`), which nothing implemented or used.
 - The model proxy's parts only tests used (`inputTokensMaxOf`, `matchRoute`, `parseStrict`, `reportedCostOf`) move to `@parcha/agentrun-kernel/testing`; `providerIdsOf` and `MCP_ROUTE_VERSIONS` leave the host API.
 - The box egress proxy (`startEgressProxy`, `parseAllow`, the address table) moves into agentrun-serve, its one user.
 
