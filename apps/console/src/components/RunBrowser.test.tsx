@@ -56,7 +56,7 @@ function nowhereBut(frame: HTMLIFrameElement | null, ...secrets: string[]) {
 }
 
 const MESSAGES = { steer: false, answer: true, follow_up: true, steer_workflow_runs: false };
-describe("the run page reads the browser only from a server that serves it", () => {
+describe("the run page reads the run's browser, whatever its capabilities list", () => {
   const base = { run_id: RUN, agent_id: "browsing", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look", created_at: "2026-11-05T09:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null } as Run;
   async function live(caps: unknown) {
     const reads: string[] = [];
@@ -73,14 +73,10 @@ describe("the run page reads the browser only from a server that serves it", () 
     await settle(80);
     return { host, reads };
   }
-  it("with features.browser_live, it reads the run's browser and offers the tab", async () => {
-    const p = await live({ harnesses: [{ id: "pi", available: true }], features: { messages: MESSAGES, browser_live: { read_only: true } } });
+  it("it reads the run's browser and offers the tab: no capability gates it, the served state decides", async () => {
+    const p = await live({ harnesses: [{ id: "pi", available: true }], features: { messages: MESSAGES } });
     expect(p.reads[0]).toBe(RUN);
     expect([...p.host.querySelectorAll('[role="tab"]')].some((b) => b.textContent === "Watch live")).toBe(true);
-  });
-  it("without it (an older server), it never asks", async () => {
-    const p = await live({ harnesses: [{ id: "pi", available: true }], features: { messages: MESSAGES } });
-    expect(p.reads).toEqual([]);
   });
 });
 
@@ -91,12 +87,17 @@ describe("the run page's Browser tab", () => {
     expect(p.frame()).toBeNull();
   });
 
-  it("is not there on an older server with no such route (404), nor for a caller it refuses (403)", async () => {
-    for (const status of [404, 403]) {
-      const p = await page(async () => { throw new ClientError(status, status === 404 ? "not_found" : "forbidden", "no", false); });
-      expect(p.tabButton(), String(status)).toBeUndefined();
-      act(() => root?.unmount()); document.body.innerHTML = "";
-    }
+  it("is not there for a caller the route refuses (403)", async () => {
+    const p = await page(async () => { throw new ClientError(403, "forbidden", "no", false); });
+    expect(p.tabButton()).toBeUndefined();
+  });
+
+  it("a 404 is a failed read like any other: it reads again, and the tab comes once the route answers", async () => {
+    let n = 0;
+    const p = await page(async () => { n += 1; if (n === 1) throw new ClientError(404, "not_found", "no", false); return { state: "live", viewer: VIEWER }; });
+    await settle(120);
+    expect(n).toBeGreaterThan(1);
+    expect(p.tabButton()?.textContent).toBe("Watch live");
   });
 
   it("waits for the browser when the run has one and no page is open yet: the tab reads Browser", async () => {
