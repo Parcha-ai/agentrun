@@ -1409,9 +1409,11 @@ and `no_new_privs`, and answers hello over `computerd stdio`. Those root contain
 capabilities, or every one (`--cap-add ALL`), with no `--cap-drop`, as Modal runs them: with `--user 0:0` and
 `--user 1000:1000`, `exec.run` reads every thread of init and its own status with all five sets zero and
 `NoNewPrivs` 1, and a root container without CAP_SETPCAP has init refuse to start, in words.
-`test/docker/e2b-commands.docker.test.mjs` runs the E2B provider's install, init and bridge through `bash -l -c`, as
-envd runs a command, in a root Debian container, and checks that init takes `DISPLAY` and `--max-deadline` and that
-`deadline.extend` moves up to that maximum and no further.
+`test/docker/e2b-commands.docker.test.mjs` runs the E2B provider's install, init and bridge as sent, in a root
+container of the desktop fixture's image, starts Xvfb through the daemon on the display init was given and waits for
+hello to declare the screen, and checks that `deadline.extend` moves up to `--max-deadline` and no further. The
+programs the daemon starts get no `DISPLAY` of init's (it passes on only PATH, HOME, USER and LOGNAME): a caller that
+starts a GUI program gives it `DISPLAY` in the request's `env`, on E2B as on Docker.
 
 ## Acknowledgements
 
