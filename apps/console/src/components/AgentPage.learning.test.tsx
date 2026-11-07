@@ -14,13 +14,13 @@ const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
   agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: kind === "agentic" ? { version: 1, name: "Refunds", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"] } : { version: 1, name: "Flow", skills: [], tools: [], workflow: { version: 1, root: { kind: "agent", id: "a", task: "t" } } },
 });
-const run: Run = {
+const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "run-b", agent_id: "refunds", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
-  created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:04Z", result: null, error: null, cost: null, archived_at: null,
-  learning: { state: "merged", reason: null, read: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
+  created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:04Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
+  learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, read: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
 };
 const EMPTY: AgentLearning = { agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
-const ended: TimelinePage = { run_id: "run-b", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
+const ended: TimelinePage = { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "run-b", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -94,7 +94,7 @@ describe("AgentPage's Learning tab", () => {
     expect(row.textContent).toContain("Learned 1 note");
   });
   it("an ended latest run whose learning is still deciding is read again until it settles: its row then says what it kept", async () => {
-    const deciding: Run = { ...run, learning: { state: "reflecting", reason: null } };
+    const deciding: Run = { ...run, learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "reflecting", reason: null } };
     let n = 0;
     // Each read is the server's answer, a new record every time, as the client parses it.
     const p = await open(agent(), { learning: "on" }, deciding, () => (++n < 2 ? { ...deciding } : { ...run }));
@@ -108,7 +108,7 @@ describe("AgentPage's Learning tab", () => {
     expect(p.reads()).toBe(settled);
   }, 15_000);
   it("the latest run's timeline is read again once its learning moves: its look-back step and its row agree", async () => {
-    const deciding: Run = { ...run, learning: { state: "proposed", reason: null } };
+    const deciding: Run = { ...run, learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "proposed", reason: null } };
     let n = 0;
     const rows = () => {
       const detail = n >= 2 ? "Learned: Try it first (replaces 1 older note)" : "Checking 1 new note…";

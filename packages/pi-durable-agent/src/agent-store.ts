@@ -22,9 +22,10 @@ export type RevisionKind = "agentic" | "workflow";
  *  `toolSettings`: the revision's own settings of a tool its host lets a user set (the tool, or a catalog's tool or an
  *  MCP server's wildcard, to its settings, such as its provider or its permission: names and values its host checks;
  *  absent: the host's own). `maxCostUsd`: an agentic revision's default spend cap for each run, in US dollars, that a
- *  run started with none of its own takes (absent: none). */
+ *  run started with none of its own takes (absent: none). `capMode`: how such a cap prices a request, a name its host
+ *  knows (absent: the host's default). */
 export type RevisionPlace = { mode: string; box?: string };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string };
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>> };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
@@ -96,7 +97,7 @@ export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
 const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; note?: string }
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; note?: string };
 /** What starts a run: `key`, the caller's name for it (1 to 256 characters), which starts one run only, and `fingerprint`
  *  (at most 256 characters), what was asked, kept to tell a retry from another request under the same key. */
@@ -217,6 +218,10 @@ function checkVersion(db: DatabaseSync): void {
 }
 
 const invalid = (message: string) => new AgentHomeError("invalid", message);
+/** A claim's holder: a non-empty name (the run's process, as its host describes it, or the server) of at most 1,024 characters. */
+function checkHolder(holder: unknown): asserts holder is string {
+  if (typeof holder !== "string" || holder === "" || holder.length > 1024) throw invalid("a claim's holder is a non-empty name of at most 1,024 characters");
+}
 /** Refuses a run's folder `dir` below `base` (the data directory) when any level of it there now is a symbolic link or not
  *  a directory: a run's files are never made or written where a link points. The disk's one link rule, as the learning
  *  folder's (serve learning.ts). */
@@ -336,7 +341,8 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined && typeof input.learning !== "boolean") throw invalid("learning is not true or false");
     if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) throw invalid("the maxCostUsd is not a number above 0");
-    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...host, ...(input.learning !== undefined ? { learning: input.learning } : {}), ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}) }, texts };
+    if (input.capMode !== undefined && (typeof input.capMode !== "string" || input.capMode === "")) throw invalid("the capMode is not a non-empty string");
+    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...host, ...(input.learning !== undefined ? { learning: input.learning } : {}), ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}), ...(input.capMode !== undefined ? { capMode: input.capMode } : {}) }, texts };
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
@@ -674,13 +680,31 @@ export class AgentStore extends AgentStoreReader {
     return run;
   }
 
-  /** Claims run `runId` for `holder`: its epoch is bumped and the holder recorded, in one transaction. The new epoch,
-   *  which the holder carries; a holder of a lower one is fenced. A take-back is a claim by the server. */
-  claimRun(runId: string, holder: string): number {
-    if (typeof holder !== "string" || holder === "" || holder.length > 256) throw invalid("a claim's holder is a non-empty name of at most 256 characters");
-    const row = this.db.prepare("UPDATE runs SET claim_epoch = claim_epoch + 1, claim_holder = ? WHERE id = ? RETURNING claim_epoch").get(holder, checkId(runId, "run")) as { claim_epoch: number } | undefined;
-    if (!row) throw new AgentHomeError("missing", "that run is unknown");
+  /** Claims run `runId` for `holder` from epoch `from`, the one its claimer read (runClaim): the epoch is bumped and the
+   *  holder recorded in one statement, only while the row still holds `from`. The new epoch, which the holder carries; a
+   *  holder of a lower one is fenced. Two claimers from the same epoch: one claims, the other is `stale` and writes
+   *  nothing. A take-back is a claim by the server. */
+  claimRun(runId: string, holder: string, from: number): number {
+    checkHolder(holder);
+    if (!Number.isSafeInteger(from) || from < 0) throw invalid("a claim names the epoch it claims from, a whole number of at least 0");
+    const row = this.db.prepare("UPDATE runs SET claim_epoch = claim_epoch + 1, claim_holder = ? WHERE id = ? AND claim_epoch = ? RETURNING claim_epoch").get(holder, checkId(runId, "run"), from) as { claim_epoch: number } | undefined;
+    if (!row) throw this.lostClaim(runId, from);
     return Number(row.claim_epoch);
+  }
+
+  /** Names `holder` for run `runId`'s claim at `epoch` (its door, once it serves), only while the row still holds that
+   *  epoch: a claim that moved on is `stale`, and nothing is written. */
+  setRunHolder(runId: string, epoch: number, holder: string): void {
+    checkHolder(holder);
+    const changed = this.db.prepare("UPDATE runs SET claim_holder = ? WHERE id = ? AND claim_epoch = ?").run(holder, checkId(runId, "run"), epoch).changes;
+    if (Number(changed) === 0) throw this.lostClaim(runId, epoch);
+  }
+
+  /** Why a claim's statement changed no row: no such run, or its epoch is no longer `epoch`. */
+  private lostClaim(runId: string, epoch: number): AgentHomeError {
+    const now = this.db.prepare("SELECT claim_epoch FROM runs WHERE id = ?").get(runId) as { claim_epoch: number } | undefined;
+    if (!now) return new AgentHomeError("missing", "that run is unknown");
+    return new AgentHomeError("stale", `the run's claim is at epoch ${Number(now.claim_epoch)}, not ${epoch}`);
   }
 
   /** The run `key` started (startRun's `origin`), as startRun returns it with `existing`; undefined when it started none. */

@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { ServerLockHeldError, startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch } from "./support.mjs";
 
 const alive = processAlive;
 const STATE = "server.state";
@@ -42,7 +42,7 @@ async function midTurn(t, data, options = {}) {
   const runId = run.body.run_id;
   await until(() => existsSync(signal), "the run's second request started");
   await rm(signal);
-  const pid = JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, runId).holder.pid;
   assert.ok(alive(pid), "the run's process works");
   t.after(() => alive(pid) && process.kill(pid, "SIGKILL"));
   return { close, runId, pid, signal, said, first };
@@ -78,7 +78,7 @@ test("a start on a data root whose server is stopping waits for that stop, says 
   assert.deepEqual(JSON.parse(readFileSync(join(data, STATE), "utf8")), { pid: process.pid, until: null }, "the new server's record: it runs");
   // The new server opens the run its stop cut: the cut request starts again in a process of its own.
   await until(() => existsSync(signal), "the cut request started again under the new server");
-  const record = JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8"));
+  const record = runRecordOf(data, runId);
   assert.ok(record.generation >= 2, `opened again on its directory: ${JSON.stringify(record.generation)}`);
   assert.notEqual(record.holder.pid, pid);
   t.after(() => alive(record.holder.pid) && process.kill(record.holder.pid, "SIGKILL"));

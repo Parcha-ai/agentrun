@@ -76,11 +76,13 @@ test("--open opens a browser unless in CI or on a Linux with no display", () => 
  *  resolves with its base URL once its banner is out. */
 async function serve(t, args, env = {}, data = undefined) {
   const home = mkdtempSync(join(tmpdir(), "serve-defaults-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
   const child = spawn(process.execPath, [CLI, "--data", data ?? join(home, "agents"), ...args], { env: { ...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
+  // The stop first, then the removal: node:test runs a test's after-hooks in the order they were added, and the server
+  // writes into its home until it has stopped.
   t.after(() => stopChild(child, exited));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));

@@ -34,6 +34,7 @@ export const HandsDoc = defineDoc<{ environment?: string }>({
 	history: "latest",
 	fork: "initial",
 	initial: () => ({}),
+	checkpointWhen: () => false,
 });
 
 /**
@@ -46,6 +47,7 @@ export const SessionBoxesDoc = defineDoc<{ boxes: Record<string, string> }>({
 	version: 1,
 	scope: "session",
 	initial: () => ({ boxes: {} }),
+	checkpointWhen: () => false,
 });
 
 /** What a transport needs from its host. */

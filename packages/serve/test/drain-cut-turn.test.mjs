@@ -11,12 +11,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv, writtenJson } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")); } catch { return null; } };
+const recordOf = (data, runId) => { try { return runRecordOf(data, runId); } catch { return null; } };
 const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 const shown = (rows) => rows.map((r) => [r.kind, r.summary]);
 
@@ -87,7 +87,7 @@ test("claude-agent (B): a server drain that cuts only the root's turn end, the s
   assert.equal((await api("POST", "/agents", agent("ended", { harness: "claude-agent", instructions: `Answer, then hold until ${go} (signal ${signal}), then end showing nothing.` }))).status, 201);
   const runId = (await api("POST", "/agents/ended/runs", { input: { content: "hi" } })).body.run_id;
   let hold = null;
-  for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, "the turn reaches the write of its end");
+  hold = await writtenJson(held, "the turn reaches the write of its end");
   const before = hold.since.join(", ");
   assert.ok(hold.since.includes("faux.turn_end"), `the session ended the turn before the root's end: ${before}`);
   const rowsBefore = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];

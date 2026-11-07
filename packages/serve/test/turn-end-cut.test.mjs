@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { DatabaseSync } from "node:sqlite";
-import { agent, client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv, jsonIn, writtenJson } from "./support.mjs";
 
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -35,12 +35,12 @@ test("a follow-up whose turn ended showing nothing, its process killed before th
   await writeFile(arm, "");
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
   let hold = null;
-  for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, "the follow-up's turn reaches the write of its end");
+  hold = await writtenJson(held, "the follow-up's turn reaches the write of its end");
   // In the window: the session wrote the turn's end (faux.turn_end), then the bridge the turn's last request (flush(true)'s
   // entry, with no content), and the root's turn end is the write held open.
   const ended = hold.since.lastIndexOf("faux.turn_end");
   assert.ok(ended >= 0 && hold.since.lastIndexOf("pi.assistant") > ended, `written since the arm: ${hold.since.join(", ")}`);
-  assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
+  assert.equal(runRecordOf(data, runId).holder?.pid, hold.pid, "the held process is the run's");
   process.kill(hold.pid, "SIGKILL");
 
   // No message after the kill: the relaunched process writes the turn's end, interrupted, and the run waits for the person.
@@ -71,7 +71,7 @@ async function queuedRelaunch(t, armed, reaching, holds) {
   t.after(() => (closed ? undefined : one.close()));
   let api = client(one.baseUrl, one.token);
   const instructions = `Queue two follow-ups until ${first}, then hold the last until ${last}.`;
-  assert.equal((await api("POST", "/agents", agent("queued", { harness: "claude-agent", instructions, tools: ["fetch_page"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("queued", { harness: "claude-agent", instructions, tools: ["web_fetch"] }))).status, 201);
   const { body } = await api("POST", "/agents/queued/runs", { input: { content: "hi" } });
   const runId = body.run_id;
   // Turn 1 holds on its fetch: both follow-ups are accepted while it works, and wait their place.
@@ -85,9 +85,9 @@ async function queuedRelaunch(t, armed, reaching, holds) {
   await writeFile(arm, armed);
   await writeFile(first, "");
   let hold = null;
-  for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, reaching);
+  hold = await writtenJson(held, reaching);
   holds(hold);
-  assert.equal(JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
+  assert.equal(runRecordOf(data, runId).holder?.pid, hold.pid, "the held process is the run's");
   // The run's process and the server go down together: the next server counts no message waiting.
   process.kill(hold.pid, "SIGKILL");
   closed = true;
@@ -106,7 +106,7 @@ async function queuedRelaunch(t, armed, reaching, holds) {
       early = { status: view.status, final_answer: view.result?.final_answer ?? null };
       break;
     }
-    const holder = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8").catch(() => "{}")).holder?.pid;
+    const holder = runRecordOf(data, runId).holder?.pid;
     if (view.status === "working" && view.state === "working" && holder && holder !== hold.pid) break;
     assert.ok(Date.now() < end, `the run opens again: last ${view.status}/${view.state}`);
   }
@@ -116,7 +116,7 @@ async function queuedRelaunch(t, armed, reaching, holds) {
   // No end before the answer first: a server that reads the run done from its store stops the process before its open
   // reaches the gate.
   assert.equal(early, undefined, `the run read ${JSON.stringify(early)} before its queued follow-up answered`);
-  assert.deepEqual(JSON.parse(await readFile(gate, "utf8").catch(() => "null")), { streamed: true }, "the reopen went on once the new server followed its door");
+  assert.deepEqual(await jsonIn(gate), { streamed: true }, "the reopen went on once the new server followed its door");
   assert.equal(await answer(api, runId), "Answer 3.", "the queued follow-up's answer");
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: hi", "You: /compact", "You: And then?"]);
 }
@@ -156,7 +156,7 @@ function storeEntries(data, runId) {
     }
   }
 }
-const holderOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")).holder?.pid;
+const holderOf = (data, runId) => runRecordOf(data, runId).holder?.pid;
 const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 
 for (const harness of ["claude-agent", "codex"]) {

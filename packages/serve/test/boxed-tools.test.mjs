@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
 import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
-import { client, flowAgent, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { client, flowAgent, follow, jsonLines, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -117,7 +117,7 @@ test("demo (pi): in a Docker place bash runs in the run's box, and read, write a
   assert.equal(existsSync(outside), false);
   assert.match(said[7].text, /Command exited with code 3/);
   // Errors name the box's paths, never the data root, which only the server knows; a host path given is refused.
-  assert.match(said[8].text, /\/run\/agentrun\/run\/work\/missing\.md/);
+  assert.match(said[8].text, /\/workspace\/missing\.md/);
   assert.ok(!said[8].text.includes(realpathSync(data)), said[8].text);
   assert.equal(said[9].text, `<harness>\n[error] ${plan[9].args.path}: outside the workspace\n</harness>`);
   // The files: bash's out.txt and the edited note, in GET /runs/{id}/files.
@@ -134,9 +134,9 @@ test("demo (pi): in a Docker place bash runs in the run's box, and read, write a
   const [spec, ...more] = specs(data);
   assert.equal(more.length, 0, "one box for the run");
   assert.deepEqual(spec, {
-    env: { LANG: "C.UTF-8", HOME: "/tmp" }, workspace: "/run/agentrun/run/work",
-    mounts: [{ source: join(runDir(data, run.run_id), "work"), target: "/run/agentrun/run/work" }],
-    labels: { "agentrun.run": run.run_id, "agentrun.box": "run" }, network: "none", maxLifetimeMs: 86_400_000,
+    env: { LANG: "C.UTF-8", HOME: "/tmp" }, workspace: "/workspace",
+    mounts: [{ source: join(runDir(data, run.run_id), "work"), target: "/workspace" }],
+    labels: { "agentrun.run": run.run_id, "agentrun.box": "run", "agentrun.epoch": "1" }, network: "none", maxLifetimeMs: 86_400_000,
   });
   // bash's calls ran in the box, one command each; read, write and edit ran none where they run here (bound-files.ts),
   // and at least one each where this host reaches directories by path.
@@ -295,7 +295,7 @@ function running(pid) {
   }
 }
 
-test("a crash: the run's next process finds its box by its label, kills the command the dead one left running, and makes no second box", { timeout: 120_000 }, async (t) => {
+test("a crash: the run's next process, under a later epoch, destroys the box the dead one left (its left command with it), makes its own, and tells the model once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await boxed(t);
   assert.equal((await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } })).status, 201);
   const run = await probe(api, "boxed", [{ tool: "bash", args: { command: "echo $$ > left.pid; sleep 600; touch late.txt" } }, { tool: "bash", args: { command: "printf after > after.txt" } }]);
@@ -303,16 +303,17 @@ test("a crash: the run's next process finds its box by its label, kills the comm
   await until(() => existsSync(join(work, "left.pid")) && readFileSync(join(work, "left.pid"), "utf8").trim() !== "", "the left command's start");
   const left = Number(readFileSync(join(work, "left.pid"), "utf8").trim());
   t.after(() => running(left) && process.kill(left, "SIGKILL"));
-  const { holder } = JSON.parse(await readFile(join(runDir(data, run.run_id), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, run.run_id);
   process.kill(holder.pid, "SIGKILL");
   await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
   const said = answers(data, run.run_id);
   assert.equal(said.at(-1).tool, "bash");
   assert.equal(said.at(-1).error, false, JSON.stringify(said));
+  assert.ok(said.at(-1).text.startsWith("this run's box was replaced after a restart: /workspace is kept; packages installed outside it and /tmp are gone; reinstall what you need"), said.at(-1).text);
   assert.equal(await readFile(join(work, "after.txt"), "utf8"), "after");
   await until(() => !running(left), "the left command's kill");
   assert.equal(existsSync(join(work, "late.txt")), false);
-  assert.equal(specs(data).length, 1, "adopted by its label, not made again");
+  assert.equal(specs(data).length, 2, "made again under the later epoch, never taken over");
 });
 
 test("the start's sweep destroys the box of a run that ended while serve was down, and leaves a box of a run it does not know", { timeout: 90_000 }, async (t) => {

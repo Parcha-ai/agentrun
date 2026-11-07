@@ -1,15 +1,20 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { after } from "node:test";
+import { fileURLToPath } from "node:url";
+import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
+import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { readRunDbSync } from "../dist/run-db.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -18,6 +23,12 @@ export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathna
 // set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
 // setting over a fake docker (docker-by-default.test.mjs).
 process.env.AGENTRUN_BOXES = "none";
+// No test reaches npm's registry: a server whose data holds no Claude Code or Codex would install it on first use
+// (harness-install.ts) from the registry npm is configured for. A test that installs names its own fake (fake-npm.mjs);
+// any other such install fails at once on this closed port rather than downloading a CLI.
+for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
+// And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
+for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
 
 /** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
  *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
@@ -28,11 +39,32 @@ export function jsonLines(file) {
   return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-export async function scratch(t) {
+/** Scratch directories, removed once this file's tests are done. node:test runs a test's after-hooks in the order they
+ *  were added, so a removal added as a directory is made would run before the stop of a server or child started in it
+ *  afterwards, while that process still writes there (ENOTEMPTY). At the file's end every test's stops have run. */
+const scratchDirs = new Set();
+// Added as this module loads, so it is the file's own hook (one added inside a test would be that test's).
+after(() => Promise.all([...scratchDirs].map((dir) => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })))));
+
+export async function scratch(_t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
-  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  // Writable first, when it goes: a first use leaves its harness read-only (harness-install.ts).
+  scratchDirs.add(dir);
   return dir;
+}
+
+/** Every directory under `dir` (no link followed) made writable by its owner, so the tree can be removed. A directory
+ *  that goes while the walk is in it (a server still closing, or a fake box's command, removes its own spool) is already
+ *  removed: it is passed over, never a failure. `fs`: the three calls it makes (a test's seam). */
+export async function writableTree(dir, fs = { lstat, chmod, readdir }) {
+  const gone = (error) => {
+    if (error.code !== "ENOENT") throw error;
+  };
+  const st = await fs.lstat(dir).catch(() => undefined);
+  if (!st?.isDirectory()) return;
+  if ((await fs.chmod(dir, st.mode | 0o700).then(() => true, gone)) !== true) return;
+  const names = await fs.readdir(dir).catch(gone);
+  for (const name of names ?? []) await writableTree(join(dir, name), fs);
 }
 
 /** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
@@ -87,14 +119,87 @@ export async function builtConsole(t) {
   return root;
 }
 
-/** A server for test `t`, stopped after it, before its scratch directory goes. */
-export async function serve(t, options = {}) {
+/** The packages the first-use installs put into `<data>/harnesses/<harness>` (harness-install.ts), linked there from this
+ *  repository's own (the Claude Agent SDK, a dev dependency, with its CLI's platform package and the MCP library; Codex's
+ *  launcher with this platform's binary package), so a server on `data` runs claude-agent and codex as one where both are
+ *  installed, with no npm. `cli`: the file Claude's platform package holds as its CLI instead (one off its pins, or a
+ *  path where nothing is); `codexBin`, the same for Codex's binary; `codex: false` leaves Codex out. A harness whose pinned
+ *  CLI is not here is left out. */
+export async function linkHarnesses(data, { cli, codex = true, codexBin } = {}) {
+  const from = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
+  const link = (target, path) => symlink(target, path).catch((error) => (error.code === "EEXIST" ? undefined : Promise.reject(error)));
+  const pinned = claudeAgentExecutable();
+  if (pinned) {
+    const to = join(data, "harnesses", "claude-agent", "node_modules");
+    const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
+    for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
+      await mkdir(dirname(join(to, name)), { recursive: true });
+      await link(join(from, name), join(to, name));
+    }
+    if (cli) {
+      // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
+      await mkdir(join(to, platform), { recursive: true });
+      await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+      if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
+    }
+  }
+  const target = codexTarget();
+  if (codex && target && existsSync(join(from, "@openai", `codex-${target.pkg}`))) {
+    const to = join(data, "harnesses", "codex", "node_modules");
+    const platform = `@openai/codex-${target.pkg}`;
+    for (const name of ["@openai/codex", ...(codexBin ? [] : [platform])]) {
+      await mkdir(dirname(join(to, name)), { recursive: true });
+      await link(join(from, name), join(to, name));
+    }
+    if (codexBin) {
+      // Its own file in the tree, as an install would leave it (one that is not there is a tree without its binary).
+      const bin = join(to, platform, "vendor", target.target, "bin");
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+      if (existsSync(codexBin)) await copyFile(codexBin, join(bin, "codex"));
+    }
+  }
+}
+
+/** A data directory for test `t` holding Claude Code and Codex as the first-use installs put them (linkHarnesses), for a
+ *  test that makes an adapter itself (adapters.ts claudeOf, codexOf, which load from the data their env names). */
+export async function harnessData(t) {
+  const data = await scratch(t);
+  await linkHarnesses(data);
+  return data;
+}
+
+/** The servers started on each data directory serve() made (a restart's, `serve(t, { data: first.data })`), by that
+ *  directory: its owner's after-hook closes them before it removes the directory. */
+const sharing = new Map();
+
+/** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
+ *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
+ *  them); `harnesses` says so for any server, `false` for none. */
+export async function serve(t, { harnesses: asked, ...options } = {}) {
+  const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
+  if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
+  // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
+  if (dir) sharing.set(data, new Set());
+  else sharing.get(data)?.add(server);
+  // Under a fake docker (fixtures/fake-docker.mjs), a box command that asked for sudo fails the test: the stand-in refused
+  // it, and noted it here.
+  const dockerState = process.env.FAKE_DOCKER_STATE;
   t.after(async () => {
     await server.close();
-    if (dir) await rm(dir, { recursive: true, force: true });
+    // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
+    // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with
+    // ENOTEMPTY (and a hook that throws skips the rest, their closes among them, so the file hangs).
+    if (dir) {
+      for (const other of sharing.get(data) ?? []) await other.close();
+      sharing.delete(data);
+    }
+    const sudo = dockerState ? (await import("./fixtures/sudo-stand-in.mjs")).sudoStandIn(dockerState).calls() : [];
+    if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
+    if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
   return { ...server, data, api: client(server.baseUrl, server.token) };
 }
@@ -129,9 +234,22 @@ export function client(baseUrl, token) {
     try {
       json = JSON.parse(text);
     } catch {}
+    budgetSaysItsLeast(json, `${method} ${path}`);
     if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
     return { status: res.status, headers: res.headers, body: json ?? text };
   };
+}
+
+/** A guard on every pause a test reads: a run paused at its cap that serves its figures serves `least_cap_usd` with them,
+ *  the very cap its words name ("Raise the cap to at least $X", runs.ts budgetPending), so the figure and the sentence are
+ *  never apart. A pause serves its figures whole or not at all (no refusal mark: none). */
+function budgetSaysItsLeast(body, where) {
+  const pendings = [body?.pending, ...(Array.isArray(body?.runs) ? body.runs.map((run) => run?.pending) : [])];
+  for (const pending of pendings) {
+    if (pending?.kind !== "budget" || pending.spent_usd === undefined) continue;
+    const named = Number(/Raise the cap to at least \$(\d+\.\d\d)\b/.exec(pending.said ?? "")?.[1]);
+    assert.equal(pending.least_cap_usd, named, `${where}: least_cap_usd is the cap its words name: ${JSON.stringify(pending)}`);
+  }
 }
 
 /** A guard on every raise a test makes: a raise that resumed a paused run (PATCH /runs/{id}, `resumed: true`) leaves it
@@ -168,6 +286,42 @@ export function storeRun(data, runId) {
   } finally {
     reader.close();
   }
+}
+
+/** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
+ *  the epoch it ran under as `generation`), and its holder from the run's row (the process's `pid`, its door as
+ *  `serve`); `{}` when there is neither yet. */
+export function runRecordOf(data, runId) {
+  let claim;
+  try {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+    try {
+      claim = db.prepare("SELECT claim_epoch, claim_holder FROM runs WHERE id = ?").get(runId);
+    } finally {
+      db.close();
+    }
+  } catch {
+    claim = undefined;
+  }
+  let holder;
+  if (typeof claim?.claim_holder === "string" && claim.claim_holder.startsWith("{")) {
+    const named = JSON.parse(claim.claim_holder);
+    holder = { ...named, ...(named.door ? { serve: named.door } : {}) };
+  }
+  let record = {};
+  const file = join(runDir(data, runId), "store", "run.sqlite");
+  if (existsSync(file)) {
+    try {
+      record = readRunDbSync(file, false, (db) => {
+        const row = db.prepare("SELECT record FROM pda_run_status WHERE id = 1").get();
+        return row ? JSON.parse(row.record) : {};
+      });
+    } catch {
+      record = {};
+    }
+  }
+  const { holder: _kept, ...rest } = record;
+  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.claim_epoch) } : {}) };
 }
 
 /** Create agent `id` and start one run of it with `content`. */
@@ -274,9 +428,6 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
 
-/** Once the process that held run `runId` (its run.json's holder) has exited: only then is the run's store free to read.
- *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
- *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
 /** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
 function takenBack(data, runId) {
   let holder;
@@ -300,22 +451,22 @@ function takenBack(data, runId) {
   }
 }
 
+/** Once the process that held run `runId` (its row's holder) has exited and the server took the run back: only then is
+ *  the run's store free to read. A paused run's process marks itself released (sleeping) before it closes its store and
+ *  exits, so its status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
 export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
-  const file = join(runDir(data, runId), "run.json");
+  let pid;
   let gone;
   for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
-    let record = null;
-    try {
-      record = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
-    } catch {
-      // Read while it was rewritten: read again.
-    }
-    const pid = record?.holder?.pid;
-    // Its process gone, and a live server's take-back done (the claim is the server's, its WAL checkpointed), so a reader
-    // of its store meets no lock; with no server to take it back (one killed), 5 s after its process went.
+    const record = runRecordOf(data, runId);
+    // The last process its row named: a take-back names the server in its place.
+    pid = record.holder?.pid ?? pid;
+    // A live server's take-back done (the claim is the server's, its WAL checkpointed), so a reader of its store meets no
+    // lock; with no server to take it back (one killed), 5 s after its process went.
+    if (takenBack(data, runId)) return;
     if (Number.isInteger(pid) && !processAlive(pid)) {
       gone ??= Date.now();
-      if (takenBack(data, runId) || Date.now() - gone > 5_000) return;
+      if (Date.now() - gone > 5_000) return;
     }
     assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
   }
@@ -347,4 +498,27 @@ export function runIds(data) {
 export function runsFolders(data) {
   const agents = join(data, "disk", "agents");
   return (existsSync(agents) ? readdirSync(agents) : []).map((agent) => join(agents, agent, "runs")).filter((folder) => existsSync(folder));
+}
+
+/** What a faux process noted in `file` as JSON (a held process's pid and where it held): null while the file does not
+ *  exist, and while its JSON is not all in (an empty or partial read: a note being written), so a poll goes on. The faux
+ *  processes write each note whole (writeWhole); this is the test's side of the same race. `read`: how the file is read
+ *  (a test's stub). */
+export async function jsonIn(file, read = (path) => readFile(path, "utf8")) {
+  const text = await read(file).catch(() => null);
+  if (text === null || !text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** `file`'s JSON once a faux process has noted it (jsonIn), polled every 50 ms; fails saying `reaching` after `ms`. */
+export async function writtenJson(file, reaching, { ms = 55_000, read } = {}) {
+  for (const end = Date.now() + ms; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    const value = await jsonIn(file, read);
+    if (value !== null) return value;
+    assert.ok(Date.now() < end, reaching);
+  }
 }

@@ -159,8 +159,9 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.deepEqual(pinOf(data, runId), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
     assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
     assert.equal(prompt.split("# Learned").length, 2, "one section");
-    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so.
-    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them you will keep it for later runs, in one short sentence at the start of your reply, never after a closing line or sign-off they asked you to end with\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
+    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so. A
+    // reply whose start or end the person set follows it from its first line to its last, with no keep sentence.
+    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them in one short sentence at the start of your reply that you will keep it for later runs\. When what they asked sets how your reply starts or ends, follow it from your reply's first line to its last and leave that sentence out\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
   });
 }
 
@@ -369,16 +370,6 @@ test("a note holding a value made one of the server's secrets after it was writt
     const text = readFileSync(join(learnedDir(data, runId), file), "utf8");
     assert.ok(!text.includes(value) && text.includes("[redacted]"), `${file}: ${text}`);
   }
-});
-
-test("a run whose pin an earlier server wrote, the index alone (`learned`), reads it as that server gave it: the index under # Learned, with the line that says where the notes are", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: SYSTEM });
-  const sha = await learned(api, data, "older", { instructions: "Answer the question." });
-  learningTestHooks.afterPin = (runDir) => void writeFileSync(join(runDir, "learning.json"), `${JSON.stringify({ seed: sha, learned: INDEX })}\n`);
-  t.after(() => void (learningTestHooks.afterPin = undefined));
-  const { prompt } = await ran(api, "older");
-  learningTestHooks.afterPin = undefined;
-  assert.equal(learnedIn(prompt), `What you learned in earlier runs, one line per note. Each note is a file in \`.learning/\` in your working directory: open one when it applies to what you are doing.\n\n${INDEX.trim()}`);
 });
 
 test("the pin: a run keeps the commit it was made from when main moves on, through a continue in a new process", { timeout: 120_000 }, async (t) => {

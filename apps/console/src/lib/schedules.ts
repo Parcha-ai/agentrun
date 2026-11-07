@@ -1,6 +1,11 @@
 import { ClientError } from "./client";
 import { clock, when } from "./format";
-import type { Firing, Trigger, TriggerInput, TriggerSource } from "./v2";
+import type { Firing, Trigger, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
+
+/** A trigger this console shows: a schedule that starts a run (isScheduleTrigger). */
+export type Schedule = Trigger & { source: Extract<TriggerSource, { kind: "schedule" }>; target: TriggerTarget };
+/** A schedule's create or edit body: the form makes only schedules that start a run. */
+export type ScheduleInput = Omit<TriggerInput, "source" | "target"> & { source?: Extract<NonNullable<TriggerInput["source"]>, { kind: "schedule" }>; target?: Extract<NonNullable<TriggerInput["target"]>, { kind: "start_run" }> };
 
 /** Schedules (serve's trigger/1) in a person's words, and the form that makes or edits one. The server checks a
  *  schedule; the form checks only that what it needs is there and that a number is a number. */
@@ -31,7 +36,7 @@ export function span(seconds: number): string {
 }
 
 /** When a schedule fires: its cron line and zone, its one time, or its interval. */
-export function whenWords(source: TriggerSource): string {
+export function whenWords(source: Schedule["source"]): string {
   if ("cron" in source) return `Cron ${source.cron} · ${source.timezone}`;
   if ("at" in source) return `Once, ${when(source.at)}`;
   return `Every ${span(source.every_s)}`;
@@ -48,7 +53,7 @@ export const capOf = (own: number | undefined, agentDefault: number | undefined)
 
 /** Whether a trigger is one this console shows: a schedule that starts runs. GET /triggers also lists webhooks and
  *  schedules that send a message to a run. */
-export const isScheduleTrigger = (t: Trigger) => (t.source as { kind?: string })?.kind === "schedule" && (t.target as { kind?: string })?.kind === "start_run";
+export const isScheduleTrigger = (t: Trigger): t is Schedule => (t.source as { kind?: string })?.kind === "schedule" && (t.target as { kind?: string })?.kind === "start_run";
 
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {
@@ -102,9 +107,9 @@ const numberOf = (text: string): number | undefined => (text.trim() !== "" && Nu
  *  here: a short interval, a cron line that does not parse and a cap of 0 are the server's to refuse. `capOptional`:
  *  the picked agent has a default cap per run (or an edited schedule already ran under it), so an empty cap is left out
  *  and each run takes the agent's; the server refuses it, under the field, if the agent has none by then. */
-export function bodyOf(d: Draft, capOptional = false): { body?: TriggerInput; issues?: Record<string, string> } {
+export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
-  let source: TriggerInput["source"];
+  let source: ScheduleInput["source"];
   if (d.kind === "cron") {
     if (!d.cron.trim()) issues["source.cron"] = "A cron line is needed.";
     source = { kind: "schedule", cron: d.cron.trim(), timezone: d.timezone.trim() || browserZone() };
@@ -136,7 +141,7 @@ export function bodyOf(d: Draft, capOptional = false): { body?: TriggerInput; is
 }
 
 /** A schedule as the form holds it, to edit: a one time and an interval's start in this browser's zone. */
-export function draftOf(t: Trigger): Draft {
+export function draftOf(t: Schedule): Draft {
   const s = t.source;
   const zone = "cron" in s ? s.timezone : browserZone();
   const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "", maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
@@ -157,7 +162,7 @@ const same = (a: unknown, b: unknown): boolean => {
 /** An edit's PATCH: only the parts of `body` that differ from the schedule as read, and never `enabled` (Pause and
  *  Resume set it). The server starts a schedule again from now whenever an edit names its source, so an unchanged
  *  source is left out. */
-export function patchOf(t: Trigger, body: TriggerInput): TriggerInput {
+export function patchOf(t: Schedule, body: ScheduleInput): ScheduleInput {
   // An interval typed with no start keeps the start the schedule has.
   const source = body.source && "every_s" in body.source && !body.source.start_at && "every_s" in t.source ? { ...body.source, start_at: t.source.start_at } : body.source;
   // What the form does not show of the target (its effort, the input's other fields) is kept as it is.

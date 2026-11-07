@@ -7,11 +7,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, runDir, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const resumedRows = (rows) => rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary);
-const recordOf = (data, runId) => { try { return JSON.parse(readFileSync(join(runDir(data, runId), "run.json"), "utf8")); } catch { return null; } };
+const recordOf = (data, runId) => { try { return runRecordOf(data, runId); } catch { return null; } };
 const shown = (rows) => JSON.stringify(rows.map((r) => [r.kind, r.summary]));
 
 /** Waits for `check`, up to `ms`; fails naming `what`. */
@@ -32,7 +32,7 @@ for (const harness of ["pi", "claude-agent"]) {
     const let_go = recordOf(data, runId);
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Go on." })).status, 202);
     const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
-    assert.deepEqual(resumedRows(rows), [], `the run answered and was let go, then followed up: no "Resumed" phase (run.json was ${JSON.stringify({ status: let_go?.status, detail: let_go?.detail })}): ${shown(rows)}`);
+    assert.deepEqual(resumedRows(rows), [], `the run answered and was let go, then followed up: no "Resumed" phase (its record was ${JSON.stringify({ status: let_go?.status, detail: let_go?.detail })}): ${shown(rows)}`);
   });
 }
 

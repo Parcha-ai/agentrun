@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Cron } from "croner";
 import { ApiError } from "../dist/errors.js";
-import { Triggers } from "../dist/triggers.js";
+import { firingKey, Triggers } from "../dist/triggers.js";
 import { fakeClock } from "./trigger-support.mjs";
 
 /** A promise and its settle functions, for a dependency the test holds open. */
@@ -19,12 +19,24 @@ function held() {
   return { promise, resolve, reject };
 }
 
+/** The engines started on each data directory engine() made (a restart's, `{ data: first.data }`), by that directory: its
+ *  owner's after-hook closes them before it removes the directory, as support.mjs serve() does for servers. */
+const sharing = new Map();
+
 async function engine(t, deps, { data, at = "2026-06-01T00:00:00Z" } = {}) {
+  const owner = data === undefined;
   data ??= await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "triggers-"));
   const clock = fakeClock(at);
   const triggers = new Triggers(data, { targetIssues: async () => [], start: async () => ({ run_id: "run-1" }), statusOf: async () => null, runOf: async () => null, say: () => {}, clock, ...deps });
+  if (owner) sharing.set(data, new Set());
+  else sharing.get(data)?.add(triggers);
+  // Only the engine that made the directory removes it, after every engine on it is closed: node:test runs after-hooks in
+  // the order they were added, so the owner's runs first.
   t.after(async () => {
     triggers.close();
+    if (!owner) return;
+    for (const other of sharing.get(data) ?? []) other.close();
+    sharing.delete(data);
     await rm(data, { recursive: true, force: true });
   });
   triggers.start();
@@ -287,28 +299,6 @@ test("a trigger whose cron line or zone no longer reads is turned off with why, 
   assert.deepEqual([fixed.enabled, fixed.disabled, fixed.next_at], [true, null, "2026-06-01T00:10:00.000Z"]);
 });
 
-test("failures a server before trigger.failed recorded are taken as told at the first start that sends it, so none is sent late; a later one is sent", async (t) => {
-  const first = await engine(t, {});
-  const old = await first.triggers.create(body({ every_s: 600 }));
-  const recent = await first.triggers.create(body({ every_s: 600 }));
-  first.triggers.close();
-  const file = join(first.data, "triggers.json");
-  const kept = JSON.parse(await readFile(file, "utf8"));
-  const failedAt = (n) => ({ key: `fir_${String(n).repeat(32)}`, by: "schedule", nominal_at: "2026-05-31T23:50:00Z", status: "failed", at: "2026-05-31T23:50:00.000Z", error: { code: "agent_not_runnable", message: "archived" } });
-  // An earlier server's trigger: no failures_in_a_row, and a failure it never told of.
-  const before = kept.triggers.find((x) => x.id === old.id);
-  delete before.failures_in_a_row;
-  delete before.disabled;
-  delete before.catchup_window_s;
-  before.firings.push(failedAt(1));
-  // This server's: a failure whose notice had not been queued yet.
-  kept.triggers.find((x) => x.id === recent.id).firings.push(failedAt(2));
-  await writeFile(file, JSON.stringify(kept));
-  const told = [];
-  await engine(t, { notify: (failed, key) => (told.push(failed.trigger_id), "queued") }, { data: first.data });
-  assert.deepEqual(told, [recent.id]);
-});
-
 test("a firing's input is checked as its run is given it: the trigger's input with the line saying what fired it", async (t) => {
   const checked = [];
   const { triggers } = await engine(t, { targetIssues: async (target) => (checked.push(target.input), []) });
@@ -434,4 +424,37 @@ test("a webhook event's firing is driven in its trigger's turn: a tick while its
   await until(() => calls.length === 2, "tried again at its retry time");
   calls[1].resolve();
   await until(() => triggers.firings(hook.id).firings[0].status === "sent", "sent once the run is idle");
+});
+
+test("triggers.json is read in this build's shape alone: a trigger missing a field an earlier build left out makes the file unreadable, and run_now_kept is not read, nor shown: a stored field outside the contract reaches no GET, list or PATCH", async (t) => {
+  // A trigger with no failures_in_a_row, catchup_window_s or disabled: the file does not read, and nothing fires.
+  for (const field of ["failures_in_a_row", "catchup_window_s", "disabled"]) {
+    const first = await engine(t, {});
+    await first.triggers.create(body({ every_s: 600 }));
+    first.triggers.close();
+    const file = join(first.data, "triggers.json");
+    const kept = JSON.parse(await readFile(file, "utf8"));
+    delete kept.triggers[0][field];
+    await writeFile(file, `${JSON.stringify(kept)}\n`);
+    const next = await engine(t, {}, { data: first.data });
+    assert.throws(() => next.triggers.list(), (error) => error.code === "store_unreadable", `without ${field}`);
+  }
+  // A firing an earlier build kept under run_now_kept answers no run now: the same key fires anew.
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers[0].run_now_kept = [{ key: firingKey("manual", made.id, "press-1"), by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "started", at: "2026-06-01T00:00:00.000Z", run_id: "run-old" }];
+  kept.triggers[0].left_by_another_build = "not in the contract";
+  await writeFile(file, `${JSON.stringify(kept)}\n`);
+  const next = await engine(t, {}, { data: first.data });
+  // Shown by the trigger's fields alone (openapi.ts TRIGGER): neither stored field, wherever a trigger is answered.
+  const shown = { get: next.triggers.get(made.id), list: next.triggers.list().triggers.find((one) => one.id === made.id), patch: await next.triggers.update(made.id, { name: "renamed" }) };
+  for (const [where, view] of Object.entries(shown)) {
+    assert.ok(view, `${where}: the trigger`);
+    for (const field of ["run_now_kept", "left_by_another_build", "firings", "kept_firings"]) assert.equal(field in view, false, `${where}: no ${field}: ${JSON.stringify(view)}`);
+  }
+  const fired = await next.triggers.fire(made.id, "press-1");
+  assert.equal(fired.created, true, `a new firing, not the old one: ${JSON.stringify(fired)}`);
 });

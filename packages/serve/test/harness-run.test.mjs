@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, printed, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
@@ -62,7 +62,7 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   await writeFile(go, "");
   process.kill(holder.pid, "SIGKILL");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -81,7 +81,7 @@ test("a run that the server stopped mid-turn goes on at the next start, and its 
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await first.close();
-  const left = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const left = runRecordOf(data, runId);
   assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
   const next = await serve(t, { data, fauxHarness: FAUX_HARNESS });
   await writeFile(go, "");
@@ -158,7 +158,7 @@ function storeRecords(data, runId, kind) {
 const storeCount = (data, runId, kind) => storeRecords(data, runId, kind).length;
 
 const killRun = async (data, runId) => {
-  const { holder } = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
 };
 
@@ -173,14 +173,15 @@ test("a request whose price is unknown makes the run's cost unknown, never 0", {
 test("a run whose booked spend passes its cap shows by how much on its timeline, once, and ends spend_cap_reached saying so", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   assert.equal((await api("POST", "/agents", agent("over", { harness: "codex", instructions: "Overspend." }))).status, 201);
-  const run = await api("POST", "/agents/over/runs", { input: { content: "hi" }, max_cost_usd: 0.3 });
+  // A cap that is no whole number of cents: its words say it in cents, never as a float's tail.
+  const run = await api("POST", "/agents/over/runs", { input: { content: "hi" }, max_cost_usd: 0.3002094 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["failed"], { deadlineMs: 55_000 });
   const over = rows.filter((row) => row.id.endsWith(":over_cap"));
-  assert.deepEqual(over.map((row) => [row.kind, row.summary]), [["phase", "Spent $0.5000, $0.2000 over the run's cap of $0.3"]]);
+  assert.deepEqual(over.map((row) => [row.kind, row.summary]), [["phase", "Spent $0.50, $0.20 over the run's cap of $0.30"]]);
   assert.equal(usageOf(rows).usd, 0.5, "the usage row it reads: the refused request cost nothing");
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.deepEqual([view.error.code, view.error.message], ["spend_cap_reached", "The run cost $0.5000, $0.2000 over its cap of $0.3."]);
+  assert.deepEqual([view.error.code, view.error.message], ["spend_cap_reached", "The run cost $0.50, $0.20 over its cap of $0.30."]);
 });
 
 test("a request admitted and cut by a crash is booked once, unknown: on resume the cost is unknown and every admitted request counts once", { timeout: 90_000 }, async (t) => {
@@ -270,9 +271,9 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`fetch_page, web_fetch's legacy name, runs on ${harness}: the definition saves with no warning, its run is not refused, and web_fetch reads the page`, { timeout: 60_000 }, async (t) => {
+  test(`web_fetch runs on ${harness} as a host tool: the definition saves with no warning, its run is not refused, and it reads the page through the guarded fetch`, { timeout: 60_000 }, async (t) => {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB });
-    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["fetch_page"] }));
+    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["web_fetch"] }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
     const run = await api("POST", `/agents/web-${harness}/runs`, { input: { content: "hi" } });
@@ -463,7 +464,7 @@ for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a follow-up sent while a turn works waits its turn; the run does not end when the first turn does, only once the follow-up is answered`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
-    const runId = await started(api, `held-${harness}`, `Hold the answer until ${go}.`, harness, ["fetch_page"]);
+    const runId = await started(api, `held-${harness}`, `Hold the answer until ${go}.`, harness, ["web_fetch"]);
     // The turn runs, held on its fetch until the file exists: its call shows only once it ends (the bridge writes a call
     // with its result), so the turn is read from the run, working with the person's message in.
     await follow(api, runId, ["working"], { deadlineMs: 30_000 });

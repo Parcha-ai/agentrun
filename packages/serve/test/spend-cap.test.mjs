@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, responsesEndpoint, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, follow, responsesEndpoint, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
 /** The gateway models' max output tokens (model.ts), which the requests below send as max_output_tokens. */
@@ -87,7 +87,7 @@ test("a request the cap refuses never reaches the model: the run's second reques
 
 test("spent so far survives a restart of the run's process: it is read back from the run's store, and the next request, which it leaves no room for, pauses the run", async (t) => {
   const { api, data, runId, first } = await asked(t);
-  const pid = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, runId).holder.pid;
   // SIGTERM: the process drains, releases the run and exits, as when its server stops; the answer opens it again.
   process.kill(pid, "SIGTERM");
   for (const end = Date.now() + 10_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
@@ -174,7 +174,7 @@ test("a refused request is final: one refusal, never retried, the model is never
   const run = (await api("GET", `/runs/${run_id}`)).body;
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0001\. Raise the cap to at least \$0\.01 to continue\.$/);
-  assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal: the request was not tried again");
+  assert.deepEqual(rows.filter((r) => r.kind === "error" || r.paused === true).map((r) => r.kind), ["phase"], "one refusal, its pause row: the request was not tried again");
   assert.equal(posts(), 0);
   assert.equal(run.cost.usd, 0, "never sent: $0");
   assert.equal(run.result, null, "no answer was paid for");

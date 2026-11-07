@@ -5,11 +5,12 @@
 // it. This is the local adapter, for one machine: the disk is a folder of it. A runner works in the folder itself, so a
 // mount is the folder's own path; a sync makes what was written in it durable (each file and folder in it fsynced); an unmount lets go
 // of nothing; and a revoke is the run's claim taken by the server, its epoch bumped on its row, which is the whole lock
-// here: a holder of a lower epoch is fenced. A Docker bind of the folder, and another machine's disk, come later.
+// here: a holder that still lives is killed first, so none of a lower epoch runs after the bump. A Docker bind of the folder, and another machine's disk, come later.
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
+import { fenceHolder, holderOfClaim } from "./run-holder.js";
 
 /** Who works in a mounted folder: a box's tools alone (`tools`: a run's work/), or its loop and tools (`loop`: the run's
  *  whole folder). */
@@ -31,8 +32,8 @@ export interface DiskAdapter {
   revoke(runId: string): Promise<number>;
 }
 
-/** What the local adapter's revoke writes: the run's claim, on its row in the control plane's store. */
-export type Claims = { claimRun(runId: string, holder: string): number };
+/** What the local adapter's revoke reads and writes: the run's claim, on its row in the control plane's store. */
+export type Claims = { runClaim(runId: string): { epoch: number; holder: string | null }; claimRun(runId: string, holder: string, from: number): number };
 
 /** The holder a revoke names: the server, which took the run back. */
 export const SERVER_HOLDER = "server";
@@ -53,7 +54,11 @@ export function localDisk(data: string, claims: Claims): DiskAdapter {
     },
     async unmount() {},
     async revoke(runId) {
-      return claims.claimRun(runId, SERVER_HOLDER);
+      // From the epoch read here: the holder it names is killed and gone before the bump, and a claim that moved on
+      // meanwhile refuses this one (stale).
+      const claim = claims.runClaim(runId);
+      await fenceHolder(holderOfClaim(runId, claim));
+      return claims.claimRun(runId, SERVER_HOLDER, claim.epoch);
     },
   };
 }

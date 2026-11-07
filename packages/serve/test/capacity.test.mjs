@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -304,7 +304,7 @@ test("a disk health cannot measure fails its check (503 cannot_check), never rea
 });
 
 test("compose and render.yaml check /v2/health", async () => {
-  const compose = await readFile(new URL("../docker/compose.yaml", import.meta.url), "utf8");
+  const compose = await readFile(new URL("../../../compose.yaml", import.meta.url), "utf8");
   assert.match(compose, /^ {4}healthcheck:\n {6}test: .*\/v2\/health/m, "the service's healthcheck reads /v2/health");
   const render = await readFile(new URL("../../../render.yaml", import.meta.url), "utf8");
   assert.match(render, /healthCheckPath: \/v2\/health/);
@@ -355,7 +355,7 @@ test("a message to a run whose process was killed is answered at once: a dead pr
   assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
   const { body: run } = await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } });
   await follow(api, run.run_id, ["input_required"]);
-  const pid = JSON.parse(await readFile(join(runDir(data, run.run_id), "run.json"), "utf8")).holder.pid;
+  const pid = runRecordOf(data, run.run_id).holder.pid;
   process.kill(pid, "SIGKILL");
   for (let i = 0; ; i++) {
     try {

@@ -14,7 +14,7 @@ import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { client, FAUX, flowAgent, follow, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -97,7 +97,7 @@ async function startFlow(api, steps, output, { schemas = {}, tools, tool_setting
 /** The run's process, once it serves its door (after its app, which reads the key, has returned): its pid. */
 async function processOf(data, runId, not) {
   for (let i = 0; ; i++) {
-    const record = JSON.parse(await readFile(join(runDir(data, runId), "run.json"), "utf8").catch(() => "{}"));
+    const record = runRecordOf(data, runId);
     const pid = record.holder?.pid;
     if (record.status === "running" && record.holder?.serve && pid && pid !== not && existsSync(`/proc/${pid}`)) return pid;
     assert.ok(i < 400, "the run's process serves");
@@ -319,7 +319,7 @@ test("capabilities lists the decision providers: jev available where its key is 
   process.env.PARALLEL_API_KEY = PARALLEL_CANARY;
   const parallel = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
   assert.deepEqual(parallel.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", true], ["openrouter", false]]);
-  assert.deepEqual(parallel.decisions.providers[1], { id: "parallel", available: true });
+  assert.deepEqual(parallel.decisions.providers[1], { id: "parallel", available: true, route: "parallel" });
   assert.ok(parallel.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
 });
 
@@ -698,7 +698,7 @@ test("with no Parallel key, a node naming parallel saves with a warning, and its
   assert.equal(refused.body.error.code, "agent_not_runnable");
   assert.match(refused.body.error.message, /PARALLEL_API_KEY/);
   assert.deepEqual(refused.body.error.details.adapters, ["runJudge"]);
-  assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY"] } }, "Jev's key is set: only Parallel is missing");
+  assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"] } }, "Jev's key is set: only Parallel is missing");
 });
 
 test("the missing-key 409's details, decisions included, meet what the served document gives agent_not_runnable", async (t) => {

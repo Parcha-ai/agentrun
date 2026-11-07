@@ -8,8 +8,9 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
 import { readLocalRunStatus } from "../src/index.ts";
-import { openDurableRun, RunError } from "../src/run.ts";
-import { parseRunRecord, RUN_JSON, type BoxMode } from "../src/status.ts";
+import { openDurableRun, RUN_STATUS_TABLE, RunError } from "../src/run.ts";
+import { DatabaseSync } from "node:sqlite";
+import type { BoxMode } from "../src/status.ts";
 import { reapOrRefuse } from "../src/commands.ts";
 import { BoxUnavailableError, FencedError, HeldError } from "../src/errors.ts";
 import { processTable } from "../src/process-table.ts";
@@ -92,23 +93,22 @@ describe("localRun", () => {
     }
   });
 
-  it("each open records the box it was given in run.json, exactly, and an open given none records none", { timeout: 60_000 }, async () => {
+  it("each open records the box it was given in its record, exactly, and an open given none records none", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("local-box-mode");
     const root = join(dir.root, "run");
     const scripted = scriptedHarness();
     const open = (boxMode?: BoxMode) =>
       openDurableRun({ disk: "dsk-local", region: "local", id: "boxed" }, { ...localRun(root), ...(boxMode ? { boxMode } : {}), harness: { models: scripted.models, registry: scripted.registry } });
-    const box = () => JSON.parse(readFileSync(join(root, "run.json"), "utf8")).box;
+    const box = async () => (await readLocalRunStatus(root))?.box;
     try {
       for (const mode of ["unsandboxed", "bwrap", "provider", "seatbelt"] as const) {
         const run = await open(mode);
-        assert.deepEqual(box(), { mode }, `while ${mode} runs`);
+        assert.deepEqual(run.record.box, { mode }, `while ${mode} runs`);
         await run.release();
-        assert.deepEqual(box(), { mode }, `kept through the release (${mode})`);
-        assert.deepEqual((await readLocalRunStatus(root))?.box, { mode }, `read back as the record says (${mode})`);
+        assert.deepEqual(await box(), { mode }, `kept through the release, read back as the record says (${mode})`);
       }
       await (await open()).release();
-      assert.equal(box(), undefined, "an open given no box records none");
+      assert.equal(await box(), undefined, "an open given no box records none");
     } finally {
       dir.remove();
     }
@@ -121,7 +121,7 @@ describe("localRun", () => {
     const open = (boxMode: BoxMode) =>
       openDurableRun({ disk: "dsk-local", region: "local", id: "unavailable" }, { ...localRun(root), boxMode, harness: { models: scripted.models, registry: scripted.registry } });
     const refused = (error: unknown) => error instanceof BoxUnavailableError && error.code === "BOX_UNAVAILABLE" && error.exitCode === 78 && /held until a server with a box opens it/.test(error.message);
-    /** Every entry under the run's directory (the claim, owner.lock, the store, run.json, work/), its size, time and, for a
+    /** Every entry under the run's directory (the claim, the store, work/), its size, time and, for a
      *  file, its bytes: what a refused open must leave as it was. */
     const snapshot = (at: string): string[] =>
       readdirSync(at, { withFileTypes: true }).flatMap((entry) => {
@@ -133,12 +133,12 @@ describe("localRun", () => {
       await assert.rejects(open("unavailable"), refused);
       assert.equal(existsSync(root), false, "a new run's directory was made");
       await (await open("bwrap")).release();
+      const generation = (await readLocalRunStatus(root))!.generation;
       const before = snapshot(root);
-      const generation = JSON.parse(readFileSync(join(root, "run.json"), "utf8")).generation;
       await assert.rejects(open("unavailable"), refused);
-      assert.deepEqual(snapshot(root), before, "the claim, the lease, the store or run.json changed");
+      assert.deepEqual(snapshot(root), before, "the claim or the store changed");
       const run = await open("bwrap");
-      const record = JSON.parse(readFileSync(join(root, "run.json"), "utf8"));
+      const record = run.record;
       assert.equal(record.generation, generation + 1, "the refused open took no generation");
       assert.deepEqual(record.box, { mode: "bwrap" });
       await run.release();
@@ -156,7 +156,7 @@ describe("localRun", () => {
     const scripted = scriptedHarness();
     const open = (boxMode: BoxMode) =>
       openDurableRun({ disk: "dsk-local", region: "local", id: "switch" }, { ...localRun(root), boxMode, harness: { models: scripted.models, registry: scripted.registry } });
-    const box = () => JSON.parse(readFileSync(join(root, "run.json"), "utf8")).box;
+    const box = async () => (await readLocalRunStatus(root))?.box;
     try {
       await (await open("unsandboxed")).release();
       // The unboxed incarnation's command, on this host, outlives its SIGKILL.
@@ -165,12 +165,12 @@ describe("localRun", () => {
       mkdirSync(join(root, "commands"), { recursive: true });
       writeFileSync(record, JSON.stringify({ boot, leader: survivor, members: [] }));
       await assert.rejects(open("bwrap"), (error: unknown) => error instanceof HeldError && error.code === "COMMANDS_ALIVE");
-      assert.deepEqual(box(), { mode: "unsandboxed" }, "a held open records nothing: run.json still tells the last open's box");
+      assert.deepEqual(await box(), { mode: "unsandboxed" }, "a held open records nothing: the record still tells the last open's box");
       assert.ok(existsSync(record), "its record stays");
       // Gone: the boxed open proceeds and records its box.
       writeFileSync(record, JSON.stringify({ boot, leader: { pid: survivor.pid, start: survivor.start + 1 }, members: [] }));
       await (await open("bwrap")).release();
-      assert.deepEqual(box(), { mode: "bwrap" });
+      assert.deepEqual(await box(), { mode: "bwrap" });
     } finally {
       dir.remove();
     }
@@ -201,7 +201,7 @@ describe("localRun", () => {
     }
   });
 
-  it("ends the commands a SIGKILLed instance left running at the next open, before afterClaim and run.json", { timeout: 60_000 }, async () => {
+  it("ends the commands a SIGKILLed instance left running at the next open, before afterClaim and the store", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("local-commands");
     const root = join(dir.root, "run");
     const instance = spawn(process.execPath, [LOCAL_COMMAND, root], { stdio: ["ignore", "pipe", "inherit"] });
@@ -225,7 +225,7 @@ describe("localRun", () => {
         },
         onStep: (name) => void steps.push([name, alive(command)]),
       });
-      assert.deepEqual(steps.map(([step]) => step).slice(0, 5), ["acquire", "owner-lock", "layout", "commands", "after-claim"], "the reap, then the app's code, then run.json");
+      assert.deepEqual(steps.map(([step]) => step).slice(0, 5), ["acquire", "claim-dir", "layout", "commands", "after-claim"], "the reap, then the app's code, then the store");
       assert.deepEqual(steps[3], ["commands", false], "the command is gone once the commands step ends");
       assert.equal(factorySaw, false, "afterClaim never runs beside the killed incarnation's command");
       assert.equal(run.generation, 2);
@@ -360,17 +360,49 @@ describe("localRun", () => {
       const run1 = await openDurableRun(ref, { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } });
       assert.equal(run1.claim.root, root);
       assert.equal(run1.claim.work, join(root, "work"));
-      assert.ok(existsSync(join(root, RUN_JSON)), "run.json is written in the directory");
       const conversation = await run1.harness.root(ctx, { agent: scripted.agent });
       await conversation.configure({ instructions: "local" }, ctx);
       await run1.release();
-      const sealed = parseRunRecord(readFileSync(join(root, RUN_JSON), "utf8"));
-      assert.equal(sealed.generation, 1);
-      assert.ok(typeof sealed.sealedSeq === "number" && sealed.sealedSeq > 0, "released and sealed");
+      const left = (await readLocalRunStatus(root))!;
+      assert.equal(left.generation, 1);
+      assert.equal(left.status, "paused", "released");
 
       const run2 = await openDurableRun(ref, { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } });
       assert.equal(run2.generation, 2);
       await run2.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("under its host's epoch: its record is in its store, the epoch its generation, the previous one read back, and a second open while the first holds the store is refused by the store's own lock", async () => {
+    const dir = scratchRoot("local-epoch");
+    const root = join(dir.root, "runs", "run-1");
+    try {
+      const scripted = scriptedHarness();
+      const options = { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } };
+      const run1 = await openDurableRun(ref, { ...options, epoch: 7 });
+      assert.equal(run1.generation, 7);
+      // A command of the run that holds the store: a second open is refused by the store's lock before it reaps anything.
+      const command = await startCommand(run1, scripted.agent);
+      await assert.rejects(openDurableRun(ref, { ...options, epoch: 8 }), (error) => error instanceof HeldError && error.code === "STORE_BUSY", "the store's exclusive lock keeps a second writer out");
+      assert.ok(alive(command), "the refused open killed no command of the run that holds the store");
+      killQuietly(command);
+      await run1.setStatus("done", { workflow: "complete" });
+      await run1.release();
+      const db = new DatabaseSync(join(root, "store", "run.sqlite"), { readOnly: true });
+      const kept = JSON.parse((db.prepare(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`).get() as { record: string }).record);
+      db.close();
+      assert.deepEqual([kept.status, kept.generation, kept.detail], ["done", 7, { workflow: "complete" }]);
+      let previous: unknown;
+      const run2 = await openDurableRun(ref, { ...options, epoch: 9, beforeResume: async (hook) => void (previous = hook.previous) });
+      assert.equal(run2.generation, 9);
+      assert.deepEqual([(previous as { status: string }).status, (previous as { generation: number }).generation], ["done", 7], "the previous incarnation's record, from the store");
+      await run2.release();
+      const after = new DatabaseSync(join(root, "store", "run.sqlite"), { readOnly: true });
+      const released = JSON.parse((after.prepare(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`).get() as { record: string }).record);
+      after.close();
+      assert.deepEqual([released.status, released.generation], ["paused", 9], "a release of a running run leaves it paused");
     } finally {
       dir.remove();
     }
@@ -395,7 +427,7 @@ describe("localRun", () => {
   it("its claim's barrier refuses once the claim is fenced, as a mount's does", async () => {
     const dir = scratchRoot("local-fence");
     try {
-      const claim = await localRun(dir.root).acquire({ ref, token: "" });
+      const claim = await localRun(dir.root).acquire({ ref });
       assert.deepEqual(await claim.barrier(), { ms: 0 });
       claim.markFenced(new Error("lost"));
       assert.equal(claim.fenced, true);
@@ -407,12 +439,12 @@ describe("localRun", () => {
   });
 });
 
-describe("the mount token", () => {
-  it("is required only to mount an Archil disk: with the default acquire and none, the open is refused before anything mounts", async () => {
+describe("the claim", () => {
+  it("is a local directory's: an open with no localRun is refused before anything is claimed", async () => {
     const scripted = scriptedHarness();
     await assert.rejects(
-      openDurableRun(ref, { harness: { models: scripted.models, registry: scripted.registry } }),
-      (error: unknown) => error instanceof RunError && error.code === "INVALID_ARGUMENT" && /mountToken/.test(error.message) && /localRun/.test(error.message),
+      openDurableRun(ref, { harness: { models: scripted.models, registry: scripted.registry } } as never),
+      (error: unknown) => error instanceof RunError && error.code === "INVALID_ARGUMENT" && /localRun/.test(error.message),
     );
   });
 });
