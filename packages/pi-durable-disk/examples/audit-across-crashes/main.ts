@@ -17,7 +17,6 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
 import type { FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Cursor, DocumentRecord, EntryRecord, Page, Seq, TaskRecord } from "@earendil-works/pi-durable";
@@ -75,7 +74,7 @@ async function incarnation(audit: boolean): Promise<void> {
   const lookup = defineTool({
     name: "lookup",
     description: "Look a topic up.",
-    parameters: Type.Object({ question: Type.Number(), topic: Type.String() }),
+    parameters: { type: "object", required: ["question", "topic"], properties: { question: { type: "number" }, topic: { type: "string" } } },
     async execute({ question, topic }, api) {
       console.log(`in flight: question ${question} (generation ${generation})`);
       if (KILLED_AT[generation] === question) await new Promise(() => setInterval(() => {}, 1 << 30)); // the host is killed here
