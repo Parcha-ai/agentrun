@@ -133,13 +133,17 @@ const js = `"use strict";
   // Frames: the latest only. A decode in flight and one waiting; a newer frame replaces the one waiting.
   var decoding = false;
   var waiting = null;
+  // Moved on by no_page: a decode begun before it is of the old page, and its picture is never drawn.
+  var generation = 0;
   function draw(buffer) {
     if (buffer.byteLength <= 4) { decoding = false; return; }
     var view = new DataView(buffer);
     var w = view.getUint16(0);
     var h = view.getUint16(2);
     var blob = new Blob([new Uint8Array(buffer, 4)], { type: "image/jpeg" });
+    var mine = generation;
     createImageBitmap(blob).then(function (bitmap) {
+      if (mine !== generation) { if (bitmap.close) bitmap.close(); return; }
       if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) { canvas.width = bitmap.width; canvas.height = bitmap.height; }
       ctx.drawImage(bitmap, 0, 0);
       gotPicture();
@@ -182,7 +186,8 @@ const js = `"use strict";
     var m;
     try { m = JSON.parse(event.data); } catch (e) { return; }
     if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; if (readOnly) viewOnly(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
-    else if (m.type === "no_page") { noPage = true; stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }
+    // The old page's picture goes with it, and so does the frame waiting; a decode in flight finishes without drawing.
+    else if (m.type === "no_page") { noPage = true; generation += 1; waiting = null; ctx.clearRect(0, 0, canvas.width, canvas.height); stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }
     // "No page yet" stays until a page or a frame comes: who drives meanwhile changes nothing on a browser with no page.
     else if (m.type === "status") { setDrive(m.drive); if (noPage) return; if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
     else if (m.type === "page") { if (noPage) { noPage = false; say(""); } document.title = m.title ? m.title + " - Live view" : "Live view"; if (document.activeElement !== urlBox) urlBox.value = m.url; if (m.url !== shownUrl) { shownUrl = m.url; expectPicture(); } }
