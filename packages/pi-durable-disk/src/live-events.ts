@@ -32,7 +32,13 @@ export type LiveEvents = {
   readonly closed: Promise<LiveEnd>;
 };
 
-const DOCS = ["pi.live", "pi.inbox", "pi.agent", "pi.usage"] as const;
+// The documents the translation reads, exactly 1.1's set, each with the token its observer follows. A kind the
+// translation reads later is added here, so it is followed too: a document read but not followed can miss a change
+// made while the snapshot is acquired. Order (pi-durable 1.5.0 dist/session/session.js): document observers are
+// Session.followCommits listeners, run synchronously at publication (:1083), while observeCommits observers are
+// dispatched a microtask later (#notifyHosts, :1109).
+const FOLLOWED = { "pi.live": LiveDoc, "pi.inbox": InboxDoc, "pi.agent": AgentDoc, "pi.usage": UsageDoc } as const;
+const DOCS = Object.keys(FOLLOWED) as (keyof typeof FOLLOWED)[];
 const live = (state: State): Live => (state.docs["pi.live"] ?? {}) as unknown as Live;
 const queued = (inbox: JsonObject | undefined) => ((inbox?.items ?? []) as { id: number; mode: string }[]).map((item) => ({ id: item.id, mode: item.mode }));
 
@@ -102,7 +108,8 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
     for (const each of followed) each.detach();
   };
   try {
-    for (const [kind, token] of [["pi.live", LiveDoc], ["pi.inbox", InboxDoc], ["pi.agent", AgentDoc], ["pi.usage", UsageDoc]] as const) {
+    for (const kind of DOCS) {
+      const token = FOLLOWED[kind];
       const attached = await harness.observeDoc(token as never, conversationId, {
         advance: (call: { kind: string; value?: JsonObject; ops?: readonly Op[] }) => {
           if (call.kind !== "value") return;
