@@ -326,14 +326,18 @@ export class HarnessInstall {
     return installingWords(this.entry.label);
   }
 
-  /** Whether a run must wait for an install: false once the harness is installed whole (read once, then kept). */
+  /** Why this harness is never installed here (noBuild: no build of its CLI for this platform, in the lock this server
+   *  installs by), or undefined. A run on it ends with these words, never waiting and never launched. */
+  async never(): Promise<string | undefined> {
+    return noBuild(this.entry, await this.pins(), this.lock);
+  }
+
+  /** Whether a run must wait for an install: false once the harness is installed whole (read once, then kept). Ask
+   *  never() first: where there is no build, the harness is neither installed nor installable, and this is true. */
   async needed(): Promise<boolean> {
     if (this.done) return false;
     if (this.running) return true;
-    const pins = await this.pins();
-    // No build for this platform: nothing to wait for, as nothing installs (the adapter says why it does not run).
-    if (noBuild(this.entry, pins, this.lock)) return false;
-    this.done = this.entry.lacking(this.dir, pins) === undefined;
+    this.done = this.entry.lacking(this.dir, await this.pins()) === undefined;
     return !this.done;
   }
 
