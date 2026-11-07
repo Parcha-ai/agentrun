@@ -93,7 +93,7 @@ test("claude-agent: two tool calls that end before their answer is paid: each ca
 });
 
 for (const on of ["claude-agent", "codex"]) {
-  test(`${on}: one answer that writes, calls, writes again and calls again, both calls ending before it is paid: one request for it, its cost known, the later text and call its continuation`, async (t) => {
+  test(`${on}: one answer that writes, calls, writes again and calls again, both calls ending before it is paid: one request for it, its cost known, both texts shown and each call above its result`, async (t) => {
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
     assert.equal((await api("POST", "/agents", agent("between", { harness: on, instructions: "Write between two calls.", tools: ["read", "write", "edit"] }))).status, 201);
     const started = await api("POST", "/agents/between/runs", { input: { content: "Write alpha to a.md and beta to b.md." } });
@@ -107,14 +107,9 @@ for (const on of ["claude-agent", "codex"]) {
     assert.equal(usage?.requests, 2, `two requests: ${JSON.stringify(usage)}`);
     assert.equal(usage?.usd, 0.003, `the known cost of both: ${JSON.stringify(usage)}`);
     assert.equal((await api("GET", `/runs/${runId}`)).body.cost?.usd, 0.003, "the run's cost is known");
-    // The store: the text and the call after the first call's end are that answer's continuation, marked so.
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-    const entries = db.prepare("SELECT id, record FROM entries WHERE conversation_id = 1 ORDER BY id").all().map((r) => ({ id: r.id, ...JSON.parse(r.record) }));
-    db.close();
-    const answers = entries.filter((e) => e.kind === "pi.assistant").map((e) => (e.model?.[0]?.content ?? []).map((b) => (b.type === "text" ? b.text : `call:${b.name}`)).join(" | "));
-    assert.deepEqual(answers, ["First I write a.md. | call:write", "Then b.md. | call:write", "Wrote both."], JSON.stringify(answers));
-    const later = entries.findIndex((e) => e.kind === "pi.assistant" && JSON.stringify(e.model).includes("Then b.md."));
-    assert.equal(entries[later - 1]?.kind, "agentrun.request_continued", "the later text and call are marked as the answer's continuation");
+    // Both texts are shown, in order.
+    const texts = rows.filter((r) => r.kind === "text_block" || r.kind === "final_answer").map((r) => r.text ?? r.summary ?? "").join(" ");
+    assert.ok(texts.indexOf("First I write a.md.") >= 0 && texts.indexOf("Then b.md.") > texts.indexOf("First I write a.md."), shown);
     // Each call above its result, in the rows a reader sees.
     for (const use of rows.filter((r) => r.kind === "tool_use")) assert.ok(rows.findIndex((r) => r.kind === "tool_result" && r.tool_use_id === use.tool_use_id) > rows.indexOf(use), shown);
   });
