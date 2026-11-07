@@ -356,6 +356,7 @@ export class LearningRuns {
           failed = said.stopped(STOPPED.notCopied);
         }
       }
+      await learningTestHooks.afterSeed?.(started.dir);
       const notes = "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0;
       return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes, ...(given.length ? { given } : {}) } : { state: "dropped", reason: "seed_failed", detail: failed, at };
     };

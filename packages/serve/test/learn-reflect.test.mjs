@@ -157,6 +157,54 @@ test("a run read while its seed is copied (a list of runs, a poll, the console) 
   assert.ok(reflectRows(rows).some((row) => row.kind === "user_message"), "its end-of-run turn was asked");
 });
 
+test("a start whose seed copy throws after part of it is laid fails as before, and its learning says the copy failed in its own words: a read of the run never takes it for a stopped server's", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("threw", { plan: PLAN }));
+  const said = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    said.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => void (process.stderr.write = write));
+  let dir;
+  learningTestHooks.afterSeed = (runDir) => {
+    learningTestHooks.afterSeed = undefined;
+    dir = runDir;
+    throw new Error("the copy's last step failed");
+  };
+  t.after(() => void (learningTestHooks.afterSeed = undefined));
+  const posted = await api("POST", "/agents/threw/runs", { input: { content: "Go." } });
+  assert.notEqual(posted.status, 202, "the start fails, as it did");
+  const runId = dir.split("/").at(-1);
+  const learning = (await api("GET", `/runs/${runId}`)).body.learning;
+  assert.deepEqual([learning?.state, learning?.reason], ["dropped", "seed_failed"], JSON.stringify(learning));
+  assert.doesNotMatch(learning.detail, /server stopped/);
+  assert.equal(existsSync(join(runDir(data, runId), "learning.json")), false, "its copy is taken back");
+  assert.deepEqual(said.filter((line) => line.includes(runId) && /stopped while it copied/.test(line)), []);
+});
+
+test("a second create with the same key while the first start copies its seed is refused as in progress, never a second start: no second Run, and its seed stays", { timeout: 120_000 }, async (t) => {
+  const loaded = [];
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, onRunLoad: (id) => loaded.push(id) });
+  await made(api, learner("keyed", { plan: PLAN }));
+  const seeds = holdSeeds(t);
+  const key = { "idempotency-key": "same-create-1" };
+  const first = api("POST", "/agents/keyed/runs", { input: { content: "Go." } }, key);
+  const runId = await heldRun(seeds.held);
+  const second = api("POST", "/agents/keyed/runs", { input: { content: "Go." } }, key);
+  await sleep(300);
+  seeds.release();
+  const [a, b] = await Promise.all([first, second]);
+  // The key's first request is in flight: the second is answered 409 before any start, so the store's existing-run path
+  // is not reached in the window from here.
+  assert.deepEqual([a.status, a.body.run_id, b.status], [202, runId, 409], JSON.stringify([a.body, b.body]));
+  assert.deepEqual(loaded.filter((id) => id === runId), [], "no second Run");
+  const { view, rows } = await ended(api, runId);
+  assert.ok(existsSync(join(runDir(data, runId), "learning.json")), "its pin stays");
+  settled(view, rows, "merged");
+});
+
 test("a server that stops while a run's seed is copied: the next one takes the copy back, and the run says its server stopped", { timeout: 120_000 }, async (t) => {
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { data } = first;
@@ -166,6 +214,11 @@ test("a server that stops while a run's seed is copied: the next one takes the c
   const runId = await heldRun(seeds.held);
   await first.close();
   const second = await serve(t, { learning: "on", faux: LEARN, data });
+  // Read at once, as a poll or a list would, whether or not the new server's recovery reached the run first: the same
+  // one load takes the copy back.
+  const early = (await second.api("GET", `/runs/${runId}`)).body.learning;
+  assert.deepEqual([early?.state, early?.reason], ["dropped", "seed_failed"], JSON.stringify(early));
+  assert.match(early.detail, /server stopped/);
   const { view } = await ended(second.api, runId, ["completed", "failed"]);
   assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "seed_failed"], JSON.stringify(view.learning));
   assert.match(view.learning.detail, /server stopped/);
