@@ -26,7 +26,10 @@ const SERVICE_POLL_MS = 250;
 const NO_SERVICE_MS = 2_000;
 /** How long a known network service may be missing, its successor not yet shown, before what it carried is told lost. */
 const SERVICE_GONE_MS = 10_000;
-type Announced = { sessionId: string; seq: number; method: string; url: string };
+/** How long one question about the network service may go unanswered: a timeout is no answer, never a restart. */
+const ASK_MS = 1_000;
+/** `frameId`: a Document request's frame, so a form lost by its intent and by its request is told once. */
+type Announced = { sessionId: string; seq: number; method: string; url: string; frameId?: string };
 
 /** An extension's pages (its offscreen document, its wake page) send nothing a model chose; its service worker is where
  *  run code executes, and is watched like a page. */
@@ -167,9 +170,9 @@ export class EffectObserver {
     const cut = () => { this.isCut = true; this.cut(); };
     if (signal?.aborted) cut(); else signal?.addEventListener("abort", cut, { once: true });
     try {
-      await this.announcedSettled(timeoutMs);
+      await this.announcedSettled(timeoutMs, signal);
       // A request that ended unpaused during the call may be one a dead network service took: asked now, while the call can be told.
-      if (this.endedUnpaused.size) await this.conclusiveCheck(timeoutMs);
+      if (this.endedUnpaused.size) await this.conclusiveCheck(timeoutMs, signal);
       while (this.inflight.size) await Promise.allSettled([...this.inflight]);
     } finally { signal?.removeEventListener("abort", cut); }
   }
@@ -221,9 +224,9 @@ export class EffectObserver {
     }
   }
 
-  private announce(sessionId: string, p: { requestId: string; request: { method: string; url: string } }): void {
+  private announce(sessionId: string, p: { requestId: string; type?: string; frameId?: string; request: { method: string; url: string } }): void {
     if (!this.sessions.get(sessionId)?.holds || SAFE.has(p.request.method) || this.pausedIds.has(p.requestId)) return;
-    this.announced.set(p.requestId, { sessionId, seq: (this.announceSeq += 1), method: p.request.method, url: p.request.url });
+    this.announced.set(p.requestId, { sessionId, seq: (this.announceSeq += 1), method: p.request.method, url: p.request.url, ...(p.type === "Document" && p.frameId ? { frameId: p.frameId } : {}) });
     this.watch();
   }
 
@@ -253,13 +256,22 @@ export class EffectObserver {
     return this.checking;
   }
 
-  /** Asks until the answer says whether the service restarted, within `ms`. A browser that never named a network service
-   *  (one in-process, or a refused question) is asked once. */
-  private async conclusiveCheck(ms: number): Promise<void> {
+  /** Asks until the answer says whether the service restarted, within `ms`, or the call's `signal` ends. A browser that
+   *  never named a network service (one in-process, or a refused question) is asked once. While a known service is missing
+   *  the wait runs to the end of its window (`SERVICE_GONE_MS`), so a successor slow to show still has the call told what
+   *  the old one took; the call's own end ends it sooner. */
+  private async conclusiveCheck(ms: number, signal?: AbortSignal): Promise<void> {
     if (this.noService || !this.decide) return;
-    for (const end = Date.now() + ms; ;) {
-      if ((await this.checkService()) !== "unknown" || this.servicePid === null || this.noService || Date.now() >= end || this.closed) return;
-      await new Promise((r) => setTimeout(r, Math.min(SERVICE_POLL_MS, 100)));
+    const end = Date.now() + ms;
+    for (;;) {
+      if ((await this.checkService()) !== "unknown" || this.servicePid === null || this.noService || this.closed || signal?.aborted) return;
+      const until = this.seenService && this.missingSince !== null ? Math.max(end, this.missingSince + SERVICE_GONE_MS + SERVICE_POLL_MS) : end;
+      if (Date.now() >= until) return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(finish, Math.min(SERVICE_POLL_MS, 100));
+        function finish() { clearTimeout(timer); signal?.removeEventListener("abort", finish); resolve(); }
+        signal?.addEventListener("abort", finish, { once: true });
+      });
     }
   }
 
@@ -267,7 +279,11 @@ export class EffectObserver {
     const covered = this.announceSeq;
     let pid: number | null = null;
     try {
-      const { processInfo } = await this.send("SystemInfo.getProcessInfo") as { processInfo?: Array<{ type?: unknown; id?: unknown }> };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), ASK_MS); });
+      const answer = await Promise.race([this.send("SystemInfo.getProcessInfo") as Promise<{ processInfo?: Array<{ type?: unknown; id?: unknown }> }>, late]).finally(() => clearTimeout(timer));
+      if (answer === "late") return "unknown";
+      const { processInfo } = answer;
       const service = processInfo?.find((p) => typeof p.type === "string" && p.type.includes("NetworkService"));
       pid = typeof service?.id === "number" ? service.id : null;
     } catch (error) {
@@ -309,12 +325,22 @@ export class EffectObserver {
     this.servicePid = pid;
     this.confirmedSeq = covered;
     this.endedUnpaused.clear();
+    // Both keys of a form refuse a late pause, but the call is told of the form once: by its Document request when that was seen.
+    const forms = new Set(gone.flatMap(([, entry]) => (entry.frameId ? [`navigation:${entry.frameId}`] : [])));
+    const told = gone.filter(([id]) => !forms.has(id));
+    // The call is told of every loss before a flush that was waiting for these requests returns: the telling is in flight
+    // before they stop being waited for, and to the call recording when they were found.
+    const listener = this.lostListener;
+    const telling = (async () => {
+      for (const [id, entry] of told) {
+        let request: EffectRequest;
+        try { request = describeRequest(entry.method, entry.url); } catch { continue; }
+        try { await listener?.({ requestId: id, method: request.method, origin: request.origin, path: request.path }); } catch { /* a listener's failure is its own */ }
+      }
+    })();
+    this.track(telling);
     for (const [id] of gone) { this.lost.add(id); this.unannounce(id); }
-    for (const [id, entry] of gone) {
-      let request: EffectRequest;
-      try { request = describeRequest(entry.method, entry.url); } catch { continue; }
-      try { await this.lostListener?.({ requestId: id, method: request.method, origin: request.origin, path: request.path }); } catch { /* a listener's failure is its own */ }
-    }
+    await telling;
   }
 
   private unannounce(requestId: string): void {
@@ -324,7 +350,7 @@ export class EffectObserver {
   /** Bounded: a request the browser never pauses (it ended some other way) must not hold a flush forever. One still waiting
    *  when the wait ends may be one a dead network service took: the service is asked about it, while the call can be told,
    *  before it is given up. */
-  private announcedSettled(ms: number): Promise<void> {
+  private announcedSettled(ms: number, signal?: AbortSignal): Promise<void> {
     if (this.announced.size === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
       const done = () => { clearTimeout(timer); this.announcedWaiters = this.announcedWaiters.filter((w) => w !== done); resolve(); };
@@ -332,7 +358,7 @@ export class EffectObserver {
       const timer = setTimeout(() => {
         void (async () => {
           try {
-            if ([...this.announced.values()].some((entry) => entry.seq <= covered)) await this.conclusiveCheck(ms);
+            if ([...this.announced.values()].some((entry) => entry.seq <= covered)) await this.conclusiveCheck(ms, signal);
           } finally {
             for (const [id, entry] of [...this.announced]) if (entry.seq <= covered) this.unannounce(id);
             done();

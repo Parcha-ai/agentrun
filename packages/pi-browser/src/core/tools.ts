@@ -106,6 +106,15 @@ const text = (value: unknown, isError = false): ToolOutput =>
   ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const withNews = (news: string, body: string) => (news ? `${news}\n\n${body}` : body);
 type Lost = { method: string; url: string };
+const LOST = Symbol("lost requests");
+/** An action's error carries the requests its call lost (`lost` is filled by the flush in the `finally` that follows the
+ *  throw), so the failure answer still tells them. */
+const withLost = (error: unknown, lost: Lost[]): unknown => {
+  const carrier = error !== null && typeof error === "object" ? error : Object.assign(new Error(String(error)), { cause: error });
+  Object.defineProperty(carrier, LOST, { value: lost, configurable: true });
+  return carrier;
+};
+const lostOf = (error: unknown): Lost[] => (error !== null && typeof error === "object" ? ((error as { [LOST]?: Lost[] })[LOST] ?? []) : []);
 /** Told to a call whose page sent requests the browser lost before they left it (Chrome's network service restarted under
  *  them): they were not sent, so the model may send them again. */
 export const lostRequests = (lost: readonly Lost[]): string =>
@@ -289,7 +298,14 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
     const tell = (out: ToolOutput): ToolOutput => (facts || previous ? { ...out, details: { ...(out.details as object | undefined), ...(facts ? { pendingEffect: facts } : {}), ...(previous ? { previous_session: previous } : {}) } } : out);
     const done = (out: ToolOutput) => { guard.note(tool, args, null); return tell(out); };
     // The notice leads a failure, never after its own keys: a call told nothing else first reads it.
-    const fail = (failure: BrowserFailure) => { guard.note(tool, args, failure); return tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...failure } : failure, true)); };
+    // Requests the failed action's call lost: told in the failure's message and listed in details, as on success.
+    let lostOnError: Lost[] = [];
+    const fail = (failure: BrowserFailure) => {
+      guard.note(tool, args, failure);
+      const told = lostOnError.length ? { ...failure, message: `${failure.message} ${lostRequests(lostOnError)}` } : failure;
+      const out = tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...told } : told, true));
+      return lostOnError.length ? { ...out, details: { ...(out.details as object | undefined), lost: lostOnError } } : out;
+    };
     let cuts: Cut[] = [];
     // A look after a refusal settles every refused cut in the chain whose warning a saved answer had already told; one this call is
     // telling stays until a later look, so a process that dies before this answer is saved tells it again.
@@ -333,6 +349,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       }
       return await looked(effect === null ? await body(s, news) : await dispatched(tool, port, call, s, effect, () => body(s, news)));
     } catch (error) {
+      lostOnError = lostOf(error);
       const failure = await failureOf(error, effectful, port, call, action);
       if (failure.code !== "browser_unavailable" || error instanceof BrowserFailureError) return fail(failure);
       // A dropped CDP connection to a session the provider still runs: a read reconnects and runs once more; a run, which
@@ -383,6 +400,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         let value: unknown;
         try {
           value = await s.driver.run(args.code !== undefined ? { code: runnableCode(args.code) } : { actions: args.actions });
+        } catch (error) {
+          throw withLost(error, lost);
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();
@@ -458,6 +477,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
           (request) => { lost.push({ method: request.method, url: call.redact(`${request.origin}${request.path}`) }); });
         try {
           await s.driver.setInputFiles(selector, { name: file.name, mimeType: file.mime, buffer: file.bytes });
+        } catch (error) {
+          throw withLost(error, lost);
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();

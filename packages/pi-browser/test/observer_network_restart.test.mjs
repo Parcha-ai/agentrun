@@ -10,6 +10,7 @@ async function fakeBrowser() {
   let socket = null;
   let servicePid = 100;
   let refusing = false;
+  let hanging = false;
   const commands = [];
   const send = (message) => {
     const body = Buffer.from(JSON.stringify(message));
@@ -44,6 +45,7 @@ async function fakeBrowser() {
       send({ id: m.id, result: { sessionId: "S1" } });
       return send({ method: "Target.attachedToTarget", params: { sessionId: "S1", targetInfo: { targetId: "T1", type: "page", url: "http://fake.test/" }, waitingForDebugger: false } });
     }
+    if (m.method === "SystemInfo.getProcessInfo" && hanging) return;
     if (m.method === "SystemInfo.getProcessInfo" && refusing) return send({ id: m.id, error: { code: -32601, message: "'SystemInfo.getProcessInfo' wasn't found" } });
     if (m.method === "SystemInfo.getProcessInfo") return send({ id: m.id, result: { processInfo: [{ type: "browser", id: 1 }, ...(servicePid ? [{ type: "network.mojom.NetworkService", id: servicePid }] : [])] } });
     send({ id: m.id, result: {}, ...(m.sessionId ? { sessionId: m.sessionId } : {}) });
@@ -58,11 +60,13 @@ async function fakeBrowser() {
     restart: (pid) => { servicePid = pid; },
     /** The endpoint refuses the question, as a provider's may. */
     refuseService: () => { refusing = true; },
+    /** The connection stays open and never answers the question. */
+    hangService: () => { hanging = true; },
     announce: (requestId, path = "/api/order") => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, type: "Fetch", request: { method: "POST", url: `${url(path)}?card=4111` } } }),
     pause: (requestId, networkId, path = "/api/order") => send({ sessionId: "S1", method: "Fetch.requestPaused", params: { requestId, networkId, resourceType: "Fetch", request: { method: "POST", url: url(path), headers: {} } } }),
     /** A form's intent, before its request exists, then its Document request and pause. */
     formIntent: (frameId) => send({ sessionId: "S1", method: "Page.frameRequestedNavigation", params: { frameId, reason: "formSubmissionPost", url: url("/submit"), disposition: "currentTab" } }),
-    announceForm: (requestId) => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, type: "Document", request: { method: "POST", url: url("/submit") } } }),
+    announceForm: (requestId, frameId = "FR1") => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, frameId, type: "Document", request: { method: "POST", url: url("/submit") } } }),
     pauseForm: (requestId, networkId, frameId) => send({ sessionId: "S1", method: "Fetch.requestPaused", params: { requestId, networkId, frameId, resourceType: "Document", request: { method: "POST", url: url("/submit"), headers: {} } } }),
     failed: (requestId) => send({ sessionId: "S1", method: "Network.loadingFailed", params: { requestId, type: "Fetch", errorText: "net::ERR_ABORTED" } }),
     close: () => new Promise((resolve) => { for (const c of sockets) c.destroy(); server.close(() => resolve()); }),
@@ -268,7 +272,7 @@ test("a form lost both by its intent and by its Document's id is refused once; t
   await sleep(100);
   browser.restart(200);
   await sleep(400);
-  assert.deepEqual(lost.map((r) => r.requestId).sort(), ["D1", "navigation:FR1"]);
+  assert.deepEqual(lost.map((r) => `${r.method} ${r.path}`), ["POST /submit"], "one form, told once");
   browser.pauseForm("F1", "D1", "FR1");
   await sleep(200);
   browser.announceForm("D2");
@@ -278,12 +282,74 @@ test("a form lost both by its intent and by its Document's id is refused once; t
   assert.deepEqual(rows, ["D1 POST /submit pending", "D1 POST /submit denied", "D2 POST /submit pending", "D2 POST /submit allowed"]);
 });
 
+test("through a call's own flush (1 s), a known service whose new pid shows only after 2.6 s still has its lost request told before the call stops recording", async (t) => {
+  const { browser, observer, lost, stop } = await rig(t);
+  browser.announce("R1");
+  await sleep(100);
+  browser.restart(null);
+  setTimeout(() => browser.restart(300), 2_600);
+  await observer.flush(undefined, 1_000);
+  stop();
+  assert.deepEqual(lost.map((r) => r.requestId), ["R1"]);
+});
+
+test("a call's abort ends a flush that waits for a missing service", async (t) => {
+  const { browser, observer } = await rig(t);
+  browser.announce("R1");
+  await sleep(100);
+  browser.restart(null);
+  const start = Date.now();
+  await observer.flush(AbortSignal.timeout(300), 1_000);
+  assert.ok(Date.now() - start < 2_500, `the flush ended with the call (${Date.now() - start} ms)`);
+});
+
+test("three requests lost together are all told before flush returns, however slowly the call takes each", async (t) => {
+  const browser = await fakeBrowser();
+  const observer = await EffectObserver.open({ sdkCdpUrl: browser.url }, effectDecider("deny"));
+  t.after(async () => { observer.close(); await browser.close(); });
+  const lost = [];
+  const stop = observer.record(() => {}, async (request) => { lost.push(request.requestId); await sleep(50); });
+  for (const id of ["R1", "R2", "R3"]) browser.announce(id);
+  await sleep(100);
+  browser.restart(200);
+  await observer.flush(undefined, 1_000);
+  stop();
+  await sleep(300);
+  assert.deepEqual(lost.sort(), ["R1", "R2", "R3"]);
+});
+
+test("a browser that never answers the question does not hold a flush past its bound", async (t) => {
+  const { browser, observer } = await rig(t);
+  browser.hangService();
+  browser.announce("R1");
+  await sleep(100);
+  const start = Date.now();
+  await observer.flush(undefined, 500);
+  assert.ok(Date.now() - start < 5_000, `the flush returned (${Date.now() - start} ms)`);
+});
+
 test("a journaling observer, which holds nothing, never asks for the network service", async (t) => {
   const { browser, observer } = await rig(t, null);
   browser.announce("R1");
   await sleep(400);
   await observer.flush(undefined, 300);
   assert.equal(browser.asked(), 0);
+});
+
+test("a run whose code throws after a loss still tells the model of the lost request, beside the error", async () => {
+  const lostOne = { requestId: "R1", method: "POST", origin: "https://shop.test", path: "/api/order" };
+  const effects = { holding: true, record: (_row, lost) => { effects.lost = lost; return () => {}; }, flush: async () => { await effects.lost?.(lostOne); } };
+  const record = { lastUrl: "https://shop.test/", navigation: [{ at: "2026-11-07T00:00:00.000Z", url: "https://shop.test/" }] };
+  const driver = { run: async () => { throw new Error("page.click: Timeout 5000ms exceeded"); }, url: async () => "https://shop.test/" };
+  const session = { driver, tag: "t-1", sessionId: "s-1", record, notice: null, interrupted: null, recorded: false, effects, replaced: null };
+  const port = { session: async () => session, ended: async () => false, mark: async () => {}, settle: async () => {}, dispatching: async () => {}, dispatched: async () => {}, finished: async () => {}, journal: async () => {}, navigated: async () => {}, answered: async () => {}, dropped: async () => {} };
+  const call = { callId: "call-2", conversationId: 2, signal: undefined, label: "node-a", redact: (text) => text, evidence: { file: async () => null } };
+  const out = await pageTools().run({ code: "await page.click('#order')" }, port, call);
+  assert.equal(out.isError, true);
+  const failed = JSON.parse(out.content[0].text);
+  assert.match(failed.message, /Timeout 5000ms exceeded/, "the error's own words stay");
+  assert.match(failed.message, /The browser lost a request your page sent before it left the browser: POST https:\/\/shop\.test\/api\/order\./);
+  assert.deepEqual(out.details?.lost, [{ method: "POST", url: "https://shop.test/api/order" }]);
 });
 
 test("run tells the model the browser lost a request and it was NOT sent, names it by method and URL with no query, and lists it in details.lost", async () => {
