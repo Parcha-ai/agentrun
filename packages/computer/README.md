@@ -744,7 +744,12 @@ So the provider pushes it in at create and starts it as a long-lived command, an
 2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
    `/opt/agentrun/computerd`, and make `/work` (its home) and `/run/agentrun` (its socket's directory). As root, or
    through passwordless `sudo`; a sandbox with neither is refused in the script's words. The script prints the
-   installed binary's sha256 (`sha256sum`, BusyBox's or coreutils'), which must be the uploaded one's.
+   installed binary's sha256 (`sha256sum`, BusyBox's or coreutils'), which must be the uploaded one's. It makes
+   `/opt/agentrun` root's, mode 755, even when the snapshot already had it, removes whatever was at the daemon's path
+   first, and then holds the whole path to one rule: the binary, `/opt/agentrun`, `/opt` and `/` each owned by root
+   and writable by no group and no other user (read with `ls -ldn`, so a symbolic link or an ACL on the way fails it).
+   A path that fails is refused in words, with nothing installed. Only root can change an owner or a mode, so the
+   rule, once it holds, holds until root changes it.
 3. Start `computerd init --deadline <time> --user 1000:1000` (the `daemonUser` option) as a session command
    (`runAsync`) in the session `agentrun-computerd`, as root (through `sudo -n` when the session's user is not root),
    in a clean environment and with `/work` as its directory. Init drops itself: it gives `/work` and `/run/agentrun`
@@ -754,7 +759,9 @@ So the provider pushes it in at create and starts it as a long-lived command, an
    snapshot's: Daytona's default snapshot has BusyBox's `setpriv`, which has no `--reuid`. The provider never deletes
    that session: deleting it ends init.
 4. `connect()` starts `computerd stdio` as root the same way, in a session of its own, to reach a socket in a
-   directory that is the daemon's user's alone; it only carries bytes. Its stdin is the command's input
+   directory that is the daemon's user's alone; it only carries bytes. Init and the bridge each check the daemon's
+   path against the same rule before they run it as root, and refuse in words when it fails, so a binary a user
+   other than root could have swapped is never run, even on a computer attached from an older install. Its stdin is the command's input
    (`POST .../input`, whole lines, one call after another), and its stdout is the command's log stream, a WebSocket
    with `follow=true`, in which Daytona prefixes each stdout line with `01 01 01` and each stderr line with `02 02 02`
    (split output, asked for with `X-Daytona-Split-Output: true`). Input is sent with `suppressInputEcho`; a line that
@@ -767,8 +774,29 @@ needs. The PTY WebSocket is one duplex stream, but a terminal: echo and line dis
 the shell before the bridge starts, and the PTY starts a shell, not a command. Daytona's V2 API (alpha) adds argv
 processes with `writeStdin` and replayable logs, which would replace the two halves when it is GA.
 
-Daytona's container class runs code as root, and the open runner runs it privileged. The provider's daemon runs as
-1000:1000 with no capabilities, but the toolbox does not: anyone with the API key can run a command as root through it.
+### Security
+
+The sandbox is the only boundary. A program in a Daytona computer can become root inside its sandbox, whatever user
+the daemon runs it as:
+
+- Daytona's toolbox daemon, the sandbox's first process, listens on port 2280 on every interface and checks no
+  credential: its only middlewares are recovery, tracing, logging and errors, and its token is sent only with its
+  telemetry. Its `/process/execute` runs any command as the toolbox's user. That user in the default snapshot has
+  passwordless `sudo` for every command (`daytona ALL=(ALL) NOPASSWD:ALL`). So from inside,
+  `curl -X POST http://127.0.0.1:2280/process/execute -d '{"command":"sudo -n id -u"}'` runs `id -u` as root.
+- The provider depends on the same thing: it installs and starts the daemon through that toolbox, as root or through
+  passwordless `sudo`, and refuses a sandbox with neither. Every sandbox it accepts has this way to root.
+- The daemon's user (1000:1000, no capabilities, `no_new_privs` on every thread) is hygiene, not a boundary. It stops
+  a program from raising itself through `sudo` or a setuid file, not from asking the toolbox. The rule that keeps the
+  daemon's path root's alone is hygiene too.
+- `networkBlockAll` limits egress only. Daytona drops what leaves the sandbox on the host, and the toolbox on the
+  sandbox's loopback stays reachable from inside it.
+- From outside, anyone with the API key can run a command as root in the sandbox through the same toolbox.
+
+Daytona's container class runs code as root, and the open runner runs it privileged.
+
+What a Daytona computer cannot do: reach a network its policy blocks, or outlive its TTL. Anything else in its sandbox,
+root included, it can.
 
 ### Capabilities
 
@@ -900,14 +928,13 @@ name is not this provider's: release refuses it, and it is reported still there.
 
 ### Not yet known
 
-Two live runs reached the default snapshot. In the first the install passed (its toolbox user is root or has
-passwordless sudo, and its `sha256sum` read back the uploaded binary), and the start failed on BusyBox's `setpriv`,
-which init's own drop now replaces. The second, with that drop, passed Core 48 of 52: every health, exec, files and
-process case, and create's drift check, the start and the bridge with them. Of the four Core cases it failed, three
-(`provider.create-release`, `provider.stop`, `drift.version`), and the computer its cleanup found still listed, met a
-delete or a stop Daytona had answered but not yet done, which release now waits for; the fourth, `provider.attach`,
-reported the resolved snapshot as the image, which the image label now answers. Neither fix has run live yet. These
-need a live probe:
+Four live runs reached the default snapshot. The first failed at the start, in the privilege tool init's own drop now
+replaces; the second passed Core 48 of 52, its failures a delete or a stop Daytona had answered but not done (release
+now waits for both) and the resolved snapshot reported as the image (the image label now answers it); the third passed
+Core 52/52. The fourth, after the re-stack, passed Core 53/53 with the 9 optional cases of groups a linux computer does
+not declare skipped, Full 4/10, and the sweep after it found nothing to delete. Since then the report files those 9
+under `optional` (a wording change), and the daemon's path is held root's alone (above), which has not run live: a
+default snapshot whose `/opt` another user can write would now be refused at create. These need a live probe:
 
 - whether the production toolbox honors `suppressInputEcho` and `X-Daytona-Split-Output`, and keeps a session's
   command running between calls;
@@ -967,6 +994,10 @@ repository's main; the docs were read on 2026-11-05.
 | Tier 1 and 2 cannot override the network per sandbox | https://www.daytona.io/docs/en/network-limits.md#tier-based-network-restrictions |
 | a change: block-all clears both lists, `false` alone clears both, an empty list clears one | https://www.daytona.io/docs/en/network-limits.md#update-network-settings-while-a-sandbox-is-running |
 | the container class runs code as root; classes `linux-vm`, `container`, `windows` | https://www.daytona.io/docs/en/isolation.md#runtime-isolation; `daytona/clients@8006f63e:openapi-specs/api.json:10473` |
+| the toolbox listens on `:2280`, every interface; its middlewares are recovery, tracing, logging and errors; `/process/execute` | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:136-158`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:199-203`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:374-388`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/config/config.go:6`; `apps/daemon/pkg/toolbox/middlewares/` holds only `error.go` |
+| the toolbox's token is set by `/init` and sent only as a telemetry header | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/controller.go:33`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/telemetry.go:46` |
+| the default snapshot's user `daytona` has `NOPASSWD:ALL` sudo | `daytonaio/daytona@b5a5d9e7:images/sandbox/Dockerfile:78`, `daytonaio/daytona@b5a5d9e7:images/sandbox/Dockerfile:96`, `daytonaio/daytona@b5a5d9e7:images/sandbox/README.md:3`; the same `RUN` line in the history of `daytonaio/sandbox:0.11.0` (config `sha256:f6b4fc1ac093`), the snapshot a create with none resolved to in a live run |
+| `networkBlockAll` drops the sandbox's outgoing packets on the host (`DOCKER-USER`, by source address) | `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/docker/create.go:242-248`, `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/netrules/set.go:40-49` |
 | non-GPU containers run privileged in the open runner | `daytonaio/daytona@b5a5d9e7:apps/runner/pkg/docker/container_configs.go:200-206` |
 | memory in GiB | https://www.daytona.io/docs/en/sandboxes.md#resources |
 | a snapshot's size is its own; delete with retries and a forced stop; the listing trails a create; no redirect followed; three tries with backoff | `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:913`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:799-817`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:819-824`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:343`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:35-36` |
