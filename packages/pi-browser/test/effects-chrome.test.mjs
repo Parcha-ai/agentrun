@@ -38,17 +38,18 @@ function recorder(observer) {
  *  the drop and the case runs again, twice at most for a drop the page saw (a refused preflight) and five times for one
  *  Chrome lost when its network service died (Chrome for Testing 155 does that after a cross-origin preflight while Fetch
  *  interception is on, sandbox or not, more often the busier the machine). One still on its way is waited for. `attempts`
- *  is how many runs it took, `lost` how many of them the network service took with it. */
+ *  is how many runs it took, `lost` how many of them were run again because the network service took them with it. */
 async function journalCase({ driver, observer, server, mode, c }) {
   const want = c.expected.length;
-  const restarts = await driver.restarts();
   let journal;
   let attempts = 0;
+  let lost = 0;
   for (;;) {
     attempts += 1;
     server.reset();
     journal = recorder(observer);
     const drops = await driver.drops();
+    const restarts = await driver.restarts();
     await driver.run({ code: JSON.stringify(c.steps) });
     await journal.until(() => journal.decided().length >= want, 10_000).catch(() => undefined);
     // A request the page started that the browser has not ended (a preflight the network answers late) is still on its way,
@@ -61,10 +62,11 @@ async function journalCase({ driver, observer, server, mode, c }) {
     journal.stop();
     const complete = journal.decided().length >= want && (mode !== "journal" || server.nonGet().length >= want);
     if (complete || (await driver.drops()) === drops) break;
-    const lost = (await driver.restarts()) - restarts;
+    // Only an attempt that is run again counts: a restart after the journal was complete took nothing with it.
+    if ((await driver.restarts()) > restarts) lost += 1;
     if (attempts - lost === 3 || lost === 5) break;
   }
-  return { rows: journal.rows, attempts, lost: (await driver.restarts()) - restarts };
+  return { rows: journal.rows, attempts, lost };
 }
 
 /** A Chrome, the fixtures' server, the test driver and an observer that denies every effect. */
