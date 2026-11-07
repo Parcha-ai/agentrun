@@ -53,7 +53,7 @@ func SocketPath() string {
 // socket with one process table and the display DISPLAY names, if any, and sweeps: a child of its own that is not one
 // of its guards is an orphan whose guard died, and is killed with everything under it. SIGTERM, SIGINT or the deadline
 // ends every process, guards first, and returns 0, which ends the computer. deadline.extend moves the deadline, never
-// past the maximum the provider gave.
+// past the maximum the provider gave, and is refused once init has decided to end the computer.
 func Init(version, socket string, deadline *lifetime.Deadline, logger *log.Logger) int {
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
 		logger.Printf("init: cannot become a child subreaper: %v", errno)
@@ -104,14 +104,17 @@ func Init(version, socket string, deadline *lifetime.Deadline, logger *log.Logge
 		case <-tick.C:
 			sweep()
 		case sig := <-stop:
+			deadline.Stop(fmt.Sprintf("init was sent %v", sig))
 			logger.Printf("init: %v, ending every process", sig)
 			_ = listener.Close()
 			shutdown()
 			return 0
 		case <-end.C:
-			if until := time.Until(deadline.At()); until > 0 {
+			// Decided under the lock deadline.extend takes: an extension either lands first and moves the deadline,
+			// or is refused.
+			if !deadline.End(time.Now()) {
 				// Moved as the old one came.
-				end.Reset(until)
+				end.Reset(time.Until(deadline.At()))
 				continue
 			}
 			logger.Printf("init: the deadline %s has come, ending every process and the computer", deadline.At().UTC().Format(time.RFC3339Nano))
