@@ -44,7 +44,7 @@ import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { capabilityOf, handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -1300,14 +1300,14 @@ export class Runs {
     // Hidden as one whose sign-in does not open is, below, when its revision grants the browser or can't be read; one whose
     // revision has none never had a browser, so was never handed a sign-in. Nothing is written over the damaged file here:
     // its end writes serve.json anew, hidden, and until then each server finds it damaged and hides it again.
-    if (row.state === "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) {
+    if (row.state === "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.includes("browser"))) {
       run.error = { code: "run_failed", message: UNREADABLE_RUN_META, retryable: false };
       run.meta.unshown = true;
     }
     // An ended run whose serve.json was damaged since: withheld as an ended run whose sign-in does not open is (below:
     // no store read, no answer, output or error words), on the same terms. It ended as it ended: nothing is stopped or
     // failed, and nothing is saved, so its words are shown again only once serve.json reads (each server decides anew).
-    if (row.state !== "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) run.meta.unshown = true;
+    if (row.state !== "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.includes("browser"))) run.meta.unshown = true;
     // A run still going whose agent's browser sign-in does not open under this server's seal key: whatever it said, or
     // says, could repeat the pointer, which nothing here can cut. Its rows are never read, and it ends failed, saying
     // why: a live process is stopped (below), one already gone is never opened again.
