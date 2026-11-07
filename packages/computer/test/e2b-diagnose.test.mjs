@@ -118,7 +118,7 @@ test("it runs the provider's own network-none check and then probe --diagnose, a
 	assert.deepEqual(argvs.at(-1), [DAEMON, "probe", "--diagnose"]);
 	assert.ok(argvs.some((argv) => argv[1] === "probe" && argv[2] === "--connect"), "the provider's --connect probe ran first");
 	const report = reportOf(stdout);
-	assert.match(report.check, /network: declared none, read back a connection from inside that reached 1\.1\.1\.1:443, 8\.8\.8\.8:443/);
+	assert.match(report.check, /network: declared none, read back an answer from 1\.1\.1\.1:443, 8\.8\.8\.8:443/);
 	assert.deepEqual(report.diagnosis, ACCEPT_ONLY);
 	await assertGone(fake);
 
@@ -129,7 +129,7 @@ test("it runs the provider's own network-none check and then probe --diagnose, a
 	const made = await provider.create({ image: "desktop", lifetimeMs: 600_000, network: "none" });
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "refused");
-	assert.match(made.error.message, /reached 1\.1\.1\.1:443/);
+	assert.match(made.error.message, /read back an answer from 1\.1\.1\.1:443/);
 	assert.ok(!execs(again).some((argv) => argv[2] === "--diagnose"), "create never runs the diagnostic");
 });
 

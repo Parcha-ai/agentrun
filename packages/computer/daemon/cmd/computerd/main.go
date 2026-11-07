@@ -19,7 +19,7 @@
 //	computerd probe --diagnose
 //	                    print one JSON line: per well-known public address and port (1.1.1.1, 8.8.8.8, 9.9.9.9 and
 //	                    151.101.1.57 on 443/tcp, 80/tcp and 53/udp), whether it refused, accepted with no answer, or
-//	                    answered (a TLS ServerHello, an HTTP status line, a DNS response), each step bounded, 15 s in all
+//	                    answered (any byte back, as for --connect), each step bounded, 15 s in all
 //	computerd version   print the version
 //
 // Each exec.run and process.start starts itself again as `computerd guard`, with no other caller (see execrun.Guard).

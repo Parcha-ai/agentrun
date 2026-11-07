@@ -1,7 +1,7 @@
 // The drift check for a Docker computer: what the computer reports of itself after create, from docker inspect and the
 // daemon's hello, against what was declared. Pure: no Docker call. Each mismatch is one sentence; none is an empty list.
 import type { ComputerKind, Group, HelloResult } from "./protocol.js";
-import type { ComputerSpec, NetworkPolicy } from "./provider.js";
+import type { ComputerSpec, NetworkPolicy, NetworkSpec } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
 export const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
@@ -195,6 +195,48 @@ export function networkOf(inspected: DockerInspect | null | undefined): NetworkP
 }
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
+
+/**
+ * What `computerd probe` reports from inside a computer: the uid:gid its programs run as, the kernel, reached (the
+ * targets that answered: bytes came back) and accepted (those that accepted a connection and sent nothing back). One
+ * rule for every provider that probes (README, "Network none, read from inside"): only an answer refuses network none.
+ */
+export interface ProbeReport {
+	uid: number;
+	gid: number;
+	kernel: string;
+	reached: string[];
+	accepted: string[];
+}
+
+const isAddresses = (value: unknown): value is string[] => Array.isArray(value) && value.every((one) => typeof one === "string");
+const isId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
+
+/** The probe's JSON line from exec.run's stdout (base64), or undefined; a report with no accepted reads it as none. */
+export function probeReportOf(stdout: string): ProbeReport | undefined {
+	try {
+		const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as Partial<ProbeReport> | null;
+		if (isId(value?.uid) && isId(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached) && (value.accepted === undefined || isAddresses(value.accepted))) {
+			return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted ?? [] };
+		}
+	} catch {
+		// Not the probe's JSON: undefined.
+	}
+	return undefined;
+}
+
+/** Network none's drift by the probe: a target that answered, in words; none when nothing answered. */
+export function probeNetworkDrift(probe: ProbeReport): string[] {
+	return probe.reached.length > 0 ? [`network: declared none, read back an answer from ${probe.reached.join(", ")}`] : [];
+}
+
+/**
+ * What the probe recorded that does not refuse the computer: under network none, the targets that accepted a connection
+ * and sent nothing back. A firewall that accepts first and decides after looks so from inside; only an answer is drift.
+ */
+export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPolicy): string[] {
+	return network === "none" && probe.accepted.length > 0 ? [`network: none; accepted with no answer (no bytes came back): ${probe.accepted.join(", ")}`] : [];
+}
 
 /** Every way hello differs from what the provider expects. */
 export function helloDrift(hello: HelloResult | null | undefined, expected: HelloExpected): string[] {

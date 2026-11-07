@@ -2,14 +2,13 @@ package probe
 
 // The diagnosis: whether bytes come back, not only whether a TCP connection is accepted. Some vendors' firewalls
 // (E2B's, by its own docs: network/internet-access, "Behavior of blocked TCP connections") accept every outbound TCP
-// connection first and decide after, so an accept says nothing about the destination; a protocol-correct answer does.
-// It tries a fixed list of well-known public addresses only, sends nothing of the computer's (a ClientHello with a
+// connection first and decide after, so an accept says nothing about the destination; bytes back do. Each check is
+// judged as `computerd probe --connect` judges a target (exchange, in probe.go): any byte back is answered, the detail
+// saying whether it was the protocol's own answer. It tries a fixed list of well-known public addresses only, sends nothing of the computer's (a ClientHello with a
 // random nonce, an HTTP HEAD, a DNS query for example.com), reads at most MaxRead bytes, and is bounded at every step.
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strconv"
@@ -28,8 +27,9 @@ type Check struct {
 // DiagnoseBounds are `computerd probe --diagnose`'s: 3 s to connect, 3 s to answer, 15 s in all, 4 KiB per check.
 var DiagnoseBounds = Bounds{Connect: 3 * time.Second, Read: 3 * time.Second, Whole: 15 * time.Second, MaxRead: 4096}
 
-// Outcome is one check's result. Outcome is refused (no TCP accept, or no UDP answer), accepted (a TCP accept, or a
-// UDP reply, with no protocol-correct answer in time: Bytes says whether other bytes came) or answered.
+// Outcome is one check's result. Outcome is refused (no TCP accept, or no UDP reply), accepted (a TCP accept, and no
+// byte back in time) or answered (any byte back: a TLS ServerHello or alert, an HTTP status line, a DNS response with
+// the query's id, or other bytes, which Detail names).
 type Outcome struct {
 	Target  string `json:"target"`
 	Port    int    `json:"port"`
@@ -101,14 +101,6 @@ func Diagnose(checks []Check, bounds Bounds) Diagnosis {
 	return Diagnosis{UID: os.Getuid(), GID: os.Getgid(), Kernel: kernel(), Verdict: verdict, Results: results}
 }
 
-// within is now plus d, never past end.
-func within(d time.Duration, end time.Time) time.Time {
-	if at := time.Now().Add(d); at.Before(end) {
-		return at
-	}
-	return end
-}
-
 func diagnose(check Check, bounds Bounds, end time.Time) Outcome {
 	host, port, err := net.SplitHostPort(check.Address)
 	number, _ := strconv.Atoi(port)
@@ -117,81 +109,20 @@ func diagnose(check Check, bounds Bounds, end time.Time) Outcome {
 		result.Detail = fmt.Sprintf("%q is not host:port", check.Address)
 		return result
 	}
-	var request []byte
-	var answered func([]byte) (bool, int)
-	var expected string
+	var ask asking
 	switch check.Probe {
 	case "tls":
-		request, answered, expected = clientHello(check.Name), serverHello, "a ServerHello"
+		ask = asking{request: clientHello(check.Name), name: tlsRecord, expected: "a TLS record"}
 	case "http":
-		request, answered, expected = httpHead(check.Name), is(statusLine), "an HTTP status line"
+		ask = asking{request: httpHead(check.Name), name: statusLine, expected: "an HTTP status line"}
 	case "dns":
 		result.Proto = "udp"
-		var id uint16
-		request, id = dnsQuery()
-		answered, expected = is(dnsResponse(id)), "a DNS response with the query's id"
+		query, id := dnsQuery()
+		ask = asking{request: query, name: dnsResponse(id), expected: "a DNS response with the query's id"}
 	default:
 		result.Detail = fmt.Sprintf("%q is no probe: tls, http or dns", check.Probe)
 		return result
 	}
-	dialer := net.Dialer{Deadline: within(bounds.Connect, end)}
-	conn, err := dialer.Dial(result.Proto, check.Address)
-	if err != nil {
-		result.Detail = "no connection: " + reason(err)
-		return result
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(within(bounds.Read, end))
-	if _, err := conn.Write(request); err != nil {
-		if result.Proto == "tcp" {
-			result.Outcome = "accepted"
-		}
-		result.Detail = "the request was not sent: " + reason(err)
-		return result
-	}
-	if result.Proto == "tcp" {
-		result.Outcome = "accepted"
-	}
-	read, err := readAnswer(conn, result.Proto, bounds.MaxRead, func(read []byte) (string, int) {
-		ok, need := answered(read)
-		if ok {
-			return expected, need
-		}
-		return "", need
-	})
-	result.Bytes = len(read)
-	if ok, _ := answered(read); ok {
-		result.Outcome, result.Detail = "answered", expected+" came back"
-		return result
-	}
-	switch {
-	case len(read) > 0:
-		// For UDP, a reply that is not the answer is still a reply from something on the path.
-		result.Outcome = "accepted"
-		result.Detail = fmt.Sprintf("%d bytes came back, not %s (first byte 0x%02x)", len(read), expected, read[0])
-	case errors.Is(err, io.EOF):
-		result.Detail = "the connection closed with no bytes"
-	case isTimeout(err) && result.Proto == "udp":
-		result.Detail = "no answer within the bound"
-	case isTimeout(err):
-		result.Detail = "no bytes within the bound"
-	case err != nil && result.Proto == "udp":
-		result.Detail = "no answer: " + reason(err)
-	case err != nil:
-		result.Detail = "no bytes: " + reason(err)
-	}
+	result.Outcome, result.Bytes, result.Detail = exchange(result.Proto, check.Address, ask, bounds, end)
 	return result
-}
-
-// serverHello: a handshake record (0x16, version 3.x) whose first message is a ServerHello (0x02); 6 bytes judge it.
-func serverHello(read []byte) (bool, int) {
-	return len(read) >= 6 && read[0] == 0x16 && read[1] == 0x03 && read[5] == 0x02, 6
-}
-
-// is turns a check that names an answer into one that says whether it is one.
-func is(name func([]byte) (string, int)) func([]byte) (bool, int) {
-	return func(read []byte) (bool, int) {
-		what, need := name(read)
-		return what != "", need
-	}
 }

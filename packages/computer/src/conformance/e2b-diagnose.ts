@@ -5,7 +5,7 @@
 // E2B documents that its firewall accepts an outbound TCP connection before it decides whether the destination is
 // allowed, so from inside a sandbox with no internet access a connection can succeed while nothing reaches the
 // destination (docs.e2b.dev network/internet-access, "Behavior of blocked TCP connections"). The provider's network-none
-// probe counts an accept as reached, and refuses. This makes ONE sandbox exactly as the provider makes one for network
+// probe refuses only on an answer and records an accept with nothing back in its notes. This makes ONE sandbox exactly as the provider makes one for network
 // none (diagnoseNetworkNone in ../e2b.ts: the same create options, read-back, upload and sha256 check), runs
 // `computerd probe --diagnose` in it (per well-known public address and port: refused, accepted with no answer, or
 // answered), prints one JSON line, then kills the sandbox and reads it back gone, on an error and on an abort (SIGINT,

@@ -152,11 +152,12 @@ Where a vendor reads no network policy back, `computerd probe` stands for one, a
   path that forwards outbound bytes and drops every reply (a one-way leak) reads the same from inside. The answered
   check catches a path that carries traffic both ways, and nothing proves the one-way case from inside the computer.
   The probe also shows its own targets are blocked, not every address.
-- **What it changes.** Only a provider that probes, on a vendor whose firewall accepts first, reads differently. Docker
-  reads its network back from `docker inspect` (`--network none` leaves no interface but `lo`, so a connection is
+- **What it changes.** Only a provider that probes, on a vendor whose firewall accepts first, reads differently: E2B
+  ([below](#network)), whose computers with network none the accept-counts rule refused, and are now kept with notes.
+  Docker reads its network back from `docker inspect` (`--network none` leaves no interface but `lo`, so a connection is
   refused outright, which `test/docker/modal-commands.docker.test.mjs` pins with the probe itself); Daytona reads
-  `networkBlockAll` back from its API and runs no probe; Modal's live run with `blockNetwork` read back no TCP accept
-  at any target under the earlier accept-counts rule, so nothing it accepted is newly let through.
+  `networkBlockAll` back from its API and runs no probe; Modal's live run with `blockNetwork` read back no TCP accept at
+  any target under the earlier accept-counts rule, so nothing it accepted is newly let through.
 
 ### Processes
 
@@ -1151,22 +1152,39 @@ sandbox's every port has a URL, `https://<port>-<id>.<domain>` (`index.mjs:1208-
 with that URL reaches whatever listens there, so a computer with no internet could still hand out data. The provider
 always sends `allowPublicTraffic: false` (a project's default may be public), and then a request needs the sandbox's
 traffic token as a header. `0.0.0.0/0` is IPv4, so for none the probe (`computerd probe`, through the daemon, as on
-Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, and refuses the computer if one is
-reached. An allowlist (`allowOut`) is refused until the live bypass cases pass (ruling 9). The network is fixed at
+Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, and refuses the computer if one answers
+(the rule every provider shares: [Network none, read from inside](#network-none-read-from-inside-nothing-answers)). An
+allowlist (`allowOut`) is refused until the live bypass cases pass (ruling 9). The network is fixed at
 create: `network(ref, policy)` refuses a change.
 
-E2B's firewall accepts an outbound TCP connection before it decides whether the destination is allowed, so from inside
-a sandbox with no internet access "a TCP connection can succeed and report the socket as open even when the destination
-is denied"; E2B says to check for an application-level answer instead (docs, network/internet-access, "Behavior of
-blocked TCP connections"; `e2b-dev/infra` `packages/orchestrator/pkg/tcpfirewall/handlers.go`, which accepts and then
-closes a denied connection). E2B documents no stricter setting: `allowInternetAccess: false` is `denyOut 0.0.0.0/0`,
-and `dnsServers` matters only with a domain in `allowOut`. The probe counts an accept as reached, so it refuses such a
-sandbox, and the provider keeps that refusal. `dist/conformance/e2b-diagnose.js` (live switch
+E2B's firewall accepts an outbound TCP connection before it decides whether the destination is allowed. E2B's docs
+(network/internet-access, "Behavior of blocked TCP connections", read 2026-11-07; the copy read is
+`vendor-docs/e2b/docs-network-internet-access.md` in the review evidence) say: "The firewall has to accept the
+connection first before it can decide whether the destination is allowed. This means that, from inside the sandbox, a
+TCP connection can succeed and report the socket as open even when the destination is denied - no packets actually
+reach the destination", and to check for an application-level answer instead; and that this "may change in the
+future". `e2b-dev/infra@ff3922213` `packages/orchestrator/pkg/tcpfirewall/handlers.go` shows it: the proxy reads the
+hostname from the connection's first bytes, decides, and closes a denied connection without dialing the destination.
+E2B documents no stricter setting: `allowInternetAccess: false` is `denyOut 0.0.0.0/0`, and `dnsServers` matters only
+with a domain in `allowOut`. Under the shared rule only an answer refuses network none, so such a sandbox is kept, and
+create's and attach's `notes` name the accepted targets: `network: none; accepted with no answer (no bytes came back):
+1.1.1.1:443, 8.8.8.8:443`. The one live diagnostic (below) read that: every IPv4 target on 443/tcp and 80/tcp accepted
+and closed with 0 bytes, no answer on 53/udp, and, in the provider's own probe, no accept from the IPv6 target.
+
+The risk that stays is one-way. From inside, the provider cannot prove that an accepted connection's outbound bytes go
+nowhere: a path that carries the request out and drops every reply reads the same as E2B's firewall. E2B says no
+packets reach the destination, and that this may change. The answered check catches any change that forwards traffic
+both ways, since the first byte back refuses network none; it does not catch a one-way leak, and nothing run from
+inside can. That is the provisional ruling (one rule for every provider, pending Miguel's confirmation), and why every
+accept is recorded in words rather than dropped.
+
+`dist/conformance/e2b-diagnose.js` (live switch
 `AGENTRUN_COMPUTER_LIVE_E2B=1`) makes one sandbox exactly as create does for network none, with a 10-minute E2B
-timeout, records the read-back and the provider's own check, runs `computerd probe --diagnose` in it, prints one JSON
-line, and kills the sandbox and reads it back gone, after an error or an abort too (SIGINT, SIGTERM, or its own 8-minute
-bound). Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 with no live switch or a refused
-setting.
+timeout, records the read-back and the provider's own check (`passed` with its `notes`, or its refusal), runs
+`computerd probe --diagnose` in it (each check judged as `--connect` judges a target: any byte back is answered),
+prints one JSON line, and kills the sandbox and reads it back gone, after an error or an abort too (SIGINT, SIGTERM,
+or its own 8-minute bound). Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 with no live
+switch or a refused setting.
 
 ### Extend and stream
 
@@ -1240,15 +1258,16 @@ killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the p
 
 ### What waits for a live run
 
-No E2B call has been made: every fact above is read from the SDK, envd and the desktop template's source, and the
-unit tests run against a fake. A live run must show:
+One live E2B run has been made, the network diagnostic of 2026-11-07 (one sandbox, killed and read back gone); every
+other fact above is read from the SDK, envd and the desktop template's source, and the unit tests run against a fake.
+A live run must show:
 
 - that `getInfo` reports `allowInternetAccess` or `denyOut`, and `network.allowPublicTraffic: false`, for a sandbox
   made with them: the provider refuses a computer whose read-back lacks them, so a missing field fails every create;
 - that `getInfo` reports a template asked for by alias with that alias, or its id (the drift check skips an alias E2B
   does not report);
-- that a sandbox with no internet access reaches no IPv6 address (the probe), and what else `denyOut 0.0.0.0/0` lets
-  through;
+- that a sandbox with no internet access gets no answer from any probe target, IPv6 included (the one diagnostic read
+  the IPv6 target refused and every IPv4 one accepted with 0 bytes), and what else `denyOut 0.0.0.0/0` lets through;
 - that envd keeps init running once create disconnects, and how long `getInfo` takes to answer not found after a kill;
 - that Xvfb starts as uid 1000 in the desktop template, and the screen and input cases pass against it;
 - `endAt` against E2B's start plus the timeout, to the second, and how long the listing takes to show a new sandbox;

@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
+import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
 import type { HelloResult } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -23,6 +23,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreatedComputer,
 	checkLifetime,
 	type NetworkPolicy,
 	type NetworkSpec,
@@ -175,7 +176,7 @@ export interface E2BProviderOptions {
 	 */
 	publicStream?: boolean;
 	timeouts?: Partial<E2BTimeouts>;
-	/** host:port addresses the probe tries, to show a computer with network none reaches nothing. */
+	/** host:port addresses the probe tries, to show none of them answers a computer with network none. */
 	probeTargets?: string[];
 }
 
@@ -459,26 +460,6 @@ function networkOf(info: E2BSandboxInfo, publicStream: boolean): NetworkPolicy {
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 
-/** What `computerd probe` reports from inside the computer. */
-interface ProbeReport {
-	uid: number;
-	gid: number;
-	kernel: string;
-	reached: string[];
-}
-
-function probeOf(stdout: string): ProbeReport | undefined {
-	try {
-		const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as Partial<ProbeReport> | null;
-		if (isWhole(value?.uid) && isWhole(value?.gid) && typeof value?.kernel === "string" && Array.isArray(value?.reached) && value.reached.every((one) => typeof one === "string")) {
-			return value as ProbeReport;
-		}
-	} catch {
-		// Not the probe's JSON: undefined.
-	}
-	return undefined;
-}
-
 /** What create made before the sandbox: its deadlines, its metadata, and the daemon with its sha256. */
 interface Made {
 	deadline: string;
@@ -502,6 +483,8 @@ export interface E2BNetworkDiagnosis {
 	computer?: ComputerRef;
 	readBack?: { allowInternetAccess?: boolean; allowPublicTraffic?: boolean; allowOut?: string[]; denyOut?: string[] };
 	check?: string;
+	/** What the provider's check recorded that does not refuse the sandbox: its silent accepts, in words. */
+	notes?: string[];
 	diagnosis?: unknown;
 	error?: { code: ComputerErrorCode; message: string };
 	released: { gone: boolean; words: string };
@@ -643,14 +626,14 @@ export class E2BProvider implements ComputerProvider {
 		return { ...this.#connection, requestTimeoutMs: ms, ...(signal ? { signal } : {}) };
 	}
 
-	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<ComputerRef>> {
+	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<CreatedComputer>> {
 		const launched = await this.#launch(spec, signal);
 		if (!launched.ok) return launched;
 		const { sandbox, ref, made } = launched.value;
 		// From here the sandbox exists: every step takes the caller's signal, and a failure or an abort kills it.
 		const prepared = await this.#prepare(spec, ref, sandbox, made, signal);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
-		if (prepared.ok) return ok(ref);
+		if (prepared.ok) return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
 		return this.#abandon(ref, prepared.error, signal);
 	}
 
@@ -745,9 +728,10 @@ export class E2BProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Everything between the create's answer and a computer that passed the drift check. The diagnostic (#diagnose) is
-	 * given every step alike up to the daemon's first connection, then runs its own inside step in place of the check
-	 * and the listing's wait, and sees the read-back.
+	 * Everything between the create's answer and a computer that passed the drift check, whose value is what the check
+	 * recorded that does not refuse it (notes). The diagnostic (#diagnose) is given every step alike up to the daemon's
+	 * first connection, then runs its own inside step in place of the check and the listing's wait, and sees the
+	 * read-back.
 	 */
 	async #prepare(
 		spec: ComputerSpec,
@@ -756,7 +740,7 @@ export class E2BProvider implements ComputerProvider {
 		{ deadline, maxDeadline, metadata, daemon, sha256 }: Made,
 		signal?: AbortSignal,
 		diagnostic?: { readBack(info: E2BSandboxInfo): void; inside(connection: ComputerConnection): Promise<Result<void>> },
-	): Promise<Result<void>> {
+	): Promise<Result<string[]>> {
 		const { requestMs, uploadMs, execMs } = this.#timeouts;
 		const info = await this.#info(ref.id, signal);
 		if (!info.ok) return info;
@@ -788,13 +772,22 @@ export class E2BProvider implements ComputerProvider {
 				const why = init.value.stderr.trim().slice(-500);
 				return opened.error.code === "aborted" ? opened : fail(opened.error.code, `the daemon did not answer: ${opened.error.message}${why ? `; init wrote: ${why}` : ""}`);
 			}
+			let notes: string[] = [];
 			try {
-				const inside = diagnostic ? await diagnostic.inside(opened.value) : await this.#checkInside(opened.value, ref.name, spec.network as "none" | "open", true, signal);
-				if (!inside.ok) return inside;
+				if (diagnostic) {
+					const inside = await diagnostic.inside(opened.value);
+					if (!inside.ok) return inside;
+				} else {
+					const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none" | "open", true, signal);
+					if (!inside.ok) return inside;
+					notes = inside.value;
+				}
 			} finally {
 				await opened.value.close();
 			}
-			return diagnostic ? ok(undefined) : await this.#waitListed(ref, signal);
+			if (diagnostic) return ok([]);
+			const listed = await this.#waitListed(ref, signal);
+			return listed.ok ? ok(notes) : listed;
 		} finally {
 			await init.value.disconnect().catch(() => {});
 		}
@@ -802,9 +795,10 @@ export class E2BProvider implements ComputerProvider {
 
 	/**
 	 * Inside the computer: for a desktop just made, the X server started through the daemon and hello declaring the
-	 * display; then the daemon's own report (hello, credentials, home, binary) and, for network none, the probe.
+	 * display; then the daemon's own report (hello, credentials, home, binary) and, for network none, the probe, which
+	 * refuses on an answer and records a silent accept in the notes it returns (README, "Network none, read from inside").
 	 */
-	async #checkInside(connection: ComputerConnection, name: string, network: NetworkPolicy, starting: boolean, signal?: AbortSignal): Promise<Result<void>> {
+	async #checkInside(connection: ComputerConnection, name: string, network: NetworkPolicy, starting: boolean, signal?: AbortSignal): Promise<Result<string[]>> {
 		let current = connection;
 		if (starting && this.#desktop) {
 			const shown = await startDisplay(connection.client, this.#desktop, { version: VERSION, vendor: "e2b", signal });
@@ -816,12 +810,14 @@ export class E2BProvider implements ComputerProvider {
 		const found = await daemonDrift(current, this.#daemonExpected(), this.#timeouts.helloMs, signal);
 		if (!found.ok) return found;
 		const drift = [...found.value];
+		const notes: string[] = [];
 		if (network === "none") {
 			const probe = await this.#probe(current, name, signal);
 			if (!probe.ok) return probe;
-			if (probe.value.reached.length > 0) drift.push(`network: declared none, read back a connection from inside that reached ${probe.value.reached.join(", ")}`);
+			drift.push(...probeNetworkDrift(probe.value));
+			notes.push(...probeNotes(probe.value, network));
 		}
-		return drift.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		return drift.length === 0 ? ok(notes) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 	}
 
 	#daemonExpected(): DaemonExpected {
@@ -988,7 +984,7 @@ export class E2BProvider implements ComputerProvider {
 		const { exitCode, stdout, stderr, timedOut } = ran.value;
 		if (timedOut) return fail("timeout", `the probe in ${name} did not end within ${seconds(probeMs)}`);
 		if (exitCode !== 0) return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
-		const report = probeOf(stdout);
+		const report = probeReportOf(stdout);
 		return report === undefined ? fail("refused", `the probe in ${name} wrote what is not its report`) : ok(report);
 	}
 
@@ -1021,6 +1017,7 @@ export class E2BProvider implements ComputerProvider {
 						const checked = await this.#checkInside(connection, ref.name, "none", true, signal);
 						if (signal?.aborted) return fail("aborted", "the diagnostic was aborted");
 						report.check = checked.ok ? "passed" : checked.error.message;
+						if (checked.ok && checked.value.length > 0) report.notes = checked.value;
 						const diagnosed = await this.#probeDiagnose(connection, ref.name, signal);
 						if (!diagnosed.ok) return diagnosed;
 						report.diagnosis = diagnosed.value;
@@ -1114,6 +1111,7 @@ export class E2BProvider implements ComputerProvider {
 		const spec = { image, lifetimeMs: 1, network: typeof network === "object" ? "open" : network, labels } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		let kind: AttachedComputer["spec"]["kind"];
+		let notes: string[] = [];
 		if (info.state === "running") {
 			const sandbox = await this.#connected(info, signal);
 			if (!sandbox.ok) return sandbox;
@@ -1123,6 +1121,7 @@ export class E2BProvider implements ComputerProvider {
 				const inside = await this.#checkInside(opened.value, name, network, false, signal);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
+				else notes = inside.value;
 			} finally {
 				await opened.value.close();
 			}
@@ -1140,6 +1139,7 @@ export class E2BProvider implements ComputerProvider {
 				...(deadline === undefined ? {} : { deadline }),
 				...(kind === undefined ? {} : { kind }),
 			},
+			...(notes.length > 0 ? { notes } : {}),
 		});
 	}
 
