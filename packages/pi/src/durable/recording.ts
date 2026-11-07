@@ -257,7 +257,7 @@ function publicationLines(publication: CommitPublication, state: RecorderState):
  * `snapshotLines` restores the documents' state; a lost commit's entries stay missing, a gap the viewer shows. The
  * returned stop ends the subscription, waits for every queued write, and then throws the first write that failed.
  */
-export function recordCommits(session: Pick<Session, "observeCommits">, options: { gen?: number; from?: RecordingLine[]; write: (lines: RecordingLine[]) => void | Promise<void>; clock?: () => number }): () => Promise<void> {
+export function recordCommits(session: Pick<Session, "observeCommits" | "closed">, options: { gen?: number; from?: RecordingLine[]; write: (lines: RecordingLine[]) => void | Promise<void>; clock?: () => number }): () => Promise<void> {
   const clock = options.clock ?? Date.now;
   const fromDriver = (options.from ?? []).reduce<number | undefined>((max, line) => {
     const generation = line.kind === "agentrun.driver" ? line.data?.value?.generation : undefined;
@@ -270,8 +270,12 @@ export function recordCommits(session: Pick<Session, "observeCommits">, options:
   }
   let chain: Promise<void> = Promise.resolve();
   let failure: { error: unknown } | undefined;
+  /** Settled once the Session's own end is read, after the observer's end. */
+  let ended: Promise<void> = Promise.resolve();
   // pi 1.5's observeCommits: a throw out of `advance` would detach the observer for good, so it never throws (it never
-  // could on 1.1 either); a Session that fails ends it, which the stop reports as the first failure.
+  // could on 1.1 either). pi ends the observer only when its Session closes, and `failed` with "session closed" on a
+  // normal close too (session.js closeEnds); the Session's own end (`closed`, settled by the same close, tagged by kind)
+  // says which: `failed` (the store failed, or could not close) is the stop's failure, `closed` is none.
   const observation = session.observeCommits({
     advance: (publication) => {
       try {
@@ -283,12 +287,17 @@ export function recordCommits(session: Pick<Session, "observeCommits">, options:
       } catch (error) { failure ??= { error }; }
     },
     end: (end) => {
-      if ("error" in end) failure ??= { error: end.error };
+      if (end.kind === "listener_error") return void (failure ??= { error: end.error });
+      ended = session.closed.then(
+        (closed) => void (closed.kind === "failed" && (failure ??= { error: closed.error })),
+        (error: unknown) => void (failure ??= { error }),
+      );
     },
   });
   return async () => {
     observation.detach();
     await chain;
+    await ended;
     if (failure) throw failure.error;
   };
 }
