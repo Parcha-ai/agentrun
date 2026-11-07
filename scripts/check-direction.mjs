@@ -120,6 +120,8 @@ async function serverFiles(root, layers) {
 export function withoutComments(text) {
   let out = '';
   let quote = null;
+  let last = '';
+  let word = '';
   for (let i = 0; i < text.length; i += 1) {
     const c = text[i];
     const next = text[i + 1];
@@ -136,11 +138,34 @@ export function withoutComments(text) {
       i = stop - 1;
       continue;
     }
+    // A slash where an expression may start opens a regular expression (after a name, a number or a closing bracket it
+    // is a division): its text is copied whole, so a `/*` or `//` inside it is never read as a comment.
+    if (c === '/' && (last === '' || '([{,;:=!&|?+-*%<>~^'.includes(last) || REGEX_AFTER.has(word))) {
+      let j = i + 1;
+      let inClass = false;
+      for (; j < text.length && text[j] !== '\n'; j += 1) {
+        if (text[j] === '\\') { j += 1; continue; }
+        if (text[j] === '[') inClass = true;
+        else if (text[j] === ']') inClass = false;
+        else if (text[j] === '/' && !inClass) break;
+      }
+      out += text.slice(i, j + 1);
+      i = j;
+      last = '/';
+      word = '';
+      continue;
+    }
     if (c === '"' || c === "'" || c === '`') quote = c;
     out += c;
+    if (/\s/.test(c)) continue;
+    word = /[\w$]/.test(c) ? (/[\w$]/.test(last) ? word + c : c) : '';
+    last = c;
   }
   return out;
 }
+
+/** Words after which a slash opens a regular expression, not a division. */
+const REGEX_AFTER = new Set(['return', 'typeof', 'case', 'void', 'in', 'of', 'delete', 'new', 'throw', 'yield', 'await', 'else']);
 
 const lineOf = (text, index) => text.slice(0, index).split('\n').length;
 

@@ -105,3 +105,13 @@ test('comments are not edges: a commented-out import, or a comment quoting a pac
   assert.deepEqual(await check({ 'packages/k/src/a.ts': "import { serve } from '@x/v';\n// import { other } from '@x/v';\n" }, [['packages/k/src/a.ts', 'packages/v', 1, ...reason]]), []);
   assert.equal(withoutComments("a // b\n'c // d'"), "a     \n'c // d'");
 });
+
+test('a regular expression is not a comment: an import after /[/*]/ is still an edge, and a division is not a regex', async () => {
+  const hidden = await check({ 'packages/k/src/a.ts': "const special = /[/*]/;\nawait import('@x/v');\n" });
+  assert.equal(hidden.length, 1, hidden.join('; '));
+  assert.match(hidden[0], /^packages\/k\/src\/a\.ts:2: /);
+  const slashes = await check({ 'packages/k/src/a.ts': "const url = /https?:\\/\\//;\nimport '@x/v';\n" });
+  assert.equal(slashes.length, 1, slashes.join('; '));
+  assert.equal(withoutComments('const half = total / 2; // a note\nconst r = /a\\/b/;'), 'const half = total / 2;          \nconst r = /a\\/b/;');
+  assert.equal(withoutComments('return /[/*]/.test(x) /* gone */;'), 'return /[/*]/.test(x)           ;');
+});
