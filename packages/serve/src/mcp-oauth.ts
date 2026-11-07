@@ -61,20 +61,48 @@ export const systemNetwork: OAuthNetwork = {
   },
 };
 
+/** What a sign-in's requests met, for its answer: the first refusal, else the last endpoint that failed (its status,
+ *  when it answered). Never what an authorization server said: its words are not passed on. */
+type Seen = { refused?: string; failed?: { what: string; status?: number; why?: string } };
+
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
- *  held to REQUEST_MS, and stopped with `stop` (the server's own stop). For an MCP server off loopback (`mcpUrl`), none
- *  goes to a private address or over plain http (checked), and each is dialled at the address checked: its
- *  authorization server cannot steer this server's code, verifier, secret or refresh token to a service on this machine
- *  or its network, by its metadata or by its name's next answer. */
-const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork) => async (input: string | URL | Request, init?: RequestInit) => {
+ *  held to REQUEST_MS, and stopped with `stop` (the server's own stop). None goes to a private or link-local address or
+ *  over plain http (checked), and each is dialled at the address checked: its authorization server cannot steer this
+ *  server's code, verifier, secret or refresh token to a service on this machine or its network, by its metadata or by
+ *  its name's next answer. The one exception is a loopback MCP server's (`mcpUrl`, development and tests): its
+ *  authorization server may also be on loopback, and only there. */
+const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}) => async (input: string | URL | Request, init?: RequestInit) => {
   // Started before the address check: its name lookup is bounded by the same timeout and the server's stop.
   const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]);
-  if (onLoopback(mcpUrl)) return fetch(input, { ...init, redirect: "manual", signal });
   const url = new URL(input instanceof Request ? input.url : String(input));
-  const at = await checked(`endpoint ${url.origin}${url.pathname}`, url.href, signal, network);
-  if ("refused" in at) throw new Error(at.refused);
-  return network.fetch(url.href, { ...init, redirect: "manual", signal }, at.address);
+  const what = `endpoint ${url.origin}${url.pathname}`;
+  if (onLoopback(mcpUrl) && LOOPBACK.test(url.hostname)) return noted(fetch(input, { ...init, redirect: "manual", signal }), what, seen);
+  let at: Awaited<ReturnType<typeof checked>>;
+  try {
+    at = await checked(what, url.href, signal, network);
+  } catch (error) {
+    // Its address check outlived the request's time (a name lookup that never answered), or the server stopped: the
+    // endpoint is noted, never the error's own words.
+    seen.failed = { what, ...(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? { why: "DNS lookup timed out" } : {}) };
+    throw error;
+  }
+  if ("refused" in at) {
+    seen.refused ??= at.refused;
+    throw new Error(at.refused);
+  }
+  return noted(network.fetch(url.href, { ...init, redirect: "manual", signal }, at.address), what, seen);
 };
+/** `sent`'s answer, an endpoint that failed (or answered 4xx/5xx) noted in `seen`. */
+async function noted(sent: Promise<Response>, what: string, seen: Seen): Promise<Response> {
+  try {
+    const res = await sent;
+    if (res.status >= 400) seen.failed = { what, status: res.status };
+    return res;
+  } catch (error) {
+    seen.failed = { what };
+    throw error;
+  }
+}
 const onLoopback = (url: string) => LOOPBACK.test(new URL(url).hostname);
 
 /** `url`, which the authorization server named as its `what`, for an MCP server off loopback: refused when it is on
@@ -116,12 +144,14 @@ const raced = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
     work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 
-/** Every endpoint discovery found, checked as `checked` does, before any is used. */
-async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwork): Promise<string | undefined> {
+/** Every endpoint discovery found, checked as `checked` does, before any is used; a loopback one passes for a loopback
+ *  MCP server (`loopback`), and only for one. */
+async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwork, loopback: boolean): Promise<string | undefined> {
   const signal = AbortSignal.timeout(REQUEST_MS);
   const metadata = state.authorizationServerMetadata;
   const named: Array<[string, string | undefined]> = [["address", state.authorizationServerUrl], ["metadata address", state.resourceMetadataUrl], ["authorization endpoint", metadata?.authorization_endpoint], ["token endpoint", metadata?.token_endpoint], ["registration endpoint", metadata?.registration_endpoint]];
   for (const [what, url] of named) {
+    if (url && loopback && LOOPBACK.test(URL.parse(url)?.hostname ?? "")) continue;
     const at = url ? await checked(what, url, signal, network) : undefined;
     if (at && "refused" in at) return at.refused;
   }
@@ -176,11 +206,15 @@ export class McpSignIns {
     const state = randomBytes(32).toString("base64url");
     const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
-    const provider = this.provider(entry, { state, redirect: (to) => void (opened = to) });
+    const seen: Seen = {};
+    const provider = this.provider(entry, { state, redirect: (to) => void (opened = to), seen });
     try {
-      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network) });
+      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen) });
     } catch (error) {
-      throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: ${(error as Error).message.slice(0, 300)}`);
+      // Named by the endpoint and its status, never by what the authorization server said: its answer is not passed on.
+      const { OAuthError } = await sdk();
+      const why = seen.refused ?? (seen.failed ? `its authorization server's ${seen.failed.what} ${seen.failed.status ? `answered HTTP ${seen.failed.status}` : `could not be reached${seen.failed.why ? ` (${seen.failed.why})` : ""}`}` : error instanceof OAuthError && /^[a-z_]{1,64}$/.test(String(error.code)) ? `its authorization server refused it (${error.code})` : "its authorization server's answer was not one it could use");
+      throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: ${why}.`);
     }
     if (!opened) throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: its authorization server gave no page to open.`);
     if (entry.client?.client_id === provider.clientMetadataUrl) entry.kind = "metadata-document";
@@ -207,7 +241,7 @@ export class McpSignIns {
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
   }
 
-  private provider(entry: Pending, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void }): OAuthClientProvider {
+  private provider(entry: Pending, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void; seen?: Seen }): OAuthClientProvider {
     const metadataUrl = entry.kind === "pre-registered" ? undefined : this.metadataUrl;
     return {
       redirectUrl: `${this.base}${OAUTH_CALLBACK}`,
@@ -223,8 +257,11 @@ export class McpSignIns {
       codeVerifier: () => entry.verifier ?? "",
       // Checked before anything discovery found is used: registration, the page the owner opens, the code exchange.
       saveDiscoveryState: async (state) => {
-        const why = onLoopback(entry.url) ? undefined : await discoveryRefusal(state, this.network);
-        if (why) throw new Error(why);
+        const why = await discoveryRefusal(state, this.network, onLoopback(entry.url));
+        if (why) {
+          if (hooks.seen) hooks.seen.refused ??= why;
+          throw new Error(why);
+        }
         entry.discovery = state;
       },
       discoveryState: () => entry.discovery,

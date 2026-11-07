@@ -42,7 +42,7 @@ import { readRunDbSync } from "./run-db.js";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
-import { type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { CAP_WRAPUP, type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -113,6 +113,35 @@ export function expectedInput(bound: number, previous: Previous | undefined, now
   if (!(gap >= 0 && gap < CACHE_WARM_MS)) return undefined;
   return { cached: previous.cachedTokens, fresh: previous.inputTokens + Math.max(0, bound - previous.boundTokens) };
 }
+/** The wrap-up's trigger (wrapUpDue): what is left of a cap under this many times a priced request's typical cost. */
+export const WRAP_UP_FACTOR = 3;
+/** A priced request's typical cost, for the wrap-up's trigger: the median of `costs` (the run's own model's requests, a
+ *  cost known and above 0) after the first, which writes the cache and costs several warm ones; with one priced request,
+ *  that one; with none, `nextExpected`, the next request's expected cost (what admission holds it at). No wait for a
+ *  count of requests: a small cap may never reach one, and that run needs the wrap-up most. */
+export function typicalCost(costs: readonly unknown[], nextExpected: number): number {
+  const priced = costs.filter((usd): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd > 0);
+  if (priced.length === 0) return nextExpected;
+  if (priced.length === 1) return priced[0]!;
+  const warm = priced.slice(1).sort((a, b) => a - b);
+  const mid = Math.floor(warm.length / 2);
+  return warm.length % 2 ? warm[mid]! : (warm[mid - 1]! + warm[mid]!) / 2;
+}
+/** Whether a run near its cap is due its wrap-up: what is left (`cap` less `spent` and `held`, as admission counts it)
+ *  is under WRAP_UP_FACTOR times `typical`. The same rule under strict. */
+export function wrapUpDue(cap: number, spent: number, held: number, typical: number): { leftUsd: number } | undefined {
+  const leftUsd = cap - spent - held;
+  return Number.isFinite(leftUsd) && Number.isFinite(typical) && leftUsd < WRAP_UP_FACTOR * typical ? { leftUsd } : undefined;
+}
+/** The wrap-up's words, what is left to the cent. `nonePriced`: the run's own model has no priced request yet, so its
+ *  typical cost is the next request's expected cost and the note can come before the run has done anything (step 0):
+ *  the words say the budget and ask for a short answer, not a finish. Read from the same priced costs live and in a
+ *  process opened again (costsIn, ownCosts), so a restart picks the same words. */
+export const wrapUpWords = (leftUsd: number, nonePriced = false): string => {
+  const left = centsMoney(Math.max(0, leftUsd));
+  return nonePriced ? `This run's budget is about ${left}, enough for little work: answer as soon as you can.` : `About ${left} left of this run's budget: finish now with your answer.`;
+};
+
 /** A request priced at `price` under `mode`, its input `bound` tokens after `previous` at `now`, plus `feeUsd`: `cost`, what
  *  it is held at given its output tokens (its expected input, never more than uncached), and `worst`, its input uncached.
  *  The one rule pi's guard (capModels) and another harness's (capBefore) call. */
@@ -485,6 +514,32 @@ export function spentIn(storeFile: string): number | null {
   if (usage === undefined) return 0;
   if (typeof usage.usd !== "number" || !Number.isFinite(usage.usd)) return null;
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
+}
+
+/** The entries of the run's store, in order (none when it has no store yet). */
+function entriesIn(storeFile: string): EntryLike[] {
+  if (!existsSync(storeFile)) return [];
+  // Fresh, read-only and lock-free (run-db.ts), as spentIn reads it.
+  const rows: EntryLike[] = [];
+  readRunDbSync(storeFile, false, (db) => {
+    rows.length = 0;
+    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) rows.push(JSON.parse(String((row as { record: string }).record)) as EntryLike);
+  });
+  return rows;
+}
+/** The priced answers of `model` (its id) in the run's store, in order: what the wrap-up's typical cost reads from earlier
+ *  processes (capModels' `wrapUp`). An answer whose cost is unknown or $0, or that was stopped or failed, is none. */
+export function costsIn(storeFile: string, model: string): number[] {
+  return entriesIn(storeFile).flatMap((entry) => {
+    const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { model?: unknown; stopReason?: unknown; usage?: { cost?: { total?: unknown } } } | undefined) : undefined;
+    const total = message?.usage?.cost?.total;
+    return message?.model === model && message.stopReason !== "error" && message.stopReason !== "aborted" && typeof total === "number" && Number.isFinite(total) && total > 0 ? [total] : [];
+  });
+}
+/** Whether the run was told its wrap-up under `cap` already (a CAP_WRAPUP entry of that cap): once per cap, across its
+ *  processes; a raise's new cap re-arms it. */
+export function wrapUpSentIn(storeFile: string, cap: number): boolean {
+  return entriesIn(storeFile).some((entry) => entry.kind === CAP_WRAPUP && typeof (entry.data as { capUsd?: unknown } | undefined)?.capUsd === "number" && Math.abs((entry.data as { capUsd: number }).capUsd - cap) <= CAP_TOLERANCE);
 }
 
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
@@ -880,6 +935,11 @@ export function requestParts(overhead: (model: Model<Api>, context: Context) => 
   };
 }
 
+/** The wrap-up on pi (capModels' `wrapUp`): the run's own model (`model`, its id), that model's priced requests so far
+ *  (`costs`, earlier processes' from the store, costsIn; capModels adds each one it books), whether it was told under this
+ *  cap already (`sent`, wrapUpSentIn), and `record`, which writes its row (request-start.ts, CAP_WRAPUP). */
+export type WrapUp = { model: string; costs: number[]; sent: boolean; record(data: { capUsd: number; leftUsd: number; words: string }): void };
+
 /** `models`, each request limited to the output tokens what is left of `cap` after `spent` USD (and what requests in flight
  *  hold) can buy, at most what it asks for, thinking included (CLAMP on its marks when that is less), and refused when that
  *  cannot buy its least (`leastOutput`: 1,024 tokens for the answer, and its thinking's least), saying so in plain words;
@@ -894,7 +954,7 @@ export function requestParts(overhead: (model: Model<Api>, context: Context) => 
  *  before its end counts at most its hold.
  *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. On
  *  another harness the run has no models of its own: every request goes through its session's proxy (port-models.ts). */
-export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, mode = "expected", now = Date.now }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void>; mode?: CapMode; now?: () => number } = {}): Promise<M> {
+export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, mode = "expected", now = Date.now, wrapUp }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void>; mode?: CapMode; now?: () => number; wrapUp?: WrapUp } = {}): Promise<M> {
   const [{ calculateCost, createAssistantMessageEventStream }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   /** When each answer settled here, by its timestamp (an answer keeps it when the run's store gives it back), the newest
@@ -928,8 +988,27 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  (limited to what is left of the cap, when that is less than it asks for), or why the cap refuses it. `simpleCall`:
    *  through streamSimple or completeSimple, whose thinking pi-ai turns into a budget or an effort; a direct call sends
    *  its maxTokens as is. */
-  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options };
+  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options; context?: Context };
+  /** `judgeOne`, and near the cap the wrap-up (wrapUpDue), once: a turn's request on the run's own model is sent with the
+   *  words after everything its context holds (`context`), its bytes admitted with it. Only in this one request: pi's
+   *  transcript never holds the note, and no input is queued, so the run spends nothing after the model answers. */
   const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
+    const judged = judgeOne(model, context, options, simpleCall, turn);
+    if (!("hold" in judged) || !wrapUp || wrapUp.sent || !turn || model.id !== wrapUp.model) return judged;
+    const spentUsd = spentNow();
+    // What is left as admission counted it: what was spent, and what requests and paid calls in flight are held at.
+    const due = spentUsd === null ? undefined : wrapUpDue(cap, spentUsd, held + paidHolds(), typicalCost(wrapUp.costs, judged.hold));
+    if (!due) return judged;
+    const words = wrapUpWords(due.leftUsd, wrapUp.costs.length === 0);
+    const noted = { ...context, messages: [...context.messages, { role: "user", content: `<system-reminder>${words}</system-reminder>`, timestamp: now() }] } as Context;
+    const again = judgeOne(model, noted, options, simpleCall, turn);
+    // The note's own bytes do not fit: the request goes as it came, and the note waits for one they do.
+    if (!("hold" in again)) return judged;
+    wrapUp.sent = true;
+    wrapUp.record({ capUsd: cap, leftUsd: due.leftUsd, words });
+    return { ...again, context: noted };
+  };
+  const judgeOne = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
     if (ceiling === undefined) return { why: noCeiling(cap) };
@@ -1012,16 +1091,23 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  (markResponseBegan: its usage is what had streamed, not what the provider can have billed), or that failed with no
    *  answer, at `worst`, what the cap held for it; each as spentIn reads its end mark. Without a figure (a deferred
    *  response) it is unknown, as is a cost that is not a number, from then on. */
-  const count = (answer: Promise<AssistantMessage>, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
+  const count = (answer: Promise<AssistantMessage>, turn: boolean, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
     const plus = (sum: number | null, cost: unknown) => (sum !== null && typeof cost === "number" && Number.isFinite(cost) ? sum + cost : null);
     const add = (cost: unknown) => void (spent = plus(spent, cost));
     // One rule (bookRequest), from how the request ended (piEnded) as its marks read it too.
     const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped && !anyAttemptLost(attempts) ? stopped(message) : worst)
       : bookRequest(piEnded(message, responseBegan.has(message), attempts), worst === undefined ? {} : { hold: worst }).usd;
-    return answer.then((message) => (endedNow(message), add(at(message))), () => add(worst));
+    // A priced turn answer of the run's own model: the wrap-up's typical cost counts it, as costsIn reads it again (its
+    // pi.assistant entries). Never a compaction summary's or a native search's request on the same model (completeSimple
+    // calls, `turn` false): no pi.assistant entry keeps them, so a process opened again would count without them.
+    const priced = (message: AssistantMessage) => {
+      const total = message.usage?.cost?.total;
+      if (wrapUp && turn && message.model === wrapUp.model && message.stopReason !== "error" && message.stopReason !== "aborted" && typeof total === "number" && Number.isFinite(total) && total > 0) wrapUp.costs.push(total);
+    };
+    return answer.then((message) => (endedNow(message), priced(message), add(at(message))), () => add(worst));
   };
   /** Sends a request judged to fit at `worst` (its hold), holding that until `answer` settles. */
-  const admit = (worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
+  const admit = (turn: boolean, worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
     held += worst;
     const release = () => void (held -= worst);
     let answered: Promise<AssistantMessage>;
@@ -1031,7 +1117,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       release();
       throw error;
     }
-    void count(answered, worst, stopped, attempts).finally(release);
+    void count(answered, turn, worst, stopped, attempts).finally(release);
     return answered;
   };
   // A paid tool's check reads the spend, and the requests in flight held at their worst case apart from it (it adds the
@@ -1052,7 +1138,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       if ("hold" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
-        admit(judged.hold, judged.stopped, () => (events = send(model, context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
         return events!;
       }
       const refused = createAssistantMessageEventStream();
@@ -1073,7 +1159,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       const judged = judge(model, context, options, simpleCall, false);
       if (!("hold" in judged)) return Promise.resolve(refusal(model, judged.why));
       const attempts = attemptsFor(model);
-      return admit(judged.hold, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged, attempts)), attempts);
+      return admit(false, judged.hold, judged.stopped, () => send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts)), attempts);
     };
   const guarded: Record<PropertyKey, unknown> = {
     stream: stream(models.stream.bind(models) as never, false),
@@ -1083,12 +1169,12 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // A deferred response was admitted when it was sent; what it cost is counted when it is fetched.
     streamDeferred: (...args: Parameters<Models["streamDeferred"]>) => {
       const events = models.streamDeferred(...args);
-      void count(events.result());
+      void count(events.result(), true);
       return events;
     },
     fetchDeferred: (...args: Parameters<Models["fetchDeferred"]>) => {
       const answer = models.fetchDeferred(...args);
-      void count(answer);
+      void count(answer, true);
       return answer;
     },
   };

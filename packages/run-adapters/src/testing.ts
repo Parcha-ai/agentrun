@@ -39,7 +39,10 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  bound its body was measured at (`inputTokensMax`; default the prompt's UTF-8 bytes), and a file it waits for once it
  *  is admitted, before it answers (`until`): a request held in flight until a test lets it go. `bookWhen`: its reply is
  *  shown at once and its cost booked only once that file exists, as a provider's usage can come after its answer. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string };
+/** `sideAfterNote`: a client's side call on another model (a title, a summary: ModelRequest.side) admitted and answered
+ *  at `usd` after this request took its host's note and before this request is admitted, as a Claude Code side call can
+ *  be while the model proxy reads the credential between the two. */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -65,7 +68,9 @@ export type FauxAction =
    *  streamed) is still booked, as a provider bills a response cut short. */
   | { cutBooked: true; usd?: number | null };
 
-export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result" } as const;
+/** `note`: a note its host had for the request (ModelPort.note, the spend cap's wrap-up), as a real adapter's model proxy
+ *  would add it to the body: filed with its text, for a test to see. */
+export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. */
@@ -162,7 +167,16 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
             // On the session's model: the proxy's, when it has one (the host's own requests go there on that model too).
-            const ticket = await io.models.beforeRequest({ model: options.proxy?.options.model ?? "faux", inputTokensMax: measured });
+            const own = options.proxy?.options.model ?? "faux";
+            // A note its host has for this request, taken before it is measured, as the model proxy takes it: its bytes count
+            // in what the request is admitted at, and it is filed as sent once the request is admitted carrying it.
+            const note = io.models.note?.(own);
+            if ("sideAfterNote" in action && action.sideAfterNote) {
+              const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
+              await io.models.afterRequest({ input: 10, output: 5, usd: action.sideAfterNote.usd }, side || undefined);
+            }
+            const ticket = await io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
               stats.requests += 1;

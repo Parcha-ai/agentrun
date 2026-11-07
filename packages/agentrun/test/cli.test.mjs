@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
@@ -22,7 +23,7 @@ const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-cli-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
 }
@@ -177,9 +178,9 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // An MCP OAuth start may carry a pre-registered client's secret: no flag for it, and its body never from the command line.
-  const oauthFlag = cli(["local", "start-mcp-oauth", "docs", "--url", "https://mcp.example.com/mcp", "--client-id", "app", "--client-secret", "not-a-secret", ...data]);
+  const oauthFlag = cli(["mcp-servers", "oauth-start", "docs", "--url", "https://mcp.example.com/mcp", "--client-id", "app", "--client-secret", "not-a-secret", ...data]);
   assert.equal(oauthFlag.code, 2, oauthFlag.err);
-  const oauthInline = cli(["local", "start-mcp-oauth", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  const oauthInline = cli(["mcp-servers", "oauth-start", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
   assert.equal(oauthInline.code, 2, oauthInline.err);
   assert.match(oauthInline.err, /--body -/);
   const oauthRaw = cli(["api", "POST", "/settings/mcp-servers/docs/oauth/start", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
@@ -581,4 +582,30 @@ test("a file path argument keeps its slashes and refuses a dot segment (plain or
   assert.equal((await run(env, ["home", "read", "a", "notes/a b.md", ...at], { extra })).code, 0);
   const homeFile = ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/");
   assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", homeFile]);
+});
+
+test("agents create --help and runs start --help end with the document's working body as a --body to paste, and pasted it works", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await serve(t, dir, env);
+  const cli = cliOf(env, []);
+  const doc = JSON.parse(cli(["--data", server.data, "server", "openapi"]).out);
+  const exampleOf = (path, method) => Object.values(doc.paths[path][method].requestBody.content["application/json"].examples)[0].value;
+  /** The help's example line, as a shell would split it: the words, then the single-quoted body. */
+  const pasted = (args) => {
+    const help = cli([...args, "--help"]);
+    assert.equal(help.code, 0, help.err);
+    const [, words, quoted] = /\nExample:\n {2}agentrun ([^']+) --body '((?:[^']|'\\'')*)'\n?$/.exec(help.out) ?? assert.fail(help.out);
+    return { words: words.split(" "), body: quoted.replace(/'\\''/g, "'") };
+  };
+  const create = pasted(["agents", "create"]);
+  assert.deepEqual(create.words, ["agents", "create"]);
+  assert.deepEqual(JSON.parse(create.body), exampleOf("/agents", "post"), "the document's example, whole");
+  const created = cli(["--data", server.data, ...create.words, "--body", create.body]);
+  assert.equal(created.code, 0, created.err);
+  const start = pasted(["runs", "start"]);
+  assert.deepEqual(start.words, ["runs", "start", "AGENT_ID"]);
+  assert.deepEqual(JSON.parse(start.body), exampleOf("/agents/{agent_id}/runs", "post"));
+  const started = cli(["--data", server.data, "runs", "start", created.json().agent_id, "--body", start.body]);
+  assert.equal(started.code, 0, started.err);
+  assert.equal(started.json().status, "queued");
 });

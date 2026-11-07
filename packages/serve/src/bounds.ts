@@ -76,6 +76,9 @@ export class RequestBounds {
     if (value.kind === REQUEST_STARTED) {
       if (data[CAP_REFUSED_FIELD] === true) return;
       // A turn or harness request: every side request still open died with its process (above).
+      // This assumes no harness runs a second request loop inside a tool call: Claude Code runs with its builtins off, or
+      // with CLAUDE_BUILTINS_OFF keeping Task and Agent off, and Codex with multi_agent and agents off. Should either get
+      // native subagents, a side request could still be live at a root start, and this drop rule needs another look.
       if (!side) for (const key of [...this.harness.keys()]) if (key.startsWith("side:")) this.harness.delete(key);
       if (harnessKey) this.harness.set(harnessKey, boundOf(data[BOUND_FIELD]));
       else if (side) return;

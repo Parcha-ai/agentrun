@@ -17,7 +17,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capModeOf, capOf, spentIn } from "./cap.js";
+import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
@@ -126,9 +126,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   /** The session's port, once the harness's run is made (adapterRun): read at each request. */
   let sessionPort: ((label: string) => SessionPort | undefined) | undefined;
   const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root));
+  // The wrap-up on pi (cap.ts WrapUp): near its cap the run's own model is told once, under this cap, to finish. Not on
+  // another harness: its guard tells the harness's model (harness-app.ts).
+  const storeFile = join(where.store, RUN_STORE_FILE);
+  const wrapUp = cap === undefined || onHarness || !model ? undefined : { model: model.modelId, costs: costsIn(storeFile, model.modelId), sent: wrapUpSentIn(storeFile, cap), record: marked!.wrapUp };
   const models = onHarness
     ? await portModels(() => sessionPort?.(LEARNED_WORKFLOW_TOOL), priced ? (chosen.models.getModel(priced.provider, priced.modelId) as never) : undefined)
-    : cap === undefined ? marked!.models : await capModels(marked!.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked!.refused, mode });
+    : cap === undefined ? marked!.models : await capModels(marked!.models, cap, spentIn(storeFile), { unpriced: chosen.unpriced, refused: marked!.refused, mode, ...(wrapUp ? { wrapUp } : {}) });
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
   // on another harness, the session's port, for a learned workflow's call node.
   searchOn(models as never);
@@ -193,7 +197,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
-    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the session's requests (the harness's and the run's own beside them): the
     // same ceiling rule as pi's (cap.ts), at the price `priced` names (above).
     const guard = await capBefore(cap, chosen.models.getModel(priced!.provider, priced!.modelId) as never, { listed: !chosen.unpriced.has(priced!.modelId), mode });

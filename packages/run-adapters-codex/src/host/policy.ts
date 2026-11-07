@@ -554,6 +554,14 @@ export function limitResponsesOutput(body: Record<string, unknown>, max: number)
   return { ...body, max_output_tokens: asked === undefined ? max : Math.min(asked, max) };
 }
 
+/** `body` (a Responses body) with `text` as a note the model reads after everything the client sent: one developer message
+ *  at the end of `input`. Caching is by prefix, so the earlier items stay a hit; the client's next request, which sends
+ *  its own input whole, does not carry it. */
+export function addResponsesNote(body: Record<string, unknown>, text: string): Record<string, unknown> {
+  const input = Array.isArray(body.input) ? body.input : [];
+  return { ...body, input: [...input, { type: "message", role: "developer", content: [{ type: "input_text", text }] }] };
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const mcp = new Set(options.mcpTools ?? []);
@@ -562,6 +570,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   return {
     id: "codex",
     routes: CODEX_RESPONSES_ROUTES,
+    addNote: addResponsesNote,
     keyOf(headers: IncomingHttpHeaders) {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";

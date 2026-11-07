@@ -133,6 +133,13 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
+  /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
+   *  host's own request beside the harness's (`host`). */
+  side?: true;
+  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+   *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
+  noted?: true;
+  inputTokensMaxWithoutNote?: number;
   /** A request the host sent beside the harness's own, on the session's own route (its model proxy, under a side key
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
@@ -180,6 +187,9 @@ export interface ModelPort {
   afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
+  /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). */
+  note?(model: string): string | undefined;
 }
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
@@ -188,6 +198,9 @@ export interface ModelTicket {
   /** The most output tokens, thinking included, the request may be sent with: what is left of its host's spend cap can
    *  buy. The session's model proxy writes it into the body; absent, the request goes as asked. */
   outputTokensMax?: number;
+  /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
+   *  request goes as its client sent it, and the note waits for another request. */
+  noteDropped?: true;
 }
 
 /** What the host lends a session. */
