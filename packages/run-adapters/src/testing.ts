@@ -4,7 +4,9 @@
 // answered interrupted, never run again.
 import { SessionFenced } from "./errors.js";
 import { abortedOutcome, SessionHalt } from "./kernel/halt.js";
-import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
+import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionPort, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
+import { type ModelProxy, type ModelProxyOptions, startModelProxy } from "./host/proxy.js";
+import { randomBytes } from "node:crypto";
 
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
 /** The model proxy's own parts, for tests of a provider policy and of the proxy: the host API (./host) keeps only what a
@@ -48,8 +50,9 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  this request still streams (after its first call's text, before that call), so two of its requests are in flight.
  *  `sideFirst`: one admitted before this request, then `say` streamed before this request is admitted: text of the
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
- *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
+ *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). `resultWhen`: a call's
+ *  result is told (its tool_end) only once this file exists, as a harness still recording it would. */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string }; resultWhen?: string };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -93,6 +96,11 @@ export interface FauxOptions {
   closeDelayMs?: number;
   /** A close that fails, after its delay, with these words (default none). */
   closeError?: string;
+  /** A real model proxy for each session, as a real adapter's machine starts one (its hooks the session's booking,
+   *  io.models), whose side keys the session's `port` hands the host: the host's own requests then go through the same
+   *  policy, origin and credential as a real harness's. The faux harness's own scripted requests stay booked directly.
+   *  `api`: what the proxy serves. */
+  proxy?: { options: Omit<ModelProxyOptions, "hooks">; api: SessionPort["api"] };
 }
 
 export interface FauxAdapter extends AgentAdapter {
@@ -123,6 +131,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       if (options.openDelayMs) await new Promise((resolve) => setTimeout(resolve, options.openDelayMs));
       const script = options.script(spec);
       const records = await io.writer.read();
+      // The session's model proxy, when the faux harness is given one: up for the session's life, its key never used here.
+      const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;
+      io.signal.addEventListener("abort", () => void proxy?.close(), { once: true });
       const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
       let cursor = records.filter((r) => r.kind === FAUX_RECORDS.request).length;
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
@@ -169,9 +180,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
+            // On the session's model: the proxy's, when it has one (the host's own requests go there on that model too).
+            const own = options.proxy?.options.model ?? "faux";
             // A note its host has for this request, taken before it is measured, as the model proxy takes it: its bytes count
             // in what the request is admitted at, and it is filed as sent once the request is admitted carrying it.
-            const note = io.models.note?.("faux");
+            const note = io.models.note?.(own, { inputTokensMax: measured, ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) });
             if ("sideAfterNote" in action && action.sideAfterNote) {
               const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
               await io.models.afterRequest({ input: 10, output: 5, usd: action.sideAfterNote.usd }, side || undefined);
@@ -185,8 +198,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
               io.onEvent({ type: "text", delta: say });
             }
             // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
-            const asked = "outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {};
-            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) };
+            const ticket = await io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
             if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
@@ -226,6 +239,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 io.onEvent({ type: "tool_start", callId, name, args });
                 const result = tool ? await tool.call(args, { callId, signal }).catch((error: Error) => ({ text: error.message, isError: true })) : { text: `unknown tool ${name}`, isError: true };
                 if (tool) stats.calls.push(name);
+                if ("resultWhen" in action && typeof action.resultWhen === "string") await untilExists(action.resultWhen, signal);
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
                 io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
               }
@@ -271,11 +285,13 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
           turnSignal?.abort(new SessionHalt("closed"));
           // A slow harness stop: told closed only once it has taken its time.
           if (options.closeDelayMs) await new Promise((resolve) => setTimeout(resolve, options.closeDelayMs));
+          await proxy?.close();
           // A harness whose stop fails: the close rejects, saying so, and is never told closed.
           if (options.closeError) throw new Error(options.closeError);
           stats.closed.push(spec.key);
           options.onClose?.(spec.key);
         },
+        port: (label) => (proxy && options.proxy ? { url: proxy.url, key: proxy.sideKey(label), model: options.proxy.options.model, api: options.proxy.api } : undefined),
       };
       return session;
     },

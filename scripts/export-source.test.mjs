@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/learn': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/harness': {}, 'packages/agentrun': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/harness': {}, 'packages/agentrun': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -81,7 +81,7 @@ test('a review file (*.review.*) is excluded and source named review is archived
   // A review file is a file named `<name>.review.<ext>`, like the author's `<n>.review.json` beside each candidate; it and the
   // `.review`/`.reviews` directories are review state. A module named review.ts, its test, a skill directory named `review`
   // and a file inside a directory whose name looks like a review file are source.
-  const archived = ['packages/serve/src/review.ts', 'packages/serve/test/review.test.mjs', 'packages/learn/skills/review/SKILL.md', 'docs/x.review.y/notes.md'];
+  const archived = ['packages/serve/src/review.ts', 'packages/serve/test/review.test.mjs', 'packages/dsl/skills/review/SKILL.md', 'docs/x.review.y/notes.md'];
   const excluded = ['examples/out/candidate-1/001.review.json', 'docs/candidate.review.json', 'docs/notes.review.md', 'docs/.review/findings.json', 'examples/.reviews/notes.md'];
   for (const path of archived) await f.write(path, 'export const review = 1;\n');
   for (const path of excluded) await f.write(path, 'PRIVATE_REVIEW_FIXTURE\n');
@@ -251,7 +251,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -276,7 +276,7 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -303,7 +303,7 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
   'packages/pi-vision': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },

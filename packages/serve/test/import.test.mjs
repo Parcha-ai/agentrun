@@ -606,9 +606,8 @@ test("this repository's own source, imported as a session's output, has nothing 
     }
   };
   for (const top of ["packages", "apps"]) walk(join(repo, top));
-  // One file holds a key-shaped literal on purpose: packages/learn/test/check.test.mjs, whose checker test plants a Slack
-  // bot token's shape (its `xoxb-` string) to see it refused. It is left out; every other file must come through whole.
-  const source = files.filter((file) => !file.endsWith(join("learn", "test", "check.test.mjs")));
+  // Every file must come through whole.
+  const source = files;
   assert.ok(source.length > 300, `the source read: ${source.length} files`);
   const root = await scratch(t);
   const at = join(root, "home");

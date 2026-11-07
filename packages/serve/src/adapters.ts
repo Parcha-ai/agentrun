@@ -11,6 +11,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
+import type { ProviderPolicy } from "@parcha/agentrun-kernel/host";
+import type { FauxOptions } from "@parcha/agentrun-kernel/testing";
 import { CLAUDE_SDK, codexBinaryIn, HARNESS_INSTALLS, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk } from "./harness-install.js";
 import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
@@ -358,82 +360,6 @@ export function claudePriceModel(env: NodeJS.ProcessEnv, model: ModelRef): Model
   }
 }
 
-/** The model a learned workflow's requests on `harness` name in the run's models (pi-ai's catalog, app.ts): the route
- *  the harness's own requests take (claudeProvider, codexProvider). Through OpenRouter, OpenRouter's name for the run's
- *  model, whose key the run holds and whose entry prices it; the vendor's provider would need the vendor's key, which a
- *  run on OpenRouter alone does not have. Otherwise the run's model as it is (Anthropic's own id for claude-agent); under
- *  a faux harness, through codex's gateway (AGENT_MODEL_BASE_URL), or where the harness refuses the run (before any
- *  request), `model` itself. */
-export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: ModelRef): ModelRef {
-  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return model;
-  try {
-    if (harness === "claude-agent") {
-      const { origin, auth, priceModel } = claudeProvider(env, model);
-      // OpenRouter's own route only (its key, as a bearer token): a gateway named by ANTHROPIC_BASE_URL, even at
-      // OpenRouter's URL, takes Anthropic's key (x-api-key), and learnedWorkflowsOff withholds learned workflows there.
-      return origin === OPENROUTER_BASE && auth === "bearer" ? { provider: "openrouter", modelId: priceModel.id } : { ...model, modelId: claudeModelId(model) };
-    }
-    if (harness === "codex" || harness === "opencode") {
-      // Through a gateway (AGENT_MODEL_BASE_URL), even one at OpenRouter's URL, the run's models hold the gateway's
-      // provider (runModels), not OpenRouter's: its model is the one prepared. opencode takes codex's route.
-      if (env.AGENT_MODEL_BASE_URL) return model;
-      const { origin, modelId } = codexProvider(env, model, harness);
-      return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId } : model;
-    }
-  } catch {
-    // The harness refuses this run before any request: nothing is sent on this model.
-  }
-  return model;
-}
-
-/** Why a run on `harness` is offered no learned workflow, or undefined when it is. A learned workflow's model requests go
- *  through the run's models (pi-ai's catalog, learnedRoute), whose Anthropic provider reaches api.anthropic.com alone:
- *  claude-agent through the operator's own gateway (ANTHROPIC_BASE_URL) would have them go around it, with its key. So
- *  that run gets none (fail closed), and its pin says why. codex and opencode (codex's route) the same, at any origin
- *  learnedOriginOk does not name; their gateway is the run's models' own (runModels), and pi runs on them. A run its
- *  harness refuses sends nothing, so it is not this one's to say. */
-export async function learnedWorkflowsOff(harness: string | undefined, env: NodeJS.ProcessEnv, ref: string | undefined): Promise<string | undefined> {
-  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return undefined;
-  let origin: string;
-  if (harness === "claude-agent") {
-    const choice = claudeModel(env, ref);
-    if ("why" in choice) return undefined;
-    let chosen: ClaudeProvider;
-    try {
-      chosen = claudeProvider(env, choice.model);
-    } catch {
-      return undefined;
-    }
-    // On the route the run chose: the operator's gateway (ANTHROPIC_BASE_URL with Anthropic's key, x-api-key), at any
-    // URL, OpenRouter's too, is one a learned node's provider could not follow. OpenRouter's own route (its key, bearer)
-    // never goes there, whatever ANTHROPIC_BASE_URL says.
-    if (chosen.auth === "x-api-key" && env.ANTHROPIC_BASE_URL) return "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it";
-    origin = chosen.origin;
-  } else if (harness === "codex" || harness === "opencode") {
-    const choice = await codexModel(env, ref, harness);
-    if ("why" in choice) return undefined;
-    try {
-      origin = codexProvider(env, choice.model as ModelRef, harness).origin;
-    } catch {
-      return undefined;
-    }
-  } else return undefined;
-  if (learnedOriginOk(harness, origin, env)) return undefined;
-  return harness === "claude-agent"
-    ? "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it"
-    : `${harness} sends this run's model requests to ${origin}, where a learned workflow's requests could not follow`;
-}
-
-/** Whether a learned workflow's requests reach `origin`, where `harness` sends the run's own (learnedWorkflowsOff): the
- *  run's models hold Anthropic's, OpenAI's and OpenRouter's providers, and, for codex and opencode (runModels), the
- *  gateway at AGENT_MODEL_BASE_URL. Any other origin is not one they can follow. */
-export function learnedOriginOk(harness: string, origin: string, env: NodeJS.ProcessEnv): boolean {
-  if (origin === OPENROUTER_BASE) return true;
-  if (harness === "claude-agent") return origin === ANTHROPIC_ORIGIN;
-  if (harness === "codex" || harness === "opencode") return origin === OPENAI_ORIGIN || Boolean(env.AGENT_MODEL_BASE_URL);
-  return true;
-}
-
 /** claude-agent's model: the revision's (or the server's default for claude-agent, hostModel) as `provider/model-id`.
  *  Never the gateway's model, which serves the other harnesses. An Anthropic model (`anthropic/<id>`) is Anthropic's
  *  own id, dots as dashes, except where claude-agent reaches Anthropic only through OpenRouter (openRouterOnly), where it
@@ -617,6 +543,28 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
+/** The model proxy a faux harness's session serves (FauxOptions.proxy): the policy, origin, credential and price `harness`'s
+ *  own adapter gives its proxy for the run's model. Throws where the harness would refuse the run. */
+async function fauxProxy(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<NonNullable<FauxOptions["proxy"]>> {
+  if (harness === "claude-agent") {
+    const provider = claudeProvider(env, needs.model);
+    const claude = (await loadClaude()) as { anthropicPolicy(options: Record<string, unknown>): ProviderPolicy };
+    const priced = { ...needs, model: { provider: provider.priceModel.provider, modelId: provider.priceModel.id } };
+    return {
+      api: "anthropic-messages",
+      options: { policy: claude.anthropicPolicy({ model: provider.modelId, tools: [], auth: provider.auth, ...nativeOptions(harness, env) }), model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf(priced) },
+    };
+  }
+  if (harness === "codex" || harness === "opencode") {
+    const provider = codexProvider(env, needs.model, harness);
+    const policy = harness === "codex"
+      ? (await import("@parcha/agentrun-harness-codex")).codexPolicy({ model: provider.modelId, tools: [], ...(nativeOptions(harness, env).webSearch === "live" ? { webSearch: "live" as const } : {}) })
+      : (await import("./harness-opencode/host/policy.js")).openCodePolicy({ model: provider.modelId, tools: [] });
+    return { api: "openai-responses", options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf(needs) } };
+  }
+  throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
+}
+
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const faux = env[FAUX_HARNESS_ENV];
   if (faux) {
@@ -627,7 +575,11 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
     const openDelayMs = module.openDelayMs?.() ?? 0;
     const closeDelayMs = module.closeDelayMs?.() ?? 0;
     const closeError = module.closeError?.();
-    return fauxAdapter({ script: module.script, ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
+    // The session's model proxy, as the harness's own adapter would start it (its policy, origin, credential and price),
+    // so the run's own requests beside the scripted harness's go through the one route. None where the harness would
+    // refuse the run (a model no key reaches).
+    const proxy = await fauxProxy(harness, env, needs).catch(() => undefined);
+    return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
   }
   if (harness === "codex") return codexOf(env, needs);
   if (harness === "opencode") return opencodeOf(env, needs);
