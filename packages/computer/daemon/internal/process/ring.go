@@ -1,7 +1,8 @@
 package process
 
 // ring keeps the last size bytes of a stream, addressed by offset since the stream began. It grows as bytes come, so a
-// quiet process holds little. A released ring holds nothing and counts what still comes: every byte reads as dropped.
+// quiet process holds little. A limited ring keeps a smaller size from then on. A released ring holds nothing and counts
+// what still comes: every byte reads as dropped.
 type ring struct {
 	size     int
 	data     []byte
@@ -46,6 +47,28 @@ func (r *ring) grow(n int) {
 	data := make([]byte, len(r.data), min(r.size, max(n, 2*cap(r.data))))
 	copy(data, r.data)
 	r.data = data
+}
+
+// limit keeps at most n bytes in the ring from now on: it drops the oldest bytes past n, never grows past n again, and
+// returns how many bytes its buffer let go. A ring already within n only stops growing past it.
+func (r *ring) limit(n int) (freed int) {
+	if r.released || n >= r.size {
+		return 0
+	}
+	before := cap(r.data)
+	keep := min(len(r.data), n)
+	tail, _, _ := r.read(r.total-int64(keep), keep)
+	r.size = n
+	if r.total <= int64(n) {
+		// Nothing was dropped yet, so the bytes are in order from offset 0.
+		r.data = tail
+		return before - cap(r.data)
+	}
+	r.data = make([]byte, n)
+	at := int((r.total - int64(n)) % int64(n))
+	copy(r.data[at:], tail)
+	copy(r.data, tail[n-at:])
+	return before - cap(r.data)
 }
 
 // release lets the ring's bytes go and returns how many it held.

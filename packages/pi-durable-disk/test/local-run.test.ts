@@ -383,8 +383,6 @@ describe("localRun", () => {
     try {
       const scripted = scriptedHarness();
       const options = { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } };
-      // Only a local directory's: an Archil mount is never probed read-write from anywhere but its holder.
-      await assert.rejects(openDurableRun(ref, { mountToken: "token", harness: options.harness, epoch: 1 }), (error) => error instanceof RunError && error.code === "INVALID_ARGUMENT");
       const run1 = await openDurableRun(ref, { ...options, epoch: 7 });
       assert.equal(run1.generation, 7);
       // A command of the run that holds the store: a second open is refused by the store's lock before it reaps anything.
@@ -432,7 +430,7 @@ describe("localRun", () => {
   it("its claim's barrier refuses once the claim is fenced, as a mount's does", async () => {
     const dir = scratchRoot("local-fence");
     try {
-      const claim = await localRun(dir.root).acquire({ ref, token: "" });
+      const claim = await localRun(dir.root).acquire({ ref });
       assert.deepEqual(await claim.barrier(), { ms: 0 });
       claim.markFenced(new Error("lost"));
       assert.equal(claim.fenced, true);
@@ -444,12 +442,12 @@ describe("localRun", () => {
   });
 });
 
-describe("the mount token", () => {
-  it("is required only to mount an Archil disk: with the default acquire and none, the open is refused before anything mounts", async () => {
+describe("the claim", () => {
+  it("is a local directory's: an open with no localRun is refused before anything is claimed", async () => {
     const scripted = scriptedHarness();
     await assert.rejects(
-      openDurableRun(ref, { harness: { models: scripted.models, registry: scripted.registry } }),
-      (error: unknown) => error instanceof RunError && error.code === "INVALID_ARGUMENT" && /mountToken/.test(error.message) && /localRun/.test(error.message),
+      openDurableRun(ref, { harness: { models: scripted.models, registry: scripted.registry } } as never),
+      (error: unknown) => error instanceof RunError && error.code === "INVALID_ARGUMENT" && /localRun/.test(error.message),
     );
   });
 });

@@ -24,7 +24,6 @@ function leaseAt(root: string, options: Partial<OpenRunLeaseOptions> = {}) {
   const fenced: FencedError[] = [];
   const open = () =>
     openRunLease(ref, {
-      mountToken: "unused",
       acquire: async () => claim,
       claimDir: localClaimDir,
       cleanup: async () => void claim.log.push("cleanup"),

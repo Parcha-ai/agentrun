@@ -45,8 +45,9 @@ export type TimelineEvent = {
   /** On a trigger's row (`origin: "trigger"`) alone: its trigger, from the message's origin, so a client labels the row
    *  by its source without reading its summary. */
   trigger?: { id: string; source: TriggerSource; owner: boolean };
-  /** `true` on an `error` row that is a spend cap's refusal for room (serve): the request was not sent and the run paused
-   *  for a raise; a pause, never a failure, whether the run waits on its cap now or was raised since. */
+  /** `true` on the server's `phase` row of a spend cap's refusal for room (serve), "Paused at the run's cap", origin
+   *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
+   *  failure, whether the run waits on its cap now or was raised since. */
   paused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time

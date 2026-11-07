@@ -7,3 +7,4 @@ export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
 export { DockerProvider, type DockerProviderOptions } from "./docker.js";
 export { drift, helloDrift, hostOf, inspectDrift, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
 export { sweep, type SweepOptions, type Swept } from "./janitor.js";
+export * from "./conformance/index.js";

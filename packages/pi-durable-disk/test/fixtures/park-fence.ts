@@ -12,7 +12,6 @@ const root = process.argv[2]!;
 const ref = { disk: "dsk-local", region: "local", id: "park-1" };
 const app = lifecycleApp(newCounters(), { retryMs: 1_200 });
 const run = await openDurableRun(ref, {
-  mountToken: "unused",
   acquire: async () => fakeClaim(root, ref, { release: async () => void process.stdout.write(`${JSON.stringify({ released: true })}\n`) }),
   claimDir: localClaimDir,
   harness: app,

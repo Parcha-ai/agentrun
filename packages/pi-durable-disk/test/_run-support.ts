@@ -42,8 +42,8 @@ export async function removeWhileWritten(path: string, afterWalk: (attempt: numb
 
 export const localRef = (id: string): RunRef => ({ disk: "dsk-local", region: "local", id });
 
-/** The claim directory of a run root on a local directory: held open like a mount's, without the mount table check. */
-export const localClaimDir = (root: string): Promise<ClaimDir> => openClaimDir(root, { fstype: null });
+/** The claim directory of a run root on a local directory. */
+export const localClaimDir = (root: string): Promise<ClaimDir> => openClaimDir(root);
 
 export interface FakeClaim extends Claim {
   readonly log: string[];
@@ -56,7 +56,7 @@ export interface FakeClaim extends Claim {
 export function fakeClaim(
   root: string,
   ref: RunRef,
-  options: { log?: string[]; reused?: boolean; barrier?: () => Promise<void>; release?: () => Promise<void> } = {},
+  options: { log?: string[]; barrier?: () => Promise<void>; release?: () => Promise<void> } = {},
 ): FakeClaim {
   const log = options.log ?? [];
   let fence: { cause: unknown } | undefined;
@@ -67,9 +67,6 @@ export function fakeClaim(
     root,
     work: join(root, "work"),
     store: join(root, "store"),
-    reused: options.reused ?? false,
-    forced: false,
-    timings: { mountMs: 0, verifyMs: 0 },
     get fenced() {
       return fence !== undefined;
     },
@@ -86,7 +83,7 @@ export function fakeClaim(
     async release() {
       log.push("release");
       await options.release?.();
-      return { via: "archil" as const };
+      return { via: "none" as const };
     },
   };
 }
