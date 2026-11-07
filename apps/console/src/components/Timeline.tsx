@@ -62,7 +62,11 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
   const running = row.kind === "tool_use" && row.tool_status === "running";
   const paused = rowPaused(row);
   const Icon = running ? LoaderCircle : paused ? CirclePause : ICON[row.kind] ?? Flag;
-  const detail = step.above ? null : step.detail ?? rowDetail(row);
+  // What the row says on its line: its title, or where the page shows what it asks.
+  const shown = step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row);
+  // What opens under it; none when it is the line's own words (the same sentence twice is no more to read).
+  const more = step.above ? null : step.detail ?? rowDetail(row);
+  const detail = more && more.trim() !== shown.trim() ? more : null;
   const interrupted = row.tool_status === "interrupted";
   const failed = rowFailed(row) || interrupted;
   const missing = row.tool_status === "missing";
@@ -86,7 +90,7 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{shown}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
             {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>
