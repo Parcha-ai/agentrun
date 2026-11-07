@@ -3,9 +3,10 @@ package probe
 // The diagnosis: whether bytes come back, not only whether a TCP connection is accepted. Some vendors' firewalls
 // (E2B's, by its own docs: network/internet-access, "Behavior of blocked TCP connections") accept every outbound TCP
 // connection first and decide after, so an accept says nothing about the destination; bytes back do. Each check is
-// judged as `computerd probe --connect` judges a target (exchange, in probe.go): any byte back is answered, the detail
-// saying whether it was the protocol's own answer. It tries a fixed list of well-known public addresses only, sends nothing of the computer's (a ClientHello with a
-// random nonce, an HTTP HEAD, a DNS query for example.com), reads at most MaxRead bytes, and is bounded at every step.
+// asked and judged as `computerd probe --connect` asks and judges a target (askFor and exchange, in probe.go): any byte
+// back is answered, the detail saying whether it was the protocol's own answer. It tries a fixed list of well-known
+// public addresses only, sends nothing of the computer's (a ClientHello with a random nonce, an HTTP HEAD, a DNS query
+// for example.com), reads at most MaxRead bytes, and is bounded at every step.
 
 import (
 	"fmt"
@@ -109,17 +110,12 @@ func diagnose(check Check, bounds Bounds, end time.Time) Outcome {
 		result.Detail = fmt.Sprintf("%q is not host:port", check.Address)
 		return result
 	}
-	var ask asking
-	switch check.Probe {
-	case "tls":
-		ask = asking{request: clientHello(check.Name), name: tlsRecord, expected: "a TLS record"}
-	case "http":
-		ask = asking{request: httpHead(check.Name), name: statusLine, expected: "an HTTP status line"}
-	case "dns":
+	if check.Probe == "dns" {
 		result.Proto = "udp"
-		query, id := dnsQuery()
-		ask = asking{request: query, name: dnsResponse(id), expected: "a DNS response with the query's id"}
-	default:
+	}
+	// The request is --connect's own (askFor), named by check.Name: a DNS check is a host:port/udp target's query.
+	ask, ok := askFor(check.Probe, check.Name, result.Proto)
+	if !ok || check.Probe == "any" {
 		result.Detail = fmt.Sprintf("%q is no probe: tls, http or dns", check.Probe)
 		return result
 	}
