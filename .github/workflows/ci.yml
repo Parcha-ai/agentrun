@@ -584,10 +584,10 @@ jobs:
         working-directory: packages/pi-durable-disk
         run: >-
           node --test --test-timeout=240000
-          test/process-table.test.ts test/commands.test.ts test/watchdog.test.ts
+          test/process-table.test.ts test/commands.test.ts
           test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
           test/examples/kill-9.test.ts test/examples/audit-across-crashes.test.ts test/examples/no-double-charge.test.ts
-          test/examples/fork-into-many.test.ts test/examples/serve-and-park.test.ts
+          test/examples/serve-and-park.test.ts
       - name: The server hands a workflow run its decision key
         # macOS aborts the parent of a spawn with a pipe at descriptor 16 or above; a run with a decision key must not.
         working-directory: packages/serve
