@@ -14,7 +14,7 @@ and delivery.
 ## Layout
 
 Each package's README is its API reference. Packages with no dependency on the others:
-`pi-durable-disk`, `pi-browser`, `pi-vision`, `pi-transport`, `pi-git-remote`.
+`pi-durable-disk`, `pi-browser`, `pi-vision`, `pi-transport`.
 
 | Path | What an agent must know |
 | --- | --- |
@@ -26,8 +26,6 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/pi-transport` | Vitest on source; its biome `lint` and Docker suite (`test:live:docker`) run in the `transport-docker` CI job |
 | `packages/pi-durable-agent` | Agent home; subpaths `./timeline`, `./export`, `./workflow`, `./serve`; bin `pi-durable-agent`. Only `./workflow` loads `dsl` and `pi`, lazily |
 | `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
-| `packages/pi-git-remote` | No repository hook, filter or driver ever runs; https credentials reach git only on fd 3. Tests need git 2.40+ and `openssl` |
-| `packages/pi-agent-learn` | Learning agent on `pi-git-remote`; locks `agent.json` and `AGENTS.md`, so `examples/agent-learn/agent/AGENTS.md` is runtime content. Tests need git 2.40+ |
 | `packages/learn` | Held. `SPEC.md` is the learning-repository contract; `agentrun-learn check` reads git with plumbing only. Depends on `dsl` alone |
 | `packages/decisions` | Held. Third-party decision models as `DecisionProvider`s (the seam and its conformance suite, `./testing`, are in `dsl`): `parallelProvider` for Parallel Decisions, key `PARALLEL_API_KEY` by name. A paid request is never re-sent unasked; a failure after sending is `outcome_unknown` and escalates as an interrupted decision. Tests use a fake fetch; `test/parallel.live.test.mjs` runs only with the key. Depends on `dsl` alone |
 | `packages/harness` | Held. The reference host; `pi-transport` is an optional peer. Covered by `examples/reference*.test.mjs` |
