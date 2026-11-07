@@ -45,8 +45,8 @@ ok: an idle run holds no process: it parked on a long retry, a restart at its wa
   doing. Work that only waits longer than the threshold is a park: new submissions get 503 `PARKING`, the wake (the
   retry's deadline) is written to `run.json` as `sleeping` with `wakeAt`, then the run is released and the instance exits.
   An open request (`server.active`) keeps the instance up.
-- The restart loop is a `setTimeout` to `wakeAt` and another `start()`. A real host does this with the supervisor
-  (`ensureRunning`) or a scheduler; the run's record is the only thing it reads. The new instance opens the run as
+- The restart loop is a `setTimeout` to `wakeAt` and another `start()`. A real host does this with its own scheduler
+  (agentrun-serve's, for one); the run's record is the only thing it reads. The new instance opens the run as
   generation 2, pi resumes the retry, and the model answers.
 - The duplicate submit goes to generation 2 with the same `requestId` and `wait: true`. pi keeps the request id in the
   run's store, so it returns submission 8, already done by the retry, and the model is asked no more: the example counts

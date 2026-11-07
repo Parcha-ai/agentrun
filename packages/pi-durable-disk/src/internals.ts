@@ -1,12 +1,14 @@
-// `@parcha/pi-durable-disk/internals`: the claim, status and Daytona plumbing that this repository's examples and demos
+// `@parcha/pi-durable-disk/internals`: the status plumbing that this repository's examples and demos
 // use. No compatibility promise: a name here may change or go in any release, and the CHANGELOG says when. A name moves
 // to the root entry when something outside this repository needs it.
-export { createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, unmountClaim } from "./claim.ts";
-export { LABEL_FLEET, LABEL_RUN, sandboxName, sandboxStatus, sweepSandboxes } from "./hosts/daytona.ts";
+export { runPath } from "./claim.ts";
 export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
 // What a run's database is opened with (the exclusive profile, and on macOS F_FULLFSYNC), for a host that checkpoints it
 // itself once the run's process is gone (agentrun-serve's take-back).
-export { profilePragmas } from "./store.ts";
+export { profilePragmas, SYNCHRONOUS_LEVEL } from "./store.ts";
+// The barriers table and the stores, for the source guard and the hosts that list them.
+export { BARRIERS, NORMAL_PRECONDITIONS, STORES } from "./barriers.ts";
+export type { BarrierRow, BarrierStatus, StoreId, StoreRow } from "./barriers.ts";
 // A run under its host's epoch (openDurableRun's `epoch`): the table of its store that holds its record, and the process
 // table its host tells a live holder from a pid reused by another process with.
 export { RUN_STATUS_TABLE } from "./run.ts";

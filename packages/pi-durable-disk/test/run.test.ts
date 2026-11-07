@@ -105,7 +105,6 @@ function setup(
     faux: scripted.faux,
     open: () =>
       openDurableRun(ref, {
-        mountToken: "unused",
         acquire: async () => {
           claim.log.push("acquire");
           return claim;
@@ -779,7 +778,7 @@ describe("the owner lock", () => {
     const dir = scratchRoot("lock");
     try {
       const first = await setup(dir.root).open();
-      const second = setup(dir.root, { claim: { reused: true } });
+      const second = setup(dir.root);
       const refused = await second.open().then(() => null, (error: unknown) => error);
       assert.ok(refused instanceof HeldError, String(refused));
       assert.equal(refused.holder, "owner-lock");
@@ -1002,6 +1001,27 @@ describe("fences during the run", () => {
       dir.remove();
     }
   });
+
+  for (const synchronous of ["FULL", "NORMAL"] as const) {
+    it(`at ${synchronous}, a fenced run's status write fails with the fence's own error, never the barrier's (barriers.ts runStatus)`, async () => {
+      const dir = scratchRoot(`status-fence-${synchronous}`);
+      try {
+        const faulty: { database?: FaultyDatabase } = {};
+        const decorateStore = (database: SqliteDatabase) => (faulty.database = new FaultyDatabase(database));
+        const t = setup(dir.root, { options: { decorateStore, synchronous } });
+        const run = await t.open();
+        const root = await run.harness.root(ctx, { agent: t.agent });
+        faulty.database!.failNextCommit(sqliteError(SQLITE_IOERR_FSYNC, "disk I/O error"));
+        await assert.rejects(root.configure({ instructions: "never durable" }, ctx), StoreFencedError);
+        await until(() => t.fenced.length === 1);
+        await assert.rejects(run.setStatus("failed", { reason: "fenced" }), (error) => error === t.fenced[0]);
+        assert.equal(runJson(dir.root).status, "running");
+        await faulty.database!.inner.close();
+      } finally {
+        dir.remove();
+      }
+    });
+  }
 
   it("self-fences once the last successful heartbeat started more than expiry minus margin ago, measured from its start", async () => {
     const dir = scratchRoot("lapse-clock");

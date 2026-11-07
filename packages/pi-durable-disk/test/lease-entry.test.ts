@@ -25,27 +25,27 @@ function esbuildBinary(): string | undefined {
 const ESBUILD = esbuildBinary();
 
 describe("the lease entry", () => {
-  it("exports what a host that owns its Harness needs, and nothing of the supervisor, the drivers or the app contract", () => {
+  it("exports what a host that owns its Harness needs, and nothing of the app contract", () => {
     const names = Object.keys(lease);
     for (const name of [
       "openRunLease", "storeHead", "OWNER_LOCK", "STORE_FILE", "EXIT_DATAERR", "EXIT_SOFTWARE", "RunError", "StoreBehindSealError", "LeaseLapsedError",
       "EXIT_FENCED", "EXIT_HELD", "PdaError", "FencedError", "HeldError", "ClaimError", "exitCodeFor", "ownWriteFenced",
       "Fence", "FencedDatabase", "assertPragmas", "PROFILE_PRAGMAS", "openArchilStore", "StoreFencedError", "StoreBusyError", "StorePragmaError",
     ]) assert.ok(names.includes(name), `${name} is exported`);
-    for (const name of ["ensureRunning", "superviseRuns", "localHost", "loadApp", "openDurableRun", "acquire", "archilEnv", "ArchilCodingTools", "checkHost"]) {
+    for (const name of ["loadApp", "openDurableRun", "archilEnv", "ArchilCodingTools"]) {
       assert.ok(!names.includes(name), `${name} is not part of the lease entry`);
     }
   });
 
-  it("bundles without supervise, the host drivers, the CLI or the app contract", { skip: ESBUILD ? false : "no esbuild: set PDA_ESBUILD to an esbuild binary", timeout: 60_000 }, () => {
+  it("bundles without the CLI or the app contract", { skip: ESBUILD ? false : "no esbuild: set PDA_ESBUILD to an esbuild binary", timeout: 60_000 }, () => {
     const dir = scratchRoot("lease-bundle");
     try {
       const meta = join(dir.root, "meta.json");
       const built = spawnSync(ESBUILD!, ["src/lease.ts", "--bundle", "--platform=node", "--format=esm", "--packages=external", `--metafile=${meta}`, `--outfile=${join(dir.root, "lease.mjs")}`], { cwd: ROOT, encoding: "utf8" });
       assert.equal(built.status, 0, built.stderr);
       const inputs = Object.keys((JSON.parse(readFileSync(meta, "utf8")) as { inputs: Record<string, unknown> }).inputs).map((p) => relative(ROOT, join(ROOT, p)));
-      for (const unwanted of ["src/supervise.ts", "src/hosts/local-host.ts", "src/cli.ts", "src/app.ts"]) assert.ok(!inputs.includes(unwanted), `${unwanted} is in the lease bundle`);
-      for (const wanted of ["src/run.ts", "src/store.ts", "src/claim.ts"]) assert.ok(inputs.includes(wanted), `${wanted} is in the lease bundle`);
+      for (const unwanted of ["src/cli.ts", "src/app.ts"]) assert.ok(!inputs.includes(unwanted), `${unwanted} is in the lease bundle`);
+      for (const wanted of ["src/run.ts", "src/store.ts"]) assert.ok(inputs.includes(wanted), `${wanted} is in the lease bundle`);
     } finally {
       dir.remove();
     }

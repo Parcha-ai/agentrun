@@ -73,7 +73,7 @@ func openPidfd(t *testing.T, pid int) pidfd {
 }
 
 // ended waits up to within for the process to end: its pidfd turns readable once it is a zombie or reaped. Then /proc
-// must agree: no entry, or a zombie.
+// must agree: no entry, a zombie (Z), or dead (X), which is what a zombie reads as while its parent reaps it.
 func (p pidfd) ended(within time.Duration) bool {
 	deadline := time.Now().Add(within)
 	for {
@@ -94,7 +94,7 @@ func (p pidfd) ended(within time.Duration) bool {
 		return true
 	}
 	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
-	return len(fields) > 0 && fields[0] == "Z"
+	return len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X")
 }
 
 // stallGuards makes every guard Start starts from now on stall before it reports the program's pid. The function it

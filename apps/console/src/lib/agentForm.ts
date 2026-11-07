@@ -144,9 +144,9 @@ export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], plac
  *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
 export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
 
-/** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
+/** The tools that reach the web: a page read (web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */
-export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_search"];
+export const WEB_TOOLS: readonly string[] = ["web_fetch", "web_search"];
 /** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 

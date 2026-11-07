@@ -119,6 +119,29 @@ export function script(spec) {
   if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4, outputTokensAsked: 1_024 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
   // The wrap-up due only after a turn's one request ($0.40): the next turn's first request is the first that can take it.
   if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4, outputTokensAsked: 1_024 }, { say: "Second.", usd: 0.01 }];
+  // One call that ends before its answer is paid, on a store slow to write (the tests' ROOT_WRITE_DELAY_ENV).
+  if (/Write once on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { end: true, usd: 0.002 }];
+  // One answer that writes, calls, writes again and calls again, both calls ending before it is paid (Claude Code's
+  // cost comes in after its response), then the closing answer.
+  if (/Write between two calls\./.test(text)) return [{ calls: [{ say: "First I write a.md.", call: "write", args: { path: "a.md", content: "alpha" } }, { say: "Then b.md.", call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote both.", usd: 0.002 }];
+  // Two requests on a store slow to write (the tests' ROOT_WRITE_DELAY_ENV): the first writes, then calls, and is paid
+  // after its call ends (Claude Code's cost comes in after its response); the second answers.
+  if (/Write on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
+  // The same, but the first request is paid only once <file> exists: after the second has started and answered.
+  const paidLate = /Write on a slow store, paid once (\S+) exists\./.exec(text);
+  if (paidLate) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookWhen: paidLate[1] }, { say: "Wrote it.", usd: 0.002 }];
+  // Text of the session's before any request of this process's own (a resumed turn's, say), a side call the only one
+  // open; then one request that answers. Both are paid only once <file> exists.
+  const sideFirst = /Answer after text with only a side call open, paid once (\S+) exists\./.exec(text);
+  if (sideFirst) return [{ say: "Answered.", usd: 0.002, bookWhen: sideFirst[1], sideFirst: { usd: 0.0005, say: "Before." } }];
+  // The same two requests, the first's cost unknown (its provider gave none).
+  if (/Write unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
+  // The same, the second ending the turn, then a follow-up's request, under a cap.
+  if (/Pay unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
+  // Two requests, a side call (a title) admitted and answered while the first still streams: two in flight at once.
+  if (/Write beside a side call on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true, sideDuring: { usd: 0.0005 } }, { say: "Wrote it.", usd: 0.002 }];
+  // The same two requests (the second ends the turn), then a follow-up's request, under a cap.
+  if (/Pay on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   // Reads a file the run was given (an upload, copied into its inputs/), then says so.
   const upload = /Read the upload (\S+)\./.exec(text)?.[1];
@@ -130,7 +153,7 @@ export function script(spec) {
   const link = /Read the link after (\S+)\./.exec(text)?.[1];
   if (link) return [{ call: "write", args: { path: "first.txt", content: "x" }, usd: 0.001 }, ...(existsSync(link) ? [] : [{ hang: true }]), { call: "read", args: { path: "out.txt" }, usd: 0.001 }, { say: "Tried.", usd: 0.001 }];
   const page = /Fetch (\S+) and say its title(?: with (\w+))?\./.exec(text);
-  if (page) return [{ call: page[2] ?? "fetch_page", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
+  if (page) return [{ call: page[2] ?? "web_fetch", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   const query = /Search the web for (.+?) and say what you found\./.exec(text)?.[1];
   if (query) return [{ call: "web_search", args: { query, n: 3 }, usd: 0.001 }, { say: "Searched.", usd: 0.001 }];
   // The turn fails on its first request with the line's text, as a harness passes on a provider's error: `Fail with: <text>`.
@@ -179,10 +202,10 @@ export function script(spec) {
   // 2,000-character summary, which the run reads whole.
   if (/The second turn answers nothing, after a long answer\./.test(text)) return [{ say: LONG_ANSWER, usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
-  // A turn that holds in its own process (fetch_page waits for the file, faux-web-hold.mjs), answers, then answers the
+  // A turn that holds in its own process (web_fetch waits for the file, faux-web-hold.mjs), answers, then answers the
   // follow-up the person sent meanwhile in a turn of its own.
   const held = /Hold the answer until (\S+)\./.exec(text)?.[1];
-  if (held) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(held)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  if (held) return [{ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(held)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // A chat whose second turn has a request of unknown price.
   if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
@@ -200,7 +223,7 @@ export function script(spec) {
   if (/The turn ends interrupted\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { end: true, turn: "interrupted", usd: 0.001 }];
   // A long tool phase: two fetches, each held until its file exists (faux-web-hold.mjs), then the answer.
   const gated = /Fetch the pages held until (\S+) and (\S+)\./.exec(text);
-  if (gated) return [1, 2].map((n) => ({ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(gated[n])}` }, usd: 0.001 })).concat([{ say: "Fetched both.", usd: 0.001 }]);
+  if (gated) return [1, 2].map((n) => ({ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(gated[n])}` }, usd: 0.001 })).concat([{ say: "Fetched both.", usd: 0.001 }]);
   // A turn held mid-way (a read, then nothing until the file exists), then its answer: a drain cuts it, the next open resumes it.
   const resumed = /Hold mid-turn until (\S+)\./.exec(text)?.[1];
   if (resumed) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, ...(existsSync(resumed) ? [] : [{ hang: true }]), { say: "Resumed and done.", usd: 0.001 }];
@@ -210,11 +233,11 @@ export function script(spec) {
   // A turn held on a fetch until the file exists, so a follow-up waits its place; then each turn answers. A third turn
   // answers too, so a follow-up sent twice shows.
   const queuedBehind = /Queue a follow-up behind a turn held until (\S+)\./.exec(text)?.[1];
-  if (queuedBehind) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(queuedBehind)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2, sent again.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  if (queuedBehind) return [{ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(queuedBehind)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2, sent again.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // A turn held on a fetch until the file exists, so a follow-up waits its place; the turn then fails (its next request
   // does), and the follow-up's turn answers.
   const failedBehind = /Fail a turn held until (\S+), with a follow-up behind it\./.exec(text)?.[1];
-  if (failedBehind) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(failedBehind)}` }, usd: 0.001 }, { fail: "the faux turn failed" }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  if (failedBehind) return [{ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(failedBehind)}` }, usd: 0.001 }, { fail: "the faux turn failed" }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // The same with a cap: an answer under the cap, then a request held until the cancel cuts it, booked then at $0.002 (over it).
   const booked = /Answer, then hold a request the cancel cuts and books \(signal (\S+)\)\./.exec(text)?.[1];
   if (booked) return [{ say: "Done.", usd: 0.0005 }, cutBookedSignalled(booked, 0.002)];

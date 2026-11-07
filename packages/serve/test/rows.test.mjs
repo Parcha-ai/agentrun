@@ -94,3 +94,16 @@ test("the usage row is the timeline's last row: a row served after it, or its ow
   assert.equal(log.sync(log.rows()), false, "nothing new: nothing moves");
   assert.equal(log.rows().at(-1).seq, last);
 });
+
+test("a full read's re-render of a big run with nothing changed since does no writes: 5,000 rows synced again take no change number and leave every row as it was", () => {
+  const clock = new ChangeClock();
+  const log = new RowLog(clock);
+  const rows = Array.from({ length: 5_000 }, (_, i) => row(`1:${i}`, `step ${i}`));
+  log.sync(rows);
+  const [changes, last, served] = [clock.current, log.last, log.rows()];
+  for (let i = 0; i < 5; i++) assert.equal(log.sync(rows), false, "nothing changed");
+  // Each write takes a change number (a row added, changed or dropped): none was taken, and the log's last change stands.
+  assert.deepEqual([clock.current - changes, log.last - last], [0, 0], "no writes");
+  assert.deepEqual(log.rows(), served, "every row as it was");
+  assert.equal(log.page(last, 10).unchanged, true, "a reader at the last change sees nothing new");
+});

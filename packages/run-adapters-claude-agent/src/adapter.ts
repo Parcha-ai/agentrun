@@ -234,8 +234,9 @@ export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk"
   return { cliPath: cli.path };
 }
 
-/** A stand-in CLI is for a test runner only. */
-const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === "test") && process.env.NODE_ENV !== "production";
+/** A stand-in CLI is for a test runner only: node --test's own mark (NODE_TEST_CONTEXT), never NODE_ENV=test, which a
+ *  production server can carry. */
+const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT) && process.env.NODE_ENV !== "production";
 
 /** The kernel's tool for a host tool: the same name, schema and replay policy, reported to the host under that name. */
 /** The most a tool's image may be, as base64, by default: the strictest of the platforms Claude runs on (Anthropic's API

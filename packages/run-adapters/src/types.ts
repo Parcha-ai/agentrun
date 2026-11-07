@@ -103,6 +103,10 @@ export interface SessionWriter {
   /** Resolves once the records are durable, in order. Rejects with `SessionFenced`, writing none of them, once a newer
    *  `open` of the key has resolved. */
   append(records: readonly SessionRecord[]): Promise<void>;
+  /** Make every record appended so far survive a lost box, not only a dead process: the kernel calls it after an
+   *  effect's start and before the effect runs. A writer whose appends are durable already resolves at once. A wrapper
+   *  passes it on (serialWriter): a writer without one is refused at the first effect that needs it. */
+  sync(): Promise<void>;
 }
 
 /** What one session is. */

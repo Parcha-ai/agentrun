@@ -26,6 +26,8 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
           if (holders.get(key) !== holder) throw new SessionFenced(key);
           sessions.set(key, [...(sessions.get(key) ?? []), ...structuredClone(records as SessionRecord[])]);
         },
+        // Memory has no box to lose: every append is as durable as it gets.
+        sync: async () => {},
       };
     },
     keys: () => [...sessions.keys()],
@@ -39,8 +41,12 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  shown at once and its cost booked only once that file exists, as a provider's usage can come after its answer. */
 /** `sideAfterNote`: a client's side call on another model (a title, a summary: ModelRequest.side) admitted and answered
  *  at `usd` after this request took its host's note and before this request is admitted, as a Claude Code side call can
- *  be while the model proxy reads the credential between the two. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number } };
+ *  be while the model proxy reads the credential between the two. `sideDuring`: one admitted and answered at `usd` while
+ *  this request still streams (after its first call's text, before that call), so two of its requests are in flight.
+ *  `sideFirst`: one admitted before this request, then `say` streamed before this request is admitted: text of the
+ *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
+ *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -48,8 +54,9 @@ export type FauxAction =
   | ({ call: string; args?: unknown; usd?: number | null } & FauxRequest)
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
    *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
-   *  response, so a call can end before the request that asked for it is paid. */
-  | ({ calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean } & FauxRequest)
+   *  response, so a call can end before the request that asked for it is paid. A call's `say` streams that text first,
+   *  as a model writes between the calls of one answer. */
+  | ({ calls: { call: string; args?: unknown; say?: string }[]; usd?: number | null; bookAfter?: boolean } & FauxRequest)
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
    *  turn interrupted, with no stop asked for, ends it so). */
@@ -163,6 +170,14 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
               const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
               await io.models.afterRequest({ input: 10, output: 5, usd: action.sideAfterNote.usd }, side || undefined);
             }
+            if ("sideFirst" in action && action.sideFirst) {
+              const { usd, say } = action.sideFirst;
+              const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
+              const paySide = () => io.models.afterRequest({ input: 10, output: 5, usd }, side || undefined);
+              if ("bookWhen" in action && typeof action.bookWhen === "string") void untilExists(action.bookWhen, signal).then(paySide).catch(() => undefined);
+              else await paySide();
+              io.onEvent({ type: "text", delta: say });
+            }
             // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
             const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) };
             const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
@@ -190,9 +205,15 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end(action.turn ?? "completed");
             else {
-              const asked = "calls" in action ? action.calls.map((c) => ({ name: c.call, args: c.args ?? {} }))
+              const asked: { name: string; args: unknown; say?: string }[] = "calls" in action ? action.calls.map((c) => ({ name: c.call, args: c.args ?? {}, ...(c.say ? { say: c.say } : {}) }))
                 : [{ name: "call" in action ? action.call : "submit", args: "call" in action ? action.args ?? {} : { value: action.submit } }];
-              for (const [n, { name, args }] of asked.entries()) {
+              for (const [n, { name, args, say }] of asked.entries()) {
+                if (say) io.onEvent({ type: "text", delta: say });
+                // A side call (a title, a summary) admitted and answered while this request still streams: two in flight.
+                if (n === 0 && "sideDuring" in action && action.sideDuring) {
+                  const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
+                  await io.models.afterRequest({ input: 10, output: 5, usd: action.sideDuring.usd }, side || undefined);
+                }
                 const callId = "calls" in action ? `${spec.key}:${index}.${n}` : `${spec.key}:${index}`;
                 const tool = tools.get(name);
                 await append(FAUX_RECORDS.call, { callId, name });

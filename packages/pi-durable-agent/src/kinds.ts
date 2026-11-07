@@ -66,11 +66,11 @@ export const DEFINED_KINDS: readonly string[] = defined;
 const session = { version: FORMAT_VERSION, scope: "session" } as const;
 const singleton = (kind: string) => {
   defined.push(kind);
-  return defineDoc<JsonObject>({ kind, ...session, initial: () => ({}) });
+  return defineDoc<JsonObject>({ kind, ...session, initial: () => ({}), checkpointWhen: () => false });
 };
 const family = (kind: string) => {
   defined.push(kind);
-  return defineDocFamily<JsonObject, null>({ kind, ...session, family: true, initial: () => ({}) });
+  return defineDocFamily<JsonObject, null>({ kind, ...session, family: true, initial: () => ({}), checkpointWhen: () => false });
 };
 
 export const IdentityDoc = singleton("agent.identity");

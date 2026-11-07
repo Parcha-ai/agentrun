@@ -49,7 +49,7 @@ export function nodeTools(offered: readonly ToolRegistration[], node: { label: s
 }
 
 /** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
-const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
+const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }), checkpointWhen: () => false });
 
 /** The run's id when nothing names one, and the key its workflow's task and journal are kept under. A demo's run is keyed by the demo's name (the place's `paths.id`), so two demos never share a run. */
 export const RUN_KEY = 'reference';
@@ -69,7 +69,7 @@ export async function placeAt(root?: string, id: string = RUN_KEY): Promise<RunP
 function localClaim(ref: RunRef, place: RunPlace): Claim {
   let fence: { cause: unknown } | undefined;
   return {
-    ref, disk: ref.disk, root: place.root, work: place.work, store: place.store, reused: false, forced: false, timings: { mountMs: 0, verifyMs: 0 },
+    ref, disk: ref.disk, root: place.root, work: place.work, store: place.store,
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
@@ -116,7 +116,7 @@ export type Composed = {
 export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
   const composed = await compose(place, host, job, options);
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
-    mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
+    acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root),
     harness: { registry: composed.registry, models: composed.models }, env: options.env ?? runEnv,
     ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
   });

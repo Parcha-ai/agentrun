@@ -140,7 +140,7 @@ test("demo through the API: the server in a container, its data a named volume: 
   // The run's work/ on the agent's disk: `disk/agents/<key>/runs/<run>/work` below the data directory, and nothing above it.
   const work = join(runDirIn(data, "boxed", runId), "work");
   assert.deepEqual(flags(run, "--mount"), [
-    `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/run/work,volume-subpath=${relative(data, work)},volume-nocopy`,
+    `type=volume,source=agentrun_agentrun-data,target=/workspace,volume-subpath=${relative(data, work)},volume-nocopy`,
     `type=volume,source=agentrun_agentrun-data,target=/run/agentrun/egress,volume-subpath=box-egress/${hash},volume-nocopy,readonly`,
   ]);
   assert.equal(flags(run, "--network")[0], "none");
