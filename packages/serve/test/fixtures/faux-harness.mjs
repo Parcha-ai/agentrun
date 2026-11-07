@@ -80,6 +80,15 @@ export function script(spec) {
   // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
   const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
   if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
+  // Claude Code on Sonnet 4.5 (faux-sonnet45.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
+  // 25,000-token first prompt, then one more request. "on a small cap": a 5,000-token prompt, a $0.01 request and one more.
+  // "restarts before the note at <file>": a 5,000-token prompt, a $0.04 request, then a hold (writing `<file>.held`) with
+  // no request open until `<file>` exists, then one more request.
+  const cc = (inputTokensMax, usd, say) => ({ say, inputTokensMax, outputTokensAsked: 32_000, usd });
+  if (/Claude Code at its start\./.test(text)) return [cc(25_000, 0.03, "Working."), cc(26_000, 0.03, "Done.")];
+  if (/Claude Code on a small cap\./.test(text)) return [cc(5_000, 0.01, "Working."), cc(5_200, 0.01, "Done.")];
+  const restartAt = /Claude Code restarts before the note at (\S+)\./.exec(text)?.[1];
+  if (restartAt) return [cc(5_000, 0.04, "Working."), ...(existsSync(restartAt) ? [] : [hangSignalled(`${restartAt}.held`)]), cc(5_200, 0.01, "Done.")];
   // The wrap-up due after a $0.40 request, then an answer whose input (5,990 tokens, $0.599 on input-priced faux) fits
   // what is left of a $1 cap only without the note's bytes.
   if (/Wrap up with no room for the note\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { say: "Answered.", inputTokensMax: 5_990, usd: 0.01 }];
@@ -99,7 +108,7 @@ export function script(spec) {
   const link = /Read the link after (\S+)\./.exec(text)?.[1];
   if (link) return [{ call: "write", args: { path: "first.txt", content: "x" }, usd: 0.001 }, ...(existsSync(link) ? [] : [{ hang: true }]), { call: "read", args: { path: "out.txt" }, usd: 0.001 }, { say: "Tried.", usd: 0.001 }];
   const page = /Fetch (\S+) and say its title(?: with (\w+))?\./.exec(text);
-  if (page) return [{ call: page[2] ?? "fetch_page", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
+  if (page) return [{ call: page[2] ?? "web_fetch", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   const query = /Search the web for (.+?) and say what you found\./.exec(text)?.[1];
   if (query) return [{ call: "web_search", args: { query, n: 3 }, usd: 0.001 }, { say: "Searched.", usd: 0.001 }];
   // The turn fails on its first request with the line's text, as a harness passes on a provider's error: `Fail with: <text>`.
@@ -148,10 +157,10 @@ export function script(spec) {
   // 2,000-character summary, which the run reads whole.
   if (/The second turn answers nothing, after a long answer\./.test(text)) return [{ say: LONG_ANSWER, usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
-  // A turn that holds in its own process (fetch_page waits for the file, faux-web-hold.mjs), answers, then answers the
+  // A turn that holds in its own process (web_fetch waits for the file, faux-web-hold.mjs), answers, then answers the
   // follow-up the person sent meanwhile in a turn of its own.
   const held = /Hold the answer until (\S+)\./.exec(text)?.[1];
-  if (held) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(held)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  if (held) return [{ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(held)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // A chat whose second turn has a request of unknown price.
   if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
@@ -169,7 +178,7 @@ export function script(spec) {
   if (/The turn ends interrupted\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { end: true, turn: "interrupted", usd: 0.001 }];
   // A long tool phase: two fetches, each held until its file exists (faux-web-hold.mjs), then the answer.
   const gated = /Fetch the pages held until (\S+) and (\S+)\./.exec(text);
-  if (gated) return [1, 2].map((n) => ({ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(gated[n])}` }, usd: 0.001 })).concat([{ say: "Fetched both.", usd: 0.001 }]);
+  if (gated) return [1, 2].map((n) => ({ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(gated[n])}` }, usd: 0.001 })).concat([{ say: "Fetched both.", usd: 0.001 }]);
   // A turn held mid-way (a read, then nothing until the file exists), then its answer: a drain cuts it, the next open resumes it.
   const resumed = /Hold mid-turn until (\S+)\./.exec(text)?.[1];
   if (resumed) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, ...(existsSync(resumed) ? [] : [{ hang: true }]), { say: "Resumed and done.", usd: 0.001 }];
@@ -179,11 +188,11 @@ export function script(spec) {
   // A turn held on a fetch until the file exists, so a follow-up waits its place; then each turn answers. A third turn
   // answers too, so a follow-up sent twice shows.
   const queuedBehind = /Queue a follow-up behind a turn held until (\S+)\./.exec(text)?.[1];
-  if (queuedBehind) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(queuedBehind)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2, sent again.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  if (queuedBehind) return [{ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(queuedBehind)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2, sent again.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // A turn held on a fetch until the file exists, so a follow-up waits its place; the turn then fails (its next request
   // does), and the follow-up's turn answers.
   const failedBehind = /Fail a turn held until (\S+), with a follow-up behind it\./.exec(text)?.[1];
-  if (failedBehind) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(failedBehind)}` }, usd: 0.001 }, { fail: "the faux turn failed" }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  if (failedBehind) return [{ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(failedBehind)}` }, usd: 0.001 }, { fail: "the faux turn failed" }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
   // The same with a cap: an answer under the cap, then a request held until the cancel cuts it, booked then at $0.002 (over it).
   const booked = /Answer, then hold a request the cancel cuts and books \(signal (\S+)\)\./.exec(text)?.[1];
   if (booked) return [{ say: "Done.", usd: 0.0005 }, cutBookedSignalled(booked, 0.002)];

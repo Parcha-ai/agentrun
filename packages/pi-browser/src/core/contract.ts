@@ -159,7 +159,7 @@ const browserDownloads: ToolContract = {
   label: "Browser: downloads",
   description:
     "Copy the files this browser session downloaded into the workspace under downloads/, with downloads/manifest.json listing each file's SHA-256. " +
-    "Returns the files fetched now, those fetched before and those skipped, never their bytes; open a fetched file with read.",
+    "Returns the files fetched now, those fetched before and those skipped with why, never their bytes; open a fetched file with read. A file the browser is still downloading is skipped as still downloading: call again to fetch it.",
   parameters: object({}),
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "files", listedWhen: "downloads",
 };

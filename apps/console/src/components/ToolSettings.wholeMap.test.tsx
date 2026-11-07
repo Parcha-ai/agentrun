@@ -29,8 +29,6 @@ const FETCH = { name: "web_fetch", providers: ["kernel", "parallel"], provider: 
 const RAW = [
   { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
   { name: "bash", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
-  // A legacy name: the server holds it to web_fetch's permission.
-  { name: "fetch_page", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
   { ...FETCH, permission: "allow", default_permission: "allow", permissions: ALL },
   { ...SEARCH, permission: "allow", default_permission: "allow", permissions: ALL },
 ];
@@ -77,14 +75,6 @@ describe("Settings → Tools saves the whole map, read then changed in one place
     expect(page.reads()).toBeGreaterThanOrEqual(2);
   });
 
-  it("fetch_page follows web_fetch's permission: no control of its own", async () => {
-    const page = await openPage({});
-    const row = page.host.querySelector("tr[data-tool='fetch_page']")!;
-    expect(row.querySelector("button[aria-haspopup=listbox]")).toBeNull();
-    expect(row.textContent).toContain("follows web_fetch");
-    expect(page.select("web_fetch permission")).toBeTruthy();
-  });
-
   it("the provider column for web_search and web_fetch is the same with the permission column beside it as without", () => {
     const cells = (withGates: boolean) => {
       const html = renderToStaticMarkup(createElement(ToolTable, { label: "t", rows: toolRows(toolChoices([SEARCH, FETCH]), withGates ? toolGates(RAW) : []), settings: { web_search: { provider: "parallel" } }, fallbackOf: (t) => t.default_provider, resolvesOf: () => "r", issues: {}, onEdit: () => {} }));
@@ -100,10 +90,10 @@ describe("Settings → Tools saves the whole map, read then changed in one place
 describe("the agent editor saves the agent's whole tool_settings, changed in one place", () => {
   const agent: Agent = {
     agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
-    definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "fetch_page", "web_search"],
+    definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "web_fetch", "web_search"],
       tool_settings: { web_search: { provider: "parallel", budget: 3 } as never, "mcp:linear/*": { permission: "deny" }, "monid.run": { permission: "allow", note: "ok" } as never } },
   };
-  it("a permission change keeps the provider, unknown fields, an MCP wildcard and a catalog tool's key; fetch_page sets web_fetch's", async () => {
+  it("a permission change keeps the provider, unknown fields, an MCP wildcard and a catalog tool's key", async () => {
     const saves: AgentFields[] = [];
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
@@ -111,8 +101,6 @@ describe("the agent editor saves the agent's whole tool_settings, changed in one
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: toolChoices(RAW), permissionGates: toolGates(RAW), step: "tools", onSave: async (f: AgentFields) => { saves.push(f); return null; } })));
     await settle();
     const scope = host.querySelector("section[aria-label='Tool settings']")!;
-    // The grant under its legacy name is web_fetch's row: one permission, web_fetch's.
-    expect(scope.querySelector("tr[data-tool='fetch_page'] select")).toBeNull();
     await choose(scope.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox][aria-label='web_search permission']")!, "ask");
     await choose(scope.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox][aria-label='web_fetch permission']")!, "deny");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save revision$/.test(b.textContent?.trim() ?? ""))!.click(); });

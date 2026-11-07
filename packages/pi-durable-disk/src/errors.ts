@@ -10,8 +10,7 @@ export const EXIT_SOFTWARE = 70;
 /** EX_TEMPFAIL: the claim was revoked or its mount failed; nothing this process writes can become durable. */
 export const EXIT_FENCED = 75;
 /**
- * Someone else holds the run: another client's delegation, another process's owner lock, another store connection. A
- * held delegation is live or orphaned (its client gone); the supervisor revokes orphans.
+ * Someone else holds the run: another process's owner lock, another store connection.
  */
 export const EXIT_HELD = 76;
 /** EX_CONFIG: the host launched a run with no box to run it in (`boxMode: "unavailable"`); a restart on this server cannot help. */

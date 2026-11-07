@@ -5,7 +5,7 @@
 // bash_output, bash_input, bash_signal, bash_list), each call made in the box. `bash` and the background tools may be
 // named only by an agent whose place is a box (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,7 +15,7 @@ import type { Revision } from "@parcha/pi-durable-agent";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
 import { writeInWork } from "./workspace.js";
-import { FETCH_PAGE_TOOL, fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./fetch-page.js";
+import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
@@ -27,7 +27,7 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { defaultPermission, permissionOf, type SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
@@ -116,7 +116,7 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
   bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
 });
 
-/** web_fetch, bound under `name`: its own, or a legacy name for it (LEGACY_NAMES, fetch_page). */
+/** web_fetch, bound under `name`. */
 const webFetchEntry = (name: string): ToolEntry => ({
   summary: `Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
   needs: [],
@@ -219,10 +219,12 @@ const browserTool: ToolEntry = {
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
+      import("@parcha/pi-browser/live-view"),
+      import("./browser-live.js"),
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
@@ -241,9 +243,21 @@ const browserTool: ToolEntry = {
         };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
     const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
+    // The owner's live view (browser-live.ts): pi-browser's own viewer, read-only, on a loopback port of this process's,
+    // over every provider (the handed one, the run's own), on the same person/model registry as the toolset; framed by
+    // the console's own origin alone.
+    const gates = createDrivingGates();
+    const view = createLiveView({ hostOrigin: "'self'", gates, readOnly: true });
+    const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
-      return handedProvider as never;
+      return watched as never;
+    };
+    // Each session's viewer reaches the server in the run's directory, never work/: written as it launches, gone as it ends.
+    const onSession = async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => {
+      if (change === "released") return live.dropHandover(host.where.root, row.session.tag);
+      const handover = row.liveView ? live.handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
+      if (handover) await live.writeHandover(host.where.root, handover);
     };
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
@@ -255,13 +269,18 @@ const browserTool: ToolEntry = {
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     const saved = kept?.save
-      ? { onSession: (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 })) }
-      : {};
+      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
+      : undefined;
+    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
+    const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
+      saved?.(row, change);
+      await onSession(row, change);
+    };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, signIns: kept !== undefined, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -281,23 +300,29 @@ const browserTool: ToolEntry = {
       await spend.reopened(harness, browser.docs, context);
     });
     host.beforeRelease(async (harness) => {
-      if (refused) return;
-      const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
-      for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
-        const conversation = await harness.conversation(id as never, context);
-        if (conversation) await browser.release(conversation as never, "close", context);
+      try {
+        if (refused) return;
+        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+        for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
+          const conversation = await harness.conversation(id as never, context);
+          if (conversation) await browser.release(conversation as never, "close", context);
+        }
+        await browser.drain(harness as never, context);
+      } finally {
+        // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it.
+        await view.close();
+        await live.dropHandover(host.where.root);
       }
-      await browser.drain(harness as never, context);
     });
     return { tools, extensions: [extension] };
   },
 };
 
 export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
-  read: fileTool("read", "Read a file in the run's work/."),
+  read: fileTool("read", "Read a file in the run's work/; in a sandbox, an image anywhere in the run's box too (a render in /tmp)."),
   write: fileTool("write", "Write a file in the run's work/."),
   edit: fileTool("edit", "Edit a file in the run's work/."),
-  bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.", true),
+  bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).", true),
   // The background tools (background.ts): each call a short command in the run's box, on bash's environment.
   bash_background: fileTool("bash_background", `Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe (a terminal with tty: true), and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
   bash_output: fileTool("bash_output", `Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
@@ -340,31 +365,28 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
 export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => !TOOLS[name]!.callOnly);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
 export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => TOOLS[name]!.effect !== undefined);
-/** Whether `name` is one of `allowed`, or a legacy name for one (fetch_page, web_fetch's): a revision that names it
- *  still saves and runs, though the table lists it no more. */
-export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(capabilityOf(name));
+/** Whether `name` is one of `allowed`. */
+export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(name);
 
 /** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
- *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS), each as granted and by its capability's name,
- *  and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
  *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane): string[] =>
-  [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[capabilityOf(name) as Pickable])).flatMap((name) => [name, capabilityOf(name)]))];
+  [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable])))];
 
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
- *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its capability's settings key, as the gate
- *  holds a legacy name. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
+ *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
 export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, SettingFrom> } => {
   const gated: Record<string, string> = {};
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
   const deniedBy: Record<string, SettingFrom> = {};
   const tools = learnedWorkflowTools(granted, plane).filter((name) => {
-    const setting = permission(capabilityOf(name));
+    const setting = permission(name);
     if (setting === "allow") return true;
     gated[name] = setting;
-    if (setting === "deny" && from) deniedBy[name] = from(capabilityOf(name));
+    if (setting === "deny" && from) deniedBy[name] = from(name);
     return false;
   });
   return { tools, gated, deniedBy };
@@ -392,7 +414,7 @@ export async function grantedTools(revision: { kind: string; tools?: readonly st
 }
 
 /** The table's entry for `name`, or undefined for a name it does not hold. */
-export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : name === FETCH_PAGE_TOOL ? webFetchEntry(FETCH_PAGE_TOOL) : undefined);
+export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : undefined);
 
 /** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
 export async function toolingOf(revision: Revision): Promise<Tooling> {

@@ -216,31 +216,6 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
   });
 });
 
-// fetch_page is web_fetch's older name: a revision may still grant it, and the server runs and resolves it as web_fetch
-// (serve's tool-plane.ts, LEGACY_NAMES). Its provider is web_fetch's, so the row is web_fetch's.
-describe("AgentEditor, tool settings for an agent granting fetch_page", () => {
-  const fetchAgent = (toolSettings?: Agent["definition"]["tool_settings"]): Agent => ({
-    agent_id: "reader", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
-    definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["read", "fetch_page"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
-    // GET /agents/{id}'s tools name the grant as the revision does.
-    tools: [{ name: "read" }, { name: "fetch_page", provider: toolSettings?.web_fetch?.provider ?? "kernel", provider_from: toolSettings ? "agent" : "server", default_provider: "kernel", resolved: toolSettings?.web_fetch?.provider ?? "kernel" }],
-  });
-  const fetchCaps = { ...caps, tools: [{ name: "read", available: true }, { name: "fetch_page", available: true }, { name: "web_fetch", available: true }] };
-  it("shows web_fetch's provider row, the server's pick its default, and a pick there saves as web_fetch's", async () => {
-    const page = await open(fetchAgent(), { editorCaps: fetchCaps });
-    expect(page.row("web_fetch")).toBeTruthy();
-    expect(valueOf(page.select("web_fetch"))).toBe("kernel");
-    await page.choose("web_fetch", "parallel");
-    await page.click(/^Save/);
-    expect(page.saves[0]!.tool_settings).toEqual({ web_fetch: { provider: "parallel" } });
-  });
-  it("its saved provider shows what the agent's read says it resolves to", async () => {
-    const page = await open(fetchAgent({ web_fetch: { provider: "parallel" } }), { editorCaps: fetchCaps });
-    expect(valueOf(page.select("web_fetch"))).toBe("parallel");
-    expect(page.row("web_fetch")!.textContent).toContain("pi: Parallel");
-  });
-});
-
 // On a phone (375 px) the provider table is wider than the screen: it scrolls in a box of its own, never the page.
 describe("AgentEditor, the tool settings on a narrow screen", () => {
   it("holds the provider table in a box that scrolls sideways", async () => {
