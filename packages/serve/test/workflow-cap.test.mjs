@@ -405,3 +405,26 @@ test("a decision sent and lost with its process, before its receipt and its book
   const holds = entriesOf(data, runId).filter((entry) => entry.kind === "agentrun.decision_hold").map((entry) => entry.data.usd);
   assert.deepEqual([holds.length, counted], [1, holds[0]], JSON.stringify(holds));
 });
+
+test("a decision whose booking was lost and whose receipt names its charge counts at that charge on the next process, never at a larger hold", async (t) => {
+  const calls = join(await scratch(t), "parallel-calls.jsonl");
+  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+  assert.equal((await api("POST", "/agents", flowAgent("charged-judge", judgeFlow("coi", "parallel")))).status, 201);
+  const started = await api("POST", "/agents/charged-judge/runs", { input: { doc: "Certificate of Incorporation of Example Widgets, Inc." }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  assert.equal((await view(api, runId)).status, "completed");
+  await letGo(data, runId);
+  const store = join(runDir(data, runId), "store", "run.sqlite");
+  // The booking lost, and the hold the cap took ten times what was charged ($0.01 against the receipt's $0.001).
+  const db = new DatabaseSync(store);
+  try {
+    assert.ok(db.prepare("DELETE FROM entries WHERE record LIKE '%\"agentrun.decision_cost\"%'").run().changes > 0, "the booking was there");
+    assert.ok(db.prepare("UPDATE entries SET record = json_set(record, '$.data.usd', 0.01) WHERE record LIKE '%\"agentrun.decision_hold\"%'").run().changes > 0, "the hold was there");
+  } finally {
+    db.close();
+  }
+  assert.equal(decisionSpentIn(store), 0.001, "the receipt's charge, not the hold");
+});

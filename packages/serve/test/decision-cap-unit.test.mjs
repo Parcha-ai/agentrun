@@ -110,3 +110,17 @@ test("a decision's hold is kept in the run's store before its request can be sen
   assert.deepEqual(await outcome(refused.before(async () => ((sent += 1), "answered"), () => false), params({ provider: "parallel", model: undefined })), ["threw", "DecisionProviderError", "connection"]);
   assert.equal(sent, 0);
 });
+
+test("a decision's hold is kept only once the driver has admitted its request, right before the send, so a crash before the admission leaves no hold for the next process to count", async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  const seen = [];
+  const { waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected",
+    book: async () => void seen.push("book"), keep: async () => void seen.push("keep") });
+  const judge = capped.settling(async () => (seen.push("send"), { answers: {}, cost_usd: 0.001 }));
+  // The driver's admission sits between `before` and the settling judge (dsl with-recovery): admit, flush, then ask.
+  const driven = capped.before(async (request) => (seen.push("admit"), judge(request)), () => false);
+  await driven(params({ provider: "parallel", model: undefined }));
+  assert.deepEqual(seen, ["admit", "keep", "send", "book"]);
+});
