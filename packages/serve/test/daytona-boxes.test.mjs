@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_RELAY_FILE, relayFetch, startBoxRelay } from "../dist/box-relay.js";
 import { BOX_ENV, BOX_SYNC_FILE, DEFAULT_BOX_ALLOW, runBox } from "../dist/run-box.js";
+import { BOX_WORK } from "../dist/place.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
@@ -594,8 +595,8 @@ test("a run's relay call takes only that run's own token: run A's process, with 
   const relayed = (token, run, target) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${token}`, "x-agentrun-target": target } });
   // A read of a sandbox, and a toolbox read of a file only run A's calls name: what reaches Daytona from run A carries
   // that name, and no call of run B's does.
-  // A box path the fake maps into each sandbox's own directory (its work/), never one of this machine's.
-  const mark = `/run/agentrun/run/work/run-a-only-${randomUUID()}.txt`;
+  // In the box's work/ (BOX_WORK), a path the fake maps into each sandbox's own directory, never one of this machine's.
+  const mark = `${BOX_WORK}/run-a-only-${randomUUID()}.txt`;
   const read = (box) => `${fake.url}/sandbox/${box}`;
   const marked = (box) => `${fake.toolboxUrl}/${box}/files/download?path=${encodeURIComponent(mark)}`;
   const carriesMark = (box) => (r) => r.path.includes(box) && new URLSearchParams(r.query).get("path") === mark;
