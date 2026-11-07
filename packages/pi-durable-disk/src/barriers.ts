@@ -201,7 +201,7 @@ export const NORMAL_PRECONDITIONS = {
   },
   browserSessionBarrier: {
     done: true,
-    what: "a browser call's hold (serve/src/browser-cost.ts:167, paidCall over keepHold) is kept in memory, not written and synced before the call goes, so it has no barrier",
+    what: "the durable unit is the session open (browserSessionOpen, written and synced before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
   },
   barrierProofs: {
     done: false,
