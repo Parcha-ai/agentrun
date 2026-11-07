@@ -145,9 +145,23 @@ export interface ReadBackSpec {
 	kind?: ComputerKind;
 }
 
+/**
+ * What a read-back recorded that does not refuse the computer, in words, one line each: under network none, the probe
+ * targets that accepted a connection and sent nothing back ("network: none; accepted with no answer (no bytes came
+ * back): 1.1.1.1:443, ..."). Recorded, never refused and never hidden. Absent when there is nothing to record.
+ */
+export type ReadBackNotes = string[];
+
+/** What create returns: the computer's ref, and what its read-back recorded that does not refuse it. */
+export interface CreatedComputer extends ComputerRef {
+	notes?: ReadBackNotes;
+}
+
 /** A computer attach found: its ref, and the spec read back from it, so a caller sees what it attached to (root, open). */
 export interface AttachedComputer extends ComputerRef {
 	spec: ReadBackSpec;
+	/** What attach's read-back recorded that does not refuse the computer (see ReadBackNotes). */
+	notes?: ReadBackNotes;
 }
 
 /** One computer as list() reads it back. */
@@ -176,7 +190,7 @@ export interface ComputerProvider {
 	readonly version: string;
 	capabilities(): ComputerCapabilities;
 	check(spec: ComputerSpec): Refusal[];
-	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<ComputerRef>>;
+	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<CreatedComputer>>;
 	/**
 	 * Finds one computer this provider made, by its id or by labels, with the spec read back from it; none or several is
 	 * an error in words.

@@ -85,7 +85,8 @@ function queue() {
 
 /**
  * The daemon's stdio bridge in one sandbox, as a ContainerProcess in binary mode: requests written to stdin are
- * answered on stdout. `box` holds what this sandbox's daemon reports: hello, and the probe's kernel, uid:gid and reached.
+ * answered on stdout. `box` holds what this sandbox's daemon reports: hello, and the probe's kernel, uid:gid, reached
+ * (targets that answered) and accepted (targets that accepted a connection and sent nothing back).
  */
 function bridge(box, fake) {
 	const stdout = queue();
@@ -119,7 +120,7 @@ function bridge(box, fake) {
 				if (box.probe === "hangs") return;
 				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
 				const reached = box.network === "none" ? [] : targets;
-				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, reached: box.reached ?? reached };
+				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, reached: box.reached ?? reached, accepted: box.accepted ?? [] };
 				const text = box.probe === "garbled" ? "not json\n" : `${JSON.stringify(report)}\n`;
 				return reply({ result: { exitCode: 0, stdout: Buffer.from(text).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 			}
