@@ -81,7 +81,7 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
   const said = answers(data, run.run_id);
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
-  assert.match(said[0].text.trim(), /\/run\/agentrun\/run\/work$/, "bash starts in the box's work/");
+  assert.match(said[0].text.trim(), /\/workspace$/, "bash starts in the box's work/");
   assert.equal(said[4].text, "edited in the box");
   // The run's files: what the box wrote, pulled back.
   assert.deepEqual(await fileList(api, run.run_id), ["note.txt", "out.txt"]);
@@ -157,7 +157,7 @@ test("a run's end lets the relay's hold on its programs go even when its box is 
   assert.deepEqual(held.released, []);
   // Its last copy back cannot be read (a file changed in the box since the turn's pull, and its archive is no archive),
   // so the box is kept at the run's end.
-  writeFileSync(join(box.dir, "run", "agentrun", "run", "work", "late.txt"), "changed in the box");
+  writeFileSync(join(box.dir, "workspace", "late.txt"), "changed in the box");
   vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
@@ -178,7 +178,7 @@ test("a program that is still starting when its run ends is let go as it lands, 
   vm.execDelayMs = (command) => (command[0] === "sleep" ? 20_000 : 0);
   const starting = fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
   await until(() => box.execs.some((exec) => exec.command[0] === "sleep"), "the start under way");
-  writeFileSync(join(box.dir, "run", "agentrun", "run", "work", "late.txt"), "changed in the box");
+  writeFileSync(join(box.dir, "workspace", "late.txt"), "changed in the box");
   vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
