@@ -313,10 +313,15 @@ function piObserver() {
     end: (end) => state.observer.end(end),
   };
 }
-/** A browser charge's commit, as onCharge books it. */
-const chargeOf = (tag, usd) => [{ type: "entry", value: { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: null, usd, seconds: 60, tag, conversation: 1, at: new Date(T0).toISOString(), final: false } } }];
-/** A run's spend whose count fails `failures` times, then adds; an unknown figure (null) makes it unknown for good. */
-function countingSpend(cap, failures = 0) {
+/** A browser charge's commit, as onCharge books it: a session's last (final), so it leaves no session open and no reserve
+ *  held. A charge that is not final would keep its session's reserve in cap.ts's holds, which belong to the process and
+ *  so to every later test in this file: enough of them refused the restart tests' first browser call for room. */
+const chargeOf = (tag, usd) => [{ type: "entry", value: { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: null, usd, seconds: 60, tag, conversation: 1, at: new Date(T0).toISOString(), final: true } } }];
+/** A run's spend whose count fails `failures` times, then adds; an unknown figure (null) makes it unknown for good. The
+ *  test ends with the process's holds as it found them: cap.ts keeps them for the process, one run's in serve. */
+function countingSpend(t, cap, failures = 0) {
+  const base = paidHolds();
+  t.after(() => assert.equal(paidHolds(), base, "the test leaves no hold behind for the next"));
   const spend = { spent: 0, adds: [] };
   useSpend({ cap, spent: () => spend.spent, add: (usd) => {
     spend.adds.push(usd);
@@ -330,7 +335,7 @@ const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 
 test("a browser charge the process fails to count (pi 1.5 detaches an observer that throws): the observer stays attached, a later charge still reaches the count, and the run's spend reads unknown, logged once: never silently uncounted", (t) => {
   t.after(() => useSpend(undefined));
-  const spend = countingSpend(5, 1);
+  const spend = countingSpend(t, 5, 1);
   const lines = [];
   const pi = piObserver();
   browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line)).watch(pi.harness);
@@ -344,7 +349,7 @@ test("a browser charge the process fails to count (pi 1.5 detaches an observer t
 
 test("on a capped run, a browser charge the process failed to count refuses the run's next paid call as unknown spend, in the cap's own words", async (t) => {
   t.after(() => useSpend(undefined));
-  countingSpend(5, 1);
+  countingSpend(t, 5, 1);
   const pi = piObserver();
   browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
   pi.publish(chargeOf("ar-1", 0.01));
@@ -360,7 +365,7 @@ const SESSION_CLOSED = () => ({ kind: "failed", error: new Error("session closed
 test("an observer pi ends before the run's own close began (listener_error, failed, even pi's own \"session closed\") leaves the run's browser spend unknown, never silently uncounted", (t) => {
   t.after(() => useSpend(undefined));
   for (const end of [{ kind: "listener_error", error: new Error("a listener threw") }, { kind: "failed", error: new Error("the Session failed") }, SESSION_CLOSED(), { kind: "ended" }]) {
-    const spend = countingSpend(5);
+    const spend = countingSpend(t, 5);
     const pi = piObserver();
     browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
     pi.publish(chargeOf("ar-1", 0.01));
@@ -371,7 +376,7 @@ test("an observer pi ends before the run's own close began (listener_error, fail
 
 test("once the run's own close began (spend.closing()), the end pi gives its close keeps the count, silently", (t) => {
   t.after(() => useSpend(undefined));
-  const closed = countingSpend(5);
+  const closed = countingSpend(t, 5);
   const lines = [];
   const pi = piObserver();
   const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line));
@@ -387,7 +392,7 @@ test("once the run's own close began (spend.closing()), the end pi gives its clo
 test("a real Harness: a charge booked, the run's close begun, the Harness closed: the count stands, with no line", async (t) => {
   const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
   t.after(() => useSpend(undefined));
-  const counted = countingSpend(5);
+  const counted = countingSpend(t, 5);
   const lines = [];
   const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
   await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
