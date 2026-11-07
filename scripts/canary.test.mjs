@@ -46,6 +46,24 @@ test('setCanaryVersions sets every package and every exact pin between them, and
   await assert.rejects(setCanaryVersions(root, directories, 8, '6b9806298aa30d8e7f37fee29642865c18036b31'), /already a canary/);
 }));
 
+// verify:packages installs every listed package, held ones too (a held package is bumped with the rest and skipped only at
+// publication), so a held package's exact pins must follow, or the clean consumer's install refuses (ERESOLVE): agentrun-harness's
+// peer pin on pi-transport, in the 11-07 dry run.
+test('the command sets the canary versions on every listed package, held ones included', async () => {
+  const source = await readFile(new URL('./canary.mjs', import.meta.url), 'utf8');
+  assert.match(source, /setCanaryVersions\(root, listedPackages,/);
+  assert.match(source, /canaryPlan\(root, releasePackages,/);
+});
+test('a held package among the directories is set and its pins follow', () => tree(async root => {
+  await mkdir(join(root, 'packages', 'harness'), { recursive: true });
+  await writeFile(join(root, 'packages', 'harness', 'package.json'), JSON.stringify({ name: '@parcha/agentrun-harness', version: '0.1.0-beta.31', private: true, peerDependencies: { '@parcha/agentrun-dsl': '0.1.0-beta.31' }, devDependencies: { '@parcha/agentrun-dsl': '0.1.0-beta.31' } }, null, 2));
+  await setCanaryVersions(root, [...directories, 'harness'], 7, '6b9806298aa30d8e7f37fee29642865c18036b31');
+  const harness = await read(root, 'harness');
+  assert.equal(harness.version, '0.1.0-canary.7.g6b98062');
+  assert.equal(harness.peerDependencies['@parcha/agentrun-dsl'], '0.1.0-canary.7.g6b98062');
+  assert.equal(harness.devDependencies['@parcha/agentrun-dsl'], '0.1.0-canary.7.g6b98062');
+}));
+
 test('canaryPlan lists the verified archives, in order, with their hashes, and refuses a plan that is not one canary', () => tree(async root => {
   await setCanaryVersions(root, directories, 7, '6b9806298aa30d8e7f37fee29642865c18036b31');
   await mkdir(join(root, '.release/packages'), { recursive: true });

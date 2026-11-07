@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // A canary from main: the release packages at one main commit, published under npm's `canary` dist-tag (never `latest`), so
 // a tester runs main with `npx -y @parcha/agentrun@canary`. Two steps, each its own command:
-//   node scripts/canary.mjs versions <run number> <commit sha>   set every release package to its canary version, and every
+//   node scripts/canary.mjs versions <run number> <commit sha>   set every listed package (held ones too) to its canary version, and every
 //       exact pin between them; nothing is committed. x.y.z becomes x.y.(z+1)-canary.<run>.g<sha7>, x.y.z-beta.N becomes
 //       x.y.z-canary.<run>.g<sha7>: above every beta of that core, below the next plain release.
 //   node scripts/canary.mjs plan <commit sha>   after npm run verify:packages: .release/release-plan.json, the plan
@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { releasePackages } from './release-preflight.mjs';
+import { listedPackages, releasePackages } from './release-preflight.mjs';
 import { isMain } from './is-main.mjs';
 
 const CANARY = /-canary\.\d+\.g[0-9a-f]{7}$/;
@@ -35,7 +35,7 @@ export async function setCanaryVersions(root, directories, run, sha) {
   const versions = Object.fromEntries(manifests.map(manifest => [manifest.name, canaryVersion(manifest.version, run, sha)]));
   for (const [index, manifest] of manifests.entries()) {
     manifest.version = versions[manifest.name];
-    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
       for (const name of Object.keys(manifest[field] ?? {})) if (Object.hasOwn(versions, name)) manifest[field][name] = versions[name];
     }
     await writeFile(manifestPath(root, directories[index]), JSON.stringify(manifest, null, 2) + '\n');
@@ -68,7 +68,9 @@ if (isMain(import.meta)) {
   const [command, ...args] = process.argv.slice(2);
   const usage = 'Usage: node scripts/canary.mjs versions <run number> <commit sha> | plan <commit sha>';
   if (command === 'versions' && args.length === 2) {
-    const versions = await setCanaryVersions(root, releasePackages, Number(args[0]), args[1]);
+    // Every listed package, held ones too: verify:packages installs them all, so a held package's exact pins must follow
+    // (a release bumps a held package with the rest and skips it only at publication). The plan publishes releasePackages.
+    const versions = await setCanaryVersions(root, listedPackages, Number(args[0]), args[1]);
     for (const [name, version] of Object.entries(versions)) console.log(`${name}@${version}`);
   } else if (command === 'plan' && args.length === 1) {
     const plan = await canaryPlan(root, releasePackages, args[0]);
