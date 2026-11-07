@@ -271,6 +271,40 @@ test("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that each ne
   assert.deepEqual(notesOf(data, runId), [rows[0].text]);
 });
 
+test("claude-agent on the faux harness: the next request's least is priced as its admission will price it, reading the cache: a first request that wrote the cache ($0.21 least uncached) never makes the second, whose least reads it (about $0.03), due", { timeout: 180_000 }, async (t) => {
+  const sonnet = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: sonnet });
+  assert.equal((await api("POST", "/agents", agent("cached-least", { harness: "claude-agent", instructions: "Grow a cached context briefly." }))).status, 201);
+  // $0.35: after request 0 ($0.053) about $0.30 is left, over 3 x $0.053 and over 2 x the cached least of the next request,
+  // but under 2 x request 0's own least, priced with nothing cached.
+  const runId = (await api("POST", "/agents/cached-least/runs", { input: { content: "go" }, max_cost_usd: 0.35 })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [], "no row: about $0.26 is left at the end, far over 2 x a cached request's least");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [], "and no note in any request");
+});
+
+test("claude-agent on the faux harness: at step 0, with no previous request in hand, the next request's least is priced uncached, and it alone makes the wrap-up due, in the budget's words (a pin)", { timeout: 180_000 }, async (t) => {
+  const booked = join(await scratch(t), "booked");
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  assert.equal((await api("POST", "/agents", agent("step0-least", { harness: "claude-agent", instructions: `Two requests needing 10,240 output tokens, the first booked when ${booked} exists.` }))).status, 201);
+  // Output at $100 a million, input free: each request's least is $1.024, its step-0 typical (4,096 tokens) $0.41. Under
+  // $2.50 the step-0 latch is not due (over 3 x $0.41); request 1, admitted with request 0 still in flight at $1.024 and
+  // nothing priced, finds $1.48 left, under 2 x its least: due by the least alone.
+  const runId = (await api("POST", "/agents/step0-least/runs", { input: { content: "go" }, max_cost_usd: 2.5 })).body.run_id;
+  for (const end = Date.now() + 60_000; (await rowsOf(api, runId)).length === 0; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    if (Date.now() > end) assert.fail(`the note was told within 60 s: ${JSON.stringify((await api("GET", `/runs/${runId}`)).body).slice(0, 1500)}`);
+  }
+  await writeFile(booked, "");
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const rows = (await rowsOf(api, runId)).map((row) => row.text);
+  assert.deepEqual(rows, [WRAP_UP_FIRST("$1.48")], "step 0's words: nothing priced at the take");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), rows);
+});
+
 test("claude-agent on Sonnet 4.5 under $0.10, its process killed after the wrap-up came due at step 0 and before a request took it: the process opened again decides the words from the run's priced requests", { timeout: 180_000 }, async (t) => {
   const go = join(await scratch(t), "go");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;

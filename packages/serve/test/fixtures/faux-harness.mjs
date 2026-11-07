@@ -224,6 +224,16 @@ export function script(spec) {
   // A growing conversation whose requests read the cache (grown), 80 of them: a cap pauses it on the way. "..., missing
   // the cache at request N until F.": request N finds no cache and is held in flight until the file F exists. "..., cut
   // at request 1 until F.": a crash cuts request 1 until F exists; then an answer as large as request 2's.
+  // Two requests that each need and ask 10,240 output tokens, the first's cost booked only once <file> exists: the
+  // second is taken and admitted with nothing priced and no previous request in hand.
+  const tenK = /Two requests needing 10,240 output tokens, the first booked when (\S+) exists\./.exec(text)?.[1];
+  if (tenK) return [{ call: "read", args: { path: "a.txt" }, outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01, bookWhen: tenK }, { say: "Done.", outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01 }];
+  // Four requests of a growing conversation that reads the cache (grown), then the answer: request 0 writes the cache
+  // (its least priced uncached), the later ones read it (their least far smaller).
+  if (/Grow a cached context briefly\./.test(text)) {
+    const answer = grown(4);
+    return [grown(0), grown(1), grown(2), grown(3), { say: "Done growing.", inputTokensMax: answer.inputTokensMax, tokens: answer.tokens, usd: answer.usd }];
+  }
   const growing = /Grow a cached context(?:, missing the cache at request (\d+) until (\S+)|, cut at request 1 until (\S+))?\./.exec(text);
   if (growing) {
     const [, missAt, missUntil, cutUntil] = growing;
