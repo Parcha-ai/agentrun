@@ -132,8 +132,9 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
       description: tool.description,
       inputSchema: tool.parameters as unknown as Record<string, unknown>,
       replay,
-      async call(args, { callId, signal }) {
-        const refused = await gated?.gate.enter(name, args, callId, gated.park);
+      async call(args, { callId, signal, attempt }) {
+        // A replay (the kernel's attempt above 0) may follow an attempt that was sent: the gate's refusal then says so.
+        const refused = await gated?.gate.enter(name, args, callId, gated.park, (attempt ?? 0) > 0 ? { replayed: true } : {});
         if (refused) {
           const answer = { text: refused.text, isError: refused.isError };
           results.set(callId, answer);
