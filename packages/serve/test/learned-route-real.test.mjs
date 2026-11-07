@@ -58,6 +58,16 @@ async function owner(server, first) {
   return (runId, approvalId) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body: { decision: "allow" } });
 }
 
+/** Nothing outlives a test whose servers are all closed: no process is this test process's child (the ps that looks is
+ *  left out), and none names the runs' data `data` (a run's process, or a harness CLI reparented when its parent died). */
+async function nothingOutlives(data) {
+  const left = () => execFileSync("ps", ["-eo", "pid=,ppid=,args="]).toString().split("\n").map((line) => line.trim()).filter(Boolean)
+    .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(data)))
+    .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
+  for (const deadline = Date.now() + 15_000; left().length && Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 200)));
+  assert.deepEqual(left(), [], "no process of the test's runs outlives it");
+}
+
 /** The node's submit when a request offers it and has no tool result yet (the faux gateway's `call`, codex). */
 const submitsAnswer = ({ body }) => {
   const offers = (body?.tools ?? []).some((tool) => tool?.name === "submit");
@@ -109,14 +119,24 @@ for (const harness of ["claude-agent", "codex"]) {
       assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(view));
       let server = first;
       let allow = allowOn;
-      if (restart) {
-        await first.close();
-        server = await serve(t, { learning: "on", faux: undefined, accounts: true, data: first.data });
-        allow = await owner(server, false);
+      let second;
+      let rows;
+      try {
+        if (restart) {
+          await first.close();
+          // Both servers share one data directory, and the first's after-hook (registered first, run first: node:test runs
+          // them in order, and a hook that throws skips the rest) removes it: the second is closed here, its run's
+          // processes with it, before any hook runs, as the cut test below closes its own.
+          second = server = await serve(t, { learning: "on", faux: undefined, accounts: true, data: first.data });
+          allow = await owner(server, false);
+        }
+        const answered = await allow(runId, view.pending.id);
+        assert.equal(answered.status, 204, answered.text);
+        ({ rows } = await follow(server.api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 }));
+      } finally {
+        await second?.close();
       }
-      const answered = await allow(runId, view.pending.id);
-      assert.equal(answered.status, 204, answered.text);
-      const { rows } = await follow(server.api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
+      if (second) await nothingOutlives(first.data);
       const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
       assert.match(resumed?.text ?? "", /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, `the approved call's result: ${resumed?.text}`);
       const node = entries(first.data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
@@ -196,11 +216,5 @@ test("on claude-agent's real adapter, a learned call allowed and then cut off wi
   const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
   assert.equal(resumed?.summary, "AgentRun: learned_workflow ran once you allowed it, and failed", JSON.stringify(resumed));
   assert.match(resumed.text, /Its result:\ninterrupted: the process running it stopped before it reported an outcome/, resumed.text);
-  // Nothing outlives the test: with both servers closed, no process is this test process's child (the ps that looks is
-  // left out), and none names the runs' data (a run's process, or a harness CLI reparented when its parent died).
-  const left = () => execFileSync("ps", ["-eo", "pid=,ppid=,args="]).toString().split("\n").map((line) => line.trim()).filter(Boolean)
-    .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(first.data)))
-    .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
-  for (const deadline = Date.now() + 15_000; left().length && Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 200)));
-  assert.deepEqual(left(), [], "no process of the test's runs outlives it");
+  await nothingOutlives(first.data);
 });
