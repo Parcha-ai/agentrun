@@ -2,7 +2,7 @@ import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } fro
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
-import { capWords, RaiseCap, suggestedCap } from "@/components/NeedsYou";
+import { capWords, RaiseCap } from "@/components/NeedsYou";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -35,9 +35,14 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const archived = !!run.archived_at;
   // A capped agentic run that has not ended takes a raise here too, so a working one is raised before it pauses.
   const cap = run.cost?.cap_usd;
-  const raisable = !!actions.onRaiseCap && run.kind === "agentic" && !view.final && typeof cap === "number";
-  const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
+  // Paused at its cap, the pause banner's raise is the one that continues the run: the header offers no second way in.
+  const raisable = !!actions.onRaiseCap && run.kind === "agentic" && !view.final && typeof cap === "number" && !budget;
+  const [raising, setRaising] = useState(false);
+  // What it cost so far, of its cap when it has one (the served cost.cap_usd), so a raise shows as the new cap.
+  const capped = typeof cap === "number" && Number.isFinite(cap);
+  const spent = cost(run.cost);
+  const costWords = !capped ? spent : run.cost?.usd !== null && run.cost?.usd !== undefined && !soFar(run.cost) ? `${spent} of ${capWords(cap!)} cap` : `${spent} · ${capWords(cap!)} cap`;
   return (
     <header className="border-b px-5 py-4 md:px-8">
       <nav className="caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" aria-label="Breadcrumb">
@@ -54,20 +59,21 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
           <h1 className="break-words text-2xl font-semibold leading-tight" title={run.title}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : run.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground">
-            <StatusBadge run={run} />
+            <span data-run-status><StatusBadge run={run} /></span>
             {archived && <Chip tone="muted">Archived</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
-              : <span className="font-mono" title={costTitle(run.cost)}>{cost(run.cost)}</span>}
+              : <span className="font-mono" title={costTitle(run.cost)} data-run-cost>{costWords}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>
         {(view.canStop || view.canCancel || actions.onArchive || raisable) && (
-          <div className="flex shrink-0 items-center gap-2">
+          // Wraps on a narrow screen (a phone held upright) rather than running off its edge; a row of its own on wide ones.
+          <div className="flex max-w-full flex-wrap items-center gap-2" role="group" aria-label="Run actions">
             {raisable && (
               <Button size="sm" onClick={() => setRaising((r) => !r)} aria-expanded={raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
                 <CircleDollarSign aria-hidden /> Raise the cap
@@ -100,8 +106,8 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       </div>
       {raisable && raising && (
         <div className="mt-3 max-w-xl">
-          {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
-          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
+          {/* A working run's raise only: paused at its cap, the banner's raise (with the server's suggestion) is the one. */}
+          <RaiseCap cap={cap!} suggested={null} paused={false} onRaise={actions.onRaiseCap!} />
         </div>
       )}
     </header>

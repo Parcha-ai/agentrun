@@ -43,27 +43,23 @@ describe("RunHeader's Raise the cap", () => {
     expect(t.host.textContent).toContain(NOTE);
   });
 
-  it("a run paused at its cap is raised from the header too, prefilled with the server's suggestion", async () => {
+  it("a run paused at its cap offers no raise in the header: the pause banner's raise is the one that continues it", () => {
     const paused = run({ status: "input_required", state: "waiting", cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.05 },
       pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0, needs_usd: 0.1024, suggested_cap_usd: 2, said: "Not sent.", at: "2026-11-05T00:00:05Z" } });
     const t = mount(paused, async (usd) => ({ run_id: "r1", max_cost_usd: usd, resumed: true, message_id: "m1", status: "input_required", state: "waiting" }));
-    await act(async () => { t.button("Raise the cap")!.click(); });
-    expect((t.host.querySelector('input[aria-label="New cap in dollars"]') as HTMLInputElement).value).toBe("2");
+    expect(t.button("Raise the cap")).toBeUndefined();
+    expect(t.host.querySelector('form[aria-label="Raise the cap"]')).toBeNull();
   });
 
-  it("an open header form follows a new pause: a working run that pauses, then pauses again after a raise, shows each pause's suggestion", async () => {
-    const paused = (cap: number, suggested: number, at: string) => run({ status: "input_required", state: "waiting", cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: cap },
-      pending: { kind: "budget", cap_usd: cap, spent_usd: 0, needs_usd: 0.1024, suggested_cap_usd: suggested, said: "Not sent.", at } });
+  it("a header form opened on a working run closes when the run pauses at its cap (the banner's raise takes over)", async () => {
     const onRaiseCap = async (usd: number): Promise<RaiseAnswer> => ({ run_id: "r1", max_cost_usd: usd, resumed: true, status: "input_required", state: "waiting" });
     const t = mount(run(), onRaiseCap);
     await act(async () => { t.button("Raise the cap")!.click(); });
-    const value = () => (t.host.querySelector('input[aria-label="New cap in dollars"]') as HTMLInputElement).value;
-    expect(value()).toBe("");
-    const render = (r: Run) => act(() => root!.render(createElement(RunHeader, { run: r, agentName: "Calc", actions: { onStop: () => {}, onCancel: () => {}, onRaiseCap } })));
-    render(paused(10, 12, "2026-11-05T00:00:05Z"));
-    expect(value()).toBe("12");
-    render(paused(12, 15, "2026-11-05T00:00:09Z"));
-    expect(value()).toBe("15");
+    expect(t.host.querySelector('form[aria-label="Raise the cap"]')).not.toBeNull();
+    const paused = run({ status: "input_required", state: "waiting", cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: 10 },
+      pending: { kind: "budget", cap_usd: 10, spent_usd: 0, needs_usd: 0.1024, suggested_cap_usd: 12, said: "Not sent.", at: "2026-11-05T00:00:05Z" } });
+    act(() => root!.render(createElement(RunHeader, { run: paused, agentName: "Calc", actions: { onStop: () => {}, onCancel: () => {}, onRaiseCap } })));
+    expect(t.host.querySelector('form[aria-label="Raise the cap"]')).toBeNull();
   });
 
   it("a run with no cap, an ended run and a workflow run offer no raise; nor does a page that gives no way to raise", () => {

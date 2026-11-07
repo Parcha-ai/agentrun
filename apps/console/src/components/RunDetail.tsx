@@ -76,6 +76,9 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
+  // The cap the banner's raise must exceed: the pause's own, else the run's served cost.cap_usd (a pause sent with its kind
+  // alone), so a paused run always has a raise while the header offers none.
+  const bannerCap = typeof budget?.cap_usd === "number" ? budget.cap_usd : typeof run.cost?.cap_usd === "number" ? run.cost.cap_usd : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
@@ -138,8 +141,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {refused && refused.id !== approval?.id && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused.text}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
             : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
-          {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
-          {view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
+          {/* The one raise while paused (the header offers none): above the pause's cap, else the run's served cap. */}
+          {view.needsYou && budget && bannerCap !== null && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={bannerCap} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
