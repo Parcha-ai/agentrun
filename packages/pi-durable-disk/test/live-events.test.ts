@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { AgentDoc, createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { watchEvents } from "../src/live-events.ts";
 
 async function opened() {
@@ -56,5 +56,32 @@ test("a snapshot taken after a turn holds its entries, and no later event append
   const appended = events.filter((event) => event.type === "message_end").map((event) => Number(event.entry?.id));
   assert.equal(appended.length, 2, "the second turn's two messages");
   assert.ok(appended.every((id) => !held.includes(id)), `none the snapshot holds: ${appended.join(",")} vs ${held.join(",")}`);
+  await stream.stop();
+});
+
+test("a document changed while the snapshot is acquired reaches the stream: the snapshot's older value is never the last word", async (t) => {
+  const { harness, root } = await opened();
+  t.after(() => harness.close(ctx));
+  // A seam in the acquisition: the view is acquired, then the agent document changes and its commit is published, and
+  // only then does the acquisition return (as a slow reader attaching while the run moves on would see it).
+  const seamed = new Proxy(harness, {
+    get: (target, key) => key !== "conversation" ? Reflect.get(target, key, target)?.bind?.(target) ?? Reflect.get(target, key, target) : async (id: never, context: never) => {
+      const conversation = await target.conversation(id, context);
+      return conversation && new Proxy(conversation, {
+        get: (inner, name) => name !== "watch" ? Reflect.get(inner, name, inner)?.bind?.(inner) ?? Reflect.get(inner, name, inner) : async (...args: unknown[]) => {
+          const watch = await (inner.watch as (...a: unknown[]) => Promise<unknown>)(...args);
+          await target.commit(async (tx) => { (await tx.doc(AgentDoc, root.id)).thinkingLevel = "high"; }, ctx);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return watch;
+        },
+      });
+    },
+  }) as unknown as Harness;
+  const stream = await watchEvents(seamed, root.id, ctx);
+  const seen: { type: string; agent?: { thinkingLevel?: string } }[] = [stream.snapshot as never];
+  stream.start(async (batch) => void seen.push(...(batch as typeof seen)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const last = seen.filter((event) => event.type === "snapshot" || event.type === "agent_changed").at(-1);
+  assert.equal(last?.agent?.thinkingLevel, "high", `the stream ends on the newer agent: ${JSON.stringify(seen.map((event) => event.type))}`);
   await stream.stop();
 });
