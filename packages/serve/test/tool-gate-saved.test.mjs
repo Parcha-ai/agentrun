@@ -50,7 +50,11 @@ test("a parked write shows no Saved row while it waits, none after a deny (and n
   const NOTE = "use scratch instead";
   // A held key straddling the summary's cut of the note (200 characters): redacted whole first, no piece of it is left.
   const KEYED = `use scratch instead, never ${"x".repeat(165)}${HELD}\nand a second line`;
-  const runs = await Promise.all([["allow"], ["deny", NOTE], ["deny", KEYED]].map(async ([decision, note], i) => ({ decision, note, ...(await parkedWrite(api, `saved-${i}`)) })));
+  // A link's query is scrubbed on the summary as on the row's text (scrubUrls): its values never show.
+  const LINKED = "use scratch instead, see https://files.example/doc?sig=s3cr3tQueryValue&id=7";
+  // The cut is by code points: an emoji straddling it is kept whole or dropped, never halved.
+  const ASTRAL = `${"a".repeat(198)}😀bbb`;
+  const runs = await Promise.all([["allow"], ["deny", NOTE], ["deny", KEYED], ["deny", LINKED], ["deny", ASTRAL]].map(async ([decision, note], i) => ({ decision, note, ...(await parkedWrite(api, `saved-${i}`)) })));
   for (const run of runs) {
     assert.deepEqual(savedRows(run.rows).map((r) => r.summary), [], `${run.decision}: no Saved row while the write waits for its approval`);
     assert.equal(existsSync(join(runDir(server.data, run.runId), "work", "hello.txt")), false, `${run.decision}: nothing was written while it waits`);
@@ -58,7 +62,7 @@ test("a parked write shows no Saved row while it waits, none after a deny (and n
   for (const run of runs) assert.equal(await answer(run.runId, run.approval, run.note === undefined ? { decision: run.decision } : { decision: run.decision, note: run.note }), 204);
   for (const run of runs) {
     const { rows } = await follow(api, run.runId, ["completed"], { deadlineMs: 55_000 });
-    const at = `${run.decision}${run.note === KEYED ? " (keyed note)" : ""}`;
+    const at = `${run.decision}${run.note === KEYED ? " (keyed note)" : run.note === LINKED ? " (linked note)" : run.note === ASTRAL ? " (astral note)" : ""}`;
     const file = join(runDir(server.data, run.runId), "work", "hello.txt");
     const resume = rows.filter((r) => r.origin === "server" && /^AgentRun: write /.test(r.summary ?? ""));
     assert.equal(resume.length, 1, `${at}: one resume row: ${JSON.stringify(rows.map((r) => r.summary))}`);
@@ -75,6 +79,12 @@ test("a parked write shows no Saved row while it waits, none after a deny (and n
       assert.equal(resume[0].summary, "AgentRun: write was refused: you declined it: use scratch instead", at);
       assert.equal(shown.filter((r) => String(r.summary ?? "").includes(NOTE)).length, 1, `${at}: the note on one row's summary: ${JSON.stringify(shown.map((r) => r.summary))}`);
       assert.deepEqual(shown.filter((r) => `${r.summary ?? ""}\n${r.text ?? ""}`.includes(NOTE)).map((r) => r.id), [resume[0].id], `${at}: on the resume row alone`);
+    } else if (run.note === LINKED) {
+      assert.match(resume[0].summary, /^AgentRun: write was refused: you declined it: use scratch instead, see https:\/\/files\.example\/doc\?sig=/, at);
+      assert.equal(JSON.stringify(shown).includes("s3cr3tQueryValue"), false, `${at}: the link's query value shows on no row: ${resume[0].summary}`);
+    } else if (run.note === ASTRAL) {
+      assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(resume[0].summary), false, `${at}: no half of a surrogate pair: ${JSON.stringify(resume[0].summary.slice(-4))}`);
+      assert.ok(resume[0].summary.endsWith("…"), `${at}: cut`);
     } else {
       assert.match(resume[0].summary, /^AgentRun: write was refused: you declined it: use scratch instead, never /, at);
       assert.equal(resume[0].summary.includes("second line"), false, `${at}: its first line only`);
