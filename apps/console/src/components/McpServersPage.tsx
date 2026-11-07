@@ -102,7 +102,8 @@ function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client;
         {!confirm && (
           <div className="flex flex-wrap gap-2">
             {oauth && s.credential !== "sealed" && <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) }))}>Sign in again</Button>}
-            <Button size="sm" disabled={busy} onClick={() => void run(async () => { setNote(await v2.refreshMcpServer(s.name)); onChanged(); })}>Refresh</Button>
+            {/* The list is read again however the refresh went: a refusal (a sign-in expired or revoked) changes the credential's state too. */}
+            <Button size="sm" disabled={busy} onClick={() => void run(async () => { try { setNote(await v2.refreshMcpServer(s.name)); } finally { onChanged(); } })}>Refresh</Button>
             <Button size="sm" disabled={busy} onClick={onChange}>Change</Button>
             <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirm(true)}>Delete</Button>
           </div>
