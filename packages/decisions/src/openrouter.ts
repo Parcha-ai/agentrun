@@ -52,7 +52,7 @@ export interface ExperimentalInputs { experimental: { inputs: readonly DecisionC
 export type DecisionModelPrice = { promptUsd: number; completionUsd: number; requestUsd: number; imageUsd: number; maxCompletionTokens: number | null };
 /** What the provider adds for a host that keeps a spend cap: `priceOf(model)`, the model's catalog price, read once
  *  with the catalog; null when the catalog lists no price for it. A catalog that cannot be read (no answer in 10 s, an
- *  answer not 2xx, one that does not parse) throws CatalogUnreadable, never a price or null, and is read again next time. */
+ *  answer not 2xx, one that does not parse or lists no models) throws CatalogUnreadable, never a price or null, and is read again next time. */
 export interface PricedModels { priceOf(model: string): Promise<DecisionModelPrice | null> }
 /** OpenRouter's catalog could not be read, so no model's price is known from it now. */
 export class CatalogUnreadable extends Error {
@@ -187,7 +187,10 @@ function catalogReader(fetcher: typeof fetch, root: string): () => Promise<Catal
       const response = await fetcher(`${root}/v1/models?output_modalities=decisions`, { signal: AbortSignal.timeout(10_000) });
       if (!response.ok) return null;
       const body: unknown = await response.json();
-      const models = (isRecord(body) && Array.isArray(body.data) ? body.data : []).filter(isRecord);
+      // An answer with no list of models is no catalog: unreadable (not kept, read again next time), never an empty one
+      // that would leave every model unpriced.
+      if (!isRecord(body) || !Array.isArray(body.data)) return null;
+      const models = body.data.filter(isRecord);
       const images = new Set(models.filter((m) => isRecord(m.architecture) && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.includes("image")).map((m) => String(m.id)));
       const prices = new Map(models.flatMap((m) => { const price = priceOfEntry(m); return price ? [[String(m.id), price] as const] : []; }));
       return { images, prices };
