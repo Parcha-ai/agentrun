@@ -135,22 +135,30 @@ export const processCases: Case[] = [
 				const stat = (await t.exec(["sh", "-c", alive([pid])])).out;
 				return stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
 			};
-			const bg = await pidAfter("sleep 306 & echo bg=$!\n", "bg");
-			const fg = await pidAfter("sh -c 'echo fg=$$; exec sleep 308'\n", "fg");
-			// The job is in the foreground once its group is the terminal's: its stat's pgrp and tpgid are its pid.
-			await t.until(async () => {
-				const fields = await stateOf(fg);
-				return fields[2] === String(fg) && fields[5] === String(fg);
-			}, `${fg} in the terminal's foreground`);
-			t.deepEqual(await t.call("process.signal", { id: sh.id, signal: "INT" }), {}, "the reply to INT with a foreground job");
-			await t.until(async () => ["", "Z"].includes((await stateOf(fg))[0] ?? ""), `the foreground job ${fg} gone`);
-			await t.call("process.write", { id: sh.id, data: b64("echo status=$?\n") });
-			({ offset } = await readUntil(t, t.client, sh.id, "pty", offset, "status=130"));
-			await t.call("process.write", { id: sh.id, data: b64("echo al''ive\n") });
-			({ offset } = await readUntil(t, t.client, sh.id, "pty", offset, "alive"));
-			t.assert(!["", "Z"].includes((await stateOf(bg))[0] ?? ""), `the background job ${bg} still runs`);
-			t.deepEqual(await t.call("process.wait", { id: sh.id, timeoutMs: 0 }), { running: true, exitCode: null, signal: null }, "the shell after INT");
-			await kill(t, sh.id);
+			// The shell and its two jobs go however the case ends: a failed or timed-out check aborts the case's signal, so the
+			// KILL goes without it, and the guard ends what the shell started.
+			let checked = false;
+			try {
+				const bg = await pidAfter("sleep 306 & echo bg=$!\n", "bg");
+				const fg = await pidAfter("sh -c 'echo fg=$$; exec sleep 308'\n", "fg");
+				// The job is in the foreground once its group is the terminal's: its stat's pgrp and tpgid are its pid.
+				await t.until(async () => {
+					const fields = await stateOf(fg);
+					return fields[2] === String(fg) && fields[5] === String(fg);
+				}, `${fg} in the terminal's foreground`);
+				t.deepEqual(await t.call("process.signal", { id: sh.id, signal: "INT" }), {}, "the reply to INT with a foreground job");
+				await t.until(async () => ["", "Z"].includes((await stateOf(fg))[0] ?? ""), `the foreground job ${fg} gone`);
+				await t.call("process.write", { id: sh.id, data: b64("echo status=$?\n") });
+				({ offset } = await readUntil(t, t.client, sh.id, "pty", offset, "status=130"));
+				await t.call("process.write", { id: sh.id, data: b64("echo al''ive\n") });
+				({ offset } = await readUntil(t, t.client, sh.id, "pty", offset, "alive"));
+				t.assert(!["", "Z"].includes((await stateOf(bg))[0] ?? ""), `the background job ${bg} still runs`);
+				t.deepEqual(await t.call("process.wait", { id: sh.id, timeoutMs: 0 }), { running: true, exitCode: null, signal: null }, "the shell after INT");
+				checked = true;
+			} finally {
+				const killed = await t.client.call("process.signal", { id: sh.id, signal: "KILL" });
+				if (checked) t.ok(killed, "KILL to the shell");
+			}
 		},
 		["processes", "exec"],
 	),
