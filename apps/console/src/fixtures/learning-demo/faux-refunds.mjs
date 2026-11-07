@@ -1,6 +1,8 @@
 // A faux model for the console's learning demo: no key, no network. A refund-policy finder that works slowly (three
-// drafts, a pause each) while it knows nothing, and fast once it has notes: it reads each note its index names from
-// `.learning/` first, then answers. Its end-of-run turn writes the notes its instructions plan for the run's shop:
+// drafts, a pause each) while it knows nothing, and fast once it has notes: given them whole, it answers at once; named
+// only in the index, it reads each from `.learning/` first, then answers. Its end-of-run turn answers with the notes its
+// instructions plan for the run's shop, one ```note <file> block each, as the server's reflect prompt asks (no tool in
+// that turn; files written are not kept):
 //   Learn on <word>: [[file, text], ...]   (the run whose first message holds <word>)
 // The server's grader is answered here too: `Drop: <file>: <reason>` in the instructions keeps every note but that one,
 // and merges none; anything else keeps every note.
@@ -35,11 +37,15 @@ export default function reply(context, faux) {
   const shop = shopOf(first);
   if (asked) {
     const plan = [...system.matchAll(/^Learn on (\S+): (\[.*\])$/gm)].filter((m) => first.includes(m[1])).flatMap((m) => JSON.parse(m[2]));
-    if (done >= plan.length) return sleep(600).then(() => faux.message("Reflected."));
-    const [file, content] = plan[done];
-    return sleep(700).then(() => faux.message(faux.toolCall("write", { path: `${asked[1]}${file}`, content }), { stopReason: "toolUse" }));
+    if (!plan.length) return sleep(600).then(() => faux.message("No notes."));
+    const blocks = plan.map(([file, content]) => `\`\`\`note ${file}\n${content.endsWith("\n") ? content : `${content}\n`}\`\`\``);
+    return sleep(700).then(() => faux.message(blocks.join("\n\n")));
   }
-  // The job. With notes: read each one first, then answer at once. Without: three drafts while it hunts for the page.
+  // The job. With notes given whole under `# Learned` (`## <name> (<file>.md)`, serve's learning.ts wholeNote): answer at
+  // once, reading none, as a run given them does. With notes named only in the index (past the learning budget): read
+  // each one first, then answer at once. Without: three drafts while it hunts for the page.
+  const whole = [...system.matchAll(/^## .+ \(([A-Za-z0-9][A-Za-z0-9._-]*\.md)\)$/gm)];
+  if (whole.length) return sleep(900).then(() => faux.message(answer(shop, true)));
   const learned = [...new Set([...system.matchAll(/\]\(([A-Za-z0-9][A-Za-z0-9._-]*\.md)\)/g)].map((m) => m[1]))];
   if (learned.length) {
     if (done < learned.length) return sleep(500).then(() => faux.message(faux.toolCall("read", { path: `.learning/${learned[done]}` }), { stopReason: "toolUse" }));

@@ -10,17 +10,6 @@ export const AUDIT_EXCEPTIONS = [
     advisories: ['GHSA-qhr7-859c-m2p7', 'GHSA-6j4f-fj2g-mc7p', 'GHSA-q2hr-2g5m-vwhr'],
     expires: '2026-12-01',
   },
-  // Stagehand pins zod 4.4.3 exactly in every release before 4.4.0, and 4.4.0 (zod 4.6.6, fixed) allows one client per
-  // browser, which @parcha/pi-browser's attach, close and reattach do not yet support. So Stagehand's own nested copy cannot
-  // reach the fixed zod from here; this exception covers only that copy, for GHSA-mrhx-c7xc-m3w5 (memory exhaustion while
-  // validating oversized constrained collections: availability only, no data exposure). Extended once, to 2026-11-13, by
-  // the maintainer's decision; the follow-up is porting pi-browser to Stagehand 4.4.0, which removes this entry.
-  {
-    package: 'zod',
-    under: 'node_modules/@browserbasehq/stagehand/',
-    advisories: ['GHSA-mrhx-c7xc-m3w5'],
-    expires: '2026-11-13',
-  },
   // @earendil-works/pi-coding-agent pins undici 8.10.2 exactly in every release before 1.5.0, and the pi family these packages
   // support is below 1.4.0, so no supported pi version carries a fixed undici and this nested copy cannot reach one from here.
   // The highs it carries: GHSA-2m5v-pch6-74hx (TLS certificate validation), GHSA-4w7w-5xrc-9h26 (response caching across

@@ -132,7 +132,7 @@ if (arguments_.includes('--inventory-only')) {
 const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'package-lock.json', 'tsconfig.base.json']);
 const allowedDirectories = new Set(['apps', 'changes', 'docs', 'examples', 'packages', 'scripts', 'spec', '.github']);
 const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
-const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.html', '.jsonl', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg', '.sse', '.go']);
+const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.html', '.jsonl', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg', '.sse', '.go', '.c']);
 const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm', '.pdf']);
 /** A PDF is exported only when one line of ASSETS.md names it with its SHA-256: each one is a document someone reviewed, not a type. */
 const assetsLines = (await readFile(join(root, 'ASSETS.md'), 'utf8').catch(() => '')).split('\n');
@@ -146,7 +146,8 @@ function excluded(path, file) {
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
 }
 const forbidden = [
-  ['machine_path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
+  // A /home/ or /Users/ right after a route parameter (`{name}`, not `${...}`) is an API route template (/agents/{agent_id}/home/files/{path}).
+  ['machine_path', /(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
   // No leading host group: it made the scan quadratic on a long run of host characters, and only the match's presence is used.
   ['internal_domain', /(?:code\.run|northflank\.com|ts\.net)\b/i],
   ['private_key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],

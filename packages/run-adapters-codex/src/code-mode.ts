@@ -6,9 +6,11 @@
 //  - ties each nested call to the one live script (scripts.ts) and holds a `never` tool's call until that script's `exec` line is in
 //    the log, declining it while two scripts are live;
 //  - writes the tie to the session's records before the call runs;
+//  - holds a call Codex runs itself (a remote MCP server's tool, mcp.ts) until its line, or its script's, is in the log;
 //  - answers, after a recovery, a `never` call the log already holds a completed outcome for from the log, one re-issue for each;
 //  - answers a cut-off `exec` with a custom tool call output built from the nested calls the log holds for it, and runs nothing;
-//  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
+//  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn;
+//  - accepts Codex's ask to run a remote MCP server's tool (mcp.ts), the one elicitation the harness does not decline.
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
 import { boundResult, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
@@ -16,7 +18,7 @@ import { boundResult, openTurn, recoveryNote, recoverySystemNote, recoveryUserTu
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
-import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
+import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = "codex.nested";
@@ -39,7 +41,8 @@ export interface CodeModeDeps {
   logged: Set<string>;
   /** Drain the rollout's tail into the log. */
   synced(): Promise<void>;
-  bridge: { get(name: string): { name: string; replay: string } | undefined };
+  /** The tool bridge; `takeImages` gives a call's images once (host/process.ts), for the answer to Codex. */
+  bridge: { get(name: string): { name: string; replay: string } | undefined; takeImages?(callId: string): readonly { mimeType: string; data: string }[] | undefined };
   log(message: string, fields?: Record<string, unknown>): void;
   /** The rollout lines restored from the log. */
   lines: readonly string[];
@@ -93,7 +96,25 @@ function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>,
     ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
     ...(status ? { told: status } : {}),
+    ...(state.effects.get(parkedKey(tie.callId))?.status === "completed" ? { parked: true as const } : {}),
   };
+}
+
+/** A recorded result that held images (kernelTool's `{ text, images }`) as its text and a line saying how many, which are not
+ *  shown again after the interruption; undefined for a result with none, whose repaired output stays as it is. */
+export function imagesNoted(output: unknown): string | undefined {
+  const images = (output as { images?: unknown } | null)?.images;
+  const count = Array.isArray(images) ? images.length : 0;
+  if (!count) return undefined;
+  return `${outputTextOf(output)}\n\nIt also returned ${count} image${count === 1 ? "" : "s"} (not shown again after the interruption).`;
+}
+
+/** A dynamic tool call's answer with `images` after its items, each `{ type: "inputImage", imageUrl }` with a data: URL
+ *  (Codex 0.164's DynamicToolCallOutputContentItem); an answer of any other shape, or no images, as it is. */
+export function withImages(answer: unknown, images: readonly { mimeType: string; data: string }[] | undefined): unknown {
+  const items = (answer as { contentItems?: unknown } | null)?.contentItems;
+  if (!images?.length || !Array.isArray(items)) return answer;
+  return { ...(answer as object), contentItems: [...items, ...images.map((image) => ({ type: "inputImage", imageUrl: `data:${image.mimeType};base64,${image.data}` }))] };
 }
 
 export function codeMode(deps: CodeModeDeps) {
@@ -108,6 +129,26 @@ export function codeMode(deps: CodeModeDeps) {
 
   /** The script a nested call is tied to now, as the log and the proxy's latest answer have it. */
   const tieNow = () => scripts.tie(machine.announcedExec?.(), (id) => logged.has(id));
+
+  /** A call Codex runs without the harness (a remote MCP server's tool, mcp.ts): the barrier it passes before its intent (its
+   *  own line in the log, as the harness's barrier has it; a script's nested call, its script's, tied to it by `admit`), and
+   *  after a recovery the log's answer for a `never` call the interrupted turn completed, re-issued under a new id. */
+  machine.onCalls?.({ recovered: (tool, args) => answeredAgain(tool, args), barrier: async (callId) => {
+    if (NESTED_CALL.test(callId)) {
+      if (!(await admit(callId))) return false;
+      const exec = execOf.get(callId);
+      journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: openTurn(ctx.state())?.since ?? -1 });
+      await journal.flush();
+      return true;
+    }
+    for (let i = 0; i < deps.tries; i++) {
+      if (i) await sleep(50 * 2 ** (i - 1));
+      await synced();
+      if (logged.has(callId)) return journal.flush().then(() => true);
+    }
+    deps.log("codex: declined a call whose function_call line is not in the log", { callId });
+    return false;
+  } });
 
   /** A `never` nested call: wait for its script's line, as the harness's barrier waits for a call's own. True: admitted. */
   const admit = async (callId: string): Promise<boolean> => {
@@ -151,6 +192,15 @@ export function codeMode(deps: CodeModeDeps) {
     }
   };
 
+  /** A `never` call the log holds a completed outcome for, re-issued after a recovery: its answer from the log, taken once. Held
+   *  to the host's bound as the bridge holds a call's result (`boundResult`): the log keeps the result whole. */
+  function answeredAgain(tool: string, args: unknown, callId?: string): string | undefined {
+    const again = recovered.get(callKey(tool, args))?.shift();
+    if (!again) return undefined;
+    deps.log("codex: answered a never call from the log: it completed before the interruption", { ...(callId ? { callId } : {}), tool: again.tool });
+    return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text;
+  }
+
   /** The cell a dangling call waited on, when it is code mode's `wait` (a function call named `wait` with a `cell_id`, and no host tool of
    *  that name); otherwise `undefined`. */
   const waitedCell = (c: Dangling): string | undefined => {
@@ -169,18 +219,19 @@ export function codeMode(deps: CodeModeDeps) {
     /** The app-server's request handler, with a code-mode host tool call handled before the harness's own. */
     request<R extends { method: string; params?: Record<string, unknown> }>(next: (req: R) => Promise<unknown>) {
       return async (req: R): Promise<unknown> => {
+        // Codex asking to run a remote MCP server's tool, should it ask (approve mode asks nothing): the session's only MCP
+        // servers are its own, at its model proxy, which serves only the granted tools and records each call before it
+        // sends it (mcp.ts). Any other elicitation is the harness's to decline.
+        const meta = req.params?._meta as { codex_approval_kind?: unknown } | undefined;
+        if (req.method === "mcpServer/elicitation/request" && meta?.codex_approval_kind === "mcp_tool_call") return { action: "accept", content: {}, _meta: null };
         if (req.method === "item/tool/call") {
           const p = req.params ?? {};
           const callId = String(p.callId ?? "");
           const tool = deps.bridge.get(String(p.tool));
           // After a recovery, a `never` call the log already holds a completed outcome for, called again (a script that was cut short and
           // written again re-issues every call it made): answered from the log, run no more.
-          const again = tool?.replay === "never" ? recovered.get(callKey(tool.name, p.arguments))?.shift() : undefined;
-          if (again) {
-            deps.log("codex: answered a never call from the log: it completed before the interruption", { callId, tool: again.tool });
-            // Held to the host's bound as the bridge holds a call's result (`boundResult`): the log keeps the result whole.
-            return { contentItems: [{ type: "inputText", text: boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text }], success: true };
-          }
+          const again = tool?.replay === "never" ? answeredAgain(tool.name, p.arguments, callId) : undefined;
+          if (again !== undefined) return { contentItems: [{ type: "inputText", text: again }], success: true };
           if (NESTED_CALL.test(callId)) {
             if (tool?.replay === "never" && !ctx.isMemoized(toolKey(callId)) && !(await admit(callId))) return declined;
             const tie = tieNow();
@@ -189,6 +240,9 @@ export function codeMode(deps: CodeModeDeps) {
             // Never the unwatched-answer marker: a call tied to no known exec is journaled with none.
             journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: openTurn(ctx.state())?.since ?? -1 });
           }
+          // The harness answers with the result's text; its images follow as `inputImage` items, which Codex 0.164's
+          // dynamic tool output takes (DynamicToolCallResponse.contentItems, its app-server schema), each a data: URL.
+          return withImages(await next(req), deps.bridge.takeImages?.(callId));
         }
         return next(req);
       };
@@ -213,7 +267,11 @@ export function codeMode(deps: CodeModeDeps) {
           // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
           const cell = waitedCell(c);
           const item = items[i] as { call_id?: unknown; output?: unknown };
-          items[i] = withOutputKind(cell === undefined ? item : { ...item, output: waitStoppedText(cell) }, c);
+          // A completed call whose result held images (kernelTool records { text, images }): repairOutput gives the record
+          // as JSON, so the model would read their base64 as text. Its text and a line on them instead; they are not sent.
+          const done = state.effects.get(toolKey(c.callId));
+          const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
+          items[i] = withOutputKind(cell !== undefined ? { ...item, output: waitStoppedText(cell) } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
         const { own, loose } = listed.get(c.callId)!;

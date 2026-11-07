@@ -75,6 +75,22 @@ test("an unmarked mcp__-named tool is wrapped as any tool is: no name goes aroun
   assert.deepEqual(entered, ["read", "mcp__other__ping"], "the gate is entered for it");
 });
 
+test("a FORGED gateway mark (the global Symbol.for key) is no mark: that tool is wrapped and gated; only the gateway's own export skips the gate", async () => {
+  const { RunGate, GATED_BY_GATEWAY } = await import("../dist/tool-gate.js");
+  const gate = new RunGate({ root: "/nonexistent", work: "/nonexistent", data: "/nonexistent", runId: "r1" });
+  const entered = [];
+  gate.enter = async (tool) => void entered.push(tool);
+  const executed = [];
+  const forged = Symbol.for("agentrun.gatedByGateway");
+  const tool = (name, mark) => ({ name, description: name, parameters: {}, execute: async () => (executed.push(name), { content: [{ type: "text", text: "ok" }] }), ...(mark ? { [mark]: true } : {}) });
+  const tools = [tool("mcp__evil__forged", forged), tool("mcp__srv__echo", GATED_BY_GATEWAY)];
+  const extension = gate.extension(tools);
+  await executeEach(extension, tools);
+  assert.notEqual(GATED_BY_GATEWAY, forged, "the gateway's mark is not the global registry's symbol");
+  assert.deepEqual(extension.wraps.map((wrap) => wrap.tool), ["mcp__evil__forged"], "the forged mark is wrapped");
+  assert.deepEqual(entered, ["mcp__evil__forged"], "the gate is entered for it");
+});
+
 test("an unmarked mcp__ tool under its server's deny is refused at the gate, and its own execute never runs", async (t) => {
   const { RunGate, GATED_BY_GATEWAY } = await import("../dist/tool-gate.js");
   const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];

@@ -13,13 +13,15 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, flowAgent, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, flowAgent, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const DOCKER = { mode: "sandbox", box: "docker" };
 const RUNNER = { mode: "runner" };
 const BUILDING = "Preparing the box image: building it (python, git, curl, node, npm, rg)…";
+/** What a new agent in the box that names no tools gets: bash, and the background tools (background.ts). */
+const SHELL = ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"];
 
 /** A fake docker first on PATH and docker listed in AGENTRUN_BOXES, with the state files `marks` names (build-hold,
  *  build-fail). `release()` lets a held build go on. */
@@ -55,7 +57,7 @@ async function rowsOf(api, runId) {
   }
 }
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -78,6 +80,13 @@ async function probe(api, agentId, plan) {
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body;
 }
+/** A run of a revision with the browser that did not start: refused (409 agent_not_runnable) for the browser's keys,
+ *  which these tests do not hold, and never for its place. */
+function refusedNotForPlace(answer) {
+  assert.equal(answer.status, 409, JSON.stringify(answer.body));
+  assert.equal(answer.body.error.code, "agent_not_runnable", JSON.stringify(answer.body));
+  assert.ok(!/sandbox|box/.test(answer.body.error.message), JSON.stringify(answer.body));
+}
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
 const fresh = (id) => ({ definition: { id, name: id, instructions: "Probe." } });
 
@@ -92,8 +101,8 @@ test("demo through the API: a new agent on a server with docker, still preparing
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings, []);
   assert.deepEqual(made.body.definition.place, DOCKER, "the default is stamped on the revision");
-  assert.deepEqual(made.body.definition.tools, ["bash"], "a new agent in the box gets a shell");
-  assert.deepEqual(storedBodies(data).map((body) => [body.place, body.tools]), [[DOCKER, ["bash"]]]);
+  assert.deepEqual(made.body.definition.tools, SHELL, "a new agent in the box gets a shell, and its background tools");
+  assert.deepEqual(storedBodies(data).map((body) => [body.place, body.tools]), [[DOCKER, SHELL]]);
   const run = await probe(api, "shelly", [{ tool: "bash", args: { command: "printf 'hello from the box\\n' > out.txt" } }]);
   assert.deepEqual(run.place, DOCKER);
   await until(async () => (await rowsOf(api, run.run_id)).some((row) => row.summary === BUILDING), "the preparing row");
@@ -108,6 +117,28 @@ test("demo through the API: a new agent on a server with docker, still preparing
   assert.ok(docker.execs().some((args) => args.join(" ").includes("out.txt")), "bash ran in the box, through docker exec");
   assert.equal((await rowsOf(api, run.run_id)).filter((row) => row.summary?.startsWith("Preparing the box image")).length, 1);
   assert.equal((await api("GET", `/runs/${run.run_id}/files/out.txt`)).body, "hello from the box\n");
+});
+
+test("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000 }, async (t) => {
+  const [{ NEW_AGENT_TOOLS }, { SHELL_TOOLS }] = await Promise.all([import("../dist/place.js"), import("../dist/background.js")]);
+  assert.deepEqual([...NEW_AGENT_TOOLS], [...SHELL_TOOLS], "a new agent's tools are the shell tools, bash and the background tools");
+  await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  const made = await api("POST", "/agents", fresh("backgrounded"));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual([made.body.definition.place, made.body.definition.tools], [DOCKER, SHELL]);
+  const plan = [
+    { tool: "bash_background", args: { command: "echo from the background" } },
+    // Until its runner has written its exit code, 20 s at most: no fixed wait a busy machine could outrun.
+    { tool: "bash", args: { command: "i=0; until [ -f background/1/exit ] || [ $i -ge 200 ]; do sleep 0.1; i=$((i+1)); done" } },
+    { tool: "bash_output", args: { id: "1" } },
+  ];
+  const run = await probe(api, "backgrounded", plan);
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 60_000 });
+  const said = answers(data, run.run_id);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.match(said[0].text, /^Started background process 1 /);
+  assert.equal(said[2].text, "Background process 1 exited with code 0. Output bytes 0 to 20 of 20, the end.\n\nfrom the background\n");
 });
 
 test("a new agent that names its tools gets exactly those in the box; one that names the runner, or a tool the box refuses, keeps the runner; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
@@ -142,7 +173,7 @@ test("with no docker, a new agent is saved as before, with no place, and runs on
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const { api, data } = await serve(t, { faux: PROBE });
   const places = await placesOf(api);
-  assert.equal(places.default, "runner");
+  assert.equal("default" in places, false);
   assert.deepEqual(places.default_place, RUNNER);
   assert.equal(places.default_reason, "new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker");
   const made = await api("POST", "/agents", fresh("plain"));
@@ -168,29 +199,80 @@ test("a docker whose image failed is no default: a new agent goes to the runner,
   assert.equal("place" in made.body.definition, false);
 });
 
-test("an agent saved before, with no place, runs where it ran before on a server that now has docker: the runner, no box made; an edit that names no place keeps none", { timeout: 90_000 }, async (t) => {
+test("a revision that names no place runs where default_place says, as a new agent would be saved: in the Docker box on a server that now has docker; one with a tool the box refuses, and a workflow, on the runner", { timeout: 90_000 }, async (t) => {
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
-  const before = await client(first.baseUrl, first.token)("POST", "/agents", fresh("old"));
-  assert.equal(before.status, 201, JSON.stringify(before.body));
-  assert.equal("place" in before.body.definition, false);
+  t.after(() => first.close());
+  const before = client(first.baseUrl, first.token);
+  const made = await before("POST", "/agents", fresh("old"));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal("place" in made.body.definition, false, "saved with no place where docker was not there");
+  assert.equal((await before("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }))).status, 201);
+  assert.equal((await before("POST", "/agents", flowAgent("flow"))).status, 201);
   await first.close();
   const docker = await fakeDocker(t);
   const { api } = await serve(t, { data, faux: PROBE });
-  assert.deepEqual((await placesOf(api)).default_place, DOCKER, "this server gives new agents the box");
+  const places = await placesOf(api);
+  assert.deepEqual(places.default_place, DOCKER, "this server's default place");
   const now = await api("GET", "/agents/old");
-  assert.equal(now.body.revision, before.body.revision, "the same revision");
+  assert.equal(now.body.revision, made.body.revision, "the same revision, still with no place");
   assert.equal("place" in now.body.definition, false);
   const run = await probe(api, "old", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
-  assert.deepEqual(run.place, RUNNER, "where it ran before");
+  assert.deepEqual(run.place, DOCKER, "where default_place says, not the runner");
+  assert.equal("default" in places, false, "one field says where a revision with no place runs: default_place");
   await follow(api, run.run_id, ["completed"]);
-  assert.deepEqual(docker.runs(), [], "no box");
-  const edited = await api("PUT", "/agents/old/definition", { definition: { instructions: "Probe again." } });
+  // An edit that names no place keeps none, and may name bash: the place it resolves to has a shell.
+  const edited = await api("PUT", "/agents/old/definition", { definition: { instructions: "Probe again.", tools: ["bash"] } });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
   assert.equal("place" in edited.body.definition, false, "an edit is no create: absent keeps the agent's, which is none");
-  const again = await probe(api, "old", [{ tool: "write", args: { path: "b.txt", content: "b" } }]);
-  assert.deepEqual(again.place, RUNNER);
-  await follow(api, again.run_id, ["completed"]);
-  assert.deepEqual(docker.runs(), [], "still no box");
+  const shell = await probe(api, "old", [{ tool: "bash", args: { command: "printf 'hi\\n' > out.txt" } }]);
+  assert.deepEqual(shell.place, DOCKER);
+  await follow(api, shell.run_id, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(docker.runs().length, 1, "one box, for the run with bash");
+  // A tool the box refuses keeps the runner, as at create; a workflow is never given a box.
+  // (Its run may still be refused for the browser's keys, which this test does not hold: never for its place.)
+  const browsing = await api("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });
+  if (browsing.status === 202) assert.deepEqual(browsing.body.place, RUNNER);
+  else refusedNotForPlace(browsing);
+  const flow = await api("POST", "/agents/flow/runs", { input: { question: "q" } });
+  assert.equal(flow.status, 202, JSON.stringify(flow.body));
+  assert.deepEqual(flow.body.place, RUNNER);
 });
+
+test("a revision with no place and bash, saved while docker was there, is refused at a run once default_place is the runner: a 409 that says why, never bash on the runner; one with the browser stays on the runner when docker comes", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_BOXES: "none" });
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  t.after(() => first.close());
+  const none = client(first.baseUrl, first.token);
+  assert.equal((await none("POST", "/agents", fresh("shell"))).status, 201);
+  assert.equal((await none("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }))).status, 201);
+  await first.close();
+  // Docker is there: an edit naming bash and no place saves, its place resolving to the box.
+  const docker = await fakeDocker(t);
+  const second = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  t.after(() => second.close());
+  const boxed = client(second.baseUrl, second.token);
+  const edited = await boxed("PUT", "/agents/shell/definition", { definition: { instructions: "Probe.", tools: ["bash"] } });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.equal("place" in edited.body.definition, false);
+  // The browser keeps the runner, docker or not: a revision with a tool the box refuses never resolves to it.
+  const browsing = await boxed("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });
+  if (browsing.status === 202) assert.deepEqual(browsing.body.place, RUNNER);
+  else refusedNotForPlace(browsing);
+  await second.close();
+  // Docker is gone: default_place is the runner, and the revision with bash is refused, saying why, before anything runs.
+  withEnv(t, { AGENTRUN_BOXES: "none" });
+  const { api } = await serve(t, { data, faux: PROBE });
+  assert.deepEqual((await placesOf(api)).default_place, RUNNER);
+  const before = (await api("GET", "/runs?agent=shell")).body.runs.length;
+  const refused = await api("POST", "/agents/shell/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "echo hi" } }] }) } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "agent_not_runnable");
+  // The words name why the sandbox is not the default here (default_reason) and both ways out: fix that, or pin the runner.
+  assert.equal(refused.body.error.message, `bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell, and ${(await placesOf(api)).default_reason}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "bash" from definition.tools.`);
+  assert.equal((await api("GET", "/runs?agent=shell")).body.runs.length, before, "no run was made");
+  assert.deepEqual(docker.execs(), [], "no shell ran anywhere");
+});
+

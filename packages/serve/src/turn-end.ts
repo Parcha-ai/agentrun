@@ -12,6 +12,9 @@ export { TURN_END } from "@parcha/pi-durable-agent/timeline";
  *  for a message an older bridge sent and wrote no end for, the run's next process writes it as it opens. */
 export const MESSAGE = "adapter.message";
 export const MESSAGE_END = "adapter.message_end";
+/** The root's marker of a paid request already written as a pi.assistant entry (`{ key, request, unpriced? }`, in the
+ *  entry's commit): `unpriced` when its cost was not in yet, which a REQUEST_COST_LATE naming it brings. */
+export const BOOKED = "adapter.request";
 
 /** What a turn's end says: the message it took (the MESSAGE id), the session's own outcome (`failed` too when the bridge
  *  wrote the turn's error, in `error`), the entry of the turn's answer (its last request with text and no call; null

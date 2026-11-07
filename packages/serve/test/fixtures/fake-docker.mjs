@@ -1,6 +1,7 @@
 // A fake `docker` for run-box.test.mjs, run by a `docker` script first on PATH: it never reaches a daemon. Each call's
 // arguments go to `$FAKE_DOCKER_STATE/argv.jsonl`, and each container is a file under `containers/`. `exec` runs the
-// command on this machine, the container's mount targets mapped to their sources and its `--env` its whole environment
+// command on this machine, the container's mount targets mapped to their sources (one with no mount at /workspace has a
+// /workspace of its own under the state directory, never this machine's) and its `--env` its whole environment
 // (with a TMPDIR of its own), so pi-transport's box environment works over it. Like Docker's, a killed `exec` client
 // leaves its command running. With `fail-run` in the state directory, `run` leaves a running container behind and fails,
 // as a client cut off while the daemon made the container would.
@@ -18,18 +19,21 @@
 // one of RUNTIMES, as that runtime's daemon does, each field of `--format` filled in from its own `docker info` (quoted
 // from each runtime's own pasted output: see RUNTIMES).
 // Named volumes (`volume create`, `inspect`, `rm`) are directories under /tmp (volumeDir), their options and labels noted in
-// `volumes.jsonl`; a `--mount type=volume` maps its target there. A container may have a `--name`, which `inspect`, `logs`
+// `volumes.jsonl`; a `--mount type=volume` maps its target there. A `--mount type=volume` with a `volume-subpath`, or of
+// a volume `volumes.json` in the state directory names, is the directory that file names for it, and the subpath below it.
+// A container may have a `--name`, which `inspect`, `logs`
 // and `rm` take as well as its id (a second with a taken name is refused, as Docker refuses it). The proxy container (label
 // `agentrun.egress`) is RUN here: its `node` command, its mounts mapped, in a process group of its own, its output its
 // `docker logs`, with `--import $FAKE_DOCKER_EGRESS_PRELOAD` when that is set (the tests' fake network); `rm` kills it.
 // `ps --all` lists stopped containers too.
 // An `exec` of the box's network relay (socat) is noted, never run here (`no-socat`, `no-setsid` or `relay-dead` in the
 // state directory: an image without one, or a relay that never listened).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { constants, release } from "node:os";
 import { join } from "node:path";
+import { sudoStandIn } from "./sudo-stand-in.mjs";
 
 /** What each runtime's `docker info` says, field by field, as its users pasted it: Docker Desktop for Mac
  *  (docker/for-mac#7791), OrbStack (orbstack/orbstack#1902), colima (abiosoft/colima#1450), Rancher Desktop on a Mac
@@ -84,6 +88,12 @@ const fail = (text, code = 1) => {
  *  socket path's limit (107 bytes) wherever the state directory is. The test that made the state removes it. */
 const volumeDir = (name) => join("/tmp", `fdv-${createHash("sha256").update(`${state}\0${name}`).digest("hex").slice(0, 12)}`);
 
+/** A process's command line, as `ps` gives it, or "" when there is no such process. */
+const commandOf = (pid) => {
+  const answer = spawnSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8" });
+  return answer.status === 0 ? answer.stdout : "";
+};
+
 const images = join(state, "images");
 const imageFile = (name) => join(images, `${encodeURIComponent(name)}.json`);
 const hasImage = (name) => existsSync(imageFile(name)) || (!existsSync(join(state, "no-image")) && !name.startsWith("agentrun-box:"));
@@ -101,6 +111,8 @@ const held = (mark, failMark, then) => {
 
 switch (args[0]) {
   case "version":
+    // The probe's `{{.Server.Version}}`; `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
+    if (args.some((arg) => arg.includes("APIVersion"))) done(existsSync(join(state, "docker-api")) ? readFileSync(join(state, "docker-api"), "utf8") : "1.47\n");
     done("27.0.0-fake\n");
     break;
   case "info": {
@@ -165,9 +177,19 @@ switch (args[0]) {
       } else if (args[i] === "--env") container.env.push(args[++i]);
       else if (args[i] === "--mount") {
         const fields = Object.fromEntries(value.split(",").map((part) => [part.split("=")[0], part.slice(part.indexOf("=") + 1)]));
-        // As Docker does, a volume a mount names that is not there is made, with Docker's defaults and no label.
-        if (fields.type === "volume" && !existsSync(volumeDir(fields.source))) mkdirSync(volumeDir(fields.source), { recursive: true });
-        container.mounts.push({ source: fields.type === "volume" ? volumeDir(fields.source) : fields.source, target: fields.target, type: fields.type });
+        // A named volume `volumes.json` in the state directory names, or a mount of a volume's subpath, is the directory that
+        // file gives its name, and its subpath below it; one it does not name fails the run, as Docker's subpath that does
+        // not exist would. Any other volume a mount names that is not there is made, as Docker does, with Docker's
+        // defaults and no label.
+        const named = existsSync(join(state, "volumes.json")) ? JSON.parse(readFileSync(join(state, "volumes.json"), "utf8")) : {};
+        if (fields.type === "volume" && (named[fields.source] || fields["volume-subpath"] !== undefined)) {
+          const at = named[fields.source] && join(named[fields.source], fields["volume-subpath"] ?? "");
+          if (!at || !existsSync(at)) fail(`docker: Error response from daemon: cannot access path ${fields["volume-subpath"] ?? ""} of volume ${fields.source}`, 125);
+          container.mounts.push({ source: at, target: fields.target, type: "volume", volume: fields.source });
+        } else {
+          if (fields.type === "volume" && !existsSync(volumeDir(fields.source))) mkdirSync(volumeDir(fields.source), { recursive: true });
+          container.mounts.push({ source: fields.type === "volume" ? volumeDir(fields.source) : fields.source, target: fields.target, type: fields.type });
+        }
         i++;
       } else if (args[i] === "--name") container.Name = args[++i]; else if (args[i] === "--workdir") container.workdir = args[++i];
       else if (args[i] === "--network") container.HostConfig.NetworkMode = args[++i];
@@ -181,7 +203,7 @@ switch (args[0]) {
     const image = args[args.indexOf("--entrypoint") + 2];
     note("made.jsonl", { id: container.Id, image, pulledInRun: !hasImage(image) });
     if (!hasImage(image) && image.startsWith("agentrun-box:")) fail(`Unable to find image '${image}' locally\ndocker: Error response from daemon: pull access denied for agentrun-box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied.\nSee 'docker run --help'.`, 125);
-    container.Mounts = container.mounts.map((mount) => ({ Type: mount.type ?? "bind", Source: mount.source, Destination: mount.target, RW: true }));
+    container.Mounts = container.mounts.map((mount) => ({ Type: mount.type ?? "bind", ...(mount.volume ? { Name: mount.volume } : {}), Source: mount.source, Destination: mount.target, RW: true }));
     if (container.Name && read(container.Name)) fail(`docker: Error response from daemon: Conflict. The container name "/${container.Name}" is already in use.`, 125);
     if ("agentrun.egress" in container.Config.Labels) {
       // The proxy container: its command run here, its paths mapped through its mounts (longest target first).
@@ -240,9 +262,11 @@ switch (args[0]) {
   case "inspect": {
     const container = read(args.at(-1));
     if (!container) fail(`Error: No such object: ${args.at(-1)}`);
-    // `--format {{.State.Running}}` gives that; `--format {{json .}}` the object; without it Docker answers a list.
+    // `--format {{.State.Running}}` gives that; `--format {{json .}}` the object, `{{json .Mounts}}` its mounts; without it
+    // Docker answers a list.
     if (args.includes("{{.State.Running}}")) done(`${container.State.Running}\n`);
-    done(`${JSON.stringify(args.includes("--format") ? container : [container])}\n`);
+    const format = args[args.indexOf("--format") + 1];
+    done(`${JSON.stringify(format === "{{json .Mounts}}" ? container.Mounts ?? [] : args.includes("--format") ? container : [container])}\n`);
     break;
   }
   case "rm": {
@@ -250,12 +274,9 @@ switch (args[0]) {
     const container = read(id);
     if (!container) fail(`Error response from daemon: No such container: ${id}`);
     // The proxy container's process group, which this fake started (its pgid is its pid).
-    // Checked first by its command line, so a pid the system gave another process since is never signalled.
-    let cmdline = "";
-    try {
-      cmdline = readFileSync(`/proc/${container.pid}/cmdline`, "utf8");
-    } catch {}
-    if (container.pid && cmdline.includes("main.js")) try {
+    // Checked first by its command line, as `ps` gives it (Linux and macOS alike; a Mac has no /proc), so a pid the
+    // system gave another process since is never signalled.
+    if (container.pid && commandOf(container.pid).includes("main.js")) try {
       process.kill(-container.pid, "SIGKILL");
     } catch {}
     rmSync(file(container.Id));
@@ -280,10 +301,18 @@ switch (args[0]) {
       if (existsSync(join(state, "relay-dead"))) fail(readFileSync(join(state, "relay-dead"), "utf8").trim(), 124);
       process.exit(0);
     }
-    const map = (text) => container.mounts.reduce((mapped, mount) => mapped.split(mount.target).join(mount.source), text);
+    // A container that mounts nothing at /workspace has its own there, under the state directory: never this machine's.
+    const own = join(state, "fs", container.Id, "workspace");
+    const mounts = container.mounts.some((mount) => mount.target === "/workspace") ? container.mounts : (mkdirSync(own, { recursive: true }), [...container.mounts, { source: own, target: "/workspace" }]);
+    const map = (text) => mounts.reduce((mapped, mount) => mapped.split(mount.target).join(mount.source), text);
     const tmp = join(state, "tmp", container.Id.slice(0, 12));
     mkdirSync(tmp, { recursive: true });
-    const env = { PATH: "/usr/local/bin:/usr/bin:/bin", TMPDIR: tmp, ...Object.fromEntries(container.env.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)])) };
+    // The command runs on this machine: a sudo it asks for meets the stand-in first on its PATH (sudo-stand-in.mjs), one it
+    // names by its absolute path is refused whole, and either is noted for the test to fail on (support.mjs serve).
+    const sudo = sudoStandIn(state);
+    if (sudo.refuses(command.join(" "))) fail("fake docker: refused a command that names an absolute sudo", 97);
+    const given = Object.fromEntries(container.env.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
+    const env = { TMPDIR: tmp, ...given, PATH: `${sudo.bin}:${given.PATH ?? "/usr/local/bin:/usr/bin:/bin"}` };
     const child = spawn(map(command[0]), command.slice(1).map(map), { cwd: map(workdir ?? container.workdir), env, stdio: "inherit" });
     child.once("error", () => fail(`OCI runtime exec failed: ${command[0]}: not found`, 127));
     child.once("exit", (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] ?? 1)));

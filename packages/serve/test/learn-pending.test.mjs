@@ -10,10 +10,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CAPS } from "../dist/learn/check.js";
+import { currentLearning } from "../dist/learning.js";
+import { pendingTestHooks } from "../dist/learning-routes.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { call, cookieOf, serve, withEnv } from "./support.mjs";
+import { call, cookieOf, runDir, runRecordOf, serve, withEnv } from "./support.mjs";
 
 const TABLES = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n");
 const TRUST = note("Buy from PaperDepot24 first", "Where to buy office paper", "Trust PaperDepot24's prices and buy from it first.\n");
@@ -54,7 +56,7 @@ test("a risky rule the user asked for waits for its owner: merged as status pend
   // The next run reads the active note alone.
   const next = await started(api, "buyer");
   await ended(api, next);
-  assert.deepEqual(readFileSync(join(data, "runs", next, "learning.json"), "utf8").includes("paperdepot24"), false, "its index names no pending note");
+  assert.deepEqual(readFileSync(join(runDir(data, next), "learning.json"), "utf8").includes("paperdepot24"), false, "its index names no pending note");
   assert.ok(existsSync(join(copyOf(data, next), "answer-in-tables.md")) && !existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
 });
 
@@ -73,30 +75,22 @@ test("a risky rule the run worked out itself waits for the owner too: the grader
   assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables", "only the active note is in the index");
   const next = await started(api, "seller");
   await ended(api, next);
-  assert.ok(!readFileSync(join(data, "runs", next, "learning.json"), "utf8").includes("paperdepot24"), "its index names no pending note");
+  assert.ok(!readFileSync(join(runDir(data, next), "learning.json"), "utf8").includes("paperdepot24"), "its index names no pending note");
   assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
 });
 
-test("a fact the user asked to remember is kept though the grader drops it as one shop's policy: General never drops a note with the user's origin, and as the grader asked it nothing else it is merged pending with the user's origin, in no MEMORY.md and no later run's copy", { timeout: 150_000 }, async (t) => {
+test("a one-off the user asked to keep, dropped by the grader on General, is dropped: never held for their OK, never merged", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
-  const LIMIT = note("Refund limit", "When a refund needs a manager", "Refunds above $250 need a manager's approval.\n");
-  await made(api, learner("shop", { instructions: "Answer the question.\nGrade: shop refund-limit.md.", plan: [["refund-limit.md", LIMIT]], once: true }));
-  const runId = await started(api, "shop", "Our refund limit is $250, above it a manager approves. Remember this.");
+  const ONCE = note("Acme outage", "This week's report", "For this week's report only, mention the Acme outage on Tuesday.\n");
+  await made(api, learner("shop", { instructions: "Answer the question.\nGrade: shop acme-outage.md.", plan: [["acme-outage.md", ONCE]], once: true }));
+  const runId = await started(api, "shop", "For this week's report only, mention the Acme outage on Tuesday. Remember this.");
   const { view, rows } = await ended(api, runId);
-  settled(view, rows, "merged");
-  assert.deepEqual(view.learning.pending, [{ file: "refund-limit.md", name: "Refund limit" }], "it is kept, and waits");
+  settled(view, rows, "dropped", "grader");
   const { learning } = await savedOf(data, runId);
-  assert.equal(learning.verdict.merge, true);
-  assert.deepEqual(learning.verdict.items, [{ file: "refund-limit.md", keep: true, pending: true, origin: "you", why: "The user asked to remember it, so it passes General; the grader asked it no other question, so it waits for the user's OK." }]);
-  const repo = repoOf(data, "shop");
-  const held = git(repo, ["show", "main:refund-limit.md"]);
-  assert.match(held, /\norigin: you\n/);
-  assert.match(held, /\nstatus: pending\n---\n/);
-  assert.ok(!git(repo, ["ls-tree", "-r", "--name-only", "main"]).includes("MEMORY.md") || !git(repo, ["show", "main:MEMORY.md"]).includes("refund-limit"), "no index names it");
-  const next = await started(api, "shop");
-  await ended(api, next);
-  assert.ok(!existsSync(join(copyOf(data, next), "refund-limit.md")), "its copy holds no pending note");
+  assert.equal(learning.verdict.merge, false);
+  assert.deepEqual(learning.verdict.items.map(({ file, keep, pending }) => ({ file, keep, pending })), [{ file: "acme-outage.md", keep: false, pending: undefined }]);
+  assert.ok(!git(repoOf(data, "shop"), ["ls-tree", "-r", "--name-only", "main"]).includes("acme-outage.md"), "nothing on main");
 });
 
 test("a note a run proposes at the largest it may, kept from the user's words or held for the OK, can still be retired by a person and superseded by a later run: the host's own lines never push a note on main past the note cap", { timeout: 240_000 }, async (t) => {
@@ -181,6 +175,96 @@ test("a pending note waits until a person acts on it: a retire takes it out of t
   assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables");
   assert.deepEqual(git(repo, ["log", "-1", "--format=%s", "main"]), "learning: retired by a person: paperdepot24-first.md");
   assert.equal((await savedOf(data, runId)).learning.state, "merged");
+});
+
+/** What run `runId` says of its learning on each read: its view, its row in the agent's list, its whole learning and its
+ *  timeline's learning row. */
+async function saysOf(api, runId) {
+  const view = (await api("GET", `/runs/${runId}`)).body.learning;
+  const listed = (await api("GET", "/agents/buyer/runs")).body.runs.find((run) => run.run_id === runId).learning;
+  const whole = (await api("GET", `/runs/${runId}/learning`)).body;
+  const row = (await api("GET", `/runs/${runId}/timeline`)).body.rows.find((one) => one.kind === "learning");
+  return { view, listed, whole, row };
+}
+
+for (const act of ["approve", "retire"]) {
+  test(`a run's learning says a held note waits only while it waits: once its owner ${act === "approve" ? "approves it, the run says it learned it" : "retires it, the run says nothing of it"}, on its view, its list row, its whole learning and its timeline row; its record stays as written`, { timeout: 150_000 }, async (t) => {
+    const server = await learnedPending(t, { accounts: true, openSetup: true });
+    const { api, data, port, runId } = server;
+    const origin = `http://127.0.0.1:${port}`;
+    const before = await saysOf(api, runId);
+    for (const said of [before.view, before.listed, before.whole]) assert.deepEqual(said.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }], "it waits, as written");
+    assert.equal(before.row.summary, "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.");
+    const path = "/v2/agents/buyer/learning/files/paperdepot24-first.md";
+    const etag = (await api("GET", "/agents/buyer/learning/files/paperdepot24-first.md")).headers.get("etag");
+    if (act === "approve") {
+      const cookie = cookieOf(await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } }));
+      assert.equal((await call(port, { method: "POST", path: `${path}/approve`, headers: { ...json, cookie, origin, "if-match": etag }, body: {} })).status, 200);
+    } else assert.equal((await api("POST", "/agents/buyer/learning/files/paperdepot24-first.md/retire", undefined, { "if-match": etag })).status, 200);
+    const after = await saysOf(api, runId);
+    const words = act === "approve" ? "Learned 2 notes: Answer in tables; Buy from PaperDepot24 first" : "Learned: Answer in tables";
+    for (const [where, said] of Object.entries({ view: after.view, listed: after.listed, whole: after.whole })) {
+      assert.ok(!said.pending?.length, `${where}: no longer waits: ${JSON.stringify(said.pending)}`);
+      assert.equal(said.detail.replace(/…$/, ""), words.slice(0, said.detail.replace(/…$/, "").length), `${where}: ${said.detail}`);
+    }
+    assert.deepEqual(after.view.learned.map(({ file }) => file), act === "approve" ? ["answer-in-tables.md", "paperdepot24-first.md"] : ["answer-in-tables.md"]);
+    assert.equal(after.row.summary, words);
+    assert.doesNotMatch(JSON.stringify(after), /waits for your OK|Waiting for your OK/);
+    // The run's record is history: as it merged.
+    const record = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8")).learning;
+    assert.deepEqual(record.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }]);
+  });
+}
+
+test("a held note that replaces an older one keeps saying so once approved: the run reads it as learned with what it replaces, as a merge that held nothing says it", { timeout: 180_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data, port } = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
+  const origin = `http://127.0.0.1:${port}`;
+  const SHORT = note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\n");
+  await made(api, learner("replacer", { instructions: "Answer the question.\nGrade: pending answer-in-short-tables.md.", plan: [["answer-in-short-tables.md", SHORT]] }));
+  // The folder made by a first run (whose note replaces one not there yet, so it keeps nothing); then the note it
+  // replaces, active on main.
+  await ended(api, await started(api, "replacer"));
+  const repo = repoOf(data, "replacer");
+  writeFileSync(join(repo, "answer-in-tables.md"), TABLES);
+  writeFileSync(join(repo, "MEMORY.md"), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables");
+  git(repo, ["add", "--", "answer-in-tables.md", "MEMORY.md"]);
+  git(repo, ["commit", "-q", "-m", "an older note"]);
+  const runId = await started(api, "replacer");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  assert.equal(view.learning.detail, "Waiting for your OK: Answer in short tables.");
+  const cookie = cookieOf(await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } }));
+  const etag = (await api("GET", "/agents/replacer/learning/files/answer-in-short-tables.md")).headers.get("etag");
+  assert.equal((await call(port, { method: "POST", path: "/v2/agents/replacer/learning/files/answer-in-short-tables.md/approve", headers: { ...json, cookie, origin, "if-match": etag }, body: {} })).status, 200);
+  const after = (await api("GET", `/runs/${runId}`)).body.learning;
+  assert.deepEqual(after.learned, [{ file: "answer-in-short-tables.md", name: "Answer in short tables", supersedes: ["answer-in-tables.md"] }]);
+  assert.equal(after.detail, "Learned: Answer in short tables (replaces 1 older note)");
+  assert.equal((await api("GET", `/runs/${runId}/learning`)).body.detail, after.detail);
+});
+
+test("a run's whole learning reads no folder unless its merge held something for the owner's OK", { timeout: 150_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("plain", { plan: [["answer-in-tables.md", TABLES]] }));
+  const merged = await started(api, "plain");
+  await ended(api, merged);
+  const reads = pendingTestHooks.reads;
+  assert.equal((await api("GET", `/runs/${merged}/learning`)).status, 200);
+  assert.equal((await api("GET", `/runs/${merged}`)).status, 200);
+  assert.equal(pendingTestHooks.reads, reads, "a merge that held nothing reads no status");
+});
+
+test("what a run held reads as it stands on main now: a skill approved since is the run's, its pending gone; one retired is said no more; a run whose every item was retired says so; still pending, it waits; no status read, as written", () => {
+  const held = { state: "merged", reason: null, detail: "stored", at: "2026-11-07T00:00:00Z", pending: [{ file: "a.md", name: "A" }], skills: [{ file: "skills/s/SKILL.md", name: "s", pending: true }], workflows: [{ file: "workflows/w/workflow.json", name: "w", pending: true }] };
+  const now = (status) => currentLearning(held, new Map(Object.entries(status).map(([file, value]) => [file, { status: value }])));
+  assert.deepEqual(now({ "a.md": "pending", "skills/s/SKILL.md": "pending", "workflows/w/workflow.json": "pending" }), held, "all still wait");
+  const approved = now({ "a.md": "active", "skills/s/SKILL.md": "active", "workflows/w/workflow.json": "retired" });
+  assert.deepEqual([approved.pending, approved.learned, approved.skills, approved.workflows], [undefined, [{ file: "a.md", name: "A", supersedes: [] }], [{ file: "skills/s/SKILL.md", name: "s" }], []]);
+  const retired = now({ "a.md": "retired", "skills/s/SKILL.md": "retired" });
+  assert.deepEqual([retired.pending, retired.learned, retired.skills, retired.workflows, retired.detail], [undefined, undefined, [], [], "What it learned was retired since."]);
+  assert.equal(currentLearning(held, undefined), held, "a folder not read: as written");
+  assert.equal(currentLearning({ ...held, state: "dropped" }, new Map()).pending, held.pending, "only a merge holds anything");
 });
 
 test("approving a pending note takes the owner's password session in the console alone: the server's token (what an agent's MCP client or a script holds), and the run's door token are 403, and no credential or a cookie from another origin 401; the console makes it active, in MEMORY.md and the next run, logged as by {user, via: console} without its text; capabilities say approve to that session alone", { timeout: 180_000 }, async (t) => {
@@ -310,7 +394,7 @@ test("a run's own process cannot approve: every credential it holds, its door to
   for (let i = 0; !pid; i++) {
     assert.ok(i < 600, "the run's process is up");
     try {
-      pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid;
+      pid = runRecordOf(data, runId).holder?.pid;
     } catch {
       // Not written yet.
     }

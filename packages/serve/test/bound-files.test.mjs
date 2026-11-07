@@ -16,7 +16,7 @@ import { boundFiles } from "../dist/bound-files.js";
 import { codingSource } from "../dist/coding-tools.js";
 import { workspaceTestHooks, writesHeld } from "../dist/workspace.js";
 import { fauxRoot } from "./fixtures/faux-box.mjs";
-import { follow, scratch, serve } from "./support.mjs";
+import { follow, runDir, scratch, serve } from "./support.mjs";
 
 // The file tools run here only where the confinement holds directory handles (Linux's /proc/self/fd); elsewhere (macOS)
 // all four run in the box, which the last test checks on every host.
@@ -25,14 +25,14 @@ const NEEDS_HELD = { skip: !HELD && "needs held directory handles (/proc/self/fd
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-const WORK = "/run/agentrun/run/work";
+const WORK = "/workspace";
 const harness = (message) => `<harness>\n[error] ${message}\n</harness>`;
 const LINK = (path) => `${WORK}/${path}: refused: a link is on the way to it, or it is one, and read, write and edit follow no link in this run's work/ (bash, in the box, can)`;
 const HARD = (path) => `${WORK}/${path}: refused: it has another hard link, and read, write and edit take only a file with one (bash, in the box, can)`;
 
 /** Each tool call of run `runId` and its answer, in order, from its released store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -57,7 +57,7 @@ async function boxed(t) {
     const run = await server.api("POST", "/agents/boxed/runs", { input: { content: JSON.stringify({ probe: plan }) } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
     await follow(server.api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-    return { runId: run.body.run_id, said: answers(server.data, run.body.run_id), work: join(realpathSync(server.data), "runs", run.body.run_id, "work") };
+    return { runId: run.body.run_id, said: answers(server.data, run.body.run_id), work: join(runDir(realpathSync(server.data), run.body.run_id), "work") };
   };
   return { ...server, ran };
 }

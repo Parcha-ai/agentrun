@@ -31,7 +31,9 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
   name is its number, `"63"`).
   On timeout, or when the call is cancelled with `$/cancelRequest {id}`, the guard sends SIGTERM to the group and
   every process under it, then SIGKILL 2 s later. A timeout is a result with `timedOut: true`; a cancel is an
-  `aborted` error. Nothing a run starts outlives it.
+  `aborted` error. Nothing a run starts outlives it. `timeoutMs` counts from the call, the start included: a guard that
+  never reports the program's start (its exec stalled on a filesystem) is killed with everything under it, and the run
+  times out.
 - `stdout` and `stderr` come back apart, in base64. Each keeps at most 360 KiB (`maxOutput`, the default and the most):
   both, in base64, fit one 1 MiB line. The rest is read and dropped, and `truncated` is true.
 - The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then `env` over them. Nothing else of the
@@ -93,6 +95,8 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
+- Starts take turns. A `process.start` cancelled while it waits for its turn, or before its program runs, is `aborted`,
+  and nothing it started is left.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
   a `timeout` error that says how much was written. A cancelled write, waiting for its turn or writing, is `aborted`.
 - The guard keeps no copy of a program's stdin, stdout or stderr pipes once the program runs. So when the program, and

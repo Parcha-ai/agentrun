@@ -46,7 +46,7 @@ class UsageError extends PdaError {
 }
 
 const USAGE = `usage:
-  pi-durable-disk run --dir PATH --app MODULE [--id ID] [any run flag below but the Archil ones]
+  pi-durable-disk run --dir PATH --app MODULE [--id ID] [--epoch N] [--door-nonce-fd N] [any run flag below but the Archil ones]
   pi-durable-disk run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
                         [--token-stdin] [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
@@ -248,6 +248,10 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
  * between the open and the exit is `serveUntilDone`.
  */
 async function runInstance(values: Record<string, unknown>): Promise<number> {
+  // The door nonce its host handed it on a descriptor of its own (--door-nonce-fd), read whole and closed before anything
+  // else of it runs. Never an environment variable: a process's starting environment stays readable by its user's other
+  // processes (/proc/<pid>/environ, ps -E) whatever it deletes, and every child inherits what it keeps.
+  const doorNonce = readDoorNonce(values["door-nonce-fd"]);
   const dir = localDir(values, ["disk", "region", "mount-root", "archil", "token-stdin"]);
   if (dir === undefined) need(values, "disk", "region", "id", "app");
   else need(values, "app");
@@ -262,6 +266,14 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (boxMode !== undefined && !(BOX_MODES as readonly string[]).includes(boxMode)) throw new UsageError(`--box-mode is one of ${BOX_MODES.join(", ")}`);
   // No box to run in: refused by name (exit 78) before anything here starts, as openDurableRun refuses it.
   if (boxMode === "unavailable") throw new BoxUnavailableError();
+  // A host that holds the run's claim on a record of its own (agentrun-serve's run row) hands its epoch: a local
+  // directory's run then takes no owner lock and writes no run.json (openDurableRun's `epoch`).
+  const epochFlag = str(values.epoch);
+  if (epochFlag !== undefined && (!/^\d{1,15}$/.test(epochFlag) || dir === undefined)) throw new UsageError("--epoch takes a whole number, with --dir");
+  const epoch = epochFlag === undefined ? undefined : Number(epochFlag);
+  // Under a host's epoch stdout is the host's pipe: one that closed (its host went) loses a line (EPIPE), never the run,
+  // whose next host reads its door from the record it keeps in its store.
+  if (epoch !== undefined) process.stdout.on("error", () => {});
   const ms = (name: string) => durationFlag(values, name);
   const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
   const parkMs = ms("park-threshold") || undefined;
@@ -291,14 +303,21 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   let server: RunServer | undefined;
   if (servePort !== undefined) {
     const url = str(values["serve-url"]);
-    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, root: rootOptions, onIdle: () => parking?.check() });
+    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, ...(doorNonce ? { proof: doorNonce } : {}), root: rootOptions, onIdle: () => parking?.check() });
     holder.serve = server.url;
+    // Under a host's epoch, where it serves goes to its host as the first line on stdout, before any harness or agent
+    // code runs; the host proves it with the nonce (POST /door-proof) and reads no later line.
+    if (epoch !== undefined) process.stdout.write(`${JSON.stringify({ event: "door", run: ref.id, epoch, pid: process.pid, serve: server.url })}\n`, () => {});
   }
   const idleMs = ms("park-idle") ?? (server ? parkMs : undefined);
   const steps: Record<string, number> = {};
   let run: DurableRun;
   try {
     run = await openDurableRun(ref, {
+      // This process ends by process.exit (main, below), so its store's close checkpoints nothing: the WAL stays, and
+      // whoever takes the run back next checkpoints it.
+      keepWal: true,
+      ...(epoch === undefined ? {} : { epoch }),
       ...(boxMode === undefined ? {} : { boxMode: boxMode as BoxMode }),
       // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
       ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
@@ -335,6 +354,23 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     ...(parkMs === undefined ? {} : { park: { thresholdMs: parkMs, ...(idleMs === undefined ? {} : { idleMs }) } }),
     onParking: (p) => void (parking = p),
   });
+}
+
+/** The door nonce on descriptor `fd` (`--door-nonce-fd`): read whole, then closed; undefined without the flag. */
+function readDoorNonce(fd: unknown): string | undefined {
+  if (fd === undefined) return undefined;
+  if (typeof fd !== "string" || !/^\d{1,3}$/.test(fd) || Number(fd) < 3) throw new UsageError("--door-nonce-fd takes a descriptor number of at least 3");
+  try {
+    const nonce = readFileSync(Number(fd), "utf8").trim();
+    if (!/^[0-9a-f]{32,128}$/.test(nonce)) throw new UsageError("--door-nonce-fd: the descriptor holds no nonce (32 to 128 hex digits)");
+    return nonce;
+  } finally {
+    try {
+      closeSync(Number(fd));
+    } catch {
+      // Closed already by its read's end.
+    }
+  }
 }
 
 /** What the instance does besides the app between its open and its exit. */
@@ -759,6 +795,8 @@ export async function main(argv: string[]): Promise<number> {
             "drain-timeout": { type: "string" },
             "run-as": { type: "string" },
             "box-mode": { type: "string" },
+            epoch: { type: "string" },
+            "door-nonce-fd": { type: "string" },
           }),
         );
       case "supervise":

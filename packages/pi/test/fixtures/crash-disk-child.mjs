@@ -4,7 +4,7 @@
 import { join } from 'node:path';
 import { openClaimDir, openDurableRun } from '@parcha/pi-durable-disk';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { Type } from '@earendil-works/pi-ai';
+import { Type } from 'typebox';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { configure, createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool } from '@earendil-works/pi-durable';
