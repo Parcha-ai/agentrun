@@ -136,7 +136,7 @@ export async function buildSampleStore(dir) {
       } else if (end) store.carryBack(started.runId, end);
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
-    rmSync(path.join(root, "runs", ids.m2), { recursive: true });
+    rmSync(store.runDir(ids.m2), { recursive: true });
     return { root, revisions, ids };
   } finally {
     store.close();

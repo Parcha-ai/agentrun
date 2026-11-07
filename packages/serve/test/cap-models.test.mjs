@@ -2,16 +2,10 @@
 // (two model requests in flight at once, as a workflow's parallel nodes would) and prices a run cannot choose (a cache
 // write dearer than input), checked on the exact worst case.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import * as capModule from "../dist/cap.js";
-import { capBefore, capModels, paidCall, paidHolds, sideRequests, spentIn, useSpend } from "../dist/cap.js";
-const sideSpend = () => capModule.sideSpend();
+import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
 import { chargeOf, monidClient } from "../dist/monid.js";
 import fakeMonid, { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
@@ -19,6 +13,11 @@ import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { webSearch } from "../dist/web-search.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
+/** A cap's refusals' figures (capModels' `refused`): what a refusal counts as spent and held, which its words say in cents. */
+const refusals = () => {
+  const all = [];
+  return { refused: async (figures) => void all.push(figures), last: () => all.at(-1) };
+};
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -84,13 +83,15 @@ test("a paid call under way holds what it is held at: a model request that fits 
   // the cap holds one of the two, not both.
   const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
   const { models, sent } = fakeModels();
-  const capped = await capModels(models, 0.0015, 0);
+  const seen = refusals();
+  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
   t.after(() => useSpend(undefined));
   const call = await underWay(t, 0.001);
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "not sent while the paid call is under way");
   const refused = await request.result();
-  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.001 for requests still answering, of its $0.0015 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.01 to run it.");
+  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: this run has spent $0 of its $0.0015 cap, and the next step needs at least $0.01. Raise the cap to at least $0.01 to continue.");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the call's hold, which its words round to $0: ${JSON.stringify(seen.last())}`);
   call.settle(0.0002);
   assert.deepEqual(await call.paid, { result: 0.0002 });
   const admitted = capped.streamSimple(priced, context);
@@ -110,7 +111,7 @@ test("a paid call that fails counts at what it was held at, as a model request t
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
   const refused = await request.result();
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\./);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\./);
 });
 
 test("a paid call the cap refuses while a model request is in flight names what is held for it apart from what the run has spent, in one format, with the cap that would run the call", async (t) => {
@@ -124,7 +125,7 @@ test("a paid call the cap refuses while a model request is in flight names what 
   assert.equal(sent.length, 1, "the request is in flight, held at $1");
   let ran = false;
   const refused = await paidCall("monid_run", async () => ((ran = true), 0), (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
-  assert.equal(refused.refused, "spend_cap_reached: Not sent: the run has spent $0.25 and holds $1 for calls still answering of its $1.50 cap, and monid_run could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.65 to run it.");
+  assert.equal(refused.refused, "spend_cap_reached: Not sent: this run has spent $0.25 and holds $1 for steps still running, of its $1.50 cap, and the next step, monid_run, could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.65 to continue.");
   assert.equal(ran, false, "refused, not sent");
   sent[0].end(0);
   await first.result();
@@ -143,7 +144,7 @@ test("a paid call's refusal names a cap that would run it, a cent above the cap 
   useSpend({ cap: 1, spent: () => 0.60000000001, add: () => {} });
   t.after(() => useSpend(undefined));
   const refused = await paidCall("monid_run", async () => 0, (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
-  assert.equal(refused.refused, "spend_cap_reached: Not sent: the run has spent $0.60 of its $1 cap, and monid_run could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.01 to run it.");
+  assert.equal(refused.refused, "spend_cap_reached: Not sent: this run has spent $0.60 of its $1 cap, and the next step, monid_run, could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.01 to continue.");
 });
 
 test("a model request whose model has no price is refused saying \"not sent\" once, in the words its row shows after \"Not sent:\", its cap in the same format as every other refusal", async (t) => {
@@ -165,7 +166,8 @@ test("a paid call the run's stop cuts short, or one that times out, counts at wh
   // request, not a $0.002 one.
   const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
   const { models, sent } = fakeModels();
-  const capped = await capModels(models, 0.0045, 0);
+  const seen = refusals();
+  const capped = await capModels(models, 0.0045, 0, { refused: seen.refused });
   t.after(() => useSpend(undefined));
   const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
   // Stopped by the run's stop while monid runs it: monid is asked to stop it, and says nothing of a charge.
@@ -190,7 +192,8 @@ test("a paid call the run's stop cuts short, or one that times out, counts at wh
   // A request dearer than the room left is refused for room, naming what is spent: never for a spend unknown.
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.003 of its \$0\.0045 cap, /, "refused for room, naming the holds as spent (#1539's words)");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0045 cap, /, "refused for room, never for a spend unknown");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.003) < 1e-12, `the three calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
 });
 
 test("a paid call monid answers FAILED with no cost, or whose answer is lost, counts at what it was held at too: every charge a call does not say is held, whatever cut it short", async (t) => {
@@ -198,7 +201,8 @@ test("a paid call monid answers FAILED with no cost, or whose answer is lost, co
   // request, not a $0.002 one.
   const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
   const { models, sent } = fakeModels();
-  const capped = await capModels(models, 0.0035, 0);
+  const seen = refusals();
+  const capped = await capModels(models, 0.0035, 0, { refused: seen.refused });
   t.after(() => useSpend(undefined));
   const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
   // /broken runs, then FAILS on its second read, its waits skipped: monid says nothing of a charge.
@@ -219,7 +223,8 @@ test("a paid call monid answers FAILED with no cost, or whose answer is lost, co
   await settled();
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.002 of its \$0\.0035 cap, /, "refused for room, naming the holds as spent (#1539's words)");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0035 cap, /, "refused for room, never for a spend unknown");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.002) < 1e-12, `the two calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
 });
 
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */
@@ -253,7 +258,7 @@ test("a request is held at the output it is sent with: what it asks for, and on 
     const answer = capped.streamSimple(priced, context, options);
     assert.equal(sent.length, sends, `${priced.api}, ${JSON.stringify(options)}, a cap of ${cap}`);
     if (sends) sent[0].end(0);
-    else assert.match((await answer.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run's cap of \$0\.0005 can't cover one m request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
+    else assert.match((await answer.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0005\. Raise the cap to at least \$0\.01 to continue\.$/);
     await answer.result();
   }
 });
@@ -349,7 +354,8 @@ test("a Parallel search under way holds its fee for the cap: a model request bes
   t.after(() => (mode === undefined ? delete process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH : (process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = mode)));
   const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
   const { models, sent } = fakeModels();
-  const capped = await capModels(models, 0.0015, 0);
+  const seen = refusals();
+  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
   t.after(() => useSpend(undefined));
   // The search reaches Parallel and is held there until released.
   let arrived, release;
@@ -364,7 +370,8 @@ test("a Parallel search under way holds its fee for the cap: a model request bes
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "not sent while the search is under way");
   // The refusal counts the search's fee as held (#1539's words, as main's paid-call hold test reads them).
-  assert.equal((await request.result()).errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.001 for requests still answering, of its $0.0015 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.01 to run it.");
+  assert.equal((await request.result()).errorMessage, "spend_cap_reached (out of budget): Not sent: this run has spent $0 of its $0.0015 cap, and the next step needs at least $0.01. Raise the cap to at least $0.01 to continue.");
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the search's fee as held, which its words round to $0: ${JSON.stringify(seen.last())}`);
   // Parallel refused the search (422): it charged nothing, and its hold is gone.
   release();
   assert.deepEqual(await search, { error: "Parallel's search answered 422" });
@@ -379,7 +386,8 @@ test("a Parallel search under way holds its fee for the cap: a model request bes
 test("under a cap, a page's one Parallel extract is held as any Parallel request: a model request that fits only without its $0.001 is refused while the read is under way, and the page's later parts hold and ask nothing", async (t) => {
   const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
   const { models, sent } = fakeModels();
-  const capped = await capModels(models, 0.0015, 0);
+  const seen = refusals();
+  const capped = await capModels(models, 0.0015, 0, { refused: seen.refused });
   t.after(() => useSpend(undefined));
   let arrived, release;
   const reached = new Promise((resolve) => (arrived = resolve));
@@ -402,7 +410,8 @@ test("under a cap, a page's one Parallel extract is held as any Parallel request
   await reached;
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "not sent while the extract is under way");
-  assert.match((await request.result()).errorMessage ?? "", /holds \$0\.001 for requests still answering, of its \$0\.0015 cap/);
+  assert.match((await request.result()).errorMessage ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap/);
+  assert.ok(Math.abs(seen.last()?.spentUsd - 0.001) < 1e-12, `its figures count the extract as held, which its words round to $0: ${JSON.stringify(seen.last())}`);
   release();
   assert.equal((await first).via, "parallel");
   const later = await bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages, offset: 20_000 }));
@@ -410,64 +419,3 @@ test("under a cap, a page's one Parallel extract is held as any Parallel request
   assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", PARALLEL_EXTRACT_USD]], "held and charged once");
 });
 
-// On claude-agent and codex the run's own model requests (a learned workflow's, a hosted search's) go through capModels
-// `joined` to the harness's spend: one total, one set of holds.
-test("joined to another harness's spend: the run's own request is judged against the harness's total, held where the harness's check sees it, and its cost counted beside the harness's", async (t) => {
-  // $1 per million output tokens and 1,000 of them: each request's worst case and least are $0.001.
-  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
-  const { models, sent } = fakeModels();
-  let harness = 0.0006;
-  const added = [];
-  useSpend({ cap: 0.0015, spent: () => harness + sideSpend(), add: (usd) => added.push(usd), now: () => harness + sideSpend() });
-  t.after(() => useSpend(undefined));
-  const capped = await capModels(models, 0.0015, 0.0001, { joined: true });
-  assert.equal(sideSpend(), 0.0001, "what the run's own requests cost in earlier processes");
-  // The harness's $0.0006 and the earlier $0.0001 leave $0.0008 of $0.0015: not the request's least.
-  const refused = await capped.streamSimple(priced, context).result();
-  assert.equal(wentOut(sent), 0, "refused on the harness's total");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.0007 of its \$0\.0015 cap/);
-  harness = 0;
-  const request = capped.streamSimple(priced, context);
-  assert.equal(sent.length, 1, "with the harness at $0, it fits");
-  assert.equal(paidHolds(), 0.001, "held where the harness's check sees it");
-  const guard = await capBefore(0.0015, priced);
-  assert.ok("refuse" in guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 }), "the harness's next request does not fit beside it");
-  sent[0].end(0.0003);
-  await request.result();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(paidHolds(), 0, "its hold goes once it answered");
-  assert.ok(Math.abs(sideSpend() - 0.0004) < 1e-12, `its cost joins what the run's own requests spent, which the harness adds to its booking: ${sideSpend()}`);
-  assert.deepEqual(added, [], "never as a paid tool's charge");
-});
-
-test("spentIn's sides: what a run's own side requests spent in earlier processes, the cut one at its hold, none of its harness's requests or paid tools; unknown when one's cost is", () => {
-  const dir = mkdtempSync(join(tmpdir(), "sides-"));
-  try {
-    const store = (file, records) => {
-      const db = new DatabaseSync(join(dir, file));
-      db.exec("CREATE TABLE entries (record TEXT)");
-      for (const record of records) db.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify(record));
-      db.close();
-      return join(dir, file);
-    };
-    const harness = [
-      { kind: "agentrun.request_started", data: { key: "run:x", request: 1, heldUsd: 0.9 } },
-      { kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason: "stop", usage: usage(0.5), timestamp: 0 }] },
-      { kind: "agentrun.tool_started", data: { call: "c", heldUsd: 0.01 } },
-      { kind: "agentrun.tool_cost", data: { call: "c", usd: 0.01 } },
-    ];
-    const sides = [
-      { kind: "agentrun.request_started", data: { request: "learned_workflow", heldUsd: 0.2 } },
-      { kind: "agentrun.request_cost", data: { request: "learned_workflow", usd: 0.05 } },
-      { kind: "agentrun.request_started", data: { request: "learned_workflow", heldUsd: 0.3 } },
-    ];
-    const file = store("known.sqlite", [...harness, ...sides]);
-    assert.ok(Math.abs(spentIn(file, { sides: true }) - 0.35) < 1e-9, `${spentIn(file, { sides: true })}`);
-    assert.ok(spentIn(file) > 0.35, "the run's whole spend counts the rest");
-    const unknown = store("unknown.sqlite", [...harness, sides[0], { kind: "agentrun.request_cost", data: { request: "learned_workflow", usd: null } }]);
-    assert.equal(spentIn(unknown, { sides: true }), null);
-    assert.equal(spentIn(store("none.sqlite", harness), { sides: true }), 0);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});

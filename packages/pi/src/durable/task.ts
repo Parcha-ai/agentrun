@@ -99,7 +99,7 @@ type WorkflowResult = Extract<WorkflowOutcome, { status: "complete" | "escalated
 /** A run's key and the task that runs it. A run started by an older build has a journal and no entry; its next start
  *  creates the task. */
 type RunRecord = { task: number | null; stop: { action: "pause" | "cancel"; source: string | null } | null };
-const RunDoc = defineDocFamily<RunRecord, null>({ kind: "agentrun.task", version: 1, scope: "session", family: true, initial: () => ({ task: null, stop: null }) });
+const RunDoc = defineDocFamily<RunRecord, null>({ kind: "agentrun.task", version: 1, scope: "session", family: true, initial: () => ({ task: null, stop: null }), checkpointWhen: () => false });
 /** Records a stop on a run's entry. A recorded cancel stands, so the first cancel names the run's source; a recorded
  *  pause is replaced by the stop that follows it. */
 const recordStop = (run: RunRecord, stop: NonNullable<RunRecord["stop"]>) => { if (run.stop?.action !== "cancel") run.stop = stop; };

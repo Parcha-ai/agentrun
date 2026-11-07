@@ -1,0 +1,276 @@
+{
+ "pi": {
+  "type": "object",
+  "required": [
+   "action"
+  ],
+  "properties": {
+   "action": {
+    "anyOf": [
+     {
+      "type": "string",
+      "const": "describe"
+     },
+     {
+      "type": "string",
+      "const": "inspect"
+     },
+     {
+      "type": "string",
+      "const": "dry-run"
+     },
+     {
+      "type": "string",
+      "const": "run"
+     },
+     {
+      "type": "string",
+      "const": "save"
+     },
+     {
+      "type": "string",
+      "const": "load"
+     },
+     {
+      "type": "string",
+      "const": "list"
+     }
+    ]
+   },
+   "name": {
+    "type": "string",
+    "description": "Saved procedure name: lowercase letters, digits, hyphens or underscores."
+   },
+   "digest": {
+    "type": "string",
+    "description": "Optional exact saved SHA-256 revision to load."
+   },
+   "workflow": {
+    "type": "object",
+    "patternProperties": {
+     "^.*$": {}
+    },
+    "description": "The complete AgentRun workflow JSON object. Pass the object directly, not a JSON-encoded string. Inspection validates its DSL structure."
+   },
+   "input": {
+    "type": "object",
+    "patternProperties": {
+     "^.*$": {}
+    }
+   }
+  }
+ },
+ "pi-transport": {
+  "type": "object",
+  "required": [
+   "environments"
+  ],
+  "properties": {
+   "environments": {
+    "type": "object",
+    "patternProperties": {
+     "^.*$": {
+      "type": "object",
+      "required": [
+       "provider"
+      ],
+      "properties": {
+       "provider": {
+        "type": "string",
+        "minLength": 1
+       },
+       "image": {
+        "type": "string",
+        "minLength": 1
+       },
+       "snapshot": {
+        "type": "string",
+        "minLength": 1
+       },
+       "cpus": {
+        "type": "number",
+        "exclusiveMinimum": 0
+       },
+       "memoryMb": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "gpu": {
+        "type": "string",
+        "minLength": 1
+       },
+       "region": {
+        "type": "string",
+        "minLength": 1
+       },
+       "isolation": {
+        "anyOf": [
+         {
+          "type": "string",
+          "const": "none"
+         },
+         {
+          "type": "string",
+          "const": "container"
+         },
+         {
+          "type": "string",
+          "const": "gvisor"
+         },
+         {
+          "type": "string",
+          "const": "vm"
+         }
+        ]
+       },
+       "env": {
+        "type": "object",
+        "patternProperties": {
+         "^.*$": {
+          "type": "string"
+         }
+        }
+       },
+       "expose": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "maxLifetime": {
+        "type": "string"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string",
+          "const": "session"
+         },
+         {
+          "type": "string",
+          "const": "conversation"
+         }
+        ]
+       },
+       "capabilities": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "purpose": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "additionalProperties": false
+     }
+    }
+   },
+   "home": {
+    "type": "string",
+    "minLength": 1
+   },
+   "hands": {
+    "anyOf": [
+     {
+      "type": "string",
+      "minLength": 1
+     },
+     {
+      "type": "object",
+      "patternProperties": {
+       "^.*$": {
+        "type": "string"
+       }
+      }
+     }
+    ]
+   },
+   "auto": {
+    "type": "object",
+    "required": [
+     "classifier"
+    ],
+    "properties": {
+     "classifier": {
+      "type": "object",
+      "required": [
+       "provider",
+       "modelId"
+      ],
+      "properties": {
+       "provider": {
+        "type": "string",
+        "minLength": 1
+       },
+       "modelId": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "additionalProperties": false
+     },
+     "ask": {
+      "anyOf": [
+       {
+        "type": "string",
+        "const": "message"
+       },
+       {
+        "type": "string",
+        "const": "turn"
+       }
+      ]
+     },
+     "rest": {
+      "type": "string",
+      "minLength": 1
+     },
+     "threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     }
+    },
+    "additionalProperties": false
+   },
+   "workspace": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string",
+      "pattern": "^/"
+     },
+     "exclude": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "maxBytes": {
+      "type": "integer",
+      "minimum": 1
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "additionalProperties": false
+ },
+ "harness": {
+  "type": "object",
+  "required": [
+   "code"
+  ],
+  "properties": {
+   "code": {
+    "type": "string",
+    "description": "The script."
+   }
+  }
+ }
+}

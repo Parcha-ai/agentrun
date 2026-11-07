@@ -5,6 +5,7 @@ import { Chip } from "@/components/ui/chip";
 import { type Answer, type Decision, type Effect, type Evidence, itemCounts, itemLabel, itemOutcome, markOf, ms, optionName, type Question, type Rule, type RunGraph, type Selection, usd, verdictOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { at, nodeMeta } from "@/lib/workflowDoc";
+import { httpHref } from "@/lib/safeUrl";
 
 type FileUrl = (ref: string) => string;
 const CONTAINERS = new Set(["chain", "parallel", "route", "map", "loop", "workflow"]);
@@ -312,10 +313,11 @@ export function VerdictCard({ d, fileUrl, zoom }: { d: Decision; fileUrl: FileUr
       {d.error && <p className={cn("border-b px-4 py-2.5 font-mono text-[12px]", d.status === "cancelled" ? "text-warning-text" : "text-destructive-text")}>{d.error}</p>}
       {!!d.images?.length && (
         <div className="space-y-3 border-b px-4 py-3">
-          {d.images.filter((img) => img.ref || img.url).map((img) => (
+          {/* The run's own file (ref), else the provider's URL only when it is http or https: an image source is server data. */}
+          {d.images.map((img) => ({ img, src: (img.ref && fileUrl(img.ref)) || httpHref(img.url) })).filter(({ src }) => src).map(({ img, src }) => (
             <figure key={img.token} className="flex gap-3">
-              <button type="button" className="block shrink-0 border bg-white hover:border-foreground" onClick={() => zoom((img.ref && fileUrl(img.ref)) || img.url || "")} aria-label={`Open ${img.ref}`}>
-                <img src={(img.ref && fileUrl(img.ref)) || img.url || undefined} alt={`The page the model saw as ${img.token}`} className="block h-[155px] w-[120px] object-cover object-top" loading="lazy" />
+              <button type="button" className="block shrink-0 border bg-white hover:border-foreground" onClick={() => zoom(src!)} aria-label={`Open ${img.ref}`}>
+                <img src={src} alt={`The page the model saw as ${img.token}`} className="block h-[155px] w-[120px] object-cover object-top" loading="lazy" />
               </button>
               <figcaption className="min-w-0 flex-1 space-y-1.5 font-mono text-[11px]">
                 <p className="caps text-[10px] text-muted-foreground">What the model saw</p>
@@ -354,11 +356,15 @@ function Citations({ evidence }: { evidence: Evidence[] }) {
         {evidence.map((e, k) => {
           let host = e.url;
           try { host = new URL(e.url).host; } catch { /* shown as given */ }
+          // A source's URL is a fetched page's, server data: a link only when it is http or https, else its title as text.
+          const href = httpHref(e.url);
           return (
             <li key={k} className="flex gap-3">
               <span className="font-mono text-[11px] text-muted-foreground">{k + 1}</span>
               <div className="min-w-0 flex-1">
-                <a href={e.url} target="_blank" rel="noreferrer noopener" className="inline-flex items-start gap-1 text-[13px] font-semibold leading-snug hover:underline">{e.title ?? host}<ExternalLink className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden /></a>
+                {href
+                  ? <a href={href} target="_blank" rel="noreferrer noopener" className="inline-flex items-start gap-1 text-[13px] font-semibold leading-snug hover:underline">{e.title ?? host}<ExternalLink className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden /></a>
+                  : <span className="break-all text-[13px] font-semibold leading-snug">{e.title ?? host}</span>}
                 <p className="mt-0.5 flex items-center gap-2 font-mono text-[10.5px] text-muted-foreground">{host}{e.scope && <span className="border px-1">{e.scope}</span>}</p>
                 {e.excerpts.slice(0, 2).map((x, j) => <blockquote key={j} className="mt-1.5 line-clamp-3 border-l-2 border-[hsl(var(--wf-parallel)/.6)] pl-2.5 text-[12.5px] leading-snug text-muted-foreground">{x}</blockquote>)}
               </div>

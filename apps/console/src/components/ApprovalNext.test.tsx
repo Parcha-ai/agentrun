@@ -15,12 +15,12 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const approval = (n: 1 | 2): PendingApproval => ({ kind: "approval", id: `ap_${n}`, tool: "web_fetch", call_id: `call_${n}`, args_preview: `{"url":"http://public.example/${n}"}`, requested_at: `2026-11-05T10:00:0${n}.000Z` });
-const run = (pending: PendingApproval): Run => ({
+const run = (pending: PendingApproval): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "r1", agent_id: "fetcher", agent_version: 1, revision: "rv1", kind: "agentic", status: "input_required", state: "waiting", title: "Fetch two pages",
-  created_at: "2026-11-05T10:00:00.000Z", ended_at: null, result: null, error: null, cost: null, archived_at: null, pending,
+  created_at: "2026-11-05T10:00:00.000Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending,
 });
-const row = (n: 1 | 2, head: string): TimelineRow => ({ id: `res_${n}:approval`, seq: n * 10, kind: "tool_approval_requested", summary: `${head}: web_fetch ${approval(n).args_preview}`, text: approval(n).args_preview, timestamp: approval(n).requested_at, tool_name: "web_fetch", tool_use_id: `call_${n}`, tool_status: null });
-const page = (rows: TimelineRow[], next: number): TimelinePage => ({ run_id: "r1", status: "input_required", state: "waiting", rows, drop: [], reset: false, unchanged: false, final: false, has_more: false, next_after: next });
+const row = (n: 1 | 2, head: string): TimelineRow => ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `res_${n}:approval`, seq: n * 10, kind: "tool_approval_requested", summary: `${head}: web_fetch ${approval(n).args_preview}`, text: approval(n).args_preview, timestamp: approval(n).requested_at, tool_name: "web_fetch", tool_use_id: `call_${n}`, tool_status: null });
+const page = (rows: TimelineRow[], next: number): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "r1", status: "input_required", state: "waiting", rows, drop: [], reset: false, unchanged: false, final: false, has_more: false, next_after: next });
 const settle = async (ms = 0) => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, ms)); }); };
 const button = (scope: ParentNode, name: string) => [...scope.querySelectorAll("button")].find((b) => b.textContent === name) as HTMLButtonElement | undefined;
 

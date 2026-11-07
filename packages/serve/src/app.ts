@@ -8,7 +8,7 @@
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
-import { authContextOf, mcpCredentials, withSecrets } from "./secrets.js";
+import { mcpCredentials, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
@@ -16,13 +16,15 @@ import { createRegistry, defineExtension, type Extension, type Harness, ROOT_CON
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
-import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capOf, spentIn } from "./cap.js";
+import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
+import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
-import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, learnedRoute, learnedWorkflowsOff, openRouterOnly, thinkingFor } from "./adapters.js";
+import { dataOfRun, FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
+import { adapterFor, claudeModel, claudePriceModel, codexModel, type ConfineChild, openRouterOnly, skillCheckOf, thinkingFor } from "./adapters.js";
+import { PORT_PROVIDER, portModels } from "./port-models.js";
+import type { SessionPort } from "@parcha/agentrun-kernel";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { MCP_PIN, mcpGateway, mcpNameOf, type McpPin, mcpRegistrations } from "./mcp-gateway.js";
@@ -31,10 +33,11 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
+import { RUN_EPOCH_ENV } from "./run-holder.js";
 import { planeOf } from "./tool-plane.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, readsFiles, systemOf } from "./skills.js";
@@ -77,8 +80,7 @@ async function markResumed({ harness, context, generation, previous }: BeforeRes
 async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   const choice = claudeModel(env, ref);
   if ("why" in choice) throw new Error(choice.why);
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
@@ -87,13 +89,12 @@ async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harn
   if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
   const choice = await codexModel(env, ref, harness);
   if ("why" in choice) throw new Error(choice.why);
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
 function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
-  const reader = openStoreReader(resolve(where.root, "..", ".."));
+  const reader = openStoreReader(dataOfRun(where.root));
   try {
     const id = basename(resolve(where.root));
     const run = reader.readRun(id);
@@ -110,28 +111,44 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
   // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  // claude-agent's own model, as in production; on the faux harness too unless pi's faux model stands in (runnable.ts).
+  const fauxModels = Boolean(env[FAUX_HARNESS_ENV] && env[FAUX_ENV]);
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !fauxModels ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
-  // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
-  // gets a start mark of its own, which its error entry answers.
-  const marked = await markRequests(chosen.models, cancelledIn(where.root));
-  // On another harness these models carry only the run's own requests (a learned workflow's, a hosted search's), under
-  // the run's one total, which the harness keeps (cap.ts capModels' `joined`): what they cost in earlier processes is
-  // read here, as the harness's booking does not hold it.
-  const joined = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE), { sides: joined }), { unpriced: chosen.unpriced, refused: marked.refused, joined });
+  const mode = capModeOf(process.env);
+  // A run on another harness has one model route, its session's proxy: every model request of the run goes through it,
+  // the harness's own and the run's beside them (a learned workflow's nodes, its `llm` call nodes, a call node's native
+  // search), on the session's booking under the run's one cap (port-models.ts, harness-app.ts). The run's models are the
+  // session's port then; on pi they are the run's own, each request marked as it leaves (request-start.ts) inside the cap:
+  // a request the cap refuses never leaves, and gets a start mark of its own, which its error entry answers.
+  const onHarness = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
+  // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
+  const priced = onHarness && revision.body.harness === "claude-agent" && !fauxModels ? claudePriceModel(env, model!) : model;
+  /** The session's port, once the harness's run is made (adapterRun): read at each request. */
+  let sessionPort: ((label: string) => SessionPort | undefined) | undefined;
+  const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root));
+  // The wrap-up on pi (cap.ts WrapUp): near its cap the run's own model is told once, under this cap, to finish. Not on
+  // another harness: its guard tells the harness's model (harness-app.ts).
+  const storeFile = join(where.store, RUN_STORE_FILE);
+  const wrapUp = cap === undefined || onHarness || !model ? undefined : { model: model.modelId, costs: costsIn(storeFile, model.modelId), sent: wrapUpSentIn(storeFile, cap), record: marked!.wrapUp };
+  const models = onHarness
+    ? await portModels(() => sessionPort?.(LEARNED_WORKFLOW_TOOL), priced ? (chosen.models.getModel(priced.provider, priced.modelId) as never) : undefined)
+    : cap === undefined ? marked!.models : await capModels(marked!.models, cap, spentIn(storeFile), { unpriced: chosen.unpriced, refused: marked!.refused, mode, ...(wrapUp ? { wrapUp } : {}) });
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
-  // on another harness too, for a learned workflow's call node.
-  searchOn(models);
+  // on another harness, the session's port, for a learned workflow's call node.
+  searchOn(models as never);
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   // The run's place, as its start resolved and kept it (serve.json): in a box, its coding tools run there (run-box.ts).
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
-  const root = resolve(where.root, "..", "..");
+  const root = dataOfRun(where.root);
   // A remote box (Daytona) is the server's to make and seed, reached through its relay; Docker's is made here.
-  const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place }) : undefined;
+  // Its box carries the epoch of the claim this process was launched under (runs.ts launch): a box of an earlier one is
+  // an earlier process's, destroyed before this one makes its own (run-box.ts fenceRunBoxes).
+  const epoch = Number(process.env[RUN_EPOCH_ENV] ?? "0");
+  const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place, epoch: Number.isSafeInteger(epoch) ? epoch : 0 }) : undefined;
   // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
   if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
@@ -155,32 +172,24 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // every harness (learning.ts).
   const learned = revision.kind === "agentic" ? await withLearned(where.root, where.work, revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
   // The workflows the agent learned that its run may run, as one tool (learned-workflow.ts), when its pin names any: on
-  // the run's models, as side requests under its cap, each model node and `llm` call on the run's model of its tier,
-  // else the run's own (the only one the run was made with, and handed the key of); the `llm` tool's completion for a
-  // call node that names it; its call nodes on the agent's tools its run's plane resolves (the plane its harness and
-  // its tools read).
+  // the run's models, as the run's own requests under its cap, each model node and `llm` call on the run's model of its
+  // tier, else the run's own (the only one the run was made with, and handed the key of); on another harness, the
+  // session's one model, through its proxy; the `llm` tool's completion for a call node that names it; its call nodes on
+  // the agent's tools its run's plane resolves (the plane its harness and its tools read).
   const flows = revision.kind === "agentic" ? await pinnedWorkflows(where.root, await readPin(where.root)) : [];
-  // On claude-agent and codex, on the route the harness's own requests take (learnedRoute): on OpenRouter alone,
-  // OpenRouter's name for the run's model, whose key the run holds, never the vendor's provider.
-  const learnedHarness = revision.kind === "agentic" ? revision.body.harness : undefined;
-  const learnedModel = (tier: unknown) => {
-    const ref = byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default");
-    return ref && learnedHarness && learnedHarness !== DEFAULT_HARNESS ? learnedRoute(learnedHarness, env, ref) : ref;
-  };
-  // A second guard beside the pin's (learning-run.ts): a run whose harness's requests go where a learned workflow's could
-  // not follow gets no tool, whatever its pin says.
-  const learnedTool = flows.length && revision.kind === "agentic" && !(await learnedWorkflowsOff(revision.body.harness, env, revision.body.model))
-    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), policy: toolGate.policy, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
+  const learnedModel = (tier: unknown): ModelRef | undefined => (onHarness ? { provider: PORT_PROVIDER, modelId: "session" } : (byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default")));
+  const learnedTool = flows.length && revision.kind === "agentic"
+    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), policy: toolGate.policy, denyFrom: toolGate.denyFrom, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
     : undefined;
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
   const guidance = effortGuidance(process.env[EFFORT_ENV]);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
-    // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
-    // refuse; codex's prompt, and a faux harness's, name each skill and its file when the run reads its files (it reads
-    // the SKILL.md when it fits), else keep every skill whole (skills.ts).
-    const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
+    // claude-agent, codex and opencode load the skills their adapter takes itself (skillCheckOf), and the prompt keeps only
+    // the ones it would refuse; a faux harness's prompt names each skill and its file when the run reads its files (it
+    // reads the SKILL.md when it fits), else keeps every skill whole (skills.ts).
+    const check = !env[FAUX_HARNESS_ENV] ? await skillCheckOf(harness) : undefined;
     const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
@@ -194,18 +203,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
-    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
-    // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
-    // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
-    const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
-    const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
+    // The run's cap, checked before each of the session's requests (the harness's and the run's own beside them): the
+    // same ceiling rule as pi's (cap.ts), at the price `priced` names (above).
+    const guard = await capBefore(cap, chosen.models.getModel(priced!.provider, priced!.modelId) as never, { listed: !chosen.unpriced.has(priced!.modelId), mode });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, learnedTool ? [...named, LEARNED_WORKFLOW_TOOL] : named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate, learnedTool ? [learnedTool] : []);
+    const { door, onOpen, port } = adapterRun(make, harness, spec, BACKGROUND, cap, learnedTool ? [...named, LEARNED_WORKFLOW_TOOL] : named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate, learnedTool ? [learnedTool] : []);
+    // The run's own model requests beside the harness's go through the session's proxy, booked on its records (port-models.ts).
+    sessionPort = port;
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
-    // A learned workflow's model requests go through the run's models, marked on its store once it opens (markRequests).
-    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness)), learnedTool && marked.open(durable), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
+    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness), durable.store), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
@@ -226,9 +235,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     if (!tools) bound.set(name, (tools = entry.bind(host)));
     return tools;
   };
+  // The gate reads its store before the run resumes (an agentic run's and a workflow's alike): the resume dispatches the
+  // calls a crash cut, and a rerun of one it let through must find its mark (tool-gate.ts prime).
+  // The run's store as a barrier takes it, and its harness, from the open's beforeResume: a task the open resumes (a turn or
+  // a workflow a crash cut) runs before onOpen, and what it sends needs both. A workflow effect's admission is synced on
+  // the store (workflowAdmit, below); a paid call's hold is synced on it and booked on the run's root (settleIn), a call
+  // node's under its call (runEffect's ledger), and a priced MCP call's records go through the harness's commit.
+  let journal: SyncTarget | undefined;
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async (run: BeforeResume) => { await markResumed(run); for (const settle of settles) await settle(run.harness); },
+    beforeResume: async (run: BeforeResume) => { journal = run.syncTarget; runHarness = run.harness; settleIn(rootRecordOf(run.harness), run.syncTarget); await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).
@@ -253,8 +269,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
     const onOpen = async (durable: DurableRun) => {
       runHarness = durable.harness;
-      settleIn(rootRecordOf(durable.harness));
-      marked.open(durable);
+      settleIn(rootRecordOf(durable.harness), durable.store);
+      marked!.open(durable);
       await toolGate.load(durable, BACKGROUND, coding.tools, learnedTool ? [learnedTool] : []);
       toolGate.start();
     };
@@ -281,9 +297,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const loadImage = imageLoader(where.work);
   const log = nodeLog(where.root);
   // The receipts earlier processes recorded, read before this one opens the store, which then holds it exclusively.
+  // Lock-free, as the server reads it: nothing made beside the store (a plain read leaves a -shm there).
   const earlier = await (async () => {
     try {
-      return durableDecisions(join(where.store, RUN_STORE_FILE));
+      return durableDecisions(join(where.store, RUN_STORE_FILE), { unlocked: true });
     } catch {
       return (await readLiveView(where.root))?.receipts ?? [];
     }
@@ -291,8 +308,6 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const live = liveView(where.root, [...earlier]);
   // The `llm` tool's one completion: on the run's models (capped and marked as a model node's), its tier's model.
   const complete = completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default"), thinkingLevel);
-  /** The run, once it opens: a call node's paid requests are booked in its store (paid-calls.ts). */
-  let opened: DurableRun | undefined;
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. Its
    *  input and output go to the node log, and its paid requests are booked under the node's own call (its execution
    *  path, and its item in a map). */
@@ -306,10 +321,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // deny since the run started is refused in the gate's words, and one set to ask too, since a call node cannot wait
       // for an approval. Neither runs.
       const permission = toolGate.policy(node.tool!);
-      if (permission === "deny") throw new Error(deniedText(node.tool!));
+      if (permission === "deny") throw new Error(deniedText(node.tool!, undefined, toolGate.denyFrom(node.tool!)));
       if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
-      const durable = opened;
-      const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
+      // Booked in the run's store, through the harness beforeResume took: a call node a resumed workflow runs before onOpen
+      // is booked as on a first run.
+      const harness = runHarness;
+      const ledger = harness ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
@@ -344,7 +361,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     log({ t: event.type, path: event.executionPath, kind: String(detail.kind ?? ""), at: new Date().toISOString(), ...(detail.status ? { status: detail.status } : {}), ...(typeof detail.duration_ms === "number" ? { duration_ms: detail.duration_ms } : {}), ...(detail.error !== undefined ? { error: String((detail.error as Error)?.message ?? detail.error).slice(0, 500) } : {}) });
   };
   const workflows = createWorkflowExtension({
-    options: () => ({ files: workspaceFiles(where.work) }),
+    // Each workflow effect's admission is synced before it is dispatched (pi-durable-disk barriers.ts, workflowAdmit): the
+    // driver's journal is the run's store, taken in beforeResume, so a workflow the open resumes, before onOpen, has it.
+    options: () => ({ files: workspaceFiles(where.work), afterAdmit: async () => {
+      if (!journal) throw new Error("the run's store is not open, so a workflow effect's admission cannot be made durable: it is not sent");
+      await syncNow(journal, BARRIER.workflowAdmit);
+    } }),
     run: ({ key, runtime, context, driver }) => {
       // Each typed question's receipt is a row of the run's store before its answer acts, and a resumed run takes an
       // answered one instead of asking again.
@@ -370,9 +392,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
-    opened = durable;
-    settleIn(rootRecordOf(durable.harness));
-    marked.open(durable);
+    settleIn(rootRecordOf(durable.harness), durable.store);
+    marked!.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });
     live.stop();
