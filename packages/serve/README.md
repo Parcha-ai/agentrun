@@ -1807,6 +1807,10 @@ server's own origin, under a CSP that allows that origin only:
   keeps the filters. A run's page follows `GET /v2/runs/{id}/timeline` with a long poll, sends messages (an answer while
   it waits on `ask_person`), stops or cancels the run, shows its files and a workflow's graph, and has **Archive** or
   **Unarchive**.
+- **Settings → MCP servers**: add a remote MCP server (its name, address and credential: none, a bearer token, headers,
+  or **Sign in** with OAuth), **Preview** its tools and protocol, then **Save**; each saved one with its tool count and
+  its credential's state, **Refresh**, **Change** (a credential left empty keeps the saved one) and **Delete**. An
+  agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
