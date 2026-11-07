@@ -8,8 +8,9 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const tracked = execFileSync('git', ['-c', 'gc.auto=0', 'ls-files', '*.ts', '*.mts', '*.mjs', '*.tsx', '*.js'], { cwd: root, encoding: 'utf8' }).split('\n').filter((file) => file && !file.startsWith('.release/') && !file.includes('/node_modules/'));
 const PI = /^@earendil-works\/(?:pi-ai|pi-agent-core|pi-durable|chord)(?:\/.*)?$/;
 const IMPORT = /import\s+(type\s+)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
