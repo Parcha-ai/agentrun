@@ -104,9 +104,9 @@
     "unpdf": "^1.8.1"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.4.0",
+    "@earendil-works/chord": "1.5.0",
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0",
+    "@earendil-works/pi-durable": "1.5.0",
     "@silvia-odwyer/photon-node": "^0.3.4"
   },
   "peerDependenciesMeta": {
@@ -124,10 +124,10 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.1.0",
-    "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-codemode": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0",
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-codemode": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
     "@parcha/agentrun-jev": "0.1.0-beta.31",
     "@silvia-odwyer/photon-node": "0.3.4",
     "sharp": "0.35.5"
