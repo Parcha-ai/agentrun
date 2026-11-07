@@ -1,5 +1,6 @@
 // `npm run conformance -w @parcha/agentrun-computer -- --provider docker | ./module.js [--image <image>] [--only <groups>] [--json]`
-// Exits 0 when Core passes, 1 when it fails, 2 on a usage error.
+// Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
+// that ran passed: a partial run is never a Core pass, so no script reads its exit code as one.
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,13 +28,17 @@ export interface CliIo {
 	signal?: AbortSignal;
 	/** Print each case to stderr as it ends. */
 	progress?: boolean;
+	/** For --provider docker: the longest `docker version` may take; default 30 s. */
+	dockerTimeoutMs?: number;
 }
 
 const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider docker|<module.js> [--image <image>] [--only <group|case>,...] [--json]
   --provider  docker, or a module that exports createProvider() (and, for the drift case, createDriftedProvider())
   --image     the image every computer starts from (default debian:bookworm-slim)
-  --only      run only these groups (health, exec, files, process, provider, drift) or case ids
-  --json      print the report as JSON`;
+  --only      run only these groups (health, exec, files, process, provider, drift) or case ids; a run that leaves
+              Core cases out is partial: no Core verdict, and exit 3 when every case that ran passed
+  --json      print the report as JSON
+exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
 
 class Usage extends Error {}
@@ -109,7 +114,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	let target: { provider: ComputerProvider; drifted?: () => Promise<ComputerProvider> };
 	try {
 		if (args.provider === "docker") {
-			const docker = dockerConformance();
+			const docker = dockerConformance(io.dockerTimeoutMs === undefined ? {} : { timeoutMs: io.dockerTimeoutMs });
 			target = docker;
 			close = docker.close;
 		} else {
@@ -134,7 +139,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			...(onResult ? { onResult } : {}),
 		});
 		await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
-		return report.core === "pass" ? 0 : 1;
+		return report.core === "pass" ? 0 : report.core === "partial" ? 3 : 1;
 	} finally {
 		close();
 	}

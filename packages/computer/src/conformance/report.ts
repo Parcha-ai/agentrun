@@ -1,4 +1,5 @@
-// The report as a person reads it: one line per level and group, each failure and skip under its line, the verdict last.
+// The report as a person reads it: one line per level and group, each failure and skip under its line, the Core cases
+// --only left out, the verdict last.
 import type { CaseResult, ConformanceReport, Group } from "./types.js";
 
 const GROUPS: Group[] = ["health", "exec", "files", "process", "provider", "drift"];
@@ -41,10 +42,17 @@ export function formatReport(report: ConformanceReport): string {
 		lines.push(`cleanup ✗ ${cleanup.left.length > 0 ? `left ${cleanup.left.join(", ")}` : "could not show nothing was left"}`);
 		for (const error of cleanup.errors) lines.push(`  ✗ ${error}`);
 	}
+	const notRun = report.coreNotRun ?? [];
+	if (notRun.length > 0) {
+		const [first = "", ...rest] = wrap(notRun);
+		lines.push(`core ${"not run".padEnd(9)} ${first}`, ...rest.map((more) => `${INDENT}${more}`));
+	}
 	const core = results.filter((r) => r.level === "core");
 	const full = results.filter((r) => r.level === "full");
 	const passed = (rs: CaseResult[]) => rs.filter((r) => r.status === "pass").length;
-	let verdict = `core ${report.core === "pass" ? "PASS" : "FAIL"} ${passed(core)}/${core.length}`;
+	// A run that left Core cases out has no Core verdict: PARTIAL, never PASS.
+	let verdict = `core ${report.core.toUpperCase()} ${passed(core)}/${core.length}`;
+	if (notRun.length > 0) verdict += ` · ${notRun.length} Core ${notRun.length === 1 ? "case" : "cases"} not run`;
 	verdict += full.length > 0 ? ` · full ${passed(full)}/${full.length}` : " · full: none run";
 	if (report.undeclared.length > 0) verdict += ` · ${report.undeclared.join(" ")} not declared`;
 	if (report.only) verdict += ` · only ${report.only.join(",")}`;

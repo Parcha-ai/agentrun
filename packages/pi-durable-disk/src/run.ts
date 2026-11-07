@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
 import type { HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
-import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
+import type { AcquireOptions, Claim, RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
 import { BoxUnavailableError, EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
@@ -25,7 +25,6 @@ import {
   DEFAULT_HEARTBEAT_MS,
   DEFAULT_LEASE_EXPIRY_MS,
   DEFAULT_LEASE_MARGIN_MS,
-  keepStartMark,
   openClaimDir,
   persistRecord,
   readRunRecord,
@@ -124,17 +123,6 @@ export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | 
 
 export interface OpenRunLeaseOptions {
   /**
-   * The mount token from the host driver (reusable, 24 h); travels only on the archil wrapper's stdin, never in an
-   * environment. Required to mount an Archil disk (the default `acquire`); a run whose `acquire` is replaced (a local
-   * directory: `localRun`) needs none, and its `acquire` is handed an empty token.
-   */
-  readonly mountToken?: string;
-  /** Default /mnt/archil. */
-  readonly mountRoot?: string;
-  /** Mount with `--force`: the takeover fallback when the supervisor could not revoke. */
-  readonly force?: boolean;
-  readonly host?: ArchilHost;
-  /**
    * The host driver's handle, written as run.json's `holder` with this process's pid and `since` added; `driver`
    * defaults to `local`, `host` and `bootId` to this machine's. The supervisor hands it back to the driver to stop it.
    */
@@ -164,14 +152,11 @@ export interface OpenRunLeaseOptions {
   readonly context?: Context;
   /** Each lifecycle step as it completes, with its duration. */
   readonly onStep?: (step: OpenStep | ReleaseStep, ms: number) => void;
-  /** Replaceable for tests: how the claim is taken (default `acquire`). */
-  readonly acquire?: (options: AcquireOptions) => Promise<Claim>;
+  /** How the claim is taken: `localRun(root)`'s, a directory on this machine. */
+  readonly acquire: (options: AcquireOptions) => Promise<Claim>;
   /** Replaceable for fault injection: how `run.json` is written (default `persistRecord`). */
   readonly persist?: PersistRecord;
-  /**
-   * Replaceable for tests: how the claim's root is held open (default `openClaimDir(root)`, which requires the root to be
-   * the mount point of an Archil mount). A run root on a local directory passes `(root) => openClaimDir(root, { fstype: null })`.
-   */
+  /** Replaceable for tests: how the claim's root is held open (default `openClaimDir(root)`). */
   readonly claimDir?: (root: string) => Promise<ClaimDir>;
   /** Replaceable for tests: the monotonic clock the self-fence measures with, in ms (default `performance.now`). */
   readonly clock?: () => number;
@@ -297,7 +282,7 @@ export interface RunClaim {
   readonly work: string;
   readonly store: string;
   readonly fenced: boolean;
-  /** `archil sync` of the mount: the workspace is durable before a result commits and before a terminal status; a failure fences the run. */
+  /** The claim's barrier, before a result commits and before a terminal status: it refuses once the claim is fenced (a failure fences the run). On a local directory it syncs nothing beyond the store's own commits. */
   barrier(): Promise<void>;
 }
 
@@ -347,7 +332,7 @@ export interface RunLease {
   fenceSettled(): Promise<void>;
   /** Write a status transition. `done` and `failed` run the barrier first, so a terminal status never names workspace files that are not durable. */
   setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
-  /** `archil sync` of the mount: the workspace is durable before a result commits and before a terminal status; a failure fences. */
+  /** The claim's barrier, before a result commits and before a terminal status: it refuses once the claim is fenced; a failure fences. On a local directory it syncs nothing beyond the store's own commits. */
   barrier(): Promise<void>;
   /**
    * After the app closed every Harness and store connection: `cleanup`, barrier, seal `run.json` with the store's last
@@ -476,8 +461,7 @@ export interface StoreHeadSource {
  * exclusive locking mode): its read meets the holder's lock. A store that is free is taken for that read and let go;
  * its close checkpoints what a previous incarnation left in its WAL, as the open that follows may. Read-write: in an
  * exclusive locking mode a read takes a write lock, which a read-only descriptor cannot. No file: nothing holds it.
- * Local directories only (a run under its host's epoch is one): an Archil run's store must never be opened read-write
- * from anywhere but its holder, since a read-write open from another client flips that mount read-only.
+ * A local directory's store only.
  */
 export function assertStoreFree(file: string): void {
   if (!existsSync(file)) return;
@@ -742,15 +726,7 @@ class Lease implements RunLease {
     if (seed !== undefined && fresh) {
       await step("seed", async () => {
         await this.#dir!.assertMounted();
-        // While a new run seeds it has no `run.json` heartbeat, and a supervisor keeps a start in its grace only while its
-        // start mark is younger than the grace: the mark is kept fresh until the seed ends, through the held claim directory.
-        // A seeder that dies stops, and the grace runs out as for any start.
-        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs, claim.root);
-        try {
-          await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
-        } finally {
-          await stop();
-        }
+        await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
         await this.#dir!.assertMounted();
         await claim.barrier();
       });
@@ -1055,23 +1031,9 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, 
   } catch (error) {
     throw new RunError("INVALID_ARGUMENT", `holder ${JSON.stringify(options.holder)}: ${(error as Error).message}`, { cause: error });
   }
-  // A run under its host's epoch is a local directory's (localRun): its open probes its store read-write
-  // (assertStoreFree), which an Archil mount must never see from anywhere but its holder.
-  if (options.epoch !== undefined && options.acquire === undefined) {
-    throw new RunError("INVALID_ARGUMENT", "a run under its host's epoch is a local directory's: pass localRun(root)");
-  }
-  if (options.acquire === undefined && !options.mountToken) {
-    throw new RunError("INVALID_ARGUMENT", "mountToken is required to mount an Archil disk; a run on a local directory passes localRun(root) instead");
-  }
-  const claim = await step("acquire", () =>
-    (options.acquire ?? acquire)({
-      ref,
-      token: options.mountToken ?? "",
-      ...(options.mountRoot === undefined ? {} : { mountRoot: options.mountRoot }),
-      ...(options.force === undefined ? {} : { force: options.force }),
-      ...(options.host === undefined ? {} : { host: options.host }),
-    }),
-  );
+  // A run is a local directory's: its claim comes from localRun(root).
+  if (typeof options.acquire !== "function") throw new RunError("INVALID_ARGUMENT", "a run is a local directory: pass localRun(root)");
+  const claim = await step("acquire", () => options.acquire({ ref }));
   const lease = new Lease(ref, claim, options, context);
   try {
     await lease.open(step, holder, afterClaim);
