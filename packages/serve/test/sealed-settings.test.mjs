@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SealedSettings, settingsFile } from "../dist/sealed-settings.js";
-import { MIN_KEY_BYTES } from "../dist/standard-webhooks.js";
+import { MIN_KEY_BYTES, signatureOf, verify } from "../dist/standard-webhooks.js";
 
 const spec = { scope: "server", fields: { signing: { minBytes: MIN_KEY_BYTES }, token: {} } };
 
@@ -48,4 +48,25 @@ test("a settings file that does not read is said, never written over: set and mi
   assert.throws(() => store.mint("trg_1", "secret"), (error) => error.code === "store_unreadable");
   store.remove("trg_1");
   assert.equal(await readFile(file, "utf8"), "{ not json", "byte for byte");
+});
+
+test("a verification key is kept only as a whsec_ secret: a raw key is refused, 422, so none is stored that would refuse every request; a whsec_ one verifies", async (t) => {
+  const data = await dir(t);
+  const store = new SealedSettings(data, "slackish", spec, randomBytes(32), () => {});
+  const raw = randomBytes(32).toString("base64");
+  assert.throws(() => store.set("server", "signing", raw), (error) => error.code === "input_invalid" && error.extra.fields[0].reason === "invalid");
+  assert.equal(store.get("server", "signing"), undefined, "nothing kept");
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  store.set("server", "signing", secret);
+  const [id, at, body] = ["msg_1", String(Math.floor(Date.now() / 1000)), Buffer.from("{}")];
+  assert.equal(verify(store.get("server", "signing"), { "webhook-id": id, "webhook-timestamp": at, "webhook-signature": signatureOf(secret, id, at, body) }, body, Date.now()), undefined, "it verifies");
+});
+
+test("a given value the redaction of the server's secrets would pass over is refused, 422: whitespace in it, or under 8 bytes", async (t) => {
+  const data = await dir(t);
+  const store = new SealedSettings(data, "slackish", spec, randomBytes(32), () => {});
+  for (const value of [" x", "short", "a token with spaces in it", "tab\there-and-long"]) {
+    assert.throws(() => store.set("server", "token", value), (error) => error.code === "input_invalid" && error.extra.fields[0].field === "token", JSON.stringify(value));
+  }
+  assert.equal(store.get("server", "token"), undefined, "nothing kept");
 });
