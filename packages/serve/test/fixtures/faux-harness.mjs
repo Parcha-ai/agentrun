@@ -7,6 +7,11 @@ export function opened(harness, options) {
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ harness, options })}\n`);
 }
 
+/** Told each session the adapter closed (its key), filed for a test to see: the harness's process stops with its run. */
+export function closed(key) {
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED, `${key}\n`);
+}
+
 /** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
 export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
 

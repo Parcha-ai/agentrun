@@ -34,7 +34,7 @@ type Outcome = { accepted: true } | { accepted: false; reason: "busy" };
 
 /** A hook whose submit and abort the test scripts; it records every call. */
 function scripted(options: { submit?: (input: DoorInput, ctx: DoorContext) => Promise<Outcome>; abort?: (ctx: DoorContext) => Promise<"aborted" | "idle"> } = {}) {
-  const calls = { submit: [] as DoorInput[], abort: 0, signals: [] as AbortSignal[] };
+  const calls = { submit: [] as DoorInput[], abort: 0, close: 0, signals: [] as AbortSignal[] };
   const state = { busy: false };
   const hook: DoorHook = {
     async submit(input, ctx) {
@@ -45,6 +45,9 @@ function scripted(options: { submit?: (input: DoorInput, ctx: DoorContext) => Pr
     async abort(ctx) {
       calls.abort++;
       return (options.abort ?? (async () => "aborted" as const))(ctx);
+    },
+    async close() {
+      calls.close++;
     },
     busy: () => state.busy,
   };
@@ -840,6 +843,48 @@ describe("the door hook: turns, children and stops", () => {
       await s.server.close();
     } finally {
       disk.remove();
+    }
+  });
+
+  it("a drain tells an idle hook its instance is going: no abort, and its close is called once, however often the door stops", async () => {
+    const disk = new LocalDisk("door-close-idle");
+    try {
+      const { hook, calls } = scripted();
+      const s = await served(disk, hook, { abortMs: 500 });
+      assert.equal((await submit(s.server, "c1")).status, 200);
+      await s.server.stopDoor();
+      await s.server.stopDoor();
+      const seen = { abort: calls.abort, close: calls.close };
+      // Let go before the check, so a failing one leaves no server holding the process open.
+      await s.run.release();
+      await s.server.close();
+      assert.deepEqual(seen, { abort: 0, close: 1 }, "an idle hook is not aborted, and is closed once");
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a fence closes the hook once, alongside the kill, busy or idle, and a drain after it closes it no more", async () => {
+    for (const busy of [true, false]) {
+      const disk = new LocalDisk(`door-close-fence-${busy}`);
+      try {
+        const { hook, calls, state } = scripted();
+        const s = await served(disk, hook, { abortMs: 500 });
+        assert.equal((await submit(s.server, "f1")).status, 200);
+        state.busy = busy;
+        await s.server.stopDoor({ now: true });
+        const fenced = calls.close;
+        state.busy = false;
+        await s.server.stopDoor();
+        const drained = calls.close;
+        // Let go before the checks, so a failing one leaves no server holding the process open.
+        await s.run.release();
+        await s.server.close();
+        assert.equal(fenced, 1, `a fence closed the ${busy ? "busy" : "idle"} hook once`);
+        assert.equal(drained, 1, `the drain after the fence closed the ${busy ? "busy" : "idle"} hook no more`);
+      } finally {
+        disk.remove();
+      }
     }
   });
 

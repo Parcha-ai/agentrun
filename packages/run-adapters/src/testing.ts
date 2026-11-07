@@ -80,6 +80,8 @@ export interface FauxOptions {
   refuse?: (spec: SessionSpec) => string[];
   /** How long `open` takes, ignoring the session's signal, as a slow harness start does (default 0). */
   openDelayMs?: number;
+  /** Told each session closed, by its key. */
+  onClose?: (key: string) => void;
 }
 
 export interface FauxAdapter extends AgentAdapter {
@@ -240,7 +242,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
-        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); },
+        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); options.onClose?.(spec.key); },
       };
       return session;
     },
