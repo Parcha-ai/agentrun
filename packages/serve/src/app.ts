@@ -16,7 +16,7 @@ import { createRegistry, defineExtension, type Extension, type Harness, ROOT_CON
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
-import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
+import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
@@ -212,7 +212,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, learnedTool ? [...named, LEARNED_WORKFLOW_TOOL] : named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate, learnedTool ? [learnedTool] : []);
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
     // A learned workflow's model requests go through the run's models, marked on its store once it opens (markRequests).
-    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness)), learnedTool && marked.open(durable), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
+    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness), durable.store), learnedTool && marked.open(durable), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
@@ -235,9 +235,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   // The gate reads its store before the run resumes (an agentic run's and a workflow's alike): the resume dispatches the
   // calls a crash cut, and a rerun of one it let through must find its mark (tool-gate.ts prime).
+  // The run's store as a barrier takes it, and its harness, from the open's beforeResume: a task the open resumes (a turn or
+  // a workflow a crash cut) runs before onOpen, and what it sends needs both. A workflow effect's admission is synced on
+  // the store (workflowAdmit, below); a paid call's hold is synced on it and booked on the run's root (settleIn), a call
+  // node's under its call (runEffect's ledger), and a priced MCP call's records go through the harness's commit.
+  let journal: SyncTarget | undefined;
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async (run: BeforeResume) => { await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
+    beforeResume: async (run: BeforeResume) => { journal = run.syncTarget; runHarness = run.harness; settleIn(rootRecordOf(run.harness), run.syncTarget); await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).
@@ -262,7 +267,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
     const onOpen = async (durable: DurableRun) => {
       runHarness = durable.harness;
-      settleIn(rootRecordOf(durable.harness));
+      settleIn(rootRecordOf(durable.harness), durable.store);
       marked.open(durable);
       await toolGate.load(durable, BACKGROUND, coding.tools, learnedTool ? [learnedTool] : []);
       toolGate.start();
@@ -301,8 +306,6 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const live = liveView(where.root, [...earlier]);
   // The `llm` tool's one completion: on the run's models (capped and marked as a model node's), its tier's model.
   const complete = completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default"), thinkingLevel);
-  /** The run, once it opens: a call node's paid requests are booked in its store (paid-calls.ts). */
-  let opened: DurableRun | undefined;
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. Its
    *  input and output go to the node log, and its paid requests are booked under the node's own call (its execution
    *  path, and its item in a map). */
@@ -318,8 +321,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       const permission = toolGate.policy(node.tool!);
       if (permission === "deny") throw new Error(deniedText(node.tool!, undefined, toolGate.denyFrom(node.tool!)));
       if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
-      const durable = opened;
-      const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
+      // Booked in the run's store, through the harness beforeResume took: a call node a resumed workflow runs before onOpen
+      // is booked as on a first run.
+      const harness = runHarness;
+      const ledger = harness ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
@@ -354,7 +359,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     log({ t: event.type, path: event.executionPath, kind: String(detail.kind ?? ""), at: new Date().toISOString(), ...(detail.status ? { status: detail.status } : {}), ...(typeof detail.duration_ms === "number" ? { duration_ms: detail.duration_ms } : {}), ...(detail.error !== undefined ? { error: String((detail.error as Error)?.message ?? detail.error).slice(0, 500) } : {}) });
   };
   const workflows = createWorkflowExtension({
-    options: () => ({ files: workspaceFiles(where.work) }),
+    // Each workflow effect's admission is synced before it is dispatched (pi-durable-disk barriers.ts, workflowAdmit): the
+    // driver's journal is the run's store, taken in beforeResume, so a workflow the open resumes, before onOpen, has it.
+    options: () => ({ files: workspaceFiles(where.work), afterAdmit: async () => {
+      if (!journal) throw new Error("the run's store is not open, so a workflow effect's admission cannot be made durable: it is not sent");
+      await syncNow(journal, BARRIER.workflowAdmit);
+    } }),
     run: ({ key, runtime, context, driver }) => {
       // Each typed question's receipt is a row of the run's store before its answer acts, and a resumed run takes an
       // answered one instead of asking again.
@@ -380,8 +390,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
-    opened = durable;
-    settleIn(rootRecordOf(durable.harness));
+    settleIn(rootRecordOf(durable.harness), durable.store);
     marked.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });

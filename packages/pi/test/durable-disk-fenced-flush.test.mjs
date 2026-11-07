@@ -45,7 +45,7 @@ const claimOf = (directory) => (ref) => {
   let fence;
   return {
     ref, disk: ref.disk, root: directory, work: join(directory, 'work'), store: join(directory, 'store'),
-    reused: false, forced: false, timings: { mountMs: 0, verifyMs: 0 },
+   
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
@@ -88,7 +88,7 @@ async function runFenced({ lease, fence }) {
   const registry = createRegistry();
   registry.install(flow.extension);
   const run = await openDurableRun({ disk: 'dsk-local', region: 'local', id: 'run-1' }, {
-    mountToken: 'unused', acquire: async ({ ref }) => claimOf(directory)(ref), claimDir: (at) => openClaimDir(at, { fstype: null }),
+    acquire: async ({ ref }) => claimOf(directory)(ref), claimDir: (at) => openClaimDir(at),
     harness: { registry, models: {} }, persist, lease,
     onFenced: (error) => { state.fenced.push(error); },
   });

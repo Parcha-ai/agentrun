@@ -81,8 +81,7 @@ export interface ArchilEnvOptions {
    * --inh-caps=-all --bounding-set=-all`), and give it `work/` and every file and directory pi's in-process file tools
    * create under `work/`, so a command can change what the agent wrote.
    * For an instance that runs as root, as in a container: the run's root, store, `run.json` and owner lock stay root's
-   * (the mount enforces their modes), and the archil daemon's environment, which holds the mount token, is unreadable to
-   * the commands. Needs root (to switch users and to chown).
+   * (their modes enforce it). Needs root (to switch users and to chown).
    */
   readonly runAs?: { readonly uid: number; readonly gid: number };
 }
@@ -722,7 +721,7 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
     throw new EnvError("INVALID_RUN_AS", `runAs needs a numeric uid and gid, got ${JSON.stringify(runAs)}`);
   }
   if (runAs?.uid === 0) {
-    throw new EnvError("INVALID_RUN_AS", "runAs names root (uid 0): the agent's commands would run as the owner of run.json, the store and the archil daemon");
+    throw new EnvError("INVALID_RUN_AS", "runAs names root (uid 0): the agent's commands would run as the owner of run.json and the store");
   }
   const darwin = process.platform === "darwin";
   const noNewPrivs = options.noNewPrivs ?? !darwin;

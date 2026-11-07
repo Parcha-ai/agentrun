@@ -64,6 +64,4 @@ ok: three processes, one run: each picked up where the last released it, the las
 ## What it does not show
 
 A run on a local directory guards one machine only: the directory is the claim, so nothing keeps out a process on another
-machine that can reach it. [Bring your own disk](../../README.md#bring-your-own-disk) puts the run on an Archil disk that any
-host can mount, and [planned-move](../planned-move/) moves a run between two hosts. The model is scripted, so the answers say
-nothing about a real model.
+machine that can reach it. The model is scripted, so the answers say nothing about a real model.
