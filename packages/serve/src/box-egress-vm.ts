@@ -190,6 +190,8 @@ export type EgressState = { state: "ready" } | { state: "preparing" | "unavailab
 export type EgressContainer = { readonly volume?: string; state(): EgressState; close(): Promise<void> };
 
 const OWN_WORDS = /^egress: [\x20-\x7e]{1,200}$/;
+/** A container's full id, as `docker run --detach` prints it. */
+const CONTAINER_ID = /^[0-9a-f]{64}$/;
 
 /**
  * The server's proxy container (see the head of this file): made ready now when Docker has its image (within
@@ -197,7 +199,7 @@ const OWN_WORDS = /^egress: [\x20-\x7e]{1,200}$/;
  * is gone or stopped. `onChange` is told each new state. `close` stops the watch and removes the container; its volume
  * stays, for boxes still mounting it and the next start.
  */
-export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; data: string; allow: readonly string[]; uid: number; gid: number; onChange?: (state: EgressState) => void; docker?: DockerCall; watchMs?: number; readyMs?: number; pullMs?: number }): Promise<EgressContainer> {
+export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; data: string; allow: readonly string[]; uid: number; gid: number; onChange?: (state: EgressState) => void; warn?: (message: string) => void; docker?: DockerCall; watchMs?: number; readyMs?: number; pullMs?: number }): Promise<EgressContainer> {
   if (!options.allow.length) throw new Error("the box network proxy needs a host list: one with none would reach every public host");
   const docker = options.docker ?? dockerCall(options.env);
   const key = egressKeyOf(await realpath(options.data));
@@ -253,8 +255,10 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
     const started = await docker(egressRunArgs({ key, uid: options.uid, gid: options.gid, code, allow: options.allow }), 30_000);
     // A name another container holds fails here (Docker's conflict), and that container is left as it is.
     if (started.code !== 0) return failed(`docker run failed (${started.code})`);
-    ours = started.stdout.trim().split("\n").at(-1)?.trim() || undefined;
-    if (!ours) return failed("docker run printed no container id");
+    // Only an id is taken as one: anything else Docker printed is never handed to rm, inspect or logs.
+    const id = started.stdout.trim().split("\n").at(-1)?.trim() ?? "";
+    if (!CONTAINER_ID.test(id)) return failed("docker run printed no container id");
+    ours = id;
     // A close while it started: what it started goes too.
     if (closed) return (await removeOurs(), state);
     const until = Date.now() + readyMs;
@@ -328,7 +332,16 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
       // What was under way ends first (a pull or a wait is aborted; a start checks `closed`), so nothing of this server's
       // touches Docker after its close.
       await busy?.catch(() => undefined);
-      await removeOurs();
+      // Best effort, but never silent: a failure says the proxy may still run, and how to remove it.
+      const left = (why: string) => options.warn?.(`the box network proxy may still be running (${why}): remove the containers labelled ${EGRESS_LABEL}=${key} with docker rm -f`);
+      if (ours) {
+        const removed = await docker(["rm", "--force", ours], 10_000);
+        if (removed.code !== 0 && !/no such container/i.test(removed.stderr)) left(`docker rm failed (${removed.code})`);
+        ours = undefined;
+      }
+      // And any other container of this server's own label, by its id: one a start made though its docker run gave no
+      // answer (a client cut off). Never by name: a container that is not this server's carries no such label.
+      await sweep().catch((error: Error) => left(error.message));
     },
   };
 }

@@ -10,7 +10,7 @@ import { REQUEST_COST, REQUEST_STARTED, runMetricsOf } from "@parcha/pi-durable-
 import { spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { flowAgent, follow, scratch, serve, storeRun } from "./support.mjs";
+import { flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun } from "./support.mjs";
 
 const FAUX_PRICED = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
 
@@ -32,7 +32,7 @@ test("demo: a priced faux workflow run's $17 llm call is $17 in its stored cost_
   const { body } = await api("POST", "/agents/asker/runs", { input: { question: "What is six times seven?" } });
   const { rows } = await follow(api, body.run_id, ["completed"]);
   // The call's own price and count, as the run logged its answer: the priced faux model, $1 a token.
-  const logged = (await readFile(join(data, "runs", body.run_id, "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((line) => line.t === "effect.end" && line.tool === "llm");
+  const logged = (await readFile(join(runDir(data, body.run_id), "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((line) => line.t === "effect.end" && line.tool === "llm");
   const { usage, cost_usd: paid } = logged.output;
   assert.equal(paid, 17, JSON.stringify(logged.output));
   assert.equal(rows.findLast((r) => r.kind === "usage").usage.usd, 17, "its usage row");
@@ -48,7 +48,7 @@ test("demo: a priced faux workflow run's $17 llm call is $17 in its stored cost_
   assert.deepEqual([m.input + m.cacheRead + m.cacheWrite, m.output, m.requests, m.unmetered], [usage.input_tokens, usage.output_tokens, 1, 0]);
   assert.deepEqual([totals.tokens, totals.requests, totals.unmetered], [usage.input_tokens + usage.output_tokens, 1, 0]);
   // The cap reads the mark's usd as before: the call once.
-  assert.equal(spentIn(join(data, "runs", body.run_id, "store", "run.sqlite")), 17);
+  assert.equal(spentIn(join(runDir(data, body.run_id), "store", "run.sqlite")), 17);
 });
 
 test("a completion's cost mark carries its tokens as pi counts them, the cache apart, and none when pi counted none: summed once, a cached token never twice", async () => {
@@ -63,7 +63,10 @@ test("a completion's cost mark carries its tokens as pi counts them, the cache a
   const model = { api: "faux", provider: "faux", id: "m" };
   await models.completeSimple(model, { messages: [] }, {});
   await models.completeSimple(model, { messages: [] }, {});
-  assert.deepEqual(marks, [
+  // Each request's start and cost name its own request id (request-start.ts), one per request.
+  const ids = marks.map((m) => m.data.requestId);
+  assert.ok(ids.every((id) => typeof id === "string") && ids[0] === ids[1] && ids[2] === ids[3] && ids[0] !== ids[2], `request ids: ${JSON.stringify(ids)}`);
+  assert.deepEqual(marks.map(({ kind, data: { requestId: _, ...data } }) => ({ kind, data })), [
     { kind: REQUEST_STARTED, data: { request: "compaction" } },
     { kind: REQUEST_COST, data: { request: "compaction", usd: 0.0042, usage: { input: 200, output: 50, cacheRead: 800, cacheWrite: 30 } } },
     { kind: REQUEST_STARTED, data: { request: "compaction" } },
@@ -93,7 +96,7 @@ test("a workflow resumed after its process died counts an llm call it made befor
   assert.equal((await api("POST", "/agents", flowAgent("resumer", flow, { tools: ["llm"] }))).status, 201);
   const gate = join(await scratch(t), "go");
   const { body } = await api("POST", "/agents/resumer/runs", { input: { question: `Answer once ${gate} exists.` } });
-  const dir = join(data, "runs", body.run_id);
+  const dir = join(runDir(data, body.run_id));
   const log = async () => (await readFile(join(dir, "nodes.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   await until(async () => (await log()).some((line) => line.t === "effect.start" && line.tool === "llm"), "the call");
   assert.equal((await api("POST", `/runs/${body.run_id}/pause`)).status, 200);
@@ -104,10 +107,10 @@ test("a workflow resumed after its process died counts an llm call it made befor
   // Its completion committed (its node's end, logged after), the run waits at the pause; its process dies, and the server
   // opens it again.
   await until(async () => (await log()).some((line) => line.t === "node.end" && line.path === answered.path), "the call's node's end");
-  const { holder, generation } = JSON.parse(await readFile(join(dir, "run.json"), "utf8"));
+  const { holder, generation } = runRecordOf(data, body.run_id);
   t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
   process.kill(holder.pid, "SIGKILL");
-  await until(async () => { const next = JSON.parse(await readFile(join(dir, "run.json"), "utf8").catch(() => "{}")); return next.generation > generation && next.holder?.pid !== holder.pid && processAlive(next.holder.pid) && next; }, "the run opened again");
+  await until(async () => { const next = runRecordOf(data, body.run_id); return next.generation > generation && next.holder?.pid !== holder.pid && processAlive(next.holder.pid) && next; }, "the run opened again");
   const graph = (await api("GET", `/runs/${body.run_id}/graph`)).body;
   assert.deepEqual([graph.run.status, graph.totals.cost_usd], ["paused", paid], "the earlier call once: in the rows read at the death, not again from the node log");
   assert.equal((await api("POST", `/runs/${body.run_id}/cancel`)).status, 202);

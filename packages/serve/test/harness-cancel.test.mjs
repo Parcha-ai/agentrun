@@ -12,7 +12,7 @@ import { timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { RUN_CANCELLED } from "../dist/files.js";
 import { adapterRun } from "../dist/harness-app.js";
 import { durableSessions } from "../dist/sessions.js";
-import { agent, FAUX, follow, serve, withEnv } from "./support.mjs";
+import { agent, FAUX, follow, runDir, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 
@@ -71,7 +71,7 @@ test(`the run's app on ${harness} reads the cancel serve writes: built on a canc
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "hello" } });
   await follow(api, run.run_id, ["completed"]);
   // The run's directory holds its revision; cancelling it writes the mark there, which the app's guard reads.
-  const root = join(data, "runs", run.run_id);
+  const root = join(runDir(data, run.run_id));
   await writeFile(join(root, RUN_CANCELLED), "");
   withEnv(t, { AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_HARNESS: FAUX_HARNESS });
   const { default: app } = await import("../dist/app.js");

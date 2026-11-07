@@ -527,15 +527,19 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
   });
 });
 
-// Where the agent runs, said with the rest of its current revision: its box, or the server (no place is the server's
-// default, the runner).
+// Where the agent runs, said with the rest of its current revision: its box, the server, or, with no place, the server's
+// default place (default_place, resolved at each run).
 describe("AgentPage, where it runs", () => {
-  it("says the box an agent runs in, or the server", async () => {
+  it("says the box an agent runs in, the server, or the server's default place", async () => {
     const base = agentFixture("invoice-checker");
     const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
     expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
     act(() => root?.unmount()); document.body.innerHTML = "";
-    expect((await open(base)).fact("Runs")).toBe("On the server");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const runner = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };
+    expect((await open(runner)).fact("Runs")).toBe("On the server");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(base)).fact("Runs")).toBe("Where this server's default place is");
   });
 });
 
