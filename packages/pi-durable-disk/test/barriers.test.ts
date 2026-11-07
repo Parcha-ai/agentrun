@@ -5,7 +5,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
-import { BARRIER, BARRIERS, STORES, syncNow, type BarrierRow, type StoreRow } from "../src/barriers.ts";
+import { BARRIER, BARRIERS, NORMAL_PRECONDITIONS, STORES, syncNow, type BarrierRow, type StoreRow } from "../src/barriers.ts";
 import { JOURNAL_SYNCHRONOUS, openArchilStore, type Synchronous } from "../src/store.ts";
 import { ctx, scratchRoot } from "./_run-support.ts";
 
@@ -126,12 +126,12 @@ describe("syncNow", () => {
 
 // ---- the source guard ------------------------------------------------------------------------------------------------
 
-type Table = { barriers: Record<string, Omit<BarrierRow, "store"> & { store: string }>; stores: Record<string, StoreRow> };
+type Table = { barriers: Record<string, Omit<BarrierRow, "store"> & { store: string }>; stores: Record<string, StoreRow>; preconditions?: Record<string, { done: boolean; what: string }> };
 
 /** The files that are the sync primitive itself: they hold `syncNow`'s definition and its pragmas, and open no store. */
 const PRIMITIVES = new Set(["pi-durable-disk/src/barriers.ts", "pi-transport/src/home/sync-now.ts"]);
-/** What opens a store read-write, or sets how one syncs. */
-const OPENS = /openArchilStore\(|openNodeSqliteStorage\(|openNodeSqliteDatabase\(|PRAGMA synchronous\b|profilePragmas\(/;
+/** What opens a store read-write, or sets how one syncs: a `new DatabaseSync(` counts unless its options say readOnly. */
+const OPENS = /openArchilStore\(|openNodeSqliteStorage\(|openNodeSqliteDatabase\(|PRAGMA synchronous\b|profilePragmas\(|new DatabaseSync\((?![^;]*readOnly:\s*true)/;
 /** What a store with no effects must never do: run a tool or a model on it. */
 const EFFECTFUL = /\.install\(|setProvider\(|syncNow\(/;
 const CALL = /syncNow\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
@@ -161,6 +161,7 @@ function violations(table: Table, journal: Synchronous, sources: ReadonlyMap<str
     if (row.status === "active" && row.via && !(sources.get(row.via.file) ?? "").includes(row.via.text)) out.push(`${name}: ${row.via.file} no longer has ${JSON.stringify(row.via.text)}`);
     if (row.status === "planned" && row.store === "run-journal" && journal === "NORMAL") out.push(`${name}: still planned, and the run journal is NORMAL: it may not go NORMAL before every barrier on it is active`);
   }
+  for (const [name, pre] of Object.entries(table.preconditions ?? {})) if (!pre.done && journal === "NORMAL") out.push(`${name}: not done, and the run journal is NORMAL: ${pre.what}`);
   const listed = new Set(Object.values(table.stores).flatMap((store) => store.opens));
   for (const [file, text] of sources) if (!PRIMITIVES.has(file) && OPENS.test(text) && !listed.has(file)) out.push(`${file}: opens a store or sets its sync, and no store in the table lists it`);
   for (const [id, store] of Object.entries(table.stores)) {
@@ -176,6 +177,35 @@ function violations(table: Table, journal: Synchronous, sources: ReadonlyMap<str
   return out;
 }
 
+/**
+ * `text` with its comments blanked (line and block, outside string and template literals), so a comment that names a
+ * barrier or an opener neither satisfies nor trips the guard. Line breaks are kept.
+ */
+function withoutComments(text: string): string {
+  let out = "";
+  let quote: string | undefined;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (quote) {
+      out += c;
+      if (c === "\\") out += text[++i] ?? "";
+      else if (c === quote) quote = undefined;
+    } else if (c === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      out += "\n";
+    } else if (c === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      const stop = end < 0 ? text.length : end + 2;
+      out += text.slice(i, stop).replace(/[^\n]/g, " ");
+      i = stop - 1;
+    } else {
+      if (c === '"' || c === "'" || c === "`") quote = c;
+      out += c;
+    }
+  }
+  return out;
+}
+
 function sourcesOf(root: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const pkg of readdirSync(root)) {
@@ -185,7 +215,7 @@ function sourcesOf(root: string): Map<string, string> {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) walk(path);
-        else if (/\.(ts|mts|js|mjs)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) out.set(relative(root, path), readFileSync(path, "utf8"));
+        else if (/\.(ts|mts|js|mjs)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) out.set(relative(root, path), withoutComments(readFileSync(path, "utf8")));
       }
     };
     walk(src);
@@ -194,7 +224,7 @@ function sourcesOf(root: string): Map<string, string> {
 }
 
 describe("the barriers table, held to the source", () => {
-  const table: Table = { barriers: BARRIERS, stores: STORES };
+  const table: Table = { barriers: BARRIERS, stores: STORES, preconditions: NORMAL_PRECONDITIONS };
   const sources = sourcesOf(PACKAGES);
 
   it("agrees with every package's source", () => {
@@ -232,5 +262,25 @@ describe("the barriers table, held to the source", () => {
       "x/src/c.ts: opens a store or sets its sync, and no store in the table lists it",
       "quiet: listed with no effects, but x/src/q.ts runs a tool, a model or a barrier on it",
     ]);
+  });
+
+  it("reads code only: a barrier call or an opener inside a comment neither counts nor trips it, and a string keeps its slashes", () => {
+    const t: Table = { barriers: { here: { store: "s", site: "x/src/a.ts", status: "active", why: "" } }, stores: { s: { opens: ["x/src/a.ts"], synchronous: "FULL", effects: "barriers", what: "" } } };
+    const files = new Map([
+      ["x/src/a.ts", withoutComments('const url = "https://x//y"; openArchilStore(f);\n// await syncNow(store, BARRIER.here);\n')],
+      ["x/src/b.ts", withoutComments("/* new DatabaseSync(path) */ const db = new DatabaseSync(path, { readOnly: true });")],
+      ["x/src/c.ts", withoutComments("const db = new DatabaseSync(file, { timeout: 0 });")],
+    ]);
+    assert.ok(files.get("x/src/a.ts")!.includes('"https://x//y"'), "a string's slashes are code");
+    assert.deepEqual(violations(t, "FULL", files), [
+      "here: active, but x/src/a.ts has no syncNow(…, BARRIER.here)",
+      "x/src/c.ts: opens a store or sets its sync, and no store in the table lists it",
+    ]);
+  });
+
+  it("a precondition not done passes while the run journal is FULL, and fails once it is NORMAL", () => {
+    const t: Table = { barriers: {}, stores: {}, preconditions: { later: { done: false, what: "x" }, now: { done: true, what: "y" } } };
+    assert.deepEqual(violations(t, "FULL", new Map()), []);
+    assert.deepEqual(violations(t, "NORMAL", new Map()), ["later: not done, and the run journal is NORMAL: x"]);
   });
 });

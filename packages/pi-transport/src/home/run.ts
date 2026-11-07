@@ -24,6 +24,7 @@ import { type CallEvent, callsExtension } from "./calls.ts";
 import { createGate, type DrainError, type Drained, type DrainOptions, type Gate } from "./gate.ts";
 import { holdStore, type StoreHold } from "./lock.ts";
 import { checkpointStore, type Seal, sealStore, verifyStore } from "./store.ts";
+import { walFileOf } from "./sync-now.ts";
 import { toolBarrier } from "./tool-barrier.ts";
 
 /** The entry kind of the notice a session gets when its home moved. */
@@ -625,7 +626,7 @@ class SessionHome implements Home {
 			// pi-durable's own opener: WAL at synchronous = NORMAL. Every tool call that is not replay-safe syncs the WAL before
 			// it runs (tool-barrier.ts), so a box loss never runs one twice.
 			storage = await openNodeSqliteStorage(store);
-			registry.install(toolBarrier(registry, { walFile: `${store}-wal` }));
+			registry.install(toolBarrier(registry, { walFile: await walFileOf(store) }));
 			wrapped = await this.#options.wrapStore?.(storage, context);
 			harness = await Harness.open(wrapped?.storage ?? storage, { ...rest, registry, models, env }, context);
 		} catch (cause) {

@@ -24,7 +24,7 @@ import {
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
-import { syncNow } from "../src/home/sync-now.ts";
+import { syncNow, walFileOf } from "../src/home/sync-now.ts";
 import { toolBarrier } from "../src/home/tool-barrier.ts";
 import { textResult } from "../src/testing/tool-result.ts";
 
@@ -66,7 +66,7 @@ const pay = defineTool({
 });
 const database = await openNodeSqliteDatabase(store);
 const storage = await SqliteStorage.open(database);
-const walFile = `${store}-wal`;
+const walFile = await walFileOf(store);
 const registry = createRegistry();
 registry.install(defineExtension({ name: "pay", tools: [pay] }));
 if (variant === "wrap") registry.install(toolBarrier(registry, { walFile }));

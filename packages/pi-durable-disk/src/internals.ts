@@ -8,7 +8,7 @@ export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
 // itself once the run's process is gone (agentrun-serve's take-back).
 export { profilePragmas, SYNCHRONOUS_LEVEL } from "./store.ts";
 // The barriers table and the stores, for the source guard and the hosts that list them.
-export { BARRIERS, STORES } from "./barriers.ts";
+export { BARRIERS, NORMAL_PRECONDITIONS, STORES } from "./barriers.ts";
 export type { BarrierRow, BarrierStatus, StoreId, StoreRow } from "./barriers.ts";
 // A run under its host's epoch (openDurableRun's `epoch`): the table of its store that holds its record, and the process
 // table its host tells a live holder from a pid reused by another process with.

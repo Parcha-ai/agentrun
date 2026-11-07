@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { KERNEL_RECORDS, openDrive } from '@parcha/agentrun-kernel/kernel';
-import { modelPortFor } from '@parcha/agentrun-kernel';
+import { modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
 import { serialWriter } from '@parcha/agentrun-kernel/host';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
@@ -68,4 +68,20 @@ test("a paid request leaves only once the host's request_start handler resolved,
   assert.equal(left, true);
   const refusing = await modelPortFor(await store.open('k2'), { key: 'k2', onEvent: (event) => (event.type === 'request_start' ? Promise.reject(new Error('the mark failed')) : undefined) });
   await assert.rejects(refusing.models.beforeRequest({ model: 'm' }), /the mark failed/);
+});
+
+test("a request whose start mark is refused is booked withdrawn and never taken for an open one: the next answer is the next request's", async () => {
+  const store = memorySessionStore();
+  let refuse = true;
+  const port = await modelPortFor(await store.open('k'), { key: 'k', onEvent: (event) => (event.type === 'request_start' && refuse ? Promise.reject(new Error('the mark failed')) : undefined) });
+  await assert.rejects(port.models.beforeRequest({ model: 'm' }), /the mark failed/);
+  refuse = false;
+  const second = await port.models.beforeRequest({ model: 'm' });
+  await port.models.responded({ id: 'resp-2' });
+  const records = await (await store.open('k')).read();
+  const refused = records.find((r) => r.kind === RUNNER_RECORDS.turn && r.data.turn === 1);
+  assert.deepEqual(refused?.data, { turn: 1, usd: 0, unsent: true }, 'the refused request is booked withdrawn at $0');
+  const response = records.find((r) => r.kind === RUNNER_RECORDS.response);
+  assert.equal(response?.data.turn, second.turn, 'a ticketless answer is the open request, not the refused one');
+  assert.equal(second.turn, 2);
 });

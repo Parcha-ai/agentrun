@@ -11,7 +11,7 @@
 // writes is listed in STORES, and every barrier in BARRIERS with the file that calls it. test/barriers.test.ts holds this
 // table to the source: every `syncNow()` names a barrier and is in that barrier's file, every active barrier has a call,
 // every file that opens a store is listed, a store with no effects never runs tools or models, and no barrier is still
-// `planned` once the run journal is NORMAL.
+// `planned`, nor any of NORMAL_PRECONDITIONS left undone, once the run journal is NORMAL.
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import { JOURNAL_SYNCHRONOUS } from "./store.ts";
 
@@ -160,9 +160,46 @@ export const STORES = {
     effects: "none",
     what: "a home store's schema probe and rebuild",
   },
+  "agent-pack": {
+    opens: ["pi-durable-agent/src/pack.ts"],
+    synchronous: "FULL",
+    effects: "none",
+    what: "a packed agent's clean copy (VACUUM INTO), SQLite's own default, a rollback journal at FULL",
+  },
+  "home-lock": {
+    opens: ["pi-transport/src/home/lock.ts"],
+    synchronous: "FULL",
+    effects: "none",
+    what: "the lock file beside a home store: an exclusive lock, no data",
+  },
+  "server-lock": {
+    opens: ["serve/src/server-lock.ts"],
+    synchronous: "FULL",
+    effects: "none",
+    what: "the server's lock file on its data root: an exclusive lock, no data",
+  },
 } as const satisfies Record<string, StoreRow>;
 
 export type StoreId = keyof typeof STORES;
+
+/**
+ * What must be true before the run's journal opens at NORMAL (JOURNAL_SYNCHRONOUS), beyond every barrier being active.
+ * test/barriers.test.ts fails while the journal is NORMAL and any of these is not `done`.
+ */
+export const NORMAL_PRECONDITIONS = {
+  fencedStatus: {
+    done: true,
+    what: "a fenced run's status write skips its barrier, so it fails with the fence's own error, as at FULL (run.test.ts)",
+  },
+  kernelSyncRequired: {
+    done: false,
+    what: "the kernel's run-journal writer must have `sync`: an effect with no barrier to call is refused, not run (drive.ts passes a writer without one)",
+  },
+  endToEndBoxLoss: {
+    done: false,
+    what: "a box-loss test through the real chokepoints (the tool gate, the kernel drive, the side-request mark) on a NORMAL run's store, not only ordering tests",
+  },
+} as const satisfies Record<string, { readonly done: boolean; readonly what: string }>;
 
 /** What `syncNow` needs of a store: its database, and the level it runs at between barriers. */
 export interface SyncTarget {

@@ -4,7 +4,17 @@
 // intent is committed (the home's tool wrap) the resumed call is reported interrupted; before it (a beforeTool hook)
 // the call resumes from before its intent and pays again.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,10 +39,17 @@ afterAll(() => {
 	if (shimDir) rmSync(shimDir, { recursive: true, force: true });
 });
 
-/** Start the run with the shim preloaded; once `pay` has paid, SIGKILL the writer: the box is gone. */
-async function payThenLoseTheBox(store: string, effects: string, variant: string, reader: string): Promise<void> {
+/** Start the run with the shim preloaded; once `pay` has paid, SIGKILL the writer: the box is gone. `real`: the file the
+ *  store's path resolves to, beside which SQLite keeps its WAL. */
+async function payThenLoseTheBox(
+	store: string,
+	effects: string,
+	variant: string,
+	reader: string,
+	real = store,
+): Promise<void> {
 	const child = spawn(process.execPath, [FIXTURE, store, effects, variant, "first", reader], {
-		env: { ...process.env, LD_PRELOAD: built!, FSYNC_SNAPSHOT_DIR: join(store, "..") },
+		env: { ...process.env, LD_PRELOAD: built!, FSYNC_SNAPSHOT_DIR: join(real, "..") },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	let out = "";
@@ -53,11 +70,11 @@ async function payThenLoseTheBox(store: string, effects: string, variant: string
 	}
 	child.kill("SIGKILL");
 	await new Promise((resolve) => child.once("exit", resolve));
-	for (const each of [store, `${store}-wal`]) {
+	for (const each of [real, `${real}-wal`]) {
 		if (existsSync(`${each}.synced`)) renameSync(`${each}.synced`, each);
 		else rmSync(each, { force: true });
 	}
-	const dir = join(store, "..");
+	const dir = join(real, "..");
 	for (const name of readdirSync(dir))
 		if (/\.(synced|syncing)$/.test(name) || name.endsWith("-shm")) rmSync(join(dir, name));
 }
@@ -113,4 +130,28 @@ describe.skipIf(!linux)("a home tool call across a box loss", () => {
 			}
 		});
 	}
+});
+
+describe.skipIf(!linux)("the home's barrier on a store reached through a symbolic link", () => {
+	it("syncs the WAL beside the file the link resolves to, and a path with no WAL is an error, not a silent pass", async () => {
+		if (!built) return expect(process.env.CI).toBeFalsy();
+		const dir = mkdtempSync(join(tmpdir(), "home-barrier-link-"));
+		try {
+			const real = join(dir, "disk", "run.sqlite");
+			const store = join(dir, "store", "run.sqlite");
+			mkdirSync(join(dir, "disk"));
+			mkdirSync(join(dir, "store"));
+			symlinkSync(real, store);
+			const effects = join(dir, "effects.log");
+			await payThenLoseTheBox(store, effects, "wrap", "", real);
+			expect(payments(effects)).toEqual(["first"]);
+			expect(resume(store, effects, "wrap")).toContain("resumed with the conversation");
+			expect(payments(effects)).toEqual(["first"]);
+			const { syncNow, walFileOf } = await import("../src/home/sync-now.ts");
+			expect(await walFileOf(store)).toBe(`${realpathSync(real)}-wal`);
+			await expect(syncNow({ walFile: `${store}-wal` }, "homeToolIntent")).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
