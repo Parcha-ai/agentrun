@@ -99,6 +99,9 @@ export type TimelineKind =
   /** A tool call that waited for the owner's approval, after its result's row and with its tool_use_id (approvals/1). */
   | "tool_approval_requested" | string;
 
+/** A row's usage: `usd` its charges' sum, or null once one has no price (then `so_far_usd` and `unpriced` say what is
+ *  known); `requests` is 0 on every row but the usage row. */
+export type RowUsage = { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number };
 export type TimelineRow = {
   id: string;
   seq: number;
@@ -121,6 +124,9 @@ export type TimelineRow = {
   tool_input_preview?: string | null;
   tool_result_preview?: string | null;
   agent_label?: string | null;
+  /** A charge on the row (serve's TimelineRow.usage): on the usage row, the run's cost so far; on a browser call's
+   *  tool_use row, the browser time booked under that call (#1736), re-sent with the row's id when a later charge lands. */
+  usage?: RowUsage | null;
   /** `server` on the row of a message the server wrote into the run (an approval's resume, a raised cap's follow-up): a
    *  `phase` row whose summary is "AgentRun: <its first line>". It is the message the turn took, never the person's. */
   origin?: "server";

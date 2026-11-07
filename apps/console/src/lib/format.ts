@@ -76,6 +76,11 @@ export const soFarNote = (c: { unpriced: number }) =>
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
  *  no price). When the server says what is known so far, that is said ("so far $0.0123 · 1 not priced"), never as the
  *  whole cost. Never a billed amount, never an invented zero. */
+/** A charge on a timeline row, in words: "$0.0018", or what is known so far ("so far $0.001, 1 not priced") when one of its
+ *  charges has no price. */
+export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number }): string =>
+  u.usd !== null ? dollars(u.usd) : typeof u.so_far_usd === "number" ? `so far ${soFarDollars(u.so_far_usd)}, ${u.unpriced ?? 0} not priced` : "not priced";
+
 export function cost(c: Cost | null | undefined): string {
   const known = soFar(c);
   const est = (x: Cost) => (isEstimate(x) ? " est." : "");
