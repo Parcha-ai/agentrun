@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError } from "@/lib/client";
 import { when } from "@/lib/format";
+import { keyHelp } from "@/lib/keyHelp";
 import type { ApiError, ToolKey, ToolKeyCheck, ToolKeyField, ToolKeys, ToolKeysReenter } from "@/lib/v2";
 
 const REASON: Record<ToolKeysReenter["reason"], string> = {
@@ -222,13 +223,21 @@ export function KeyForm({ tool: k, fields, cantStore, onSave, onCancel }: { tool
     }
     setInvalid({ fields: byField, message: rest.length ? rest.join(" ") : Object.keys(byField).length ? null : refused.message });
   };
+  // A model provider's: where to get a key (its own page, a new tab) and what one looks like, for someone with none yet.
+  const help = keyHelp(k.id);
   return (
     <form ref={form} autoComplete="off" onSubmit={(e) => void submit(e)} onInput={() => setTyped(!!typedIn())} className="mt-4 space-y-4 border bg-card p-4" aria-label={`${k.label} key`}>
+      {help && (
+        <p className="text-[13px] text-muted-foreground">
+          <span className="font-semibold text-foreground">{k.label}</span> · No key yet?{" "}
+          <a href={help.url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">Get a key</a> (opens in a new tab)
+        </p>
+      )}
       {fields.map((f) => (
         <label key={f.name} className="block">
           <span className="caps mb-2 block text-[12px] font-semibold">{f.name}</span>
           {f.set && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Saved already. A new value replaces it; leave it empty to keep it.</span>}
-          <input type="password" name={f.name} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
+          <input type="password" name={f.name} autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" placeholder={help && fields.length === 1 ? help.placeholder : undefined}
             className="w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none focus:border-border-strong" />
           {invalid?.fields[f.name] && <span className="mt-2 block font-mono text-[12px] text-destructive-text" role="alert">{invalid.fields[f.name]}</span>}
         </label>
