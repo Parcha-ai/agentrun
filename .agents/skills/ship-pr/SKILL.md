@@ -70,12 +70,8 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 ### `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`
 
 - **When:** any change to `packages/dsl`, `packages/jev` or `packages/pi`.
-- **pi versions:** each version in its own disposable checkout, because `--scratch` rewrites the manifests
-  and the lockfile: `git worktree add ../leg-<version> <head>`, then in it `npm ci --ignore-scripts` and
-  `node scripts/pi-leg.mjs --pi <version> --scratch --npm "npx --yes npm@11.21.0"`, at the lowest version the
-  peers accept (CI's floor jobs run 1.0.4) and at the newest minor they accept (the `pi-1-2` job runs 1.2.0).
-  `--plan` only prints the leg. Pass: build, type-check and suite green, one copy of each pi package at the
-  leg's version. Remove the checkout by its exact path afterwards.
+- **pi version:** the packages pin one pi family exactly (`scripts/pi-ranges.test.mjs`), and the suites run on it; there
+  is no other version to run.
 - **Recovery or durable behaviour** (the driver, the journal, reconcile, effects, `./durable`): the PR
   body carries a kill-storm proof on the head: seeds, kills, every outside call applied once, every
   record equal to the uncut run's, no stop. Cost: $0 (scripted providers).

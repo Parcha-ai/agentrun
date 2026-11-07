@@ -1,5 +1,5 @@
-// A run that asks for a pi version (scripts/pi-leg.mjs sets PI_EXPECT_VERSION) runs on exactly that one: the pi-durable,
-// chord and pi-ai this package loads, and the chord and pi-ai its pi-durable loads, as a host's install resolves them.
+// The suites run on exactly the pi version this package pins: the pi-durable, chord and pi-ai this package loads, and the
+// chord and pi-ai its pi-durable loads, as a host's install resolves them.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -15,9 +15,9 @@ const copyOf = (dir, name) => {
     if (at === dirname(at)) throw new Error(`${name} does not resolve from ${dir}`);
   }
 };
-const expected = process.env.PI_EXPECT_VERSION;
+const expected = JSON.parse(readFileSync(join(here, "package.json"), "utf8")).devDependencies["@earendil-works/pi-durable"];
 
-test("the package and the pi-durable it loads run on the pi version they were asked to run on", { skip: expected ? false : "no version asked for" }, () => {
+test("the package and the pi-durable it loads run on the pi version the package pins", () => {
   const durable = copyOf(here, "@earendil-works/pi-durable");
   const seen = {
     "@earendil-works/pi-durable": durable.version,

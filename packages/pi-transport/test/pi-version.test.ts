@@ -1,15 +1,14 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
-// A CI leg that reruns the suite on another pi version sets one of these, so a run that resolved a different copy fails.
-// `PI_EXPECT_VERSION` is what scripts/pi-leg.mjs sets; the older name still works for a local run.
-const expected = process.env.PI_EXPECT_VERSION ?? process.env.PI_TRANSPORT_EXPECT_PI_DURABLE;
 const require = createRequire(import.meta.url);
+// The pi version this package pins (one whole family): a run that resolved a different copy fails.
+const pinned = (require("../package.json") as { devDependencies: Record<string, string> }).devDependencies["@earendil-works/pi-durable"];
 
 describe("the pi packages this run resolved", () => {
-	it.skipIf(expected === undefined)("are the version the job asked for", () => {
+	it("are the version the package pins", () => {
 		for (const name of ["@earendil-works/pi-durable", "@earendil-works/chord"]) {
-			expect(require(`${name}/package.json`).version, name).toBe(expected);
+			expect(require(`${name}/package.json`).version, name).toBe(pinned);
 		}
 	});
 });
