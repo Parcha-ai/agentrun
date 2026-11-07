@@ -900,10 +900,10 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   const tracked = new Set<string>();
   const redact = createRedactor(() => [...providerKeyValues(process.env, options.redact?.values), ...tracked]);
   const vault = vaultRuntime(options, (secret) => { tracked.add(secret); }, (message) => process.emitWarning(`pi-browser: ${redact(message)}`, { code: "PI_BROWSER_VAULT" }));
-  const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED) });
-  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }) });
+  const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED), checkpointWhen: () => false });
+  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }), checkpointWhen: () => false });
   // A fork starts with no sessions: it never shares a live browser.
-  const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptySessions });
+  const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptySessions, checkpointWhen: () => false });
   const readers: Readers<D> = { options, redact, Config };
 
   /** Class name and redacted message only: a vendor SDK's error text can repeat the request's credentials. */
