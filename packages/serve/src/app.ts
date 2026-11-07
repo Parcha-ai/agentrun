@@ -343,7 +343,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     try {
       return await (fn as (params: unknown) => Promise<unknown>)(params);
     } catch (error) {
-      throw waits.stopped(params?.executionPath) ?? error;
+      // A refusal kept with no path of its own is this node's only while it runs alone (stepped counts it running).
+      throw waits.stopped(params?.executionPath, running.size === 1) ?? error;
     }
   }) as F : fn);
   // Each decision's hold under the cap, before its request is admitted, and its charge once it answers (decision-cap.ts).

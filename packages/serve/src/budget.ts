@@ -109,7 +109,8 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
         }
       };
     },
-    /** What the step at `path` has waited so far, in ms: the interpreter's deps.held, which its deadline does not count. */
+    /** What the step at `path` has waited so far, in ms: the interpreter's deps.held, which its deadline does not count.
+     *  A map's items each have a path of their own (`.../items/<i>/body`), so each holds its own time. */
     held(path: string): number {
       const at = held.get(path);
       return at ? at.total + (at.from !== undefined ? Date.now() - at.from : 0) : 0;
@@ -164,11 +165,13 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
       stops.set(at?.path ?? `#${stops.size}`, { refusal, at });
     },
     /** The refusal no raise fixes that the step at `path` met (a model node's request, recorded by capModels), if any:
-     *  its failure is then a CapStop, never the node's own failure, which a collecting map would take for an item's. */
-    stopped(path: string | null | undefined): CapStop | undefined {
-      // Its own, else the run's first: a step whose request lost its node's context (a map's items side by side) still
-      // stops the run, which no further request can go on in once one was refused for good.
-      const met = (path ? stops.get(path) : undefined) ?? stops.values().next().value;
+     *  its failure is then a CapStop, never the node's own failure, which a collecting map would take for an item's.
+     *  `alone`: the step is the only one running, so a refusal kept with no path of its own (its request lost its
+     *  node's context) is its. */
+    stopped(path: string | null | undefined, alone = false): CapStop | undefined {
+      // Its own, else, when it runs alone, the run's first: a refusal whose request lost its node's context is then this
+      // step's. With others running it may be theirs, and this step's failure stays its own.
+      const met = (path ? stops.get(path) : undefined) ?? (alone ? stops.values().next().value : undefined);
       return met ? new CapStop(met.refusal, met.at) : undefined;
     },
     /** Ends the step at `at` on a refusal no raise fixes: its words kept for the server, and CapStop thrown. */
