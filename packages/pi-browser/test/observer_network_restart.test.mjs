@@ -460,6 +460,20 @@ test("a page that sends a held request every millisecond is asked about at most 
   assert.ok(browser.asked() <= Math.ceil(took / 50) + 2, `${browser.asked()} questions in ${took} ms`);
 });
 
+test("a cancelled call's flush stops waiting for an allowed request's response head at once", async (t) => {
+  const { browser, observer, rows } = await rig(t, effectDecider("allow"));
+  browser.announce("R1");
+  browser.pause("F1", "R1");
+  await sleep(100);
+  assert.deepEqual(rows, ["R1 POST /api/order pending", "R1 POST /api/order allowed"], "continued, and its response head never comes");
+  const cancel = new AbortController();
+  let abortedAt = 0;
+  setTimeout(() => { abortedAt = Date.now(); cancel.abort(); }, 200);
+  await observer.flush(cancel.signal, 1_000);
+  const after = Date.now() - abortedAt;
+  assert.ok(abortedAt > 0 && after < 50, `the flush returned ${abortedAt ? `${after} ms after the abort` : "before the abort"}`);
+});
+
 test("a journaling observer, which holds nothing, never asks for the network service", async (t) => {
   const { browser, observer } = await rig(t, null);
   browser.announce("R1");

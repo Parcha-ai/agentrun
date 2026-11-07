@@ -426,9 +426,13 @@ export class EffectObserver {
    *  when the wait ends may be one a dead network service took: the service is asked about it, while the call can be told,
    *  before it is given up. */
   private announcedSettled(ms: number, signal?: AbortSignal): Promise<void> {
+    // A cancelled call does not wait for an allowed request's answer: nothing it could still be told depends on it.
+    const stopResponding = () => { for (const id of [...this.responding.keys()]) this.answered(id); };
+    if (signal?.aborted) stopResponding();
     if (this.announced.size === 0 && this.responding.size === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const done = () => { clearTimeout(timer); this.announcedWaiters = this.announcedWaiters.filter((w) => w !== done); resolve(); };
+      const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", stopResponding); this.announcedWaiters = this.announcedWaiters.filter((w) => w !== done); resolve(); };
+      signal?.addEventListener("abort", stopResponding, { once: true });
       const covered = this.announceSeq;
       const coveredResponses = this.respondSeq;
       const timer = setTimeout(() => {
