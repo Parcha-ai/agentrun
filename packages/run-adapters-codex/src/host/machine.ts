@@ -18,12 +18,14 @@ import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { FileTail } from "@parcha/agentrun-kernel/process";
-import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
+import type { AcquireMachine, CallHooks, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
+import type { SessionMcp } from "@parcha/agentrun-kernel";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { codexPolicy, withWebSearches } from "./policy.js";
 import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
+import { CODEX_MCP_CLIENT, mcpServersConfig, recorded } from "../mcp.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -77,6 +79,9 @@ export interface LocalMachineOptions {
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
+  /** The session's remote MCP servers (mcp.ts): each served at the proxy's `/mcp/<server>`, written in Codex's config,
+   *  and each call recorded in the drive's session before it is sent. */
+  mcp?: SessionMcp;
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
   /** Files one of the session's private directories holds at the start of every drive: written when the machine is
@@ -233,12 +238,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let announced: string | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
+    let calls: CallHooks | undefined;
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
         tools: options.proxy.tools,
+        ...(options.mcp ? { mcpTools: options.mcp.servers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)) } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(search ? { webSearch: "live" as const } : {}),
         announce: {
@@ -260,6 +267,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(price ? { price } : {}),
+      // The kernel's proxy mounts the session's MCP door for Codex's own client; each call is recorded first (recorded).
+      ...(options.mcp ? { mcp: { session: recorded(options.mcp, ctx, () => calls), client: CODEX_MCP_CLIENT } } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
@@ -278,7 +287,15 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelKey: key,
       announcedExec: () => announced,
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
-      ...(search ? { configure: (config: Record<string, TomlValue>) => void (config.web_search = "live") } : {}),
+      onCalls: (given) => void (calls = given),
+      ...(search || options.mcp ? {
+        configure: (config: Record<string, TomlValue>) => {
+          if (search) config.web_search = "live";
+          // Codex's bearer for the proxy's /mcp/<server> is the key it sends to the proxy's model route.
+          const keyEnv = ((config.model_providers as Record<string, Record<string, TomlValue>> | undefined)?.gateway?.env_key ?? "") as string;
+          if (options.mcp) config.mcp_servers = mcpServersConfig(options.mcp, proxy.url, keyEnv);
+        },
+      } : {}),
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-harness-codex: the session machine is closed");

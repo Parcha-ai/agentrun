@@ -71,7 +71,7 @@ func TestHello(t *testing.T) {
 	if r.Error != nil || json.Unmarshal(r.Result, &hello) != nil {
 		t.Fatalf("hello failed: %+v", r)
 	}
-	if hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Arch != runtime.GOARCH || len(hello.Capabilities) != 1 || hello.Capabilities[0] != "exec" {
+	if hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Arch != runtime.GOARCH || len(hello.Capabilities) != 2 || hello.Capabilities[0] != "exec" || hello.Capabilities[1] != "files" {
 		t.Fatalf("hello %+v", hello)
 	}
 }

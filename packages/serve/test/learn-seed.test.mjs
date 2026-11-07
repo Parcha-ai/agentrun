@@ -159,8 +159,9 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.deepEqual(pinOf(data, runId), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
     assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
     assert.equal(prompt.split("# Learned").length, 2, "one section");
-    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so.
-    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them you will keep it for later runs, in one short sentence at the start of your reply, never after a closing line or sign-off they asked you to end with\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
+    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so. A
+    // reply whose start or end the person set follows it from its first line to its last, with no keep sentence.
+    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them in one short sentence at the start of your reply that you will keep it for later runs\. When what they asked sets how your reply starts or ends, follow it from your reply's first line to its last and leave that sentence out\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
   });
 }
 

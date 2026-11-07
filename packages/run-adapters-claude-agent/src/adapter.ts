@@ -16,12 +16,12 @@ import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession,
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, mcpRoute, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
+import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
-import { type ConfineChild, localMachine } from "./host/machine.js";
+import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
 import { MCP_SERVER } from "./transcript.js";
 import type { ToolServerModules } from "./host/tool-server.js";
@@ -302,13 +302,15 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
     async execute(input, effect) {
       // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
       calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      const result = await tool.call(input, { callId, signal: effect.signal });
+      const result = await tool.call(input, { callId, signal: effect.signal, attempt });
       if (result.isError) throw new Error(result.text);
       if (!result.images?.length) return result.text;
       // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
@@ -359,7 +361,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   return {
     id: CLAUDE_AGENT_ID,
     version: CLAUDE_AGENT_SDK_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CLAUDE_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -415,7 +417,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
-          ...(spec.mcp ? { mcp: { handler: mcpRoute(spec.mcp), tools: [...mcpNames] } } : {}),
+          ...(spec.mcp ? { mcp: { session: spec.mcp, tools: [...mcpNames] } } : {}),
         },
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
