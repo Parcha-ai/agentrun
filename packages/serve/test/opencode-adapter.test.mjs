@@ -94,7 +94,6 @@ const spec = (tools, extra = {}) => ({ key: `s-${n}`, label: "task", system: ["Y
 test("the adapter says which OpenCode it runs and how to install it", () => {
   const { adapter: a } = adapter([]);
   assert.equal(a.id, "opencode");
-  assert.equal(a.version, OPENCODE_VERSION);
   assert.equal(OPENCODE_VERSION, "1.19.5");
   assert.equal(OPENCODE_INSTALL, "npm install --save-exact opencode-ai@1.19.5");
 });

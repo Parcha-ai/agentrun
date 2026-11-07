@@ -360,8 +360,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
 
   return {
     id: CLAUDE_AGENT_ID,
-    version: CLAUDE_AGENT_SDK_VERSION,
-    capabilities: () => ({ fork: false, mcpClient: CLAUDE_MCP_CLIENT }),
+    capabilities: () => ({ mcpClient: CLAUDE_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");

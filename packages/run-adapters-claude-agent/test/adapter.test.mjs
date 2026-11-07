@@ -139,7 +139,7 @@ test("a host header the proxy would refuse is refused when the adapter is made, 
 
 test("the adapter declares its harness's own MCP client: the kernel's proxy mounts the session's MCP door from it, and reads a call's id from claudecode/toolUseId", () => {
   const adapter = claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, sdk: fakeSdk(), standIn: { command: process.execPath } });
-  assert.deepEqual(adapter.capabilities(), { fork: false, mcpClient: { callIdMeta: 'claudecode/toolUseId' } });
+  assert.deepEqual(adapter.capabilities(), { mcpClient: { callIdMeta: 'claudecode/toolUseId' } });
 });
 
 test("the PreToolUse gate leaves the session's own tools to the tool, and a failure inside it is a deny, while the turn runs", async (t) => {
