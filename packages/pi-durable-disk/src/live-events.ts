@@ -4,13 +4,17 @@
 // it, as 1.1 translated each publication. Held branch pi/family-1.5 until P5 moves the readers to conversation.watch with
 // ConversationTranscript and pi.live and deletes this (scripts/watch-events-p5.test.mjs lists the two callers).
 //
-// The conversation's documents (pi.live, pi.inbox, pi.agent, pi.usage) are each followed by a document observer
-// (Session.observeDoc), attached atomically on the Session line: its value includes every commit before it and it hears
-// every later one, synchronously as each is published, a microtask before the commit observers. So the documents never
-// miss a change, whenever a commit lands against the snapshot. The snapshot's entries are the view a watch acquires
-// (`Conversation.watch`), every entry; commits published while it is acquired are held, then translated after it, and an
-// entry the snapshot already holds is not appended again (by its ID). A document absent when the stream attaches is
-// followed through the commits instead: any change to it is after the snapshot.
+// The snapshot: the conversation's documents (pi.live, pi.inbox, pi.agent, pi.usage) are each followed by a document
+// observer (Session.observeDoc), attached atomically on the Session line: its value includes every commit before it and
+// it hears every later one, synchronously as each is published, a microtask before the commit observers (pi-durable 1.5.0
+// dist/session/session.js: followCommits listeners at :1083 and :1186-1236, observeCommits dispatch at :1109). So the
+// snapshot's documents miss no commit that lands while it is taken. Its entries are the view a watch acquires
+// (`Conversation.watch`), every entry; an entry the snapshot already holds is not appended again (by its ID).
+// After the snapshot: each commit is translated with its own document changes, value and operations, whenever it is
+// translated: a commit held before `start()` keeps its own history, never the documents as they are later. A commit
+// dispatched before the snapshot was set (not fresh) is already in it, through the observers; one dispatched after it
+// whose document value the snapshot already holds (the observer's value is the commit's own object, session.js:1225-1231)
+// changes nothing again. A document absent when the stream attaches has no observer: every change to it is applied.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
 import type { CommitPublication, ConversationId, EntryRecord, Harness, JsonObject, Observation, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
@@ -72,8 +76,8 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
   let snapshotNewest = -1;
   const completing = new Set<number>();
   let delivering = Promise.resolve();
-  // Each followed document's newest value, and the operations on pi.live since the last translation (view paths).
-  const docs: Followed = { now: {}, observed: new Set(), liveOps: [] };
+  // Each followed document's newest value, as its observer heard it: the snapshot's documents.
+  const docs: Followed = { now: {}, observed: new Set() };
   const flush = () => {
     if (!state || !listener || ended) return;
     while (held.length) {
@@ -117,7 +121,6 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
           try {
             if (call.kind !== "value") return;
             docs.now[kind] = call.value;
-            if (kind === "pi.live") for (const op of call.ops ?? []) docs.liveOps.push([op[0], ["docs", kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
           } catch {
             detachAll();
             endIt({ reason: "failed" });
@@ -136,7 +139,6 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
     await watch.stop();
     // The followed documents as they are now (every commit so far); one absent at the attachment, as the view has it.
     state = { entries: [...view.entries], docs: Object.fromEntries(DOCS.map((kind) => [kind, docs.observed.has(kind) ? docs.now[kind] : view.docs[kind]])) };
-    docs.liveOps.length = 0;
     snapshotNewest = view.entries.reduce((max, entry) => Math.max(max, Number(entry.id)), -1);
     for (const record of await scanCompleting(harness, conversationId, context)) completing.add(Number(record.id));
   } catch (error) {
@@ -182,9 +184,8 @@ async function scanCompleting(harness: Harness, conversationId: ConversationId, 
 
 /** Every event one stored commit causes for the conversation, in the order of spec §9.4; `state` moves to after it. A
  *  commit held while the snapshot was taken (`fresh` false) appends no entry the snapshot holds and leaves its documents. */
-/** The followed documents: each one's newest value from its observer, which kinds have one, and the operations on
- *  pi.live since the last translation, with view paths. */
-type Followed = { now: Record<string, JsonObject | undefined>; observed: Set<string>; liveOps: Op[] };
+/** The followed documents: each one's newest value from its observer (the snapshot's), and which kinds have one. */
+type Followed = { now: Record<string, JsonObject | undefined>; observed: Set<string> };
 
 function translate(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed): LiveEvent[] {
   const entries: EntryRecord[] = [];
@@ -196,17 +197,17 @@ function translate(conversationId: ConversationId, publication: CommitPublicatio
     if (change.type === "entry" && change.value.conversationId === conversationId && (fresh || Number(change.value.id) > snapshotNewest)) entries.push(change.value);
     else if (change.type === "task" && change.value.conversationId === conversationId) tasks.set(Number(change.value.id), change.value);
     else if (change.type === "submission" && change.value.conversationId === conversationId) submissions.push(change.value as SubmissionRecord);
-    // A document the stream did not find when it attached: every change to it is after the snapshot.
-    else if (change.type === "document" && change.conversationId === conversationId && (DOCS as readonly string[]).includes(change.record.kind) && change.record.key === undefined && !followed.observed.has(change.record.kind)) {
+    else if (change.type === "document" && change.conversationId === conversationId && (DOCS as readonly string[]).includes(change.record.kind) && change.record.key === undefined) {
+      const kind = change.record.kind;
+      // A followed document's commit dispatched before the snapshot was set is in the snapshot already, through its
+      // observer; one whose value the snapshot holds (the same object) too. Anything else is this commit's own change.
+      if (followed.observed.has(kind) && (!fresh || (change.kind === "change" && change.value === state.docs[kind]))) continue;
       if (change.kind === "change") {
-        state.docs[change.record.kind] = change.value;
-        for (const op of change.ops as unknown as Op[]) docOps.push([op[0], ["docs", change.record.kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
-      } else state.docs[change.record.kind] = undefined;
+        state.docs[kind] = change.value;
+        if (kind === "pi.live") for (const op of change.ops as unknown as Op[]) docOps.push([op[0], ["docs", kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
+      } else state.docs[kind] = undefined;
     }
   }
-  // A followed document is as its observer last heard it (it hears each commit before this one runs).
-  for (const kind of followed.observed) state.docs[kind] = followed.now[kind];
-  if (followed.observed.has("pi.live")) docOps.push(...followed.liveOps.splice(0));
   if (docOps.length === 0 && entries.length === 0 && tasks.size === 0 && submissions.length === 0 && !docsMoved(before, state)) return [];
   state.entries = entries.length ? [...state.entries, ...entries] : state.entries;
   submissions.sort((a, b) => Number(a.id) - Number(b.id));

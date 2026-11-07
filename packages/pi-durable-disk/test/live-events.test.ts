@@ -90,14 +90,14 @@ test("a document change the stream cannot follow ends it failed, never stale: pi
   const { harness, root } = await opened();
   t.after(() => harness.close(ctx));
   // pi's observeDoc as the Session runs it: a later change whose advance throws is reported, the observer detached and
-  // ended `listener_error` (guardObserver), and it hears no later change. The change here carries an op whose path is
-  // no list, which the stream cannot follow.
+  // ended `listener_error` (guardObserver), and it hears no later change. The call here is no call the observer can
+  // read (none at all), which makes it throw.
   const seamed = new Proxy(harness, {
     get: (target, key) => key !== "observeDoc" ? Reflect.get(target, key, target)?.bind?.(target) ?? Reflect.get(target, key, target) : async (token: unknown, id: never, observer: { advance(call: unknown): void; end(end: unknown): void }, context: never) => {
       const attached = await target.observeDoc(token as never, id, observer as never, context);
       if (token === LiveDoc && attached) setTimeout(() => {
         try {
-          observer.advance({ kind: "value", value: {}, ops: [["set", 5]] });
+          observer.advance(null);
         } catch (error) {
           attached.detach();
           observer.end({ kind: "listener_error", error });
