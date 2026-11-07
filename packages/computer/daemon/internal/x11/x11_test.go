@@ -17,8 +17,8 @@ func TestParseDisplay(t *testing.T) {
 		":1.0":            {Number: 1},
 		":12.1":           {Number: 12, Screen: 1},
 		"unix:3":          {Host: "unix", Number: 3},
-		"localhost:10.0":  {Host: "localhost", Number: 10},
-		"192.0.2.7:2":     {Host: "192.0.2.7", Number: 2},
+		"x.test:10.0":     {Host: "x.test", Number: 10},
+		"y.test:2":        {Host: "y.test", Number: 2},
 		"display.test:99": {Host: "display.test", Number: 99},
 	} {
 		got, err := x11.ParseDisplay(name)
