@@ -232,6 +232,11 @@ export type ServeOptions = {
   /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
    *  process is launched, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam: awaited where a raise that opens a let-go workflow pins what its launch needs, after its place is
+   *  taken (runs.ts finishRaise); one that throws stands for a pin that fails there. */
+  beforeRaiseLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam: the host's memory, in bytes, that the runs' limit reads (host.ts), in place of this host's. */
+  hostMemory?: number;
   /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
@@ -974,6 +979,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const expected = digest(`Bearer ${token}`);
   if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
+  if (options.beforeRaiseLaunch) runs.beforeRaiseLaunch = options.beforeRaiseLaunch;
+  if (options.hostMemory) runs.memory = options.hostMemory;
   if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
   if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
   if (options.onRunLoad) runs.onRunLoad = options.onRunLoad;

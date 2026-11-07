@@ -1197,7 +1197,8 @@ export class Runs {
   /** The memory the starts counted in `starting` reserve, in MiB. */
   private startingMib = 0;
   /** This host's memory, out of which each live run reserves what its harness takes (host.ts), beside `maxRuns`. */
-  private readonly memory = hostMemory();
+  /** This host's memory for runs (host.ts); a test's seam sets it (startServe's `hostMemory`). */
+  memory = hostMemory();
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
   /** The runs' learning (learning-run.ts): a step this file calls as a run starts, ends, settles, opens again and is
@@ -1228,6 +1229,9 @@ export class Runs {
   /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
    *  launch, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeRaiseLaunch`): awaited where a raise that opens a let-go workflow pins what its
+   *  launch needs (finishRaise), after its place is taken; one that throws stands for a pin that fails there. */
+  beforeRaiseLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam (startServe's `onRunLoad`): told each run read in from its store, its timeline with it. */
   onRunLoad?: (runId: string) => void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
@@ -3610,6 +3614,7 @@ export class Runs {
       this.placeWaiters.delete(run);
       run.placeWait = undefined;
       clearBudgetPause(run.dir);
+      await this.beforeRaiseLaunch?.(run.id);
       await this.pinNeeds(run);
       await this.pinSignIn(run);
       this.launch(run);
