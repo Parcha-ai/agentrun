@@ -457,9 +457,14 @@ export function personHands(options: {
       const refused = await acquire(tag, TAKE_USER, "taking over the browser", false);
       if (refused) return refused;
       let ended = false;
+      let live = false;
       return {
         // The row is the hold's going live (a take while the agent's call runs goes live once it returns).
-        started: () => void note(HOST_PHASE, { summary: TAKEN }),
+        started: () => {
+          if (ended || live) return;
+          live = true;
+          void note(HOST_PHASE, { summary: TAKEN });
+        },
         // No hold started after all: what was held for it goes, and no row was written for it.
         cancel: () => {
           if (ended) return;
@@ -471,7 +476,9 @@ export function personHands(options: {
           ended = true;
           const words = ledgers.get(tag)?.refused;
           release(tag, TAKE_USER);
-          // An answered ask writes its own row.
+          // Ended before it went live (the agent's call still running): the person never had the browser, and no row says
+          // they took it, so none says how it came back. An answered ask writes its own row.
+          if (!live) return;
           if (why === "cap") void note(HOST_PHASE, { summary: `${CAPPED}${words ? `: ${words}` : ""}` });
           else if (why !== "answered") void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
         },

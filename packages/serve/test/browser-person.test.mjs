@@ -104,7 +104,7 @@ test("a take-over kept alive past its hold holds the person's time again each ho
   // As the live view does: a viewer present, the host's take, then the gate's hold, whose end ends the take.
   gates(tag).setPresent(true);
   const take = await person.take(tag);
-  gates(tag).take((why, message) => { ends.push([why, message]); take.end(why); });
+  gates(tag).take((why, message) => { ends.push([why, message]); take.end(why); }, () => take.started());
   assert.equal(held.taken, 1);
   for (let minute = 0; minute < 20; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   assert.equal(held.taken, 2, "20 minutes of steady input: held a second time at 15");
@@ -131,7 +131,7 @@ test("after a re-hold the cap refused, the take-over and the ask it was shared w
   const asked = await person.handoff.request(ask(6, tag));
   const take = await person.take(tag);
   const ends = [];
-  gates(tag).take((why) => { ends.push(why); take.end(why); });
+  gates(tag).take((why) => { ends.push(why); take.end(why); }, () => take.started());
   held.refuse = "spend_cap_reached: Not sent: the run has spent $0.04 of its $0.05 cap, and more of your time in the browser could cost up to $0.03.";
   for (let minute = 0; minute < 16; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   assert.deepEqual(ends, ["cap"], "the re-hold was refused: the take-over ended cap");
@@ -230,7 +230,7 @@ test("take-over time counts: what the person used stays held until a charge book
   for (let round = 0; round < 5; round += 1) {
     const take = await person.take(tag);
     if ("refused" in take) { taken.push(take.refused); break; }
-    gates(tag).take((why) => take.end(why));
+    gates(tag).take((why) => take.end(why), () => take.started());
     for (let minute = 0; minute < 10; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
     gates(tag).give();
     taken.push("held");
@@ -254,7 +254,7 @@ test("while the cap refuses more of the person's time on a session, a new ask th
   gates(tag).setPresent(true);
   await person.handoff.request(ask(13, tag));
   const take = await person.take(tag);
-  gates(tag).take((why) => take.end(why));
+  gates(tag).take((why) => take.end(why), () => take.started());
   refuse = true;
   for (let minute = 0; minute < 16; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   assert.equal(gates(tag).held(), false, "the re-hold was refused: the take-over ended");
@@ -317,7 +317,7 @@ test("an ask that arrives while the take-over's re-hold waits on the cap holds n
   const tag = "ar-run-40-1";
   gates(tag).setPresent(true);
   const take = await person.take(tag);
-  gates(tag).take((why) => take.end(why));
+  gates(tag).take((why) => take.end(why), () => take.started());
   for (let minute = 0; minute < 15; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   assert.ok(answerRehold, "the re-hold at 15 minutes is waiting on the cap");
   const asked = person.handoff.request(ask(40, tag));
@@ -351,6 +351,19 @@ test("a process that lets go while its first hold is still being asked of the ca
   assert.deepEqual(calls, ["taking over the browser"], "and nothing is held again");
   const asked = await person.handoff.request(ask(41, "ar-run-41-1"));
   assert.ok("refused" in asked, "a closed process makes no ask");
+});
+
+test("a take that ends before its hold goes live (the agent's call still running) writes no row: no hand-back without a take-over", async (t) => {
+  const root = await scratch(t);
+  const { person, held } = hands(root);
+  t.after(() => person.close());
+  for (const why of ["given", "idle", "away", "released", "cap"]) {
+    const take = await person.take("ar-run-42-1");
+    take.end(why);
+  }
+  await sleep(5);
+  assert.deepEqual(held.notes, [], "nothing taken over, nothing handed back");
+  assert.deepEqual([held.taken, held.dropped], [5, 5], "each one's time let go");
 });
 
 test("a take-over's row is written when its hold goes live, and a take whose hold never started is let go with no row", async (t) => {
@@ -396,7 +409,7 @@ test("an ask that joins a take-over holds the person's time through its own expi
   gates(tag).setPresent(true);
   const take = await person.take(tag);
   const ends = [];
-  gates(tag).take((why) => { ends.push(why); take.end(why); });
+  gates(tag).take((why) => { ends.push(why); take.end(why); }, () => take.started());
   for (let minute = 0; minute < 10; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   const asked = await person.handoff.request(ask(22, tag));
   assert.deepEqual(held, [["taking over the browser", 900], ["handing the browser to you", 600]], "the ask at minute 10 holds its extra ten minutes: through minute 25");
@@ -439,7 +452,7 @@ test("an ask a restarted process takes up holds through its own expiry: joining 
   t.after(() => after.close());
   gates(tag).setPresent(true);
   const take = await after.take(tag);
-  gates(tag).take((why) => take.end(why));
+  gates(tag).take((why) => take.end(why), () => take.started());
   for (let minute = 0; minute < 10; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   assert.equal(await after.handoff.outcome(asked.interactionId), "pending");
   await sleep(10);
@@ -468,7 +481,7 @@ test("a re-hold holds only past what is held already: take at 0, an ask at 10 (h
   gates(tag).setPresent(true);
   const take = await person.take(tag);
   const ends = [];
-  gates(tag).take((why) => { ends.push(why); take.end(why); });
+  gates(tag).take((why) => { ends.push(why); take.end(why); }, () => take.started());
   for (let minute = 0; minute < 10; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
   await person.handoff.request(ask(25, tag));
   for (let minute = 0; minute < 6; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
