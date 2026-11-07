@@ -70,6 +70,19 @@ export function subsetOrder(packages, names, built = (p) => existsSync(join(p.di
   return buildOrder(packages).filter((name) => wanted.has(name));
 }
 
+/** Builds each of `order` that has a build script, once, in that order (`build(name)` gives its exit status), and stops
+ *  at the first that fails: `{ built }`, the names built, and with a failure `failed` and its `status`. */
+export function buildAll(packages, order, build) {
+  const builds = new Set(packages.filter((p) => p.build).map((p) => p.name));
+  const built = [];
+  for (const name of order.filter((n) => builds.has(n))) {
+    const status = build(name);
+    if (status !== 0) return { built, failed: name, status };
+    built.push(name);
+  }
+  return { built };
+}
+
 if (isMain(import.meta)) {
   const flag = (name) => { const at = process.argv.indexOf(name); return at < 0 ? undefined : process.argv[at + 1]; };
   const root = flag('--root') ? resolve(flag('--root')) : ROOT;
@@ -79,13 +92,10 @@ if (isMain(import.meta)) {
   if (process.argv.includes('--order')) {
     process.stdout.write(`${order.join('\n')}\n`);
   } else {
-    const built = new Set(packages.filter((p) => p.build).map((p) => p.name));
-    for (const name of order.filter((n) => built.has(n))) {
-      const run = spawnSync('npm', ['run', 'build', '-w', name], { cwd: root, stdio: 'inherit' });
-      if (run.status !== 0) {
-        process.stderr.write(`build-workspaces: ${name}'s build failed (${run.status ?? run.signal}); nothing after it was built\n`);
-        process.exit(run.status || 1);
-      }
+    const result = buildAll(packages, order, (name) => spawnSync('npm', ['run', 'build', '-w', name], { cwd: root, stdio: 'inherit' }).status ?? 1);
+    if (result.failed) {
+      process.stderr.write(`build-workspaces: ${result.failed}'s build failed (${result.status}); nothing after it was built\n`);
+      process.exit(result.status || 1);
     }
   }
 }

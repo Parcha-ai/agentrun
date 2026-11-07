@@ -215,8 +215,10 @@ function argsOf(argv) {
   return args;
 }
 
-function run(command, args, options) {
-  const [bin, ...pre] = command.split(/\s+/).filter(Boolean);
+/** Runs `command` with `args` and prints it first; its exit status (1 for none). `command` as text splits into its words
+ *  (`--npm "npx --yes npm@11.21.0"`); as an array it is taken whole, so an executable path with a space in it stays one. */
+export function run(command, args, options) {
+  const [bin, ...pre] = Array.isArray(command) ? command : command.split(/\s+/).filter(Boolean);
   console.log(`$ ${[bin, ...pre, ...args].join(' ')}`);
   return spawnSync(bin, [...pre, ...args], { stdio: 'inherit', ...options }).status ?? 1;
 }
@@ -282,12 +284,12 @@ function main() {
   const env = { ...process.env, PI_EXPECT_VERSION: args.pi };
   report.built = buildOf(workspaces, plan.leg);
   // In dependency order (build-workspaces.mjs): no package's build builds what it imports.
-  const build = run(process.execPath, [fileURLToPath(new URL('./build-workspaces.mjs', import.meta.url)), '--root', args.root, '--only', report.built.join(',')], { cwd: args.root, env });
+  const build = run([process.execPath], [fileURLToPath(new URL('./build-workspaces.mjs', import.meta.url)), '--root', args.root, '--only', report.built.join(',')], { cwd: args.root, env });
   report.steps.push({ step: 'build', rc: build });
   if (build !== 0) { write(); process.exit(1); }
   if (part) {
     for (const { suite, command } of commandsOf(part.suites, part.units)) {
-      const rc = run(command[0], command.slice(1), { cwd: args.root, env });
+      const rc = run([command[0]], command.slice(1), { cwd: args.root, env });
       const typecheck = suite.startsWith('typecheck:');
       report.steps.push({ workspace: typecheck ? suite.slice('typecheck:'.length) : suite, step: typecheck ? 'typecheck' : `test (${part.units.filter((unit) => unit.suite === suite).length} of its files)`, rc });
       if (rc !== 0) failed = true;
