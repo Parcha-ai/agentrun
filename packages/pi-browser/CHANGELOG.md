@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-beta.32 (2026-11-07)
+
+- `@parcha/pi-browser` runs on Stagehand 4.4.0, whose zod (4.6.6) carries the fix for GHSA-mrhx-c7xc-m3w5. If you upgrade: a local Chrome must be 137 or later, `cdpProvider({ endpoint, extensionId })` and `AttachTarget.extensionId` are gone (Stagehand finds its extension by name), and `STAGEHAND_TELEMETRY` and `STAGEHAND_INIT_IN_PROGRESS` are no longer exported.
+  - **One client per browser.** Stagehand 4.4 attaches one client to a browser at a time. Closing a driver now disconnects it, so the next attach (a handoff, a reconnect, a durable reattach) is allowed; an attach while another client holds the browser fails with "A Stagehand client is already connected".
+  - **One Stagehand extension per browser.** Stagehand refuses a browser with two. The cdp provider uninstalls any other Stagehand extension from a local Chrome at each attach, so the lease's confined copy is the one used. A Chrome you attach to by endpoint must hold at most one.
+  - **The extension dials the browser directly.** `AttachTarget.extensionCdpUrl` names the browser's own DevTools URL for the extension's connection; the cdp provider sets it for a local Chrome. A dropped connection between the driver and the browser then no longer stalls the next attach for 60 s.
+  - **No trace export.** Stagehand 4.4 exports traces only to an endpoint it is given, and the driver gives none. The closed loopback trace port, and the request observer's exemption for it, are gone.
+  - **Shutdown with no drain.** `handle.close()` of the pi-durable adapter now waits (30 s at most) for this process's `close` releases that no `drain` since covered to reach the provider. Before, a host that closed the Harness straight after them left the browser running whenever the driver closed fast enough, which Stagehand 4.4's does.
+
 ## 0.1.0-beta.31 (2026-11-06)
 
 - A model granted both web_fetch and the browser is now told which one has cookies. Asked to "Open https://httpbin.org/cookies", a pi run picked web_fetch, which has no cookies, and answered with an empty page; it picked the browser only when told to. The tool descriptions the model reads now say:
