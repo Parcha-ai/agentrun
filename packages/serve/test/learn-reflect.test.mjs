@@ -116,6 +116,63 @@ test("no_budget: a turn whose request the run's cap refuses; a run whose cap sto
   assert.equal(readFileSync(join(copyOf(data, mute.view.run_id), "MEMORY.md"), "utf8"), "");
 });
 
+/** Holds every run's seed copy once its pin is in place, until released: the run's directory, as each is held. */
+function holdSeeds(t) {
+  const held = [];
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  learningTestHooks.afterPin = async (dir) => {
+    held.push(dir);
+    await gate;
+  };
+  t.after(() => void (learningTestHooks.afterPin = undefined));
+  return { held, release: () => { learningTestHooks.afterPin = undefined; release(); } };
+}
+const heldRun = async (held) => {
+  for (let i = 0; !held.length; i++) {
+    assert.ok(i < 1200, "the seed is copied");
+    await sleep(25);
+  }
+  return held[0].split("/").at(-1);
+};
+
+test("a run read while its seed is copied (a list of runs, a poll, the console) is the run being started: no second Run is read from disk, its seed stays, its learning is seeded, and its end-of-run turn is asked", { timeout: 120_000 }, async (t) => {
+  const loaded = [];
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, onRunLoad: (id) => loaded.push(id) });
+  await made(api, learner("polled", { plan: PLAN }));
+  const seeds = holdSeeds(t);
+  const posted = started(api, "polled");
+  const runId = await heldRun(seeds.held);
+  // Reads in the window: each finds the run's row running, no learning saved, and the copy on disk. A list reads every
+  // running row it does not hold (the console's runs list did, as a run started).
+  const reads = [api("GET", "/runs"), api("GET", "/agents/polled/runs"), api("GET", `/runs/${runId}`)];
+  await sleep(300);
+  seeds.release();
+  for (const read of await Promise.all(reads)) assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(await posted, runId);
+  assert.deepEqual(loaded.filter((id) => id === runId), [], "the run being started is never read from disk: no second Run");
+  const { view, rows } = await ended(api, runId);
+  assert.ok(existsSync(join(runDir(data, runId), "learning.json")), "its pin stays");
+  settled(view, rows, "merged");
+  assert.ok(reflectRows(rows).some((row) => row.kind === "user_message"), "its end-of-run turn was asked");
+});
+
+test("a server that stops while a run's seed is copied: the next one takes the copy back, and the run says its server stopped", { timeout: 120_000 }, async (t) => {
+  const first = await serve(t, { learning: "on", faux: LEARN });
+  const { data } = first;
+  await made(first.api, learner("cut", { plan: PLAN }));
+  const seeds = holdSeeds(t);
+  void started(first.api, "cut").catch(() => undefined);
+  const runId = await heldRun(seeds.held);
+  await first.close();
+  const second = await serve(t, { learning: "on", faux: LEARN, data });
+  const { view } = await ended(second.api, runId, ["completed", "failed"]);
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "seed_failed"], JSON.stringify(view.learning));
+  assert.match(view.learning.detail, /server stopped/);
+  assert.equal(existsSync(join(runDir(data, runId), "learning.json")), false, "its pin is taken back");
+  seeds.release();
+});
+
 test("a seed that failed is a learning row from the run's start, and a run that does not learn has none", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("blocked", { plan: PLAN }));
