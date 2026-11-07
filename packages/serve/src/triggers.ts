@@ -1,5 +1,6 @@
-// Triggers: what starts a run with no caller. A trigger is a source (here a schedule: a cron line in an IANA zone, one
-// time, or every N seconds on a grid) and a target (here a run of an agent, always capped). They live in
+// Triggers: what starts a run with no caller. A trigger is a source (one of the registry's adapters,
+// trigger-adapters.ts: a schedule on a clock, a signed webhook pushed to the server) and a target (a run of an agent,
+// always capped, or a message to one run). They live in
 // DIR/triggers.json, written whole and synced on every change, with each trigger's last HISTORY_KEPT firings. Never in
 // store.sqlite, which runs open.
 // A firing starts exactly once. Its key is fixed by what it fires for: the trigger and its nominal time (a schedule), or
@@ -16,12 +17,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Cron } from "croner";
 import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { EFFORTS } from "./model.js";
+import { instantOf, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
+import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
+
+export { MAX_EVERY_S, MIN_EVERY_S } from "./trigger-schedule.js";
 
 export const TRIGGERS_FILE = "triggers.json";
 /** The firings each trigger keeps, newest last; a firing still due is never dropped, nor a failure whose trigger.failed is
@@ -37,11 +42,8 @@ const FULL_RETRY_S = 30;
 /** The most failures a trigger keeps past its history while their trigger.failed waits for the outbox. A schedule turns
  *  itself off after FAILURES_TO_PAUSE in a row, but runs that start between failures, and run now, can add more. */
 const UNTOLD_KEPT = 50;
-/** The shortest every_s, and so the most often a schedule fires: a cron line has no seconds field. */
-export const MIN_EVERY_S = 60;
-/** The longest every_s: a year and a day. */
-export const MAX_EVERY_S = 366 * 86_400;
-export const SOURCE_KINDS = ["schedule", "webhook"] as const;
+/** The kinds of source this server has: its adapters' ids. */
+export const SOURCE_KINDS: readonly string[] = TRIGGER_ADAPTERS.map((a) => a.id);
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
 /** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start. */
@@ -69,16 +71,14 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 const dueOf = (trigger: { firings: readonly { status: string }[] }) => trigger.firings.filter((f) => f.status === "due").length;
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
-type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "schedule"; at: string } | { kind: "schedule"; every_s: number; start_at: string };
-/** A signed POST to /v2/hooks/{trigger_id} (server.ts): the request is the firing. */
-type Source = Schedule | { kind: "webhook" };
 /** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
  *  required: server.ts targetIssues and start). */
 export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
 type FiringStatus = (typeof FIRING_STATUSES)[number];
 type Firing = {
   key: string;
-  by: "schedule" | "manual" | "webhook";
+  /** `manual` (run now), or the id of the adapter that delivered it. */
+  by: string;
   nominal_at: string;
   status: FiringStatus;
   /** When it was recorded. */
@@ -139,6 +139,8 @@ export type TriggerDeps = {
   notify(failed: TriggerFailed, key: string): "queued" | "unsaved" | "off" | "closed";
   say(fields: Record<string, string | number>): void;
   clock?: TriggerClock;
+  /** The sources this engine reads: the registry's (trigger-adapters.ts), unless a test gives its own. */
+  adapters?: readonly TriggerAdapter[];
 };
 
 const REAL_CLOCK: TriggerClock = {
@@ -150,111 +152,29 @@ const REAL_CLOCK: TriggerClock = {
   },
 };
 const iso = (ms: number) => new Date(ms).toISOString();
-/** RFC 3339 in UTC, to the second: the form a schedule's key is made of. */
-const second = (ms: number) => iso(ms).replace(/\.\d{3}Z$/, "Z");
-const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/i;
-/** An RFC 3339 date-time with its offset, as an instant; undefined for one that names no real time (month 13, Feb 30,
- *  25 o'clock, an offset past 23:59), which Date.parse would refuse or roll over. */
-function instantOf(text: unknown): number | undefined {
-  const parts = typeof text === "string" ? RFC3339.exec(text) : null;
-  if (!parts) return undefined;
-  const [y, mo, d, h, mi, s, , , oh = "0", om = "0"] = parts.slice(1).map((p) => p ?? "0").map(String);
-  const days = new Date(Date.UTC(Number(y), Number(mo), 0)).getUTCDate();
-  if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > days || Number(h) > 23 || Number(mi) > 59 || Number(s) > 59 || Number(oh) > 23 || Number(om) > 59) return undefined;
-  const at = Date.parse(text as string);
-  return Number.isFinite(at) ? at : undefined;
-}
-export const firingKey = (kind: "schedule" | "manual" | "webhook", triggerId: string, what: string) => `fir_${createHash("sha256").update(`${kind}\n${triggerId}\n${what}`).digest("hex").slice(0, 32)}`;
-const cronOf = (source: { cron: string; timezone: string }) => new Cron(source.cron, { timezone: source.timezone, mode: "5-part" });
+export const firingKey = (by: string, triggerId: string, what: string) => `fir_${createHash("sha256").update(`${by}\n${triggerId}\n${what}`).digest("hex").slice(0, 32)}`;
+/** The adapter of `kind`, among `adapters`. */
+const adapterIn = (adapters: readonly TriggerAdapter[], kind: string): TriggerAdapter | undefined => adapters.find((a) => a.id === kind);
 
-/** The source's first nominal time strictly after `after`, or null when it has none (or none a Date holds). */
-function nextAfter(source: Source, after: number, cron?: Cron): number | null {
-  if (source.kind === "webhook") return null;
-  const at = nextOf(source, after, cron);
+/** A clock source's first time strictly after `after`, or null when it has none (or none a Date holds); a pushed
+ *  source has none. */
+function nextAfter(adapter: TriggerAdapter | undefined, source: Source, after: number): number | null {
+  const at = adapter?.clock?.(source).next(after) ?? null;
   return at !== null && Number.isFinite(at) && Math.abs(at) <= DATE_MAX_MS ? at : null;
-}
-/** `cron`: the source's Cron, made once by a caller that asks for many times. */
-function nextOf(source: Schedule, after: number, cron?: Cron): number | null {
-  if ("cron" in source) return (cron ?? cronOf(source)).nextRun(new Date(after))?.getTime() ?? null;
-  if ("at" in source) return Date.parse(source.at) > after ? Date.parse(source.at) : null;
-  const start = Date.parse(source.start_at);
-  const step = source.every_s * 1000;
-  return start > after ? start : start + (Math.floor((after - start) / step) + 1) * step;
-}
-
-/** The source's latest nominal time at or before `now`, given one that is (`first`), found without walking to it: an
- *  interval's on its grid, a cron line's by croner's search back from a second past now (previousRuns is exclusive and
- *  to the second), which yields the times nextRun does, across clock changes too. */
-function latestBy(source: Schedule, first: number, now: number, cron?: Cron): number {
-  if ("at" in source) return first;
-  if ("every_s" in source) return first + Math.floor((now - first) / (source.every_s * 1000)) * source.every_s * 1000;
-  const at = (cron ?? cronOf(source)).previousRuns(1, new Date(Math.floor(now / 1000) * 1000 + 1000))[0]?.getTime();
-  return at !== undefined && at >= first && at <= now ? at : first;
 }
 
 /** A time in `zone` as a person reads it: "Nov 1, 2026, 1:30 AM PDT". */
 const local = (ms: number, zone: string) => new Intl.DateTimeFormat("en-US", { timeZone: validZone(zone) ? zone : "UTC", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(ms);
-const zoneOf = (source: Source) => ("timezone" in source ? source.timezone : "UTC");
-const validZone = (zone: string) => {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: zone });
-    return true;
-  } catch {
-    return false;
-  }
-};
-/** Why a schedule kept in the file no longer reads (its zone or its cron line, which this croner or this ICU refuses):
- *  a trigger with one is turned off with the reason, alone, and never stalls the others. */
-function sourceProblem(source: Source): string | undefined {
-  if (!("cron" in source)) return undefined;
-  if (!validZone(source.timezone)) return `the zone ${source.timezone} is not one this server knows`;
-  try {
-    cronOf(source).nextRun(new Date(0));
-    return undefined;
-  } catch (error) {
-    return `the cron line does not read: ${(error as Error).message}`;
-  }
-}
 
-function sourceOf(value: unknown, now: number, issues: InputIssue[]): Source | undefined {
+/** "A, B or C". */
+const either = (items: readonly string[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`);
+
+function sourceOf(adapters: readonly TriggerAdapter[], value: unknown, now: number, issues: InputIssue[]): Source | undefined {
   const bad = (field: string, reason: string, message: string) => void issues.push({ field: `source${field ? `.${field}` : ""}`, reason, message });
-  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", "source is an object: {kind: \"schedule\", cron, timezone}, {kind: \"schedule\", at}, {kind: \"schedule\", every_s, start_at?} or {kind: \"webhook\"}"), undefined;
-  if (value.kind === "webhook") {
-    issues.push(...unknownFields(value, ["kind"]).map((i) => ({ ...i, field: `source.${i.field}` })));
-    return { kind: "webhook" };
-  }
-  if (value.kind !== "schedule") return bad("kind", "not_an_option", `source.kind is one of ${SOURCE_KINDS.join(", ")}`), undefined;
-  const forms = ["cron", "at", "every_s"].filter((field) => value[field] !== undefined);
-  if (forms.length !== 1) return bad("", "invalid", "a schedule names exactly one of cron, at and every_s"), undefined;
-  if (value.cron !== undefined) {
-    issues.push(...unknownFields(value, ["kind", "cron", "timezone"]).map((i) => ({ ...i, field: `source.${i.field}` })));
-    const timezone = value.timezone ?? "UTC";
-    if (typeof timezone !== "string" || !validZone(timezone)) return bad("timezone", "invalid", "timezone is an IANA zone, such as America/Los_Angeles (default UTC)"), undefined;
-    if (typeof value.cron !== "string" || value.cron.trim().split(/\s+/).length !== 5) return bad("cron", "invalid", "cron is five fields, minute hour day-of-month month day-of-week: a schedule fires at most once a minute"), undefined;
-    const source = { kind: "schedule" as const, cron: value.cron.trim(), timezone };
-    try {
-      if (nextAfter(source, now) === null) return bad("cron", "invalid", "cron never fires"), undefined;
-    } catch (error) {
-      return bad("cron", "invalid", `cron does not read: ${(error as Error).message}`), undefined;
-    }
-    return source;
-  }
-  if (value.at !== undefined) {
-    issues.push(...unknownFields(value, ["kind", "at"]).map((i) => ({ ...i, field: `source.${i.field}` })));
-    const given = instantOf(value.at);
-    if (given === undefined) return bad("at", "invalid", "at is an RFC 3339 date-time with its offset"), undefined;
-    const at = Math.floor(given / 1000) * 1000;
-    if (at <= now) return bad("at", "invalid", "at is in the past"), undefined;
-    return { kind: "schedule", at: second(at) };
-  }
-  issues.push(...unknownFields(value, ["kind", "every_s", "start_at"]).map((i) => ({ ...i, field: `source.${i.field}` })));
-  if (!Number.isSafeInteger(value.every_s) || (value.every_s as number) < MIN_EVERY_S || (value.every_s as number) > MAX_EVERY_S) return bad("every_s", "invalid", `every_s is a whole number of seconds, ${MIN_EVERY_S} to ${MAX_EVERY_S}`), undefined;
-  const given = value.start_at === undefined ? now : instantOf(value.start_at);
-  if (given === undefined) return bad("start_at", "invalid", "start_at is an RFC 3339 date-time with its offset"), undefined;
-  // The grid's origin, to the second (down, so one made now first fires an interval from now): the first firing is at it
-  // when it is ahead, else one step after it.
-  const start = Math.floor(given / 1000) * 1000;
-  return { kind: "schedule", every_s: value.every_s as number, start_at: second(start) };
+  if (!isObject(value)) return bad("", value === undefined ? "missing" : "wrong_type", `source is an object: ${either(adapters.map((a) => a.describe))}`), undefined;
+  const adapter = typeof value.kind === "string" ? adapterIn(adapters, value.kind) : undefined;
+  if (!adapter) return bad("kind", "not_an_option", `source.kind is one of ${adapters.map((a) => a.id).join(", ")}`), undefined;
+  return adapter.parse(value, now, bad, issues);
 }
 
 function targetOf(value: unknown, issues: InputIssue[]): Target | undefined {
@@ -285,16 +205,16 @@ function settingsOf(body: Json, issues: InputIssue[]): { catchup_window_s?: numb
 const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s"];
 
 /** A trigger as triggers.json keeps it, whole: what the engine reads of it is there, of its type. */
-function wellFormed(t: unknown): t is Trigger {
+function wellFormed(adapters: readonly TriggerAdapter[], t: unknown): t is Trigger {
   if (!isObject(t) || typeof t.id !== "string" || typeof t.name !== "string" || typeof t.enabled !== "boolean" || typeof t.created_at !== "string" || typeof t.updated_at !== "string") return false;
   if (!(t.next_at === null || instantOf(t.next_at) !== undefined) || !(t.last_run_id === undefined || typeof t.last_run_id === "string")) return false;
   if (!Number.isSafeInteger(t.catchup_window_s) || !Number.isSafeInteger(t.failures_in_a_row) || !(t.disabled === null || isObject(t.disabled))) return false;
   const { source, target } = t;
-  if (!isObject(source) || !(source.kind === "webhook" || source.kind === "schedule")) return false;
-  const timed = source.kind === "webhook" || (typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined);
+  const adapter = isObject(source) && typeof source.kind === "string" ? adapterIn(adapters, source.kind) : undefined;
+  const timed = adapter !== undefined && adapter.wellFormed(source as Source);
   const aimed = isObject(target) && isObject(target.input) && (target.kind === "message_run" ? typeof target.run_id === "string" : target.kind === "start_run" && typeof target.agent_id === "string" && (target.max_cost_usd === undefined || typeof target.max_cost_usd === "number"));
   if (!timed || !aimed) return false;
-  const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual" || f.by === "webhook") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
+  const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && typeof f.by === "string" && (f.by === "manual" || adapterIn(adapters, f.by) !== undefined) && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
   const list = (value: unknown) => value === undefined || (Array.isArray(value) && value.every(firing));
   return Array.isArray(t.firings) && t.firings.every(firing) && list(t.kept_firings);
 }
@@ -302,6 +222,7 @@ function wellFormed(t: unknown): t is Trigger {
 export class Triggers {
   private readonly file: string;
   private readonly clock: TriggerClock;
+  private readonly adapters: readonly TriggerAdapter[];
   private triggers: Trigger[] = [];
   /** Why triggers.json does not read: nothing fires and nothing is written over it until it does. */
   private readonly unreadable?: string;
@@ -319,6 +240,7 @@ export class Triggers {
   constructor(data: string, private readonly deps: TriggerDeps) {
     this.file = join(data, TRIGGERS_FILE);
     this.clock = deps.clock ?? REAL_CLOCK;
+    this.adapters = deps.adapters ?? TRIGGER_ADAPTERS;
     let text: string | undefined;
     try {
       text = readFileSync(this.file, "utf8");
@@ -329,7 +251,7 @@ export class Triggers {
     try {
       const doc = JSON.parse(text) as unknown;
       if (!isObject(doc) || doc.v !== 1 || !Array.isArray(doc.triggers)) throw new Error("not a triggers file of version 1");
-      const bad = doc.triggers.findIndex((t) => !wellFormed(t));
+      const bad = doc.triggers.findIndex((t) => !wellFormed(this.adapters, t));
       if (bad >= 0) throw new Error(`its trigger at ${bad} is not one this server reads`);
       this.triggers = doc.triggers as Trigger[];
     } catch (error) {
@@ -342,7 +264,7 @@ export class Triggers {
    *  it already started the same run), the times missed while it was down recorded, the timer armed, and each failure's
    *  trigger.failed queued that is not yet. */
   start(): void {
-    this.offUnreadable(this.triggers.filter((t) => t.enabled && sourceProblem(t.source)), this.clock.now());
+    this.offUnreadable(this.triggers.filter((t) => t.enabled && this.problem(t.source)), this.clock.now());
     // A trigger.failed an earlier server wrote the firing of but never queued: queued before the first tick records
     // anything, so no trim reaches it first.
     for (const t of this.unreadable ? [] : this.triggers) for (const f of t.firings) if (unmarked(f)) this.notifyFailed(t.id, f.key);
@@ -372,47 +294,49 @@ export class Triggers {
     this.readable();
     const now = this.clock.now();
     const issues = unknownFields(body, WRITABLE);
-    const source = sourceOf(body.source, now, issues);
+    const source = sourceOf(this.adapters, body.source, now, issues);
     const target = targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
-    if (target) issues.push(...(await this.deps.targetIssues(given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
+    if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
-    const trigger: Trigger = { id, name: typeof body.name === "string" ? body.name.trim() : id, enabled, source, target, catchup_window_s: settings.catchup_window_s ?? CATCHUP_WINDOW_S, failures_in_a_row: 0, disabled: null, created_at: iso(now), updated_at: iso(now), next_at: enabled ? nextIso(source, now) : null, firings: [] };
-    // A webhook trigger's secret is kept before the trigger is: one that cannot be kept (no seal key) makes none.
-    const secret = source.kind === "webhook" ? this.deps.secrets.mint(id) : undefined;
+    const trigger: Trigger = { id, name: typeof body.name === "string" ? body.name.trim() : id, enabled, source, target, catchup_window_s: settings.catchup_window_s ?? CATCHUP_WINDOW_S, failures_in_a_row: 0, disabled: null, created_at: iso(now), updated_at: iso(now), next_at: enabled ? this.nextIso(source, now) : null, firings: [] };
+    // A secret is kept before its trigger is: one that cannot be kept (no seal key) makes none.
+    const secret = this.adapter(source).secret ? this.deps.secrets.mint(id) : undefined;
     this.commit(() => void this.triggers.push(trigger));
     this.arm();
     return { ...this.view(trigger), ...(secret ? { secret } : {}) };
   }
 
-  /** A webhook trigger's new secret, shown this once; the old one signs nothing from now on. */
+  /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. */
   rotate(id: string): { secret: string } {
     const trigger = this.need(id);
-    if (trigger.source.kind !== "webhook") throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
+    if (!this.adapter(trigger.source).secret) throw invalid([{ field: "source.kind", reason: "not_allowed", message: `Only a trigger whose source has a signing secret has one (${this.adapters.filter((a) => a.secret).map((a) => a.id).join(", ")}).` }]);
     return { secret: this.deps.secrets.mint(id) };
   }
 
-  /** Whether `id` is a webhook trigger that is on: the one a signed request to /v2/hooks/{id} may fire. */
-  hookable(id: string): boolean {
+  /** Whether `id` is a trigger of the pushed source `kind` that is on: the one a request delivered for `kind` may fire. */
+  hookable(id: string, kind: string): boolean {
     const trigger = this.unreadable ? undefined : this.triggers.find((t) => t.id === id);
-    return trigger?.source.kind === "webhook" && trigger.enabled;
+    return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source).delivery === "push" && trigger.enabled;
   }
 
-  /** A signed request to /v2/hooks/{id} (server.ts checked it): its firing, keyed by its `webhook-id`, recorded due in
-   *  one write and driven after the answer. `created` false: that webhook-id's firing, as it stands. */
-  receive(id: string, webhookId: string, payload: string): { created: boolean; firing: ReturnType<typeof firingView> } {
+  /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
+   *  sender's own id for it (a webhook's `webhook-id`), recorded due in one write and driven after the answer. `created`
+   *  false: that id's firing, as it stands. */
+  receive(id: string, eventId: string, payload: string): { created: boolean; firing: ReturnType<typeof firingView> } {
     const trigger = this.need(id);
-    const key = firingKey("webhook", id, webhookId);
+    const by = trigger.source.kind;
+    const key = firingKey(by, id, eventId);
     const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
     this.roomFor(trigger);
     const now = this.clock.now();
-    const firing: Firing = { key, by: "webhook", nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload) };
+    const firing: Firing = { key, by, nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload) };
     this.commit(() => this.record(trigger, firing));
     void this.inTurn(id, key);
     return { created: true, firing: firingView(firing) };
@@ -424,21 +348,22 @@ export class Triggers {
   async update(id: string, body: Json) {
     const was = this.need(id);
     const issues = unknownFields(body, WRITABLE);
-    const source = body.source === undefined ? undefined : sourceOf(body.source, this.clock.now(), issues);
+    const source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
     const target = body.target === undefined ? undefined : targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
-    if (target) issues.push(...(await this.deps.targetIssues(given(typeof body.name === "string" ? body.name.trim() : was.name, source ?? was.source, target, this.clock.now()))));
+    if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : was.name, source ?? was.source, target, this.clock.now()))));
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
     const trigger = this.need(id);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
     const now = this.clock.now();
     const enabled = typeof body.enabled === "boolean" ? body.enabled : trigger.enabled;
-    const problem = enabled && !source ? sourceProblem(trigger.source) : undefined;
-    if (problem) throw invalid([{ field: "source", reason: "invalid", message: `This schedule no longer reads (${problem}): give it a new source.` }]);
-    const next = !enabled ? null : source || !trigger.enabled ? nextIso(source ?? trigger.source, now) : trigger.next_at;
-    if (enabled && next === null && trigger.source.kind === "schedule") throw invalid([{ field: "enabled", reason: "invalid", message: "This schedule has no time left to fire at: give it a new source." }]);
+    const adapter = this.adapter(trigger.source);
+    const problem = enabled && !source ? this.problem(trigger.source) : undefined;
+    if (problem) throw invalid([{ field: "source", reason: "invalid", message: `This ${adapter.label} no longer reads (${problem}): give it a new source.` }]);
+    const next = !enabled ? null : source || !trigger.enabled ? this.nextIso(source ?? trigger.source, now) : trigger.next_at;
+    if (enabled && next === null && adapter.delivery === "clock") throw invalid([{ field: "enabled", reason: "invalid", message: `This ${adapter.label} has no time left to fire at: give it a new source.` }]);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again = enabled && !trigger.enabled ? { failures_in_a_row: 0, disabled: null } : {};
     this.commit(() => Object.assign(trigger, { ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}), ...settings, ...again, enabled, updated_at: iso(now), next_at: next }));
@@ -449,7 +374,7 @@ export class Triggers {
   remove(id: string): void {
     const trigger = this.need(id);
     this.commit(() => void (this.triggers = this.triggers.filter((t) => t !== trigger)));
-    if (trigger.source.kind === "webhook") this.deps.secrets.remove(id);
+    if (this.adapter(trigger.source).secret) this.deps.secrets.remove(id);
     this.arm();
   }
 
@@ -479,7 +404,7 @@ export class Triggers {
     if (due.length) {
       // One whose source no longer reads is turned off alone, before the write, so it neither stalls the others nor
       // reads as a write that failed.
-      const unreadable = due.filter((t) => sourceProblem(t.source));
+      const unreadable = due.filter((t) => this.problem(t.source));
       if (!this.offUnreadable(unreadable, now)) {
         this.timer = this.clock.arm(() => this.tick(), WRITE_RETRY_MS);
         return;
@@ -523,7 +448,7 @@ export class Triggers {
    *  failed, which is said too: the caller tries again after WRITE_RETRY_MS. */
   private offUnreadable(triggers: Trigger[], now: number): boolean {
     if (!triggers.length) return true;
-    const why = new Map(triggers.map((t) => [t, sourceProblem(t.source)!]));
+    const why = new Map(triggers.map((t) => [t, this.problem(t.source)!]));
     try {
       this.commit(() => {
         for (const [t, detail] of why) Object.assign(t, { enabled: false, next_at: null, disabled: { at: iso(now), reason: "source_unreadable", detail } });
@@ -540,34 +465,39 @@ export class Triggers {
    *  come, the latest fires (on time, or late within catchup_window_s: a catch-up, under its own nominal key), and every
    *  other is one `missed` row with their count. A one-time schedule, or one that never fires again, is turned off. */
   private advance(trigger: Trigger, now: number): void {
-    const { source } = trigger;
-    // A webhook trigger has no next time, so it is never here.
-    if (source.kind === "webhook") return;
-    const cron = "cron" in source ? cronOf(source) : undefined;
+    const adapter = this.adapter(trigger.source);
+    // A pushed source has no next time, so it is never here.
+    const clock = adapter.clock?.(trigger.source);
+    if (!clock) return;
+    const by = adapter.id;
     const windowMs = trigger.catchup_window_s * 1000;
     const first = Date.parse(trigger.next_at!);
-    const last = latestBy(source, first, now, cron);
+    const last = clock.latest(first, now);
+    const nextOf = (after: number) => {
+      const at = clock.next(after);
+      return at !== null && Number.isFinite(at) && Math.abs(at) <= DATE_MAX_MS ? at : null;
+    };
     // The times from first to last: an interval's counted on its grid, a cron line's walked, at most MISSED_COUNTED.
     let count = 1;
     let capped = false;
-    if ("every_s" in source) count += (last - first) / (source.every_s * 1000);
+    if (clock.step) count += (last - first) / clock.step;
     else for (let at = first; at < last; count++) {
       if (count === MISSED_COUNTED) {
         capped = true;
         break;
       }
-      at = nextAfter(source, at, cron) ?? last;
+      at = nextOf(at) ?? last;
     }
     const late = now - last;
     const fires = late <= LATE_MS || late <= windowMs;
     // Capped, the times counted are all before the last: every one of them was missed, and more besides.
     const missed = capped || !fires ? count : count - 1;
     // Every time reckoned before anything is written: a source that throws leaves the trigger as it was.
-    const next = nextAfter(source, last, cron);
-    if (missed > 0) this.record(trigger, { key: firingKey("schedule", trigger.id, `missed\n${second(first)}`), by: "schedule", nominal_at: second(first), status: "missed", at: iso(now), count: missed, reason: `The server was down or its timer late: ${missed === 1 && !capped ? "this time was" : `${missed}${capped ? " or more" : ""} times from this one were`} not fired.` });
+    const next = nextOf(last);
+    if (missed > 0) this.record(trigger, { key: firingKey(by, trigger.id, `missed\n${second(first)}`), by, nominal_at: second(first), status: "missed", at: iso(now), count: missed, reason: `The server was down or its timer late: ${missed === 1 && !capped ? "this time was" : `${missed}${capped ? " or more" : ""} times from this one were`} not fired.` });
     // A message_run firing has no overlap check, so a run that stays busy would hold one more due firing each time.
     const full = dueOf(trigger) >= DUE_KEPT ? { status: "skipped" as const, reason: `${DUE_KEPT} earlier firings are still waiting to reach the run.` } : { status: "due" as const };
-    if (fires) this.record(trigger, { key: firingKey("schedule", trigger.id, second(last)), by: "schedule", nominal_at: second(last), ...full, at: iso(now), ...(late > LATE_MS ? { catch_up: true } : {}) });
+    if (fires) this.record(trigger, { key: firingKey(by, trigger.id, second(last)), by, nominal_at: second(last), ...full, at: iso(now), ...(late > LATE_MS ? { catch_up: true } : {}) });
     trigger.next_at = next === null ? null : iso(next);
     if (next === null) trigger.enabled = false;
   }
@@ -598,7 +528,7 @@ export class Triggers {
       if (now.trigger.target.kind === "message_run") return await this.send(triggerId, key);
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.trigger.target, inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, messageOriginOf(now.trigger));
+        started = await this.deps.start(now.trigger.target, this.inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, this.originOf(now.trigger));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -624,7 +554,7 @@ export class Triggers {
     const { target } = found.trigger;
     let skipped: string | undefined;
     try {
-      skipped = (await this.deps.message(target, inputOf(found.trigger, found.firing), key, messageOriginOf(found.trigger)))?.skipped;
+      skipped = (await this.deps.message(target, this.inputOf(found.trigger, found.firing), key, this.originOf(found.trigger)))?.skipped;
     } catch (error) {
       if (this.closed) return;
       if (error instanceof ApiError && ["rate_limited", "home_busy", "unavailable"].includes(error.code)) return this.retry(triggerId, key, error);
@@ -723,7 +653,7 @@ export class Triggers {
     const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && !untold.has(f) && over-- > 0) : [];
     for (const f of gone) if (unmarked(f)) this.deps.say({ condition: "trigger_notice_dropped", trigger: trigger.id, firing: f.key });
     trigger.firings = trigger.firings.filter((f) => !gone.includes(f));
-    const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
+    const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || adapterIn(this.adapters, f.by)?.delivery === "push")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
     if (kept.length) trigger.kept_firings = kept;
     else delete trigger.kept_firings;
   }
@@ -801,12 +731,52 @@ export class Triggers {
     const { id, name, enabled, source, target, catchup_window_s, failures_in_a_row, disabled, next_at, created_at, updated_at, firings } = trigger;
     return { id, name, enabled, source, target, catchup_window_s, failures_in_a_row, disabled, next_at, last_run_id: trigger.last_run_id ?? null, created_at, updated_at, last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
+
+  // ---- what each source's adapter says ----------------------------------------------------------------------------------
+
+  /** `source`'s adapter: every kept or given source has one (wellFormed, sourceOf). */
+  private adapter(source: Source): TriggerAdapter {
+    return adapterIn(this.adapters, source.kind)!;
+  }
+
+  /** Why `source` no longer reads on this server, if it does not. */
+  private problem(source: Source): string | undefined {
+    return this.adapter(source).problem?.(source);
+  }
+
+  private nextIso(source: Source, now: number): string | null {
+    const at = nextAfter(this.adapter(source), source, now);
+    return at === null ? null : iso(at);
+  }
+
+  /** `target` with its input as a firing of a trigger named `name` would give it to its run: what create and PATCH
+   *  check. */
+  private given(name: string, source: Source | undefined, target: Target, now: number): Target {
+    const trigger = { name, source: source ?? { kind: this.adapters[0]!.id }, target } as Trigger;
+    return { ...target, input: this.inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
+  }
+
+  /** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never
+   *  by its payload. Only a source whose words are its owner's (a schedule's, fired on time or by hand) gives owner true;
+   *  a pushed source's come from outside, its body empty or not. */
+  private originOf(trigger: Trigger): MessageOrigin {
+    return { kind: "trigger", trigger_id: trigger.id, source: trigger.source.kind as Extract<MessageOrigin, { kind: "trigger" }>["source"], owner: this.adapter(trigger.source).owner };
+  }
+
+  /** The run's input: the trigger's, then a pushed firing's payload marked untrusted (tagged with its source), then a
+   *  line saying what fired it and when, in the trigger's zone. */
+  private inputOf(trigger: Trigger, firing: Firing): Json {
+    const adapter = this.adapter(trigger.source);
+    const when = local(Date.parse(firing.nominal_at), adapter.zone?.(trigger.source) ?? "UTC");
+    const what = `the ${adapter.label} "${trigger.name}"`;
+    const line = firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : adapterIn(this.adapters, firing.by)?.delivery === "push" ? `(From ${what}, received at ${when}.)` : `(Started by ${what} for ${when}.)`;
+    // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag cannot end the block.
+    const payload = firing.payload === undefined ? "" : `\n\n<trigger-payload source="${firing.by}" untrusted>\n${firing.payload.replaceAll("</trigger-payload", "<\\/trigger-payload")}\n</trigger-payload>`;
+    const { input } = trigger.target;
+    return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
+  }
 }
 
-const nextIso = (source: Source, now: number) => {
-  const at = nextAfter(source, now);
-  return at === null ? null : iso(at);
-};
 /** A failed firing whose trigger.failed is not marked queued. */
 const unmarked = (firing: Firing) => firing.status === "failed" && !firing.notified;
 /** A time a Date holds: past it (about the year 275760) a next time is none. */
@@ -814,29 +784,6 @@ const DATE_MAX_MS = 8.64e15;
 
 function firingView(firing: Firing) {
   return { key: firing.key, by: firing.by, nominal_at: firing.nominal_at, status: firing.status, at: firing.at, run_id: firing.run_id ?? null, reason: firing.reason ?? null, error: firing.error ?? null, ...(firing.count !== undefined ? { count: firing.count } : {}), ...(firing.catch_up ? { catch_up: true } : {}), ...(firing.retry_at ? { attempts: firing.attempts ?? 0, retry_at: firing.retry_at } : {}) };
-}
-
-/** `target` with its input as a firing of a trigger named `name` would give it to its run: what create and PATCH check. */
-function given(name: string, source: Source | undefined, target: Target, now: number): Target {
-  const trigger = { name, source: source ?? { kind: "schedule", at: second(now) }, target } as Trigger;
-  return { ...target, input: inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
-}
-
-/** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never by
- *  its payload. Only a schedule's words are its owner's, fired on time or by hand; a webhook's come from outside, its
- *  body empty or not. */
-const messageOriginOf = (trigger: Trigger): MessageOrigin => ({ kind: "trigger", trigger_id: trigger.id, source: trigger.source.kind, owner: trigger.source.kind === "schedule" });
-
-/** The run's input: the trigger's, then a webhook's payload marked untrusted, then a line saying what fired it and when,
- *  in the trigger's zone. */
-function inputOf(trigger: Trigger, firing: Firing): Json {
-  const when = local(Date.parse(firing.nominal_at), zoneOf(trigger.source));
-  const what = trigger.source.kind === "webhook" ? `the webhook trigger "${trigger.name}"` : `the schedule "${trigger.name}"`;
-  const line = firing.by === "schedule" ? `(Started by ${what} for ${when}.)` : firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : `(From ${what}, received at ${when}.)`;
-  // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag cannot end the block.
-  const payload = firing.payload === undefined ? "" : `\n\n<trigger-payload source="webhook" untrusted>\n${firing.payload.replaceAll("</trigger-payload", "<\\/trigger-payload")}\n</trigger-payload>`;
-  const { input } = trigger.target;
-  return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
 }
 
 /** `text` cut to PAYLOAD_KEPT_BYTES of UTF-8 at a character's start, and said to be cut. */

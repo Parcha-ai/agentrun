@@ -1199,7 +1199,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     try {
       id = decodeURIComponent(/^\/hooks\/([^/]+)$/.exec(path)![1]!);
     } catch {}
-    const secret = ID.test(id) && triggers.hookable(id) ? triggerSecrets!.value(id) : undefined;
+    const secret = ID.test(id) && triggers.hookable(id, "webhook") ? triggerSecrets!.value(id) : undefined;
     const refusal = hookRefusal(secret ?? NO_TRIGGER_SECRET, req.headers, body, Date.now());
     if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
     const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
