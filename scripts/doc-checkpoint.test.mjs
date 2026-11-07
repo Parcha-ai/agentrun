@@ -8,9 +8,10 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const sources = execFileSync('git', ['-c', 'gc.auto=0', 'ls-files', 'packages/*/src/*.ts', 'packages/*/src/**/*.ts'], { cwd: root, encoding: 'utf8' }).split('\n').filter((file) => file.endsWith('.ts') && !file.endsWith('.d.ts'));
 
 /** Each defineDoc/defineDocFamily call in `file`: its line, and whether its options name checkpointWhen. An options
