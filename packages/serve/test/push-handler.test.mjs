@@ -19,8 +19,8 @@ const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const sealKey = randomBytes(32);
 const SEAL = { AGENTRUN_SEAL_KEY: sealKey.toString("base64") };
 
-/** A pushed source no other code knows of: one server-wide signing secret (its settings), and a body that names its
- *  trigger, its event's id and its text. */
+/** A pushed source no other code knows of: one server-wide signing secret (its settings); its triggers each listen on a
+ *  channel (its scope), and a body is a list of events, each with its id, its channel and its text. */
 const ping = {
   id: "ping", label: "ping trigger", delivery: "push", owner: false,
   describe: '{kind: "ping"}', fires: "a ping", schemas: [],
@@ -33,14 +33,19 @@ const ping = {
     parse(_headers, body) {
       try {
         const doc = JSON.parse(body.toString("utf8"));
-        return typeof doc.trigger === "string" && typeof doc.id === "string" && typeof doc.text === "string" ? { triggerId: doc.trigger, eventId: doc.id, payload: doc.text } : undefined;
+        return Array.isArray(doc.events) ? doc.events.filter((e) => typeof e.id === "string" && typeof e.channel === "string" && typeof e.text === "string").map((e) => ({ key: e.id, text: e.text, scope: e.channel })) : [];
       } catch {
-        return undefined;
+        return [];
       }
     },
   },
-  parse: (value, _now, _bad, issues) => (issues.push(...Object.keys(value).filter((k) => k !== "kind").map((k) => ({ field: `source.${k}`, reason: "not_allowed", message: k }))), { kind: "ping" }),
-  wellFormed: () => true,
+  scopeOf: (source) => source.channel,
+  parse: (value, _now, bad, issues) => {
+    issues.push(...Object.keys(value).filter((k) => k !== "kind" && k !== "channel").map((k) => ({ field: `source.${k}`, reason: "not_allowed", message: k })));
+    if (typeof value.channel !== "string") return bad("channel", "missing", "channel is a string"), undefined;
+    return { kind: "ping", channel: value.channel };
+  },
+  wellFormed: (source) => typeof source.channel === "string",
 };
 
 /** A request to `path` with `body`, signed by `secret` (or carrying `headers` as given). */
@@ -67,12 +72,12 @@ async function pingServer(t) {
 test("a pushed source is one adapter: served at /v2/hooks/<its id> with no token and no edit of the server, verified with its own settings, and its event fires its trigger once", { timeout: 120_000 }, async (t) => {
   const { server, api, secret } = await pingServer(t);
   assert.equal((await api("POST", "/agents", agent("pinged"))).status, 201);
-  const made = await api("POST", "/triggers", { name: "pings", source: { kind: "ping" }, target: { kind: "start_run", agent_id: "pinged", input: { content: "A ping." }, max_cost_usd: 0.5 } });
+  const made = await api("POST", "/triggers", { name: "pings", source: { kind: "ping", channel: "c1" }, target: { kind: "start_run", agent_id: "pinged", input: { content: "A ping." }, max_cost_usd: 0.5 } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const body = JSON.stringify({ trigger: made.body.id, id: "evt-1", text: "hello" });
+  const body = JSON.stringify({ events: [{ id: "evt-1", channel: "c1", text: "hello" }] });
   const first = await post(server.baseUrl, "/hooks/ping", body, { secret });
   assert.equal(first.status, 202, JSON.stringify(first.body));
-  assert.deepEqual([first.body.by, first.body.status], ["ping", "due"]);
+  assert.deepEqual(first.body.firings.map((f) => [f.by, f.status]), [["ping", "due"]]);
   assert.equal((await post(server.baseUrl, "/hooks/ping", body, { secret })).status, 200, "the same event again is its firing");
   const [fired] = await firings(api, made.body.id, 1);
   assert.equal(fired.status, "started", JSON.stringify(fired));
@@ -85,7 +90,7 @@ test("a verified request whose body does not parse is answered 200 and said, nev
   const unparsed = await post(server.baseUrl, "/hooks/ping", "not json", { secret });
   assert.equal(unparsed.status, 200, JSON.stringify(unparsed.body));
   assert.ok(lines.some((line) => line.includes("condition=hook_unparsed") && line.includes("ping")), `said: ${JSON.stringify(lines)}`);
-  const nobody = await post(server.baseUrl, "/hooks/ping", JSON.stringify({ trigger: "trg_000000000000000000000000", id: "evt-2", text: "hi" }), { secret });
+  const nobody = await post(server.baseUrl, "/hooks/ping", JSON.stringify({ events: [{ id: "evt-2", channel: "nobody-listens", text: "hi" }] }), { secret });
   assert.equal(nobody.status, 200, JSON.stringify(nobody.body));
   assert.ok(lines.some((line) => line.includes("condition=hook_no_trigger")), `said: ${JSON.stringify(lines)}`);
 });
@@ -97,4 +102,21 @@ test("a hook path that does not decode is the one 401, said as a malformed path,
   const said = lines.filter((line) => line.includes("auth_failed"));
   assert.ok(said.some((line) => line.includes("reason=malformed_path")), `said: ${JSON.stringify(said)}`);
   assert.ok(!said.some((line) => line.includes("reason=no_webhook_trigger")), `not as no webhook trigger: ${JSON.stringify(said)}`);
+});
+
+test("an unknown trigger, or one that is off, on a trigger's own hook path is the one 401, the same as a bad signature: no trigger id is found by asking; only a server-wide source says, after its check, that no trigger takes an event", { timeout: 120_000 }, async (t) => {
+  const { server, api, secret: pingSecret, lines } = await pingServer(t);
+  assert.equal((await api("POST", "/agents", agent("hooked"))).status, 201);
+  const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const bad = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: `whsec_${randomBytes(32).toString("base64")}` });
+  const unknown = await post(server.baseUrl, "/hooks/trg_000000000000000000000000", "{}", { secret: made.body.secret });
+  assert.equal((await api("PATCH", `/triggers/${made.body.id}`, { enabled: false })).status, 200);
+  const off = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: made.body.secret });
+  const strip = (answer) => ({ status: answer.status, error: { ...answer.body.error, request_id: undefined } });
+  assert.deepEqual([strip(unknown), strip(off)], [strip(bad), strip(bad)], "the same 401, body and all");
+  assert.equal(bad.status, 401);
+  const nobody = await post(server.baseUrl, "/hooks/ping", JSON.stringify({ events: [{ id: "evt-3", channel: "nobody-listens", text: "hi" }] }), { secret: pingSecret });
+  assert.equal(nobody.status, 200, "a server-wide source, checked: it says no trigger takes it");
+  assert.ok(lines.some((line) => line.includes("condition=hook_no_trigger")));
 });
