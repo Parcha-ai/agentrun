@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, type EntryLike, isMessageRow, isUserEntry, MESSAGE_ORIGIN, type MessageOrigin, originMatcher, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -28,6 +28,7 @@ import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpSe
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
+import { Hearing } from "./heard.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { rowPaths } from "./workspace-paths.js";
@@ -289,12 +290,9 @@ export type Run = {
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
-  /** What the person said to the run, whole, by store entry: its first message and each one sent to it after, read from
-   *  the store's user entries (a timeline row cuts a message at 2,000 characters), the server's own messages left out.
-   *  Learning's grader reads them, the end-of-run turn's left out (learning-run.ts). */
-  said?: Map<number, string>;
-  /** Reads which user entries the server wrote, across the run's stream, as the timeline does (originMatcher). */
-  saidBy?: (entry: EntryLike) => MessageOrigin | undefined;
+  /** What was said to it, whole, by store entry, as its learning's grader reads it (heard.ts): the person's words, and a
+   *  trigger's input apart by its source. */
+  hearing?: Hearing;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by the holder its row names. */
   orphan?: number;
@@ -483,16 +481,10 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
     if (data) run.capMark = value.id;
     if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" && typeof data.leastCapUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd, leastCapUsd: data.leastCapUsd, ...(typeof data.boundUsd === "number" && data.boundUsd > 0 ? { boundUsd: data.boundUsd } : {}) } : undefined;
-    // What the person said, whole, by entry, each entry once (a snapshot sends them again): a user entry the server did
-    // not write, or the person's own words in one it did (a declined approval). Its text parts only: an image or a file
-    // the message carries is no words. Kept only while the run's learning has yet to keep it (seeded or reflecting): a
-    // run that does not learn holds none, and learning-run.ts beforeSettle lets them go once kept.
-    const by = (run.saidBy ??= originMatcher())(value as EntryLike);
+    // What was said to the run, whole, by entry (heard.ts): kept only while its learning has yet to keep it (seeded or
+    // reflecting), so a run that does not learn holds none, and learning-run.ts beforeSettle lets it go once kept.
     const learning = run.meta.learning?.state;
-    if ((learning === "seeded" || learning === "reflecting") && isUserEntry(value as EntryLike) && !run.said?.has(value.id)) {
-      const words = by === undefined ? userText((value as EntryLike).model?.[0]) : by.kind === "server" && by.reason === "approval_declined" ? by.said.trim() : undefined;
-      if (words !== undefined) (run.said ??= new Map()).set(value.id, words);
-    }
+    if (learning === "seeded" || learning === "reflecting") (run.hearing ??= new Hearing()).note(value);
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {

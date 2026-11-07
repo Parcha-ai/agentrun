@@ -302,13 +302,15 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
     async execute(input, effect) {
       // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
       calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      const result = await tool.call(input, { callId, signal: effect.signal });
+      const result = await tool.call(input, { callId, signal: effect.signal, attempt });
       if (result.isError) throw new Error(result.text);
       if (!result.images?.length) return result.text;
       // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.

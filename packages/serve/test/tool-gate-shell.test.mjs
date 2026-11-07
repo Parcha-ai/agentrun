@@ -46,10 +46,10 @@ const WATCHERS = ["bash_output", "bash_list", "bash_signal"];
 
 test("bash: deny refuses bash and each background tool, saying they follow bash's setting; bash: allow runs each", async (t) => {
   const bash = await onPi(t, { bash: { permission: "deny" } }, "bash");
-  assert.deepEqual([bash.text, bash.isError, bash.ran], ["Permission denied: bash is set to deny on this server. Don't retry it.", true, 0]);
+  assert.deepEqual([bash.text, bash.isError, bash.ran], ["Permission denied: bash is set to deny on this server. It was not run: nothing was sent and nothing was charged. Don't retry it.", true, 0]);
   for (const name of BACKGROUND_TOOLS) {
     const denied = await onPi(t, { bash: { permission: "deny" } }, name);
-    assert.deepEqual([denied.text, denied.isError, denied.ran], [`Permission denied: ${name} follows bash's setting, which is deny on this server. Don't retry it.`, true, 0], name);
+    assert.deepEqual([denied.text, denied.isError, denied.ran], [`Permission denied: ${name} follows bash's setting, which is deny on this server. It was not run: nothing was sent and nothing was charged. Don't retry it.`, true, 0], name);
     const allowed = await onPi(t, { bash: { permission: "allow" } }, name);
     assert.deepEqual([allowed.text, allowed.ran, allowed.kept.length], ["ran", 1, 0], name);
   }
