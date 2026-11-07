@@ -570,10 +570,17 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   if (!run.approvals?.size) return [...rows];
   const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
   const waiting = waitingApproval(run);
+  // The result rows of the calls that waited for approval: the park answered each with the gate's waiting text.
+  const parkedResults = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id && byCall.has(row.tool_use_id)).map((row) => row.id));
   return rows.flatMap((row) => {
+    // A Saved row (pi-durable-agent's, read from a write's arguments) of a call that waited: the park wrote nothing, a
+    // deny or a withdrawal never will, and what an allowed call wrote is its resume's, so the row would say a file was
+    // written that its call never wrote.
+    const savedBy = row.kind === "phase" ? /^(.*):saved:\d+$/.exec(row.id)?.[1] : undefined;
+    if (savedBy !== undefined && parkedResults.has(savedBy)) return [];
     // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
     const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
-    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!, redact) }];
+    if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!, redact), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!, redact) }];
     const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
     const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
@@ -606,8 +613,23 @@ function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: App
 /** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
 const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
   [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
-/** A resume's row as the approval's outcome: what ran, or what was refused. Only the tool's name and fixed words. */
-function resumeSays(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
+/** A resume's row as the approval's outcome: what ran, or what was refused. The tool's name and fixed words, and the
+ *  note a person typed with a Deny: its first line, redacted whole with the run's redactor (`redact`) and its links'
+ *  query values elided (scrubUrls), as the row's text is (resumeShows), then cut. A declining message adds nothing: it
+ *  shows as the person's own row. */
+function resumeSays(approval: Approval, given: { decision: string; by?: string; note?: string } | undefined, text: string, redact: (text: string) => string): string {
+  const note = given?.decision === "deny" && given.by !== "message" && given.note ? scrubUrls(redact(given.note)).split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
+  return `${resumeOutcome(approval, given, text)}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
+}
+/** `text` cut to `max` code points, an ellipsis last when cut: a pair of surrogates is never halved. */
+const clipPoints = (text: string, max: number): string => {
+  const points = Array.from(text);
+  return points.length > max ? `${points.slice(0, max - 1).join("")}…` : text;
+};
+/** At most this many code points of a Deny's note on its resume row's summary; its row's text has the whole of it. */
+const DENY_NOTE_CHARS = 200;
+/** What came of an approval, in fixed words: the head of its resume row's summary and of its text. */
+function resumeOutcome(approval: Approval, given: { decision: string; by?: string } | undefined, text: string): string {
   if (given?.decision === "deny") return `AgentRun: ${approval.tool} was refused: ${given.by === "message" ? "your message declined it" : "you declined it"}`;
   return `AgentRun: ${approval.tool} ran once you allowed it${text.includes(" They allowed it, and it ran and failed.") ? ", and failed" : ""}`;
 }
@@ -617,7 +639,7 @@ function resumeSays(approval: Approval, given: { decision: string; by?: string }
  *  quote the gate's words can't move it; a row whose text doesn't start with it shows the outcome alone. The model's own
  *  message is unchanged. */
 function resumeShows(approval: Approval, given: { decision: string; by?: string; args_shown?: string } | undefined, text: string, redact: (text: string) => string): string {
-  const said = resumeSays(approval, given, text).replace(/^AgentRun: /, "");
+  const said = resumeOutcome(approval, given, text).replace(/^AgentRun: /, "");
   // The row's text is the message as the Timeline shows it: redacted whole (the run's redactor) and its links scrubbed
   // (scrubUrls), so the gate's head is compared after the same two steps.
   const written = resumeHead(approval, given?.args_shown ?? "(not shown)");
@@ -1616,9 +1638,16 @@ export class Runs {
 
   /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): this
    *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
-   *  server's own tokens. */
+   *  server's own tokens and the secrets it makes (ownSecrets: each webhook trigger's, read now, so a rotation is cut at
+   *  once). */
   private refusedValues(run: Run): string[] {
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(run.handed ?? []), this.options.token, this.options.doorToken];
+    return [...this.serverSecrets(), ...(run.handed ?? [])];
+  }
+
+  /** The values this server holds, whatever run: its secrets wherever its launcher put them and the keys saved on it, its
+   *  own tokens, and the secrets it makes (ownSecrets). */
+  private serverSecrets(): string[] {
+    return [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
@@ -3135,7 +3164,7 @@ export class Runs {
     const at = new Date().toISOString();
     const meta: RunMeta = {
       // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
-      title: clip(redacted(options.title.trim().replace(/\s+/g, " "), [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken]), 80),
+      title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
       created_at: at,
       input: options.input,
       place: options.place,
