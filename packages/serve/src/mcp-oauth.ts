@@ -106,9 +106,9 @@ async function noted(sent: Promise<Response>, what: string, seen: Seen): Promise
 }
 const portOf = (url: URL) => Number(url.port || (url.protocol === "https:" ? 443 : 80));
 /** Whether `url` is an endpoint a loopback MCP server's authorization server may use on loopback (a development-only
- *  allowance): the MCP server's own loopback host as it is written (127.0.0.1 is not 127.0.0.2, nor [::1], nor
- *  localhost), on any port but this server's own (`own`). Any other loopback endpoint is checked as any address is,
- *  and refused. */
+ *  allowance): the MCP server's own loopback host exactly as it is written (never another loopback address, the IPv6
+ *  loopback, or a name for this machine in its place), on any port but this server's own (`own`). Any other loopback endpoint is checked
+ *  as any address is, and refused. */
 function loopbackAllowed(url: string | URL, mcpUrl: string, own: string | undefined): boolean {
   const at = typeof url === "string" ? URL.parse(url) : url;
   const mcp = URL.parse(mcpUrl);

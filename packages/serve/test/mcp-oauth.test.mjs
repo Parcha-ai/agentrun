@@ -815,8 +815,8 @@ test("a loopback MCP server's authorization server may use only the MCP server's
   const sent = offLoopback(t);
   const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
   // This server's own address: a service on its port stands for it.
-  const own = await targetOn(t, "127.0.0.1");
-  const elsewhere = [await targetOn(t, "127.0.0.2"), await targetOn(t, "::1")].filter(Boolean);
+  const own = await targetOn(t, "127.0.0.1"); // key-gate: this server's own loopback address, which an authorization server must not reach
+  const elsewhere = [await targetOn(t, "127.0.0.2"), await targetOn(t, "::1")].filter(Boolean); // key-gate: other loopback addresses an authorization server must not reach
   for (const at of [own, ...elsewhere]) {
     for (const [what, metadata] of [["token endpoint", { token_endpoint: `${at.origin}/x` }], ["registration endpoint", { registration_endpoint: `${at.origin}/x` }]]) {
       const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
