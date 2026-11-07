@@ -1089,8 +1089,9 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // each paid call under way at what it is held at.
     const holding = held + paidHolds();
     const left = cap - spentUsd - holding;
-    // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit.
-    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { hold: cost(0), bound: bound(0), stopped: () => cost(0) } : refusedAt(holding, 0);
+    // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit. Its least
+    // admission is that figure, its input at its price after the previous request, and no output (the wrap-up's least).
+    if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { hold: cost(0), bound: bound(0), stopped: () => cost(0), least: cost(0) } : refusedAt(holding, 0);
     // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
