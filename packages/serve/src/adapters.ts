@@ -198,8 +198,8 @@ type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite:
 /** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
 export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>) => { command: string; args: string[] };
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
- *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, which its own check took:
- *  skills.ts). */
+ *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
+ *  which its own check took: skills.ts). */
 export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string> };
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
@@ -435,6 +435,17 @@ export async function claudeSkillCheck(load: () => Promise<unknown> = loadClaude
   return typeof claude?.skillProblems === "function" ? (claude.skillProblems as SkillCheck) : undefined;
 }
 
+/** The check of the skills `harness`'s adapter loads itself, its own: claude-agent's (claudeSkillCheck, its Skill tool),
+ *  codex's (Codex lists them from its session's CODEX_HOME/skills) and opencode's (its instructions name them); the
+ *  last two give the model read_skill_file. The skills it takes leave the run's prompt and are handed to the adapter;
+ *  the ones it refuses stay in the prompt (skills.ts). None for any other harness: its skills stay in the prompt. */
+export async function skillCheckOf(harness: string): Promise<SkillCheck | undefined> {
+  if (harness === "claude-agent") return claudeSkillCheck();
+  if (harness === "codex") return claudeSkillCheck(() => import("@parcha/agentrun-harness-codex"));
+  if (harness === "opencode") return claudeSkillCheck(() => import("./harness-opencode/index.js"));
+  return undefined;
+}
+
 /** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native: claude-agent,
  *  Claude's own WebSearch with the input a search request may read in beyond its body (cap.ts), which its proxy adds to
  *  that request's bound; codex, Codex's own search, live (its adapter books each search); nothing otherwise. */
@@ -517,7 +528,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   // whole (AGENT_MODEL_GATEWAY_IDS says whether it is provider-qualified), OpenAI's model id, which chooseModel has
   // already taken out of "openai/<id>", or OpenRouter's whole slug.
   const provider = codexProvider(env, needs.model);
-  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("codex", env), ...(nativeOptions("codex", env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
+  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("codex", env), ...(nativeOptions("codex", env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
 }
 
 /** opencode's adapter, from `load` (the installed package; a test gives its own). Its model goes where codex's does: serve's
@@ -540,7 +551,7 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // harness.
   // The id as the provider's endpoint names it (codexProvider, as codexOf takes it): OpenRouter's is the whole slug.
   const provider = codexProvider(env, needs.model, "opencode");
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 /** The model proxy a faux harness's session serves (FauxOptions.proxy): the policy, origin, credential and price `harness`'s
