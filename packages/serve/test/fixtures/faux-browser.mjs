@@ -8,9 +8,72 @@
 // its pipe) gets a line naming it, and whether that ref is anywhere in its environment (process.env, the env the
 // provider gets with its hidden properties, and the environment the kernel shows); each session that asks for a
 // profile logs the profile's name and whether it saves. Profiles are kept, as Browserbase's and Kernel's are.
+//
+// A session's DevTools address (what the live view streams from) is a fake DevTools endpoint of this module's own, on
+// loopback in the run's process, never the backend's sentinel vendor address: it has one page, and sends one screencast
+// frame (FRAME, bytes no image decoder needs) once the page's screencast starts. It is started at the first attach.
 import { appendFileSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { BrowserFailureError, browserFailure } from "@parcha/pi-browser";
 import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
+
+/** The screencast frame the fake DevTools endpoint sends: its bytes, and the page's size it reports. */
+export const FRAME = { bytes: Buffer.from("faux-live-view-frame"), w: 1280, h: 800 };
+
+const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const encode = (text) => {
+  const payload = Buffer.from(text);
+  const n = payload.length;
+  const head = n < 126 ? Buffer.from([0x81, n]) : Buffer.from([0x81, 126, n >> 8, n & 255]);
+  return Buffer.concat([head, payload]);
+};
+/** Masked client text frames out of a growing buffer. */
+const decoder = (onText) => {
+  let buffer = Buffer.alloc(0);
+  return (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (;;) {
+      if (buffer.length < 2) return;
+      let length = buffer[1] & 127;
+      let at = 2;
+      if (length === 126) { if (buffer.length < 4) return; length = buffer.readUInt16BE(2); at = 4; }
+      const masked = (buffer[1] & 128) !== 0;
+      if (buffer.length < at + (masked ? 4 : 0) + length) return;
+      const mask = masked ? buffer.subarray(at, at + 4) : null;
+      at += masked ? 4 : 0;
+      const body = Buffer.from(buffer.subarray(at, at + length));
+      if (mask) for (let i = 0; i < body.length; i += 1) body[i] ^= mask[i % 4];
+      const opcode = buffer[0] & 15;
+      buffer = buffer.subarray(at + length);
+      if (opcode === 1) onText(body.toString("utf8"));
+    }
+  };
+};
+
+let devtools;
+/** The fake DevTools endpoint's address, started once. */
+const devtoolsUrl = () => (devtools ??= new Promise((resolve) => {
+  const server = createServer((_req, res) => { res.statusCode = 404; res.end(); });
+  server.on("upgrade", (req, socket) => {
+    const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}${GUID}`).digest("base64");
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    socket.on("error", () => {});
+    const send = (message) => { if (!socket.destroyed) socket.write(encode(JSON.stringify(message))); };
+    const page = { targetId: "PAGE1", type: "page", title: "Example", url: "https://example.test/", attached: false };
+    socket.on("data", decoder((text) => {
+      const { id, method, sessionId } = JSON.parse(text);
+      send({ id, ...(sessionId ? { sessionId } : {}), result: {} });
+      if (method === "Target.setDiscoverTargets") send({ method: "Target.targetCreated", params: { targetInfo: page } });
+      else if (method === "Target.attachToTarget") send({ method: "Target.attachedToTarget", params: { sessionId: "FLAT1", targetInfo: page, waitingForDebugger: false } });
+      else if (method === "Page.startScreencast") send({ method: "Page.screencastFrame", sessionId: "FLAT1", params: { data: FRAME.bytes.toString("base64"), metadata: { deviceWidth: FRAME.w, deviceHeight: FRAME.h }, sessionId: 1 } });
+    }));
+  });
+  server.listen(0, "127.0.0.1", () => {
+    server.unref();
+    resolve(`ws://127.0.0.1:${server.address().port}/devtools/browser/faux`);
+  });
+}));
 
 export default function browser(env = process.env, vendor = "browserbase", signIn = undefined) {
   const log = process.env.FAUX_BROWSER_LOG;
@@ -39,5 +102,11 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     if (signIn && spec.profile?.save && process.env.FAUX_BROWSER_REFUSE_WITH_REF) throw new BrowserFailureError(browserFailure("refused", `browser profile "${signIn.ref}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`));
     return provider.create(spec, signal);
   };
-  return { provider: { ...provider, create }, driver: fakeDriver(backend) };
+  // The session's id stays in the address's query, where the fake driver reads it.
+  const attach = async (ref, signal) => {
+    const target = await provider.attach(ref, signal);
+    const id = new URL(target.sdkCdpUrl).searchParams.get("sessionId") ?? "";
+    return { ...target, sdkCdpUrl: `${await devtoolsUrl()}?sessionId=${encodeURIComponent(id)}` };
+  };
+  return { provider: { ...provider, create, attach }, driver: fakeDriver(backend) };
 }
