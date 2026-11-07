@@ -4,6 +4,7 @@
 // faux module's (no key, no network); with `AGENT_MODEL_BASE_URL` every model id goes to that one OpenAI Responses
 // gateway; otherwise pi-ai's providers serve it, each with its keys from the server's secrets (PROVIDER_KEYS): the
 // launcher hands the server every one, and a run's process those of its model's provider, never in an environment.
+import { withLocalModels } from "./local-models.js";
 import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
@@ -328,13 +329,14 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   if (!ids.length) return { models, model, byTier, unpriced };
   if (faux) {
     type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number };
-    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: Tokens | "unknown"; contextWindow?: number; usage?: (context: unknown, usage: Tokens) => Tokens };
+    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: Tokens | "unknown"; contextWindow?: number; maxTokens?: number; usage?: (context: unknown, usage: Tokens) => Tokens };
     const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
-    // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact.
-    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}) })) as [{ id: string }, ...{ id: string }[]] });
+    // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact; `maxTokens` its
+    // output ceiling, so a test can price a request's whole output allowance as a real model's (64,000 on Sonnet 4.5).
+    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}), ...(typeof mod.maxTokens === "number" ? { maxTokens: mod.maxTokens } : {}) })) as [{ id: string }, ...{ id: string }[]] });
     const step = (async (context: unknown, options?: { signal?: AbortSignal }, _state?: unknown, model?: { id?: string }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}), ...(model?.id ? { model: model.id } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
     // `cost` (USD per million tokens) prices the faux model's usage, which the faux core leaves at $0, so a run's
@@ -473,7 +475,8 @@ export const anthropicRefusal = (models: { getProvider(id: string): object | und
  *  for an Anthropic model; every other provider runs as it does without the setting. Never throws. */
 export async function providerModels(env: NodeJS.ProcessEnv) {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  const models = builtinModels({ authContext: authContextOf(env) });
+  // With the models serve lists beside pi-ai's catalog (local-models.ts): OpenRouter's particle-1.
+  const models = withLocalModels(builtinModels({ authContext: authContextOf(env) }));
   if (!env.ANTHROPIC_BASE_URL) return models;
   const [{ gatewayBase }, { createProvider }, { anthropicMessagesApi }] = await Promise.all([import("./adapters.js"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const own = models.getProvider("anthropic")!;
@@ -554,7 +557,7 @@ export type Listed = { provider: string; cost: ModelCost };
 export async function catalogPrices(): Promise<Map<string, Listed[]>> {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const out = new Map<string, Listed[]>();
-  for (const model of builtinModels().getModels()) {
+  for (const model of withLocalModels(builtinModels()).getModels()) {
     const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, tiers } = (model as { cost?: Partial<ModelCost> }).cost ?? {};
     const listed = out.get(model.id) ?? out.set(model.id, []).get(model.id)!;
     listed.push({ provider: model.provider, cost: { input, output, cacheRead, cacheWrite, ...(tiers ? { tiers } : {}) } });

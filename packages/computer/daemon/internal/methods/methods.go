@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
 // Capabilities is what this daemon offers, as hello reports it.
-var Capabilities = []string{"exec", "files"}
+var Capabilities = []string{"exec", "files", "processes"}
 
 type HelloParams struct {
 	Client string `json:"client"`
@@ -40,8 +41,8 @@ type ExecRunResult = execrun.Result
 
 const maxTimeoutMs = 24 * 60 * 60 * 1000
 
-// Handlers is every method this daemon answers.
-func Handlers(version string) map[string]rpc.Handler {
+// Handlers is every method this daemon answers, with processes kept in table.
+func Handlers(version string, table *process.Table) map[string]rpc.Handler {
 	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
 			return HelloResult{Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: Capabilities}, nil
@@ -52,6 +53,7 @@ func Handlers(version string) map[string]rpc.Handler {
 		"exec.run": execRun,
 	}
 	maps.Copy(handlers, fileHandlers())
+	maps.Copy(handlers, processHandlers(table))
 	return handlers
 }
 

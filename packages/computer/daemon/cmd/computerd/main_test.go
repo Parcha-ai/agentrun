@@ -6,9 +6,12 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 )
 
 // argsEnv makes the test binary run computerd's main with these arguments (JSON), as a process of its own.
@@ -32,8 +35,13 @@ func computerd(t *testing.T, bound time.Duration, args ...string) (int, string) 
 	encoded, _ := json.Marshal(append([]string{"computerd"}, args...))
 	ctx, cancel := context.WithTimeout(context.Background(), bound)
 	defer cancel()
+	// Init refuses a socket directory others may enter; t.TempDir's mode follows the umask.
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.CommandContext(ctx, os.Args[0])
-	cmd.Env = append(os.Environ(), argsEnv+"="+string(encoded))
+	cmd.Env = append(os.Environ(), argsEnv+"="+string(encoded), daemon.SocketEnv+"="+filepath.Join(dir, "computerd.sock"))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	err := cmd.Run()

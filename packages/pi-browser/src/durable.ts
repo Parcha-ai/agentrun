@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { configure, defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
-import type { TSchema, Usage } from "@earendil-works/pi-ai";
+import type { Usage } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { BROWSER_TOOL_NAMES, browserSection, browserToolsFor, listedFor, WEB_TOOL_NAMES } from "./core/contract.js";
 import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput, NO_HANDOFF } from "./core/custody.js";
 import { forModel } from "./durable/result.js";
@@ -919,10 +920,10 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   const tracked = new Set<string>();
   const redact = createRedactor(() => [...providerKeyValues(process.env, options.redact?.values), ...tracked]);
   const vault = vaultRuntime(options, (secret) => { tracked.add(secret); }, (message) => process.emitWarning(`pi-browser: ${redact(message)}`, { code: "PI_BROWSER_VAULT" }));
-  const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED) });
-  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }) });
+  const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED), checkpointWhen: () => false });
+  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }), checkpointWhen: () => false });
   // A fork starts with no sessions: it never shares a live browser.
-  const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptySessions });
+  const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptySessions, checkpointWhen: () => false });
   const readers: Readers<D> = { options, redact, Config };
 
   /** Class name and redacted message only: a vendor SDK's error text can repeat the request's credentials. */
