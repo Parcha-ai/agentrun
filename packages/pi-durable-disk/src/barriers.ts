@@ -53,19 +53,20 @@ export const BARRIERS = {
   modelRequestStarted: {
     store: "run-journal",
     site: "serve/src/request-start.ts",
-    status: "planned",
+    status: "active",
     why: "a pi model or compaction request: its start mark and bound, before it is sent",
   },
   paidToolHold: {
     store: "run-journal",
     site: "serve/src/paid-calls.ts",
-    status: "planned",
+    status: "active",
     why: "a paid tool call's hold (paid calls, monid, the MCP gateway), before the call is sent",
   },
   workflowAdmit: {
     store: "run-journal",
-    site: "dsl/src/recovery/driver.ts",
-    status: "planned",
+    site: "serve/src/app.ts",
+    via: { file: "dsl/src/recovery/driver.ts", text: "if (options.afterAdmit) await persist(options.afterAdmit);" },
+    status: "active",
     why: "a workflow effect's admission with its intent, before it is dispatched",
   },
   decisionHold: {
