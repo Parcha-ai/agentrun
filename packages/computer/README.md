@@ -502,8 +502,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   16384 pixels a side and 2^25 pixels, and inflates no more than their IHDR gives), `input.click-lands` (a single and a double click show in the fixture's log at their
   point, with their count), `input.type-text` (`Hello, agentrun! 123` arrives exactly),
   `input.key-table-refuses-unknown` (a batch whose second action names `Hyper_Q` gives `done` 0, `failed.index` 1,
-  kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (click, move off the screen, click: `done`
-  1, only the first click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
+  kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
+  click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
   fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
   front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
   the screenshot, with the fixture's button found by its id and text).
