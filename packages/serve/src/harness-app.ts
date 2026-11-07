@@ -311,6 +311,11 @@ export function adapterRun(
   // The call the gate parked, until the next message starts a turn: no request leaves meanwhile, and the turn is
   // interrupted once the call's result is in. Not a failure: the turn ends as the person's answer will resume it.
   let parked: ParkedCall | undefined;
+  // The parked call answered allow (the gate's unpark): the run's own requests beside the harness's (the approved call's
+  // node) are admitted from then, while the harness's own stay held until the next message's turn. Apart from `parked`,
+  // which names the call whose result still ends the parked turn: an allow that lands while the harness is still
+  // recording that result leaves it, so the turn is interrupted as it would be without the allow.
+  let approved = false;
   const PARKED = new Error("the turn ended: a tool call waits for a person's approval");
   // Each call's arguments, by its id, for a park named by tool and arguments (endsTurn).
   const argsOf = new Map<string, unknown>();
@@ -587,6 +592,7 @@ export function adapterRun(
   /** The person's message: the session's new turn, then its entry and its end on the root. */
   const sendOf = (message: Message) => async () => {
     parked = undefined;
+    approved = false;
     argsOf.clear();
     await message.recorded;
     taking = message.id;
@@ -832,7 +838,7 @@ export function adapterRun(
         beforeRequest: guard as never,
         onEvent: onModel,
         note: () => takeNote(plus(booking.spentUsd(), charged)),
-        stopped: () => halted ?? cancelStop() ?? (parked === undefined ? undefined : PARKED),
+        stopped: (request) => halted ?? cancelStop() ?? (parked === undefined || (approved && request.host !== undefined) ? undefined : PARKED),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {
@@ -915,7 +921,7 @@ export function adapterRun(
       // The answers from now on: each resumes the session with one message of its own.
       // The allow un-parks the run before the approved call runs: its own model requests (a learned workflow's node, on
       // the session's route) go out; the harness's own wait for the resume's turn, which the park left them for.
-      gate?.start(resume, () => void (parked = undefined));
+      gate?.start(resume, () => void (approved = true));
     },
   };
 }

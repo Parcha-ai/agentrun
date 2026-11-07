@@ -136,8 +136,9 @@ export interface ModelPortOptions {
   records?: readonly SessionRecord[];
   /** How a record is written (default: the writer's append, which a newer open fences). */
   append?: (records: SessionRecord[]) => Promise<void>;
-  /** The attempt has stopped: the error a new paid request is refused with. */
-  stopped?: () => Error | undefined;
+  /** The attempt has stopped: the error a new paid request is refused with. Told the request's host label, for a host
+   *  that admits its own requests (ModelRequest.host) while the harness's own are held. */
+  stopped?: (request: { host?: string }) => Error | undefined;
   /** A pause is draining the attempt: the error a new paid request is refused with, while the attempt itself goes on. A
    *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
   draining?: () => Error | undefined;
@@ -238,7 +239,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
   const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, side, noted, inputTokensMaxWithoutNote, host }: ModelRequest): Promise<ModelTicket> => {
     let inputTokensMax = measured;
-    const stopped = options.stopped?.() ?? failed;
+    const stopped = options.stopped?.(host === undefined ? {} : { host }) ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
@@ -257,7 +258,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (limited !== undefined && !(Number.isSafeInteger(limited) && limited > 0)) throw end("refused", `the request was not sent: its output limit (${String(limited)}) is not a whole number of tokens above 0`);
     // A stop or a pause that came while the host was checking: nothing was written for this request, so it is refused, not
     // sent. After the write below it is committed (refusing it then would leave a recorded request that was never sent).
-    const late = options.stopped?.() ?? failed ?? options.draining?.();
+    const late = options.stopped?.(host === undefined ? {} : { host }) ?? failed ?? options.draining?.();
     if (late) throw late;
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
@@ -271,7 +272,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
     // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
     // Its record is written, so it costs a turn of the cap, never money.
-    const stoppedNow = options.stopped?.();
+    const stoppedNow = options.stopped?.(host === undefined ? {} : { host });
     if (stoppedNow) {
       answered.add(turn);
       // Through the booking's own write: a response's ids still waiting to be carried go with the withdrawal.
@@ -289,7 +290,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     }
     // A stop that came while the mark was made: the request has not left either. Booked withdrawn as above, and its end
     // told to the host, whose mark has it started: at $0, so the host never reads it cut at an unknown price.
-    const stoppedLate = options.stopped?.();
+    const stoppedLate = options.stopped?.(host === undefined ? {} : { host });
     if (stoppedLate) {
       answered.add(turn);
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
@@ -345,7 +346,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}) } }], covers);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
-        if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        if (!options.stopped?.({})) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
         throw error;
       }
       answered.add(turn);
