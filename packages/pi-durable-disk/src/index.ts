@@ -20,7 +20,10 @@ export type { RefusalReason } from "./confine.ts";
 export { BoxUnavailableError, ClaimError, FencedError, HeldError, PdaError } from "./errors.ts";
 export type { ClaimErrorCode, Holder } from "./errors.ts";
 // Store types the run's signatures name; the store's functions and classes are in `./lease`.
-export type { ArchilStore, Fence, FencedDatabase, Profile, StoreFencedError } from "./store.ts";
+export type { ArchilStore, Fence, FencedDatabase, Profile, StoreFencedError, Synchronous } from "./store.ts";
+// The barrier: what a site calls once a commit must be durable before the run goes on (barriers.ts).
+export { BARRIER, syncNow } from "./barriers.ts";
+export type { BarrierName, SyncTarget } from "./barriers.ts";
 
 // The app contract: what `--app` names.
 export { AppError } from "./app.ts";

@@ -4,8 +4,10 @@
 export { EXIT_DATAERR, EXIT_SOFTWARE, LeaseLapsedError, openRunLease, OWNER_LOCK, RunError, StoreBehindSealError, storeHead, STORE_FILE } from "./run.ts";
 export type { LeaseOptions, OpenRunLeaseOptions, OpenStep, ReleaseStep, RunClaim, RunErrorCode, RunLease, RunSeed, RunSeedDir, StoreHeadSource } from "./run.ts";
 export * from "./errors.ts";
-export { assertPragmas, Fence, FencedDatabase, openArchilStore, PROFILE_PRAGMAS, StoreBusyError, StoreFencedError, StorePragmaError } from "./store.ts";
-export type { ArchilStore, OpenOptions, PragmaMismatch, Profile } from "./store.ts";
+export { assertPragmas, Fence, FencedDatabase, JOURNAL_SYNCHRONOUS, openArchilStore, PROFILE_PRAGMAS, StoreBusyError, StoreFencedError, StorePragmaError } from "./store.ts";
+export type { ArchilStore, OpenOptions, PragmaMismatch, Profile, Synchronous } from "./store.ts";
+export { BARRIER, syncNow } from "./barriers.ts";
+export type { BarrierName, SyncTarget } from "./barriers.ts";
 // Types the signatures above mention.
 export type { AcquireOptions, Claim, RunRef, Unmounted } from "./claim.ts";
 export { BOX_MODES } from "./status.ts";

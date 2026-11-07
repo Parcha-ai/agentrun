@@ -80,6 +80,15 @@ export function script(spec) {
   // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
   const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
   if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
+  // Claude Code on Sonnet 4.5 (faux-sonnet45.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
+  // 25,000-token first prompt, then one more request. "on a small cap": a 5,000-token prompt, a $0.01 request and one more.
+  // "restarts before the note at <file>": a 5,000-token prompt, a $0.04 request, then a hold (writing `<file>.held`) with
+  // no request open until `<file>` exists, then one more request.
+  const cc = (inputTokensMax, usd, say) => ({ say, inputTokensMax, outputTokensAsked: 32_000, usd });
+  if (/Claude Code at its start\./.test(text)) return [cc(25_000, 0.03, "Working."), cc(26_000, 0.03, "Done.")];
+  if (/Claude Code on a small cap\./.test(text)) return [cc(5_000, 0.01, "Working."), cc(5_200, 0.01, "Done.")];
+  const restartAt = /Claude Code restarts before the note at (\S+)\./.exec(text)?.[1];
+  if (restartAt) return [cc(5_000, 0.04, "Working."), ...(existsSync(restartAt) ? [] : [hangSignalled(`${restartAt}.held`)]), cc(5_200, 0.01, "Done.")];
   // The wrap-up due after a $0.40 request, then an answer whose input (5,990 tokens, $0.599 on input-priced faux) fits
   // what is left of a $1 cap only without the note's bytes.
   if (/Wrap up with no room for the note\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { say: "Answered.", inputTokensMax: 5_990, usd: 0.01 }];

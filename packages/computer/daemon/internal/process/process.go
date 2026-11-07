@@ -6,6 +6,9 @@ const (
 	RingBytes = 8 << 20
 	// MaxEntries is how many processes the table holds, running or ended.
 	MaxEntries = 256
+	// RetainedBytes is how much output the table's rings hold together before it lets go of the rings of the
+	// processes that ended first: 256 MiB, where 256 entries' full rings would be 4 GiB.
+	RetainedBytes = 256 << 20
 	// MaxRead is the most bytes one process.read returns: in base64, it fits a line.
 	MaxRead = 512 << 10
 	// MaxWaitMs bounds a read's long poll.
@@ -16,6 +19,8 @@ const (
 type Options struct {
 	RingBytes  int
 	MaxEntries int
+	// RetainedBytes bounds the output every ring in the table holds together; only ended processes' rings are let go.
+	RetainedBytes int64
 }
 
 type Size struct {
