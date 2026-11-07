@@ -178,16 +178,20 @@ export async function verifyPublished(root, selected, { allowAbsent = false, can
   }
 }
 
-if (isMain(import.meta)) {
-  // --canary: the plan is a canary from main (canary.yml's publish), not a release.
+/** The command's arguments (`argv` as process.argv): `--package <directory|all>`, then `--allow-absent` and `--canary` in any
+ *  order, each at most once (--canary: the plan is a canary from main, not a release). Anything else throws the usage line. */
+export function commandArgs(argv) {
   const usage = 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-disk|all [--allow-absent] [--canary]';
-  const flags = process.argv.slice(4);
-  assert.equal(process.argv[2], '--package', usage);
-  assert.ok(process.argv.length >= 4 && flags.every(flag => ['--allow-absent', '--canary'].includes(flag)) && new Set(flags).size === flags.length, usage);
-  const selected = process.argv[3];
+  const flags = argv.slice(4);
+  assert.ok(argv[2] === '--package' && argv.length >= 4 && flags.every(flag => ['--allow-absent', '--canary'].includes(flag)) && new Set(flags).size === flags.length, usage);
+  return { selected: argv[3], allowAbsent: flags.includes('--allow-absent'), canary: flags.includes('--canary') };
+}
+
+if (isMain(import.meta)) {
+  const { selected, allowAbsent, canary } = commandArgs(process.argv);
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   try {
-    const result = await verifyPublished(root, selected, { allowAbsent: flags.includes('--allow-absent'), canary: flags.includes('--canary') });
+    const result = await verifyPublished(root, selected, { allowAbsent, canary });
     if (result.status === 'absent') {
       console.log(`Registry confirms ${selected} is absent at the release version.`);
       process.exitCode = 3;

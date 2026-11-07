@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyPublished, waitForRegistryVersions, registryBackoffMs, installRegistryConsumer, PACKUMENT_ACCEPT } from './verify-published.mjs';
+import { verifyPublished, waitForRegistryVersions, registryBackoffMs, installRegistryConsumer, PACKUMENT_ACCEPT, commandArgs } from './verify-published.mjs';
 import { ownVersionPackages, releasePackageNames, releasePackages } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
@@ -105,9 +105,20 @@ test('a canary plan is verified only under canary, every package on one canary s
   await write(canary.map(pkg => ({ ...pkg, version: pkg.version.replace(/\.g[0-9a-f]+$/, '') })));
   await assert.rejects(verifyPublished(root, 'dsl', { canary: true, allowAbsent: true, wait, fetchImpl: none }), /is not a canary/);
 }));
-test('the command takes --canary after --package, alone or with --allow-absent, and refuses anything else before a registry read', async () => {
+test('the command\'s arguments: --canary and --allow-absent after --package, alone or both in either order, each reach its mode', () => {
+  const args = list => commandArgs(['node', 'scripts/verify-published.mjs', ...list]);
+  assert.deepEqual(args(['--package', 'dsl']), { selected: 'dsl', allowAbsent: false, canary: false });
+  assert.deepEqual(args(['--package', 'all', '--canary']), { selected: 'all', allowAbsent: false, canary: true });
+  assert.deepEqual(args(['--package', 'dsl', '--allow-absent']), { selected: 'dsl', allowAbsent: true, canary: false });
+  assert.deepEqual(args(['--package', 'dsl', '--allow-absent', '--canary']), { selected: 'dsl', allowAbsent: true, canary: true });
+  assert.deepEqual(args(['--package', 'dsl', '--canary', '--allow-absent']), { selected: 'dsl', allowAbsent: true, canary: true });
+  for (const bad of [['--package', 'dsl', '--canary', '--bogus'], ['--package', 'dsl', '--bogus'], ['--canary', '--package', 'dsl'], ['--package', 'dsl', '--canary', '--canary'], ['--package']]) {
+    assert.throws(() => args(bad), /Usage: node scripts\/verify-published\.mjs/, bad.join(' '));
+  }
+});
+test('the command refuses bad arguments at its usage line, before any registry read', async () => {
   const run = args => exec(process.execPath, ['scripts/verify-published.mjs', ...args], { cwd: new URL('..', import.meta.url) }).then(() => '', error => String(error.stderr));
-  for (const bad of [['--package', 'dsl', '--canary', '--bogus'], ['--package', 'dsl', '--bogus'], ['--canary', '--package', 'dsl'], ['--package', 'dsl', '--canary', '--canary']]) {
+  for (const bad of [['--package', 'dsl', '--canary', '--bogus'], ['--canary', '--package', 'dsl']]) {
     assert.match(await run(bad), /Usage: node scripts\/verify-published\.mjs/, bad.join(' '));
   }
 });
