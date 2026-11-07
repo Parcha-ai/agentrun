@@ -99,7 +99,12 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run as root in a container by hand.
 - `computerd probe [--connect <host:port>]...` prints one JSON line: the uid and gid it runs as, the kernel's release,
   and which addresses a TCP connection reached, each tried for at most 3 s. A provider whose vendor reads nothing back
-  runs it through `exec.run` (below, Modal).
+  runs it through `exec.run` (below, Modal). `computerd probe --diagnose` asks more than an accept: for 1.1.1.1,
+  8.8.8.8, 9.9.9.9 and 151.101.1.57 (Fastly's anycast edge, which is no resolver) on 443/tcp, 80/tcp and 53/udp it
+  reports `refused` (no TCP accept, no UDP answer), `accepted` (an accept, no answer) or `answered` (a TLS ServerHello,
+  an `HTTP/1.` status line, a DNS response with the query's id), with 3 s to connect and 3 s to answer, 15 s in all and
+  at most 4 KiB read per check, and a `verdict`: `egress`, `accepted-only` or `none`. It sends nothing of the
+  computer's: a ClientHello with a random nonce, `HEAD / HTTP/1.0`, a query for `example.com`.
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
@@ -1114,6 +1119,19 @@ Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, and 
 reached. An allowlist (`allowOut`) is refused until the live bypass cases pass (ruling 9). The network is fixed at
 create: `network(ref, policy)` refuses a change.
 
+E2B's firewall accepts an outbound TCP connection before it decides whether the destination is allowed, so from inside
+a sandbox with no internet access "a TCP connection can succeed and report the socket as open even when the destination
+is denied"; E2B says to check for an application-level answer instead (docs, network/internet-access, "Behavior of
+blocked TCP connections"; `e2b-dev/infra` `packages/orchestrator/pkg/tcpfirewall/handlers.go`, which accepts and then
+closes a denied connection). E2B documents no stricter setting: `allowInternetAccess: false` is `denyOut 0.0.0.0/0`,
+and `dnsServers` matters only with a domain in `allowOut`. The probe counts an accept as reached, so it refuses such a
+sandbox, and the provider keeps that refusal. `dist/conformance/e2b-diagnose.js` (live switch
+`AGENTRUN_COMPUTER_LIVE_E2B=1`) makes one sandbox exactly as create does for network none, with a 10-minute E2B
+timeout, records the read-back and the provider's own check, runs `computerd probe --diagnose` in it, prints one JSON
+line, and kills the sandbox and reads it back gone, after an error or an abort too (SIGINT, SIGTERM, or its own 8-minute
+bound). Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 with no live switch or a refused
+setting.
+
 ### Extend and stream
 
 `extend(ref, ttlMs)` sets E2B's timer to now + `ttlMs` (`Sandbox.setTimeout`, `index.mjs:5529-5541`), reads the end
@@ -1206,7 +1224,7 @@ unit tests run against a fake. A live run must show:
 `e2b-dev/desktop@91f23aca` (`template/template.py`), `e2b-dev/infra@ff3922213`
 (`packages/orchestrator/pkg/template/build/core/rootfs/files/envd.service.tpl`,
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
-(network/restrict-public-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
+(network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
 ## Conformance
 

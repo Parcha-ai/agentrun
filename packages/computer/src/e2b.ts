@@ -479,6 +479,47 @@ function probeOf(stdout: string): ProbeReport | undefined {
 	return undefined;
 }
 
+/** What create made before the sandbox: its deadlines, its metadata, and the daemon with its sha256. */
+interface Made {
+	deadline: string;
+	maxDeadline: string;
+	metadata: Record<string, string>;
+	daemon: Buffer;
+	sha256: string;
+}
+
+/** The E2B timeout of the diagnostic's sandbox: E2B ends it at 10 minutes whatever happens to the run. */
+export const DIAGNOSE_LIFETIME_MS = 10 * 60_000;
+
+/**
+ * What diagnoseNetworkNone learned, one JSON object: the sandbox it made (none when create made nothing), E2B's
+ * read-back of its network, the provider's own network-none check from inside (`passed`, or its refusal in words, which
+ * stands: the diagnostic never relaxes it), what `computerd probe --diagnose` printed, why it stopped short of that, and
+ * whether the sandbox was killed and read back gone.
+ */
+export interface E2BNetworkDiagnosis {
+	template: string;
+	computer?: ComputerRef;
+	readBack?: { allowInternetAccess?: boolean; allowPublicTraffic?: boolean; allowOut?: string[]; denyOut?: string[] };
+	check?: string;
+	diagnosis?: unknown;
+	error?: { code: ComputerErrorCode; message: string };
+	released: { gone: boolean; words: string };
+}
+
+/** How the diagnostic reaches the provider's private steps: set by E2BProvider's static block. */
+let diagnoseWith: (provider: E2BProvider, image: string, signal?: AbortSignal) => Promise<E2BNetworkDiagnosis>;
+
+/**
+ * The network diagnostic: one sandbox made exactly as create makes one for network none (the same options, read-back,
+ * upload and sha256 check, daemon and display start, and the provider's own check from inside, recorded), then
+ * `computerd probe --diagnose` in it, and the sandbox killed and read back gone whatever happened, an abort included.
+ * Its E2B timeout is 10 minutes. It never relaxes create: create still refuses what the check refuses.
+ */
+export function diagnoseNetworkNone(provider: E2BProvider, { image, signal }: { image: string; signal?: AbortSignal }): Promise<E2BNetworkDiagnosis> {
+	return diagnoseWith(provider, image, signal);
+}
+
 /** Why ref is not an E2B computer's ref, or undefined. */
 function refProblem(ref: ComputerRef): string | undefined {
 	if (typeof ref?.name !== "string" || !NAME.test(ref.name)) return `${String(ref?.name)} is not the name of an E2B computer (computer-<12 hex digits>)`;
@@ -603,6 +644,18 @@ export class E2BProvider implements ComputerProvider {
 	}
 
 	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<ComputerRef>> {
+		const launched = await this.#launch(spec, signal);
+		if (!launched.ok) return launched;
+		const { sandbox, ref, made } = launched.value;
+		// From here the sandbox exists: every step takes the caller's signal, and a failure or an abort kills it.
+		const prepared = await this.#prepare(spec, ref, sandbox, made, signal);
+		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
+		if (prepared.ok) return ok(ref);
+		return this.#abandon(ref, prepared.error, signal);
+	}
+
+	/** Everything create does up to E2B's answer: the spec checked, the daemon read, the sandbox made, by its options. */
+	async #launch(spec: ComputerSpec, signal?: AbortSignal): Promise<Result<{ sandbox: E2BSandbox; ref: ComputerRef; made: Made }>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		let daemon: Buffer;
@@ -662,12 +715,7 @@ export class E2BProvider implements ComputerProvider {
 			return fail(created.error.code, `E2B did not create the sandbox: ${created.error.message}${swept}`);
 		}
 		const sandbox = created.value;
-		const ref = { id: sandbox.sandboxId, name };
-		// From here the sandbox exists: every step takes the caller's signal, and a failure or an abort kills it.
-		const prepared = await this.#prepare(spec, ref, sandbox, { deadline, maxDeadline, metadata, daemon, sha256 }, signal);
-		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
-		if (prepared.ok) return ok(ref);
-		return this.#abandon(ref, prepared.error, signal);
+		return ok({ sandbox, ref: { id: sandbox.sandboxId, name }, made: { deadline, maxDeadline, metadata, daemon, sha256 } });
 	}
 
 	/** Kills a sandbox create gives up on, then waits, under the caller's signal, until E2B reads it gone. */
@@ -696,17 +744,23 @@ export class E2BProvider implements ComputerProvider {
 		return killed.ok || killed.error.code === "not_found" ? ok(undefined) : killed;
 	}
 
-	/** Everything between the create's answer and a computer that passed the drift check. */
+	/**
+	 * Everything between the create's answer and a computer that passed the drift check. The diagnostic (#diagnose) is
+	 * given every step alike up to the daemon's first connection, then runs its own inside step in place of the check
+	 * and the listing's wait, and sees the read-back.
+	 */
 	async #prepare(
 		spec: ComputerSpec,
 		ref: ComputerRef,
 		sandbox: E2BSandbox,
-		{ deadline, maxDeadline, metadata, daemon, sha256 }: { deadline: string; maxDeadline: string; metadata: Record<string, string>; daemon: Buffer; sha256: string },
+		{ deadline, maxDeadline, metadata, daemon, sha256 }: Made,
 		signal?: AbortSignal,
+		diagnostic?: { readBack(info: E2BSandboxInfo): void; inside(connection: ComputerConnection): Promise<Result<void>> },
 	): Promise<Result<void>> {
 		const { requestMs, uploadMs, execMs } = this.#timeouts;
 		const info = await this.#info(ref.id, signal);
 		if (!info.ok) return info;
+		diagnostic?.readBack(info.value);
 		const vendor = this.#sandboxDrift(spec, info.value, metadata);
 		if (vendor.length > 0) return fail("refused", `it did not match its spec: ${vendor.join("; ")}`);
 		const staging = `${STAGING}${randomBytes(8).toString("hex")}`;
@@ -735,12 +789,12 @@ export class E2BProvider implements ComputerProvider {
 				return opened.error.code === "aborted" ? opened : fail(opened.error.code, `the daemon did not answer: ${opened.error.message}${why ? `; init wrote: ${why}` : ""}`);
 			}
 			try {
-				const inside = await this.#checkInside(opened.value, ref.name, spec.network as "none" | "open", true, signal);
+				const inside = diagnostic ? await diagnostic.inside(opened.value) : await this.#checkInside(opened.value, ref.name, spec.network as "none" | "open", true, signal);
 				if (!inside.ok) return inside;
 			} finally {
 				await opened.value.close();
 			}
-			return await this.#waitListed(ref, signal);
+			return diagnostic ? ok(undefined) : await this.#waitListed(ref, signal);
 		} finally {
 			await init.value.disconnect().catch(() => {});
 		}
@@ -936,6 +990,69 @@ export class E2BProvider implements ComputerProvider {
 		if (exitCode !== 0) return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 		const report = probeOf(stdout);
 		return report === undefined ? fail("refused", `the probe in ${name} wrote what is not its report`) : ok(report);
+	}
+
+	static {
+		diagnoseWith = (provider, image, signal) => provider.#diagnose(image, signal);
+	}
+
+	/**
+	 * See diagnoseNetworkNone. Create is awaited, never raced by the signal (bounded by createMs), so a sandbox it makes is
+	 * known by id; every step after it takes the signal; the kill and the wait for gone take none, bounded by goneMs.
+	 */
+	async #diagnose(image: string, signal?: AbortSignal): Promise<E2BNetworkDiagnosis> {
+		const report: E2BNetworkDiagnosis = { template: image, released: { gone: true, words: "nothing was made" } };
+		const spec: ComputerSpec = { image, lifetimeMs: DIAGNOSE_LIFETIME_MS, network: "none" };
+		if (signal?.aborted) return { ...report, error: { code: "aborted", message: "the diagnostic was aborted before E2B was called" } };
+		const launched = await this.#launch(spec);
+		if (!launched.ok) {
+			const madeNothing = ["refused", "invalid", "denied", "limit", "not_found"].includes(launched.error.code);
+			return { ...report, error: launched.error, released: madeNothing ? report.released : { gone: false, words: launched.error.message } };
+		}
+		const { sandbox, ref, made } = launched.value;
+		report.computer = ref;
+		const prepared = signal?.aborted
+			? fail("aborted", "the diagnostic was aborted")
+			: await this.#prepare(spec, ref, sandbox, made, signal, {
+					readBack: ({ allowInternetAccess, network }) => {
+						report.readBack = { allowInternetAccess, allowPublicTraffic: network?.allowPublicTraffic, allowOut: network?.allowOut, denyOut: network?.denyOut };
+					},
+					inside: async (connection) => {
+						const checked = await this.#checkInside(connection, ref.name, "none", true, signal);
+						if (signal?.aborted) return fail("aborted", "the diagnostic was aborted");
+						report.check = checked.ok ? "passed" : checked.error.message;
+						const diagnosed = await this.#probeDiagnose(connection, ref.name, signal);
+						if (!diagnosed.ok) return diagnosed;
+						report.diagnosis = diagnosed.value;
+						return ok(undefined);
+					},
+				});
+		if (!prepared.ok) report.error = signal?.aborted ? { code: "aborted", message: `the diagnostic was aborted: ${prepared.error.message}` } : prepared.error;
+		const killed = await this.#kill(ref.id);
+		const gone = killed.ok ? await this.#settle(ref) : killed;
+		report.released = gone.ok ? { gone: true, words: `${ref.name} was killed, and E2B reads it gone` } : { gone: false, words: `${ref.name}: ${gone.error.message}; E2B ends it at its 10-minute timeout` };
+		return report;
+	}
+
+	/** `computerd probe --diagnose` through the daemon, as the computer's own user: its JSON line, or why not. */
+	async #probeDiagnose(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<unknown>> {
+		const { probeMs } = this.#timeouts;
+		const what = `probe --diagnose in ${name}`;
+		const ran = await connection.client.call("exec.run", { argv: [DAEMON_IN_COMPUTER, "probe", "--diagnose"], timeoutMs: probeMs }, { signal: this.#bounded(probeMs + 5_000, signal) });
+		if (!ran.ok) {
+			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
+			return fail(ran.error.code === "aborted" ? "timeout" : ran.error.code, `${what} failed: ${ran.error.message}`);
+		}
+		const { exitCode, stdout, stderr, timedOut } = ran.value;
+		if (timedOut) return fail("timeout", `${what} did not end within ${seconds(probeMs)}`);
+		if (exitCode !== 0) return fail("refused", `${what} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
+		try {
+			const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as { verdict?: unknown; results?: unknown } | null;
+			if (typeof value?.verdict === "string" && Array.isArray(value.results)) return ok(value);
+		} catch {
+			// Not the diagnosis: below.
+		}
+		return fail("refused", `${what} wrote what is not its report`);
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {

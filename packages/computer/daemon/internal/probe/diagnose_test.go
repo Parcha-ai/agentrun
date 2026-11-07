@@ -2,9 +2,16 @@ package probe_test
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net"
 	"reflect"
 	"strconv"
@@ -15,8 +22,9 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
 )
 
-// own is where each listener of these tests listens: this machine's own IPv4 loopback, any free port.
-const own = "127.0.0.1:0" // key-gate: loopback-rule the diagnostic's tests listen on this machine only, never past it
+// own is where each listener of these tests listens: this machine's own IPv4 loopback, any free port, so no test
+// reaches past this machine.
+var own = net.JoinHostPort(net.IPv4(127, 0, 0, 1).String(), "0")
 
 // short bounds a diagnosis against this machine's own listeners.
 var short = probe.Bounds{Connect: time.Second, Read: time.Second, Whole: 5 * time.Second, MaxRead: 4096}
@@ -191,6 +199,44 @@ func TestDiagnoseTLSIsAnsweredOnlyByAServerHello(t *testing.T) {
 	got = only(t, probe.Diagnose([]probe.Check{{Probe: "tls", Address: alert, Name: "one.one.one.one"}}, short))
 	if got.Outcome != "accepted" || got.Bytes != 7 || !strings.Contains(got.Detail, "not a ServerHello") {
 		t.Fatalf("an alert came back, and the probe reported %+v; want accepted, 7 bytes, and that they are not a ServerHello", got)
+	}
+}
+
+// A real TLS server (Go's own, TLS 1.2 and 1.3) answers the probe's ClientHello with a ServerHello: the hello is one a
+// server of today takes, not only one this file's parser reads.
+func TestDiagnoseTLSIsAnsweredByARealTLSServer(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "one.one.one.one"}, DNSNames: []string{"one.one.one.one"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := tls.Listen("tcp", own, &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+				_ = conn.(*tls.Conn).Handshake()
+			}()
+		}
+	}()
+	for _, name := range []string{"one.one.one.one", ""} {
+		got := only(t, probe.Diagnose([]probe.Check{{Probe: "tls", Address: listener.Addr().String(), Name: name}}, short))
+		if got.Outcome != "answered" {
+			t.Fatalf("with the name %q, Go's TLS server gave %+v; want answered", name, got)
+		}
 	}
 }
 
