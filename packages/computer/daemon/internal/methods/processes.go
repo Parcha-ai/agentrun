@@ -12,7 +12,7 @@ import (
 // in package process.
 func processHandlers(table *process.Table) map[string]rpc.Handler {
 	return map[string]rpc.Handler{
-		"process.start":  handle(table.Start),
+		"process.start":  handleCtx(table.Start),
 		"process.read":   handleCtx(table.Read),
 		"process.write":  handleCtx(table.Write),
 		"process.signal": handle(table.Signal),

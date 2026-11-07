@@ -204,8 +204,8 @@ func TestHelloOffersFilesAndProcesses(t *testing.T) {
 	c := dial(t)
 	var hello methods.HelloResult
 	c.ok("hello", map[string]any{"client": "test"}, &hello)
-	if strings.Join(hello.Capabilities, ",") != "exec,files,processes" {
-		t.Fatalf("capabilities %v", hello.Capabilities)
+	if strings.Join(hello.Groups, ",") != "exec,files,processes" {
+		t.Fatalf("groups %v", hello.Groups)
 	}
 }
 

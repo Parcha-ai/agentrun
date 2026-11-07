@@ -1,0 +1,25 @@
+```skill ops-status-report
+---
+name: ops-status-report
+description: Write a short status report for the Lumen operations team; use whenever asked for a report or status update
+---
+Team rule for every report:
+1. The first line is `STATUS: <OK, AT RISK or BLOCKED>`. Choose OK when everything completed, AT RISK when something was skipped or delayed but has a recovery planned, and BLOCKED when work cannot proceed.
+2. Keep the whole report to 5 lines or fewer.
+3. The last line starts with `Next:` and names the next action.
+4. Use only the facts the team gives. Add no preamble or closing remarks outside these lines.
+```
+
+Because that skill is a four-backtick block in the format, here it is again in the required form:
+
+````skill ops-status-report
+---
+name: ops-status-report
+description: Write a short status report for the Lumen operations team; use whenever asked for a report or status update
+---
+Team rule for every report:
+1. The first line is `STATUS: <OK, AT RISK or BLOCKED>`. Choose OK when everything completed, AT RISK when something was skipped or delayed but has a recovery planned, and BLOCKED when work cannot proceed.
+2. Keep the whole report to 5 lines or fewer.
+3. The last line starts with `Next:` and names the next action.
+4. Use only the facts the team gives. Add no preamble or closing remarks outside these lines.
+````

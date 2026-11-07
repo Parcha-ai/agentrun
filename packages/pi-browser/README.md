@@ -94,7 +94,7 @@ The same tools run on three kinds of browser. You pick one when you set up the p
 
 | Provider | What it is | What it needs |
 |---|---|---|
-| Local Chrome (`/providers/cdp`) | A Chrome the package starts and stops by exact pid, with its own profile directory and a free debugging port. It can also attach to a Chrome you already run, at a CDP endpoint. | Chrome or Chromium. No key. |
+| Local Chrome (`/providers/cdp`) | A Chrome the package starts and stops by exact pid, with its own profile directory and a free debugging port. It can also attach to a Chrome you already run, at a CDP endpoint. | Chrome or Chromium 137 or later. No key. |
 | Browserbase (`/providers/browserbase`) | A Browserbase session, through its SDK. | `BROWSERBASE_API_KEY` and the `@browserbasehq/sdk` peer. |
 | Kernel (`/providers/kernel`) | A Kernel browser, through its REST API. | `KERNEL_API_KEY`. No SDK. |
 
@@ -159,6 +159,11 @@ Every browser tool is a model call on its session's gate (`drivingGates`, shared
 registry, pass the same one to both sides: `const gates = createDrivingGates({ idleMs: 5_000 }); createLiveView({ hostOrigin, gates }); createBrowserExtension({ ..., gates });`.
 
 `drivingGates(tag).viewing()` is true for as long as an authenticated viewer is connected to that session, even when the person sits still longer than the 3 s driving window (a person mid-sign-in): the host's own custody reads it before it releases a session on its own. A custom registry's gates implement `viewing()` and `setViewing(on)`; the live view sets it on a viewer's hello and clears it when that viewer leaves or the session is released.
+
+`readOnly: true` makes the view watch-only: every input, navigation and dialog answer a viewer sends is dropped on the server, before the browser (`held read_only`, and
+one that keeps sending is closed), its `ready` carries `readOnly: true` and the page shows "view only" with its controls off; a watching viewer never sets `viewing`, so it
+keeps no session open. A browser with no page to show (a headless one that starts with none, or whose last page closed) sends `no_page`, and the page says "No page yet"
+until one opens.
 
 Limits: JS dialogs show with accept and dismiss. A file chooser and downloads are not supported.
 
@@ -283,7 +288,8 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
 - `/driver/stagehand`: `stagehandDriver()`, Stagehand v4 over upstream's facade, vendored unedited in
   `src/vendor/stagehand-facade/`. `UPSTREAM.json` names the commit and each file's blob id and SHA-256;
   `node scripts/vendor-facade.mjs --check` verifies them and `--commit SHA --release NAME` re-vendors. Stagehand is created
-  sealed: no inference, no cache, its trace exporter pointed at a closed loopback port.
+  sealed: no inference, no cache, and no trace endpoint, so no trace is exported. Stagehand attaches one client to a browser
+  at a time: closing a driver disconnects it, so the next attach is allowed.
 - `/providers/browserbase`, `/providers/kernel`, `/providers/cdp`: where browsers come from. Browserbase through its SDK,
   with the credential-proxy dial and the connect-URL rewrite. Kernel through its REST API on the package's own HTTP agent.
   Any CDP endpoint, or a local Chrome the provider starts and kills by exact pid.
@@ -316,7 +322,7 @@ else the first of `google-chrome`, `chromium` and the usual install locations (`
 | `--browser-chrome PATH`, `PI_BROWSER_CHROME` | The Chrome to start. A path that does not exist is refused by name, never replaced. |
 | `--browser-headed`, `PI_BROWSER_HEADED=1` | Show the window instead of running headless. |
 | `--browser-no-sandbox`, `PI_BROWSER_NO_SANDBOX=1` | Start Chrome without its sandbox. Needed as root, in a container, or where user namespaces are restricted. Use it only for pages you trust. |
-| `--browser-endpoint URL`, `PI_BROWSER_ENDPOINT` | Attach to a Chrome you already run (`http://host:port` or `ws://`) instead of starting one. Releasing leaves it running. |
+| `--browser-endpoint URL`, `PI_BROWSER_ENDPOINT` | Attach to a Chrome you already run (`http://host:port` or `ws://`) instead of starting one. Releasing leaves it running. Stagehand attaches one client to a browser at a time, so a second pi on the same Chrome is refused until the first lets go, and the Chrome must hold at most one Stagehand extension. |
 | `--browser-provider browserbase`, `PI_BROWSER_PROVIDER` | Use Browserbase. Needs `BROWSERBASE_API_KEY` (`BB_API_KEY` also works); a missing key is refused by name. `PI_BROWSER_PROXIES=1` turns on its proxies. |
 | `--browser-provider kernel`, `PI_BROWSER_PROVIDER` | Use Kernel. Needs `KERNEL_API_KEY`; a missing key is refused by name. `KERNEL_BASE_URL` points at another Kernel API. `PI_BROWSER_STEALTH=1` turns on Kernel's stealth mode. |
 
@@ -330,7 +336,7 @@ What it does with your machine and your data:
 - Each browser session is appended to the pi session file (`browser.session` entries; the model never sees them). The coding
   agent has no mid-turn resume, so a resumed session gets a fresh browser: cookies and page state do not carry over. A Chrome
   that a crashed pi left running is closed when that session is next started, never adopted.
-- Stagehand's trace export is pointed at a closed loopback port, so nothing you browse goes to a third party.
+- Stagehand is given no trace endpoint, so it exports no traces: nothing you browse goes to a third party.
 - `browser_relaunch` with `verified` or `geolocation` changes nothing on a local Chrome or on Kernel; they are Browserbase features.
   With proxies off (the default), a `geolocation` is refused and the session is left as it was, as in the pi-durable adapter.
 - A host that builds the extension with `policy: { actions: "deny" }` or `"ask"` asks for requests to be held, and the coding
@@ -396,6 +402,9 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
 - `decisions`: `classifyPage` and `rankChunks`, answered with your judge. Absent, no page is classified and no find is ranked.
 - `redact.values`: exact strings to scrub besides the built-in shapes.
 - `section.addendum`: your text after the package's prompt section.
+- `signIns`: `true` when the plane's sessions open on the agent's saved sign-ins (your kept profile or context). `run`'s
+  description then tells the model the browser keeps them, for a page behind a sign-in; without it, it says only that the
+  browser keeps cookies across pages. Absent, it is whether a `sessionVault` is given.
 - `workspace`: where `browser_downloads` writes, and where `browser_upload` reads when `files` is absent. Absent, `browser_downloads` is not listed, and `browser_upload` is listed only if `files` is given.
 - `files`: a `WorkspaceFiles` that resolves `browser_upload` paths. Given, `browser_upload` is listed without a `workspace`.
 - `handoff`: a `HandoffPort` that reaches a person (`request`, then `outcome` polled until done, cancelled or expired;
@@ -414,7 +423,8 @@ region, a raw context id, the session timeout, the idle release and the batch ti
 package's defaults to spread and override) in the conversation's creating commit,
 selects the extensions for it, and calls `handle.release(conversation, "close", ctx)` when the conversation ends. Releases run
 as background tasks, which `waitForIdle` skips and closing the harness aborts: before it closes, a host calls
-`handle.drain(harness, ctx, signal?)`, which resolves once none is live. A release the store cannot record (a storage error)
+`handle.drain(harness, ctx, signal?)`, which resolves once none is live. A host that closes with no drain after its `close`
+releases gets them at the provider all the same: `handle.close()` waits, 30 s at most, for every one no drain since covered. A release the store cannot record (a storage error)
 is still made at the provider, and the record is left for the next run's reconcile; once the store has failed,
 `handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
 after the extensions are installed and

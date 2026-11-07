@@ -17,6 +17,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Cron } from "croner";
+import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { EFFORTS } from "./model.js";
@@ -126,11 +127,12 @@ export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): {
 export type TriggerDeps = {
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
-  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; ApiError when refused. */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger): Promise<{ run_id: string }>;
+  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; its first message is the
+   *  trigger's (`from`, never the person's); ApiError when refused. */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
   /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
-   *  once per key); ApiError when refused. */
-  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string): Promise<void | { skipped: string }>;
+   *  once per key), as the trigger's (`from`); ApiError when refused. */
+  message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
   /** A webhook trigger's signing secret, made now (at its create or a rotation) and shown once; its removal. */
   secrets: { mint(triggerId: string): string; remove(triggerId: string): void };
   /** A run's status, or null when there is no such run. */
@@ -609,7 +611,7 @@ export class Triggers {
       if (now.trigger.target.kind === "message_run") return await this.send(triggerId, key);
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.trigger.target, inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key });
+        started = await this.deps.start(now.trigger.target, inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, messageOriginOf(now.trigger));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -635,7 +637,7 @@ export class Triggers {
     const { target } = found.trigger;
     let skipped: string | undefined;
     try {
-      skipped = (await this.deps.message(target, inputOf(found.trigger, found.firing), key))?.skipped;
+      skipped = (await this.deps.message(target, inputOf(found.trigger, found.firing), key, messageOriginOf(found.trigger)))?.skipped;
     } catch (error) {
       if (this.closed) return;
       if (error instanceof ApiError && ["rate_limited", "home_busy", "unavailable"].includes(error.code)) return this.retry(triggerId, key, error);
@@ -830,6 +832,11 @@ function given(name: string, source: Source | undefined, target: Target, now: nu
   const trigger = { name, source: source ?? { kind: "schedule", at: second(now) }, target } as Trigger;
   return { ...target, input: inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
 }
+
+/** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never by
+ *  its payload. Only a schedule's words are its owner's, fired on time or by hand; a webhook's come from outside, its
+ *  body empty or not. */
+const messageOriginOf = (trigger: Trigger): MessageOrigin => ({ kind: "trigger", trigger_id: trigger.id, source: trigger.source.kind, owner: trigger.source.kind === "schedule" });
 
 /** The run's input: the trigger's, then a webhook's payload marked untrusted, then a line saying what fired it and when,
  *  in the trigger's zone. */

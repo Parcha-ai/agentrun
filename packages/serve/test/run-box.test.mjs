@@ -17,12 +17,12 @@ import { writesHeld } from "../dist/workspace.js";
 import { DEFAULT_DOCKER_IMAGE, RECIPE_HASH, RECIPE_LABEL } from "../dist/box-image.js";
 import { startServe } from "../dist/index.js";
 import { SERVER_LOCK } from "../dist/server-lock.js";
-import { client, follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, jsonLines, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-const WORK = "/run/agentrun/run/work";
+const WORK = "/workspace";
 /** Values planted in the server's environment, which the box must not hold: an unnamed key, OpenAI's, and the four keys
  *  a tester runs everything with (OpenRouter's, Monid's, Parallel's and Browserbase's), each searched for by value. */
 const PLANTED = Object.fromEntries(["FOO", "OPENAI", "OPENROUTER", "MONID", "PARALLEL", "BROWSERBASE"].map((name) => [`${name}_API_KEY`, ["planted", name.toLowerCase(), "sentinel"].join("-")]));
@@ -50,7 +50,7 @@ async function fakeDocker(t, vars = {}) {
 }
 
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -137,11 +137,11 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   const said = answers(data, runId);
   assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["read", false], ["bash", false], ["read", true]], JSON.stringify(said));
-  assert.match(said[3].text, /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
+  assert.match(said[3].text, /\/workspace\/missing\.md/, "an error names the box's path");
   assert.ok(!said[3].text.includes(realpathSync(data)), "never the data root");
   assert.equal(said[1].text, "hi");
   for (const [name, value] of Object.entries(PLANTED)) assert.ok(!said[2].text.includes(value), `${name}: the run's environment is not the box's`);
-  assert.equal(readFileSync(join(data, "runs", runId, "work", "out.txt"), "utf8"), "hi");
+  assert.equal(readFileSync(join(runDir(data, runId), "work", "out.txt"), "utf8"), "hi");
   const runs = docker.runs();
   assert.equal(runs.length, 1, "one box for the run's calls");
   const [args] = runs;
@@ -149,7 +149,7 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.deepEqual(flag(args, "--user"), [`${process.getuid()}:${process.getgid()}`]);
   // No capability and no new privilege: as root (serve run as uid 0) the box still cannot make a device node in work/.
   assert.deepEqual([flag(args, "--cap-drop"), flag(args, "--security-opt")], [["ALL"], ["no-new-privileges"]]);
-  assert.deepEqual(flag(args, "--mount"), [`type=bind,source=${join(realpathSync(data), "runs", runId, "work")},target=${WORK}`]);
+  assert.deepEqual(flag(args, "--mount"), [`type=bind,source=${join(runDir(realpathSync(data), runId), "work")},target=${WORK}`]);
   assert.deepEqual(flag(args, "--workdir"), [WORK]);
   assert.deepEqual(flag(args, "--env"), ["LANG=C.UTF-8", "HOME=/tmp"], "the fixed environment, each NAME=value: a bare --env NAME would copy the host's");
   for (const label of [`agentrun.run=${runId}`, "agentrun.box=run"]) assert.ok(flag(args, "--label").includes(label), label);
@@ -258,7 +258,7 @@ test("a remote box found at its run's next call: one with no network is kept whe
   const made = [];
   const destroyed = [];
   let found;
-  const box = (id, network) => ({ id, facts: () => ({ provider: "fake", network }), destroy: async () => {
+  const box = (id, network) => ({ id, facts: () => ({ provider: "fake", workspace: "/workspace", network }), destroy: async () => {
     destroyed.push(id);
     if (found?.id === id) found = undefined;
     return { ok: true, value: undefined };
@@ -281,12 +281,65 @@ test("a remote box found at its run's next call: one with no network is kept whe
   // Destroyed: a list when none is asked, and an open or unknown network whatever is asked.
   found = box("listed", "allowlist");
   await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "listed", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "made-1", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "made-1", made: true, replaced: true });
   assert.deepEqual([made, destroyed], [["none"], ["listed"]]);
   found = box("open", "open");
   await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "open", mark: { entries: [] } }));
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], pull }), { id: "made-2", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: ["pypi.org"], pull }), { id: "made-2", made: true, replaced: true });
   assert.deepEqual([made, destroyed], [["none", { allow: ["pypi.org"] }], ["listed", "open"]]);
+});
+
+test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work is copied back from there, whole, then destroyed and made again at /workspace; never kept with its files elsewhere", async (t) => {
+  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
+  const pulled = [];
+  // The copy back stand-in: notes which box it copied from, and where that box has the run's files.
+  let found;
+  const pull = async () => void pulled.push([found.id, found.facts().workspace]);
+  const runDir = await scratch(t);
+  const destroyed = [];
+  const box = (id, workspace) => ({ id, facts: () => ({ provider: "fake", workspace, network: "none" }), destroy: async () => (destroyed.push(id), found?.id === id && (found = undefined), { ok: true, value: undefined }) });
+  const specs = [];
+  const boxes = {
+    list: async () => ({ ok: true, value: found ? [{ id: found.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: found && found.id === id ? found : undefined }),
+    create: async (spec) => {
+      specs.push(spec);
+      found = box("new", spec.workspace);
+      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "new", mark: { entries: [] } }));
+      return { ok: true, value: found };
+    },
+  };
+  found = box("old", "/run/agentrun/run/work");
+  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "old", mark: { entries: [] } }));
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: true, replaced: true }, "replaced: its model is told so (run-box.ts BOX_REPLACED_NOTE)");
+  assert.deepEqual(pulled, [["old", "/run/agentrun/run/work"]], "copied back from the old box, before it went");
+  assert.deepEqual(destroyed, ["old"]);
+  assert.equal(specs[0].workspace, "/workspace");
+});
+
+test("a remote box replaced, then a create of its successor that fails: the next attempt that makes one still says replaced, once", async (t) => {
+  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  let found;
+  let fails = 1;
+  const box = (id, workspace) => ({ id, facts: () => ({ provider: "fake", workspace, network: "none" }), destroy: async () => ((found = found?.id === id ? undefined : found), { ok: true, value: undefined }) });
+  const boxes = {
+    list: async () => ({ ok: true, value: found ? [{ id: found.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: found && found.id === id ? found : undefined }),
+    create: async (spec) => {
+      if (fails-- > 0) return { ok: false, error: Object.assign(new Error("the provider is busy"), { code: "unavailable" }) };
+      found = box("new", spec.workspace);
+      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "new", mark: { entries: [] } }));
+      return { ok: true, value: found };
+    },
+  };
+  found = box("old", "/run/agentrun/run/work");
+  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "old", mark: { entries: [] } }));
+  const pull = async () => undefined;
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), /could not be made: the provider is busy/);
+  assert.equal(found, undefined, "the old box is gone, and no new one came");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: true, replaced: true }, "the attempt that makes one says the box was replaced");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", pull }), { id: "new", made: false }, "and only that one");
 });
 
 test("a remote box found with a host list is kept only when its list is the one asked, as a set: another list, or one it does not say, is destroyed and made again", async (t) => {
@@ -298,7 +351,7 @@ test("a remote box found with a host list is kept only when its list is the one 
   const made = [];
   const destroyed = [];
   let found;
-  const box = (id, facts) => ({ id, facts: () => ({ provider: "fake", ...facts }), destroy: async () => {
+  const box = (id, facts) => ({ id, facts: () => ({ provider: "fake", workspace: "/workspace", ...facts }), destroy: async () => {
     destroyed.push(id);
     if (found?.id === id) found = undefined;
     return { ok: true, value: undefined };
@@ -321,9 +374,9 @@ test("a remote box found with a host list is kept only when its list is the one 
   await finding("same", { network: "allowlist", allow: ["github.com", "pypi.org"] });
   assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "same", made: false });
   await finding("wider", { network: "allowlist", allow: ["pypi.org", "github.com", "example.com"] });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-1", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-1", made: true, replaced: true });
   await finding("unsaid", { network: "allowlist" });
-  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-2", made: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: asked, pull }), { id: "made-2", made: true, replaced: true });
   assert.deepEqual(destroyed, ["wider", "unsaid"]);
   assert.deepEqual(made, [{ allow: asked }, { allow: asked }]);
   assert.equal(pulls.length, 2, "each replaced box was copied back first");
@@ -383,7 +436,7 @@ test("fake docker: read, write and edit run no docker command, on the work/ the 
   assert.equal(docker.runs().length, 1, "one box, made for bash");
 });
 
-test("fake docker: a run whose earlier process left a box gets that box's left commands killed before its first read, write or edit here, with no create; a fresh run makes no box for them", { skip: !writesHeld() && "needs held directory handles (/proc/self/fd)", timeout: 90_000 }, async (t) => {
+test("fake docker: a run whose earlier process left a box has that box destroyed before its first read, write or edit here (its left commands with it), with no create, and its model told once; a fresh run makes no box for them", { skip: !writesHeld() && "needs held directory handles (/proc/self/fd)", timeout: 90_000 }, async (t) => {
   const docker = await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
   assert.equal((await api("POST", "/agents", { definition: { id: "files", name: "files", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "edit", "bash"] } })).status, 201);
@@ -391,7 +444,7 @@ test("fake docker: a run whose earlier process left a box gets that box's left c
   const run = await api("POST", "/agents/files/runs", { input: { content: JSON.stringify({ probe: [{ wait: go }, { tool: "write", args: { path: "a.txt", content: "resumed" } }, { tool: "read", args: { path: "a.txt" } }] }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   // The box an earlier process of the run made, as Docker would list it: its commands may still change work/.
   const id = "e".repeat(64);
@@ -400,11 +453,15 @@ test("fake docker: a run whose earlier process left a box gets that box's left c
   await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: HARDENED, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
-  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"], ["read", false, "resumed"]]);
-  const execs = docker.calls().filter((args) => args[0] === "exec");
-  assert.equal(execs.length, 1, JSON.stringify(execs));
-  assert.ok(execs[0].join(" ").includes(".pi-transport") && execs[0].join(" ").includes("kill -KILL"), "the one command kills what the earlier process left, before the file tools ran");
-  assert.deepEqual(docker.runs(), [], "taken over: no create");
+  const note = "this run's box was replaced after a restart: /workspace is kept; packages installed outside it and /tmp are gone; reinstall what you need";
+  const said = answers(data, runId).map((a) => [a.tool, a.error, a.text]);
+  assert.equal(said.length, 2, JSON.stringify(said));
+  assert.deepEqual([said[0][0], said[0][1]], ["write", false]);
+  assert.ok(said[0][2].startsWith(note) && said[0][2].endsWith("Successfully wrote to a.txt"), said[0][2]);
+  assert.deepEqual(said[1], ["read", false, "resumed"]);
+  assert.ok(docker.removed().includes(id), "the earlier process's box is destroyed");
+  assert.deepEqual(docker.calls().filter((args) => args[0] === "exec"), [], "nothing runs in it");
+  assert.deepEqual(docker.runs(), [], "no create for the file tools");
 });
 
 test("a Docker daemon on another machine (DOCKER_HOST tcp:// or ssh://) binds none of this machine's work/: the run's box is not bound, so read, write and edit go through the box", async (t) => {
@@ -435,7 +492,7 @@ test("fake docker: a run's box made before every capability was dropped (an olde
   await boxedAgent(api);
   const go = join(await scratch(t), "go");
   const runId = await probe(api, [{ wait: go }, { tool: "bash", args: { command: "printf fresh > out.txt" } }]);
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
   const id = "a".repeat(64);
   const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
@@ -453,17 +510,18 @@ test("fake docker: a run's box made before every capability was dropped (an olde
   assert.ok(!docker.calls().some((args) => args[0] === "exec" && args.includes(id)), "nothing ran in the old box");
 });
 
-test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {
+test("fake docker: a run's box of its process's own epoch is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {
   const docker = await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
   await boxedAgent(api);
   const go = join(await scratch(t), "go");
   const runId = await probe(api, [{ wait: go }, { tool: "bash", args: { command: "printf adopted > out.txt" } }]);
-  const work = join(realpathSync(data), "runs", runId, "work");
+  const work = join(runDir(realpathSync(data), runId), "work");
   await until(() => existsSync(work), "the run's work/");
-  // The box an earlier process of the run made, as Docker would list it.
+  await until(() => claimEpochOf(realpathSync(data), runId) >= 1, "the run's claim");
+  // A box of the run's own epoch, as Docker would list it (made by this process before, then lost): taken over.
   const id = "c".repeat(64);
-  const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
+  const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run", "agentrun.epoch": String(claimEpochOf(realpathSync(data), runId)) };
   await mkdir(join(docker.state, "containers"), { recursive: true });
   await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: HARDENED, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
   await writeFile(go, "");
@@ -499,10 +557,10 @@ test("fake docker: a bash timeout kills the command's group in the box, though t
   const [bash] = answers(data, runId);
   assert.equal(bash.error, true);
   assert.match(bash.text, /timed out after 1 seconds/);
-  const pid = Number(readFileSync(join(data, "runs", runId, "work", "k.pid"), "utf8").trim());
+  const pid = Number(readFileSync(join(runDir(data, runId), "work", "k.pid"), "utf8").trim());
   t.after(() => running(pid) && process.kill(pid, "SIGKILL"));
   await until(() => !running(pid), "the timed-out command's kill", 15_000);
-  assert.equal(existsSync(join(data, "runs", runId, "work", "late.txt")), false);
+  assert.equal(existsSync(join(runDir(data, runId), "work", "late.txt")), false);
 });
 
 test("fake docker: a create that fails is the call's error, never a run on this machine, and the container it left is destroyed by its label", { timeout: 90_000 }, async (t) => {
@@ -515,7 +573,7 @@ test("fake docker: a create that fails is the call's error, never a run on this 
   const [bash] = answers(data, runId);
   assert.equal(bash.error, true);
   assert.match(bash.text, /the run's box could not be made: docker could not start a box: docker: Error response from daemon: the fake's start failed/);
-  assert.equal(existsSync(join(data, "runs", runId, "work", "out.txt")), false, "nothing ran on this machine");
+  assert.equal(existsSync(join(runDir(data, runId), "work", "out.txt")), false, "nothing ran on this machine");
   assert.equal(docker.runs().length, 1);
   // Waited on by its rm and its file, not by polling containers(), which could read a file an rm in flight is removing.
   await until(() => docker.removed().length >= 1 && docker.removed().every(docker.gone), "the left container's destroy");
@@ -601,3 +659,13 @@ test("where this host reaches a run's directories by path (no /proc/self/fd, as 
   assert.match(await monidText(huge, runner, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
   assert.equal(readFileSync(join(runner, "evidence", "monid", "run_1.json"), "utf8"), JSON.stringify(huge));
 });
+
+/** Run `runId`'s claim epoch, as its row in the agent store holds it. */
+function claimEpochOf(data, runId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    return db.prepare("SELECT claim_epoch FROM runs WHERE id = ?").get(runId)?.claim_epoch;
+  } finally {
+    db.close();
+  }
+}

@@ -126,6 +126,8 @@ export const said = {
     return dropped ? `${base}${base.endsWith(".") ? "" : "."} ${dropped}` : base;
   },
   empty: "Nothing new to remember from this run.",
+  /** A merge whose every item the owner has since retired: nothing it learned is kept now. */
+  retiredSince: "What it learned was retired since.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
   unparsed: "Not kept: its notes weren't in the expected format.",
   /** The grader's word on why it kept nothing (a dropped note's why, or its reason), its first sentence. */
@@ -141,10 +143,8 @@ export const said = {
   stale: (problems: readonly Pick<Problem, "rule">[]) => problems.length && problems.every((problem) => problem.rule === "supersedes")
     ? "Not kept: a note it would replace is gone or was changed since."
     : `Not kept: the agent's notes changed while this run ran (${rulesIn(problems)}).`,
-  noWriteTool: "Not kept: this agent can't write notes (give it the write tool).",
   noBudget: "Skipped: no budget left in this run to look back.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover looking back.",
-  screen: "Not kept: a new note read like instructions planted in a page, not a lesson.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
 };
 

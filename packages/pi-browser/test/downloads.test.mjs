@@ -9,7 +9,7 @@ import { createRedactor, DOWNLOADS_MANIFEST, fetchDownloads, recordingHandle, sa
 import { browserbaseProvider } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
-import { CHROME, LOCAL_TELEMETRY, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -221,8 +221,8 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     let browser;
     try {
       const attached = await provider.attach(ref);
-      browser = await localBrowser.connect({ cdpUrl: attached.sdkCdpUrl, ...(attached.extensionId ? { extensionId: attached.extensionId } : {}) });
-      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+      browser = await localBrowser.connect({ cdpUrl: attached.sdkCdpUrl });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
     await page.goto(`http://127.0.0.1:${server.address().port}/`);

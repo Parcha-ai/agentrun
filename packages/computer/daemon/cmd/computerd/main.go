@@ -5,7 +5,8 @@
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline.
 //	                    With --user, init starts as root, gives HOME and the socket's directory to uid:gid and becomes
 //	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
-//	                    cannot be relied on (Daytona)
+//	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
+//	                    capability in any set and no_new_privs set, or refuses to start
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--connect <host:port>]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, and the addresses a TCP
@@ -47,11 +48,15 @@ func main() {
 		if !ok {
 			os.Exit(2)
 		}
+		var dropped error
 		if opts.user != nil {
-			if err := daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath()); err != nil {
-				logger.Printf("init: %v", err)
-				os.Exit(1)
-			}
+			dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath())
+		} else {
+			dropped = daemon.Unprivileged()
+		}
+		if dropped != nil {
+			logger.Printf("init refuses to start: %v", dropped)
+			os.Exit(1)
 		}
 		os.Exit(daemon.Init(version, daemon.SocketPath(), opts.deadline, logger))
 	case "probe":

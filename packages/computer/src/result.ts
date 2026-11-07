@@ -15,7 +15,8 @@ export type ComputerErrorCode =
 	| "not_dir"
 	| "is_dir"
 	| "docker"
-	| "daytona";
+	| "daytona"
+	| "modal";
 
 export interface ComputerError {
 	code: ComputerErrorCode;

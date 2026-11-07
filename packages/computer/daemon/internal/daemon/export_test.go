@@ -8,5 +8,10 @@ func SetAfterHalfClose(t *testing.T, fn func()) {
 	t.Cleanup(func() { afterHalfClose = nil })
 }
 
-// NoNewPrivsChild is the child of TestNoNewPrivsHoldsOnEveryThread, run from TestMain.
-func NoNewPrivsChild() int { return noNewPrivsChild() }
+// BecomeChild and StatusChild are the children of the Become tests, and NoNewPrivsChild the child of
+// TestNoNewPrivsHoldsOnEveryThread, run from TestMain.
+var (
+	BecomeChild     = becomeChild
+	StatusChild     = statusChild
+	NoNewPrivsChild = noNewPrivsChild
+)
