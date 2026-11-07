@@ -3,7 +3,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { exitCodeFor, HeldError } from "../src/errors.ts";
@@ -134,6 +136,54 @@ describe("a run's record, in its store", () => {
         db.close();
       }
     } finally {
+      dir.remove();
+    }
+  });
+
+  it("a holder paused by SIGSTOP keeps the store's lock: an open beside it is refused (HeldError store, 76); once it is gone the next open takes the run", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("store-record-paused");
+    const HOLD = fileURLToPath(new URL("./fixtures/open-and-hold.ts", import.meta.url));
+    const child = spawn(process.execPath, [HOLD, dir.root, ref.id], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, NODE_NO_WARNINGS: "1" } });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    try {
+      const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+      assert.match(String((await lines.next()).value), /^opened 1 \d+$/);
+      child.kill("SIGSTOP");
+      const scripted = scriptedHarness();
+      const options = { ...localRun(dir.root), harness: { models: scripted.models, registry: scripted.registry } };
+      const refused = await openDurableRun(ref, options).then(() => null, (error: unknown) => error);
+      assert.ok(refused instanceof HeldError && refused.holder === "store", `refused by the store's lock while its holder is paused: ${String(refused)}`);
+      assert.equal(exitCodeFor(refused), 76);
+      child.kill("SIGCONT");
+      child.kill("SIGKILL");
+      await exited;
+      const run = await openDurableRun(ref, options);
+      assert.equal(run.generation, 2, "the next open takes the run once the paused holder is gone");
+      await run.release();
+    } finally {
+      child.kill("SIGKILL");
+      dir.remove();
+    }
+  });
+
+  it("readLocalRunStatus on a store nobody holds: its close checkpoints the WAL's committed frames into the database file", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("store-record-checkpoint");
+    const HOLD = fileURLToPath(new URL("./fixtures/open-and-hold.ts", import.meta.url));
+    const child = spawn(process.execPath, [HOLD, dir.root, ref.id], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, NODE_NO_WARNINGS: "1" } });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    const wal = join(dir.root, "store", "run.sqlite-wal");
+    try {
+      const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+      assert.match(String((await lines.next()).value), /^opened 1 \d+$/);
+      child.kill("SIGKILL");
+      await exited;
+      assert.ok(existsSync(wal) && statSync(wal).size > 0, "the killed holder left its committed frames in the WAL");
+      const record = await readLocalRunStatus(dir.root);
+      assert.deepEqual([record?.status, record?.generation], ["running", 1], "the record the killed holder committed");
+      assert.ok(!existsSync(wal) || statSync(wal).size === 0, `the read's close checkpointed the WAL: ${existsSync(wal) ? statSync(wal).size : "gone"} bytes left`);
+      assert.deepEqual(await readLocalRunStatus(dir.root), record, "what the WAL committed is in the database file now");
+    } finally {
+      child.kill("SIGKILL");
       dir.remove();
     }
   });
