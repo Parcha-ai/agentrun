@@ -89,6 +89,10 @@ export interface FauxOptions {
   openDelayMs?: number;
   /** Told each session closed, by its key. */
   onClose?: (key: string) => void;
+  /** How long a session's close takes before it is told closed, as a slow harness stop does (default 0). */
+  closeDelayMs?: number;
+  /** A close that fails, after its delay, with these words (default none). */
+  closeError?: string;
 }
 
 export interface FauxAdapter extends AgentAdapter {
@@ -263,7 +267,15 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
-        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); options.onClose?.(spec.key); },
+        async close() {
+          turnSignal?.abort(new SessionHalt("closed"));
+          // A slow harness stop: told closed only once it has taken its time.
+          if (options.closeDelayMs) await new Promise((resolve) => setTimeout(resolve, options.closeDelayMs));
+          // A harness whose stop fails: the close rejects, saying so, and is never told closed.
+          if (options.closeError) throw new Error(options.closeError);
+          stats.closed.push(spec.key);
+          options.onClose?.(spec.key);
+        },
       };
       return session;
     },
