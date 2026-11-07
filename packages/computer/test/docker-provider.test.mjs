@@ -587,3 +587,11 @@ test("desktop: create() deletes a computer whose display never comes up, after i
 	assert.match(result.error.message, /display :0 .*not up within 0\.3 s/);
 	assert.deepEqual(names(), []);
 });
+
+test("desktop: a timeoutMs a timer cannot hold is refused when the provider is made, before any computer exists", () => {
+	const daemonPath = fakeDocker().daemonPath;
+	for (const timeoutMs of [2 ** 31, 2 ** 32, Number.MAX_SAFE_INTEGER]) {
+		assert.throws(() => new DockerProvider({ daemonPath, desktop: { timeoutMs } }), /the desktop's timeoutMs must be .* at most 2147483647/, String(timeoutMs));
+	}
+	assert.doesNotThrow(() => new DockerProvider({ daemonPath, desktop: { timeoutMs: 2 ** 31 - 1 } }));
+});
