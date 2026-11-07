@@ -19,22 +19,19 @@ const label = 'reads argv[1] only as a label for the script being run, and never
 const realpathForm = 'compares realpathSync(argv[1]) with its URL, which is symlink-safe; the published package allows Node 23 and 24.0-24.1, which have no import.meta.main';
 const reviewed = new Map([
   ['scripts/is-main.mjs', 'compares realpathSync(argv[1]) with its URL, symlink-safe, only where Node has no import.meta.main, to refuse the command rather than exit 0'],
+  ['packages/computer/src/conformance/cli.ts', realpathForm],
   ['packages/pi-durable-disk/src/cli.ts', realpathForm],
-  ['packages/pi-durable-disk/src/hosts/daytona-launch.ts', realpathForm],
-  ['packages/pi-durable-disk/src/hosts/local-host.ts', childScript],
   ['examples/reference-demo-providers.test.mjs', childScript],
   ['examples/web/server.test.mjs', childScript],
   ['examples/reference-demo-recording.test.mjs', childScript],
   ['examples/reference-demo-supervision.test.mjs', childScript],
   ['examples/reference-record.test.mjs', childScript],
   ['packages/pi-durable-agent/test/agent-store.test.mjs', childScript],
+  ['packages/serve/test/graph-lockfree.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve-store.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve.test.mjs', childScript],
   ['packages/pi-durable-disk/test/commands.test.ts', childScript],
-  ['packages/pi-durable-disk/test/live/_p9.ts', childScript],
-  ['packages/pi-durable-disk/test/live/daytona-probe.ts', childScript],
-  ['packages/pi-durable-disk/test/live/docker-probe.ts', childScript],
-  ['packages/pi-transport/src/testing/move-conformance.ts', childScript],
+  ['packages/pi-durable-disk/test/place.test.ts', childScript],
   ['packages/pi-vision/test/durable-providers.test.mjs', childScript],
   ['packages/pi-vision/test/node-env.test.mjs', childScript],
   ['packages/pi/test/signin-entry.test.mjs', childScript],
@@ -98,7 +95,6 @@ const bare = new Map([
   ['packages/pi-durable-agent/test/fixtures/serve-sample.mjs', ownPackage],
   ['packages/pi-durable-agent/test/fixtures/store-sample.mjs', ownPackage],
   ['packages/pi-durable-disk/test/fixtures/paid-api.ts', ownPackage],
-  ['packages/pi-durable-disk/test/live/ci.ts', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);

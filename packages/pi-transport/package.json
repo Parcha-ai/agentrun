@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-transport",
-  "version": "0.1.0-beta.29",
+  "version": "0.1.0-beta.31",
   "description": "A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one Box interface; Jev places each step.",
   "keywords": [
     "pi",
@@ -43,23 +43,11 @@
       "import": "./dist/hands/index.js",
       "default": "./dist/hands/index.js"
     },
-    "./home": {
-      "source": "./src/home/index.ts",
-      "types": "./dist/home/index.d.ts",
-      "import": "./dist/home/index.js",
-      "default": "./dist/home/index.js"
-    },
     "./launch": {
       "source": "./src/launch/index.ts",
       "types": "./dist/launch/index.d.ts",
       "import": "./dist/launch/index.js",
       "default": "./dist/launch/index.js"
-    },
-    "./place": {
-      "source": "./src/place/index.ts",
-      "types": "./dist/place/index.d.ts",
-      "import": "./dist/place/index.js",
-      "default": "./dist/place/index.js"
     },
     "./sync": {
       "source": "./src/sync/index.ts",

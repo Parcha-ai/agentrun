@@ -13,7 +13,6 @@ import { opensInPage } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { blobsAt, blobsNamed, bundledRecordings, fromFiles, fromUrl, openBundled, type GalleryEntry, type IndexEntry } from './load.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
-import { diskPanel } from './disk.ts';
 import { picturePanel } from './picture.ts';
 import { pdfDrawer, type PdfDrawn } from './pdf.ts';
 import { transportPanel } from './transport.ts';

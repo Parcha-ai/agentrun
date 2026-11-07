@@ -1,4 +1,4 @@
-import type { ToolSettings } from "./v2";
+import type { Permission, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
 export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
@@ -8,11 +8,27 @@ export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as cons
  *  settings; and whether it runs here at all, with the server's reason when not (a provider of `off`, say). */
 export type ToolChoice = { name: string; providers: string[]; provider: string; default_provider: string; resolves: Record<string, string>; available: boolean; reason?: string };
 
-/** Older tool names a revision may still grant, and the capability each one is, as the server has them
- *  (packages/serve/src/tool-plane.ts, LEGACY_NAMES): `fetch_page` runs, and resolves, as web_fetch. */
-const LEGACY_NAMES: Readonly<Record<string, string>> = { fetch_page: "web_fetch" };
-/** The capability a granted tool name is: its legacy target, else itself. */
-export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
+/** The tools a workflow's call nodes call (`node: "call"` with a `tool`, wherever it sits), once, sorted. A call node runs only the server's built-in call tools, never a catalog one. */
+export function callNodeTools(workflow: unknown): string[] {
+  const found = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    if (!v || typeof v !== "object") return;
+    const o = v as Record<string, unknown>;
+    if (o.node === "call" && typeof o.tool === "string") found.add(o.tool);
+    Object.values(o).forEach(walk);
+  };
+  walk(workflow);
+  return [...found].sort();
+}
+
+/** The tools a 409 `agent_not_runnable` names as stopping a workflow's call nodes (approvals/1): `denied`, set to
+ *  deny; `asks`, set to ask, which a call node can't wait for. Each is an array of settings keys, present only when not
+ *  empty. */
+export function toolBlockers(details: Record<string, unknown> | null | undefined): { denied: string[]; asks: string[] } {
+  const names = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? [...new Set(v as string[])] : []);
+  return { denied: names(details?.denied), asks: names(details?.asks) };
+}
 
 /** The capabilities that have a provider choice, in the server's order: `capabilities.tools` entries that carry one. */
 export function toolChoices(raw: unknown): ToolChoice[] {
@@ -23,6 +39,23 @@ export function toolChoices(raw: unknown): ToolChoice[] {
       name: e.name, providers: e.providers, provider: e.provider ?? e.providers[0], default_provider: e.default_provider ?? e.providers[0], resolves: e.resolves && typeof e.resolves === "object" ? e.resolves : {},
       available: e.available !== false, ...(typeof e.reason === "string" && e.reason ? { reason: e.reason } : {}),
     }];
+  });
+}
+
+/** A tool's permission on this server (`capabilities.tools`, approvals/1): the one in force (its setting, else the owner's
+ *  default), the owner's default, those it may be set to, and `ask_needs: "password"` where ask can't be answered here
+ *  (accounts off: approving a call takes the owner's password sign-in). */
+export type ToolGate = { name: string; permission: Permission; default_permission: Permission; permissions: Permission[]; ask_needs?: "password" };
+
+const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
+const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
+
+/** Each tool's permission, in the server's order: `capabilities.tools` entries that carry one. None from an older server. */
+export function toolGates(raw: unknown): ToolGate[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((t): ToolGate[] => {
+    const e = t as { name?: unknown; permission?: unknown; default_permission?: unknown; permissions?: unknown; ask_needs?: unknown } | null;
+    if (!e || typeof e.name !== "string" || !Array.isArray(e.permissions) || !e.permissions.length || !e.permissions.every(isPermission) || !isPermission(e.default_permission)) return [];
+    return [{ name: e.name, permission: isPermission(e.permission) ? e.permission : e.default_permission, default_permission: e.default_permission, permissions: e.permissions, ...(e.ask_needs === "password" ? { ask_needs: "password" as const } : {}) }];
   });
 }
 
@@ -64,18 +97,37 @@ export function resolution(value: string | undefined, tool?: string): { text: st
   return value.startsWith("unavailable") ? { text: value, unavailable: true } : { text: providerLabel(value, tool), unavailable: false };
 }
 
-/** `settings` with `tool`'s provider set to `provider`. One equal to `fallback` (what applies when this layer sets none:
- *  the built-in default for the server's, the server's for an agent's), or undefined, is no setting: the row takes its
- *  default again. Never changes `settings`. */
-export function withProvider(settings: ToolSettings, tool: string, provider: string | undefined, fallback: string): ToolSettings {
-  const { [tool]: _old, ...rest } = settings;
-  return provider === undefined || provider === fallback ? rest : { ...rest, [tool]: { provider } };
+/** `settings` with `tool`'s `field` set to `value`, the tool's other setting kept. One equal to `fallback` (what applies
+ *  when this layer sets none), or undefined, is no setting; a tool left with none goes. Never changes `settings`. */
+function withField<K extends "provider" | "permission">(settings: ToolSettings, tool: string, field: K, value: ToolSettings[string][K] | undefined, fallback: string): ToolSettings {
+  const { [tool]: old, ...rest } = settings;
+  const { [field]: _gone, ...kept } = old ?? {};
+  const next = value === undefined || value === fallback ? kept : { ...kept, [field]: value };
+  return Object.keys(next).length ? { ...rest, [tool]: next } : rest;
 }
 
-/** The settings a layer sets: of `answer` (GET /v2/settings/tools gives every capability, its default filled in), those
- *  unlike their default. */
+/** `settings` with `tool`'s provider set to `provider`, its permission kept. One equal to `fallback` (what applies when this
+ *  layer sets none: the built-in default for the server's, the server's for an agent's), or undefined, is no setting: the
+ *  row takes its default again. Never changes `settings`. */
+export const withProvider = (settings: ToolSettings, tool: string, provider: string | undefined, fallback: string): ToolSettings => withField(settings, tool, "provider", provider, fallback);
+
+/** `settings` with `tool`'s permission set to `permission`, its provider kept. One equal to `fallback` (the owner's default
+ *  for the server's, the server's for an agent's), or undefined, is no setting. Never changes `settings`. */
+export const withPermission = (settings: ToolSettings, tool: string, permission: Permission | undefined, fallback: Permission): ToolSettings => withField(settings, tool, "permission", permission, fallback);
+
+/** The settings a layer sets, of `answer` (GET /v2/settings/tools gives every capability's provider, its default filled
+ *  in, and each permission set): every key and every field as the server holds it, a key this page shows no row for (a
+ *  catalog tool's, an MCP server's wildcard) and a field this console doesn't know included, but a capability's provider
+ *  equal to its default, which is the default filled in. A PUT replaces the whole map, so a save made from these keeps
+ *  what it does not change. */
 export function ownSettings(answer: ToolSettings, choices: readonly ToolChoice[]): ToolSettings {
-  return Object.fromEntries(choices.flatMap((c) => (answer[c.name]?.provider && answer[c.name]!.provider !== c.default_provider ? [[c.name, { provider: answer[c.name]!.provider! }]] : [])));
+  const defaults = new Map(choices.map((c) => [c.name, c.default_provider]));
+  return Object.fromEntries(Object.entries(answer).flatMap(([key, setting]) => {
+    if (!setting || typeof setting !== "object") return [];
+    const { provider, ...rest } = setting;
+    const own = provider !== undefined && !(defaults.has(key) && provider === defaults.get(key)) ? { ...rest, provider } : rest;
+    return Object.keys(own).length ? [[key, own]] : [];
+  }));
 }
 
 /** A refused save's issues (`field` → message, as saveError keys them) for one tool under `prefix`

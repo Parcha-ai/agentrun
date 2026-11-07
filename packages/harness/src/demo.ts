@@ -27,6 +27,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
 import type { Extension, Harness } from '@earendil-works/pi-durable';
 import type { BoxProvider } from '@parcha/pi-transport';
+import { readLocalRunStatus } from '@parcha/pi-durable-disk';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
@@ -510,26 +511,16 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const unlanded: string[] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
-  // A directory a run already used keeps its identity (run.json's `run`, whatever name this version would give it): a saved run resumes under the name it was started with.
-  const savedId = (() => { try { const saved = (JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')) as { run?: unknown }).run; return typeof saved === 'string' && saved ? saved : undefined; } catch { return undefined; } })();
-  // Otherwise one fresh run id per invocation, the same across its processes (every kill and resume): a second run of one demo on a shared disk never finds the first's run.json `done` or its old signals files.
+  // A directory a run already used keeps its identity (its record's `run`, whatever name this version would give it): a saved run resumes under the name it was started with.
+  // A record that cannot be read (none yet, or a live run holding its store) gives no saved name.
+  const savedId = await readLocalRunStatus(dir).then((record) => (record?.run ? record.run : undefined), () => undefined);
+  // Otherwise one fresh run id per invocation, the same across its processes (every kill and resume): a second run of one demo on a shared disk never finds the first's record `done` or its old signals files.
   const runId = savedId ?? `${spec.name}-${randomBytes(4).toString('hex')}`;
   const paths = pathsAt(dir, runId);
   base.RUN_ID = paths.id;
   const requestFile = (attempt: number) => join(scratch, `kill-${attempt}.json`);
   let place!: Place;
-  // The place's own reading of the run (`place.status()`), written as a `run.json` host line: `gen` is the record's generation and the rest is the record verbatim, only when its status, generation, holder or sealedSeq changes
-  // (RECORDING.md's host row). Read at the boundaries (a runner's start and exit, a kill, a result) and on a slow tick while a runner runs; a place without `status()` writes none, and a reading never fails the run.
-  let lastRunRecord = '';
-  let lastGeneration: number | undefined;
-  let currentGen = 0;
-  const delegationSeen = new Map<string, string>();
-  const hostLabels = new Map<string, string>();
-  const bootLabels = new Map<string, string>();
-  const clientLabels = new Map<string, string>();
-  const inodeLabels = new Map<string, string>();
-  // A delegation's client and inode ids name a machine's mount and a file in the place's own store: the recording shows `client-N` and `inode-N` by first appearance, the same value the same label (in a revoke line too).
-  const safeDelegation = <T extends { clientId: string; inodeId: string | number }>(delegation: T): T => ({ ...delegation, clientId: labelOf(clientLabels, 'client', delegation.clientId), inodeId: labelOf(inodeLabels, 'inode', String(delegation.inodeId)) });
+  // The place's own reading of its boxes (`place.status()`). Read at the boundaries (a runner's start and exit, a kill, a result) and on a slow tick while a runner runs; a place without `status()` writes none, and a reading never fails the run.
   const labelOf = (labels: Map<string, string>, prefix: string, value: string) => { let label = labels.get(value); if (!label) { label = `${prefix}-${labels.size + 1}`; labels.set(value, label); } return label; };
   let reading: Promise<void> = Promise.resolve();
   const boxLabels = new Map<string, string>();
@@ -577,32 +568,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     reading = reading.then(async () => {
       inflight = true;
       try {
-        const status = (await place.status!()) as { record?: Record<string, unknown> | null; delegations?: unknown; boxes?: unknown } | undefined;
-        const record = status?.record;
-        if (record && typeof record.run === 'string' && Number.isInteger(record.generation)) {
-          lastGeneration = record.generation as number;
-          const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
-          if (key !== lastRunRecord) {
-            lastRunRecord = key;
-            // The line is an allowlist (RECORDING.md's host row): run, status, generation, sealedSeq, wakeAt, holder { driver, host, bootId, pid, since }, heartbeatAt, updatedAt, and a detail as text of at most 240 with every absolute path as `<path>`; every other field is dropped (a sandbox id, a name, a
-            // mountpoint: what a place knows of its machine is not the recording's). A holder's host and boot id are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
-            const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
-            const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
-            const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
-            const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
-            supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
-          }
-        }
-        // The place's delegations of the run's own path (an Archil place), one `delegation` line each time one appears or its orphaned or pending state changes: the first line with `isOrphaned` marks the first reading that SAW the orphan.
-        for (const entry of Array.isArray(status?.delegations) ? status!.delegations as unknown[] : []) {
-          const delegation = delegationOf(entry);
-          if (!delegation) continue;
-          const id = `${delegation.clientId}:${delegation.inodeId}`;
-          const state = JSON.stringify([delegation.isOrphaned, delegation.isPending, delegation.path]);
-          if (delegationSeen.get(id) === state) continue;
-          delegationSeen.set(id, state);
-          supervisor.host('delegation', { gen: lastGeneration ?? currentGen, ...safeDelegation(delegation) });
-        }
+        const status = (await place.status!()) as { boxes?: unknown } | undefined;
         // The boxes the place made (a `HostBox` each, ended ones too): one `box.receipt` line per box when its `to` appears, or at the final read for one still open (`to`, `seconds` and `cost_usd` null). A box is its place in the
         // place's list (the place lists the boxes it started, in the order it started them, so equal provider, kind and start never make two boxes one), and it is `box-N` by first appearance, labelled when it first shows, before its
         // receipt; never the provider's id. `cost_usd` is seconds times the published per-second price, null when the box has none (the run's cost then reads unknown).
@@ -690,15 +656,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const nonce = randomBytes(16).toString('hex');
       const order = { gen, env: { ...base, ...(place.readRunFile && place.listRunFiles ? { HOST_LABELS: 'read' } : {}), CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, RECORD_GEN: String(gen), RECORD_STARTED: startedText, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
-      currentGen = gen;
       const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
       runner = recovered ? recovered.runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
       // The reading runs beside the supervision: the kill requests and the spend cap are watched from the start, however slow the place's read is.
       void readStatus();
-      // A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took.
-      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, ...(path !== undefined ? { path } : {}), isOrphaned }));
-      if (revoked.length) supervisor.host('revoke', { gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
@@ -957,15 +919,6 @@ export function messageOf(error: unknown, root: string): string {
   const text = String((error as { message?: unknown } | null)?.message ?? error);
   // A directory in a path may have spaces in its name (`Private Documents`): a path's folders are words joined by single spaces, and only its last part ends at a space, so `/srv/x and /run/y` is two paths, not one. A Windows drive path is replaced too.
   return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+(?: [\w.@%+~-]+)*\/)*[\w.@%+~-]+\/?|\b[A-Za-z]:\\(?:[^\\\n;,"'`]+\\)*[^\s\\;,"'`]+/g, (path) => (path === own || path.startsWith(`${own}/`) ? path : '<path>')).slice(0, 240);
-}
-
-/** One delegation as the recording holds it: the allowlisted fields, with the path clipped; anything that is not a delegation is not one. */
-function delegationOf(value: unknown): { clientId: string; inodeId: string | number; isOrphaned: boolean; isPending: boolean; path?: string } | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const entry = value as Record<string, unknown>;
-  if (typeof entry.clientId !== 'string' || (typeof entry.inodeId !== 'string' && typeof entry.inodeId !== 'number')) return undefined;
-  // A delegation the package found by matching its inode to the run's has no path: it is kept, without one.
-  return { clientId: entry.clientId, inodeId: entry.inodeId, isOrphaned: entry.isOrphaned === true, isPending: entry.isPending === true, ...(typeof entry.path === 'string' ? { path: entry.path.slice(0, 240) } : {}) };
 }
 
 /** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */

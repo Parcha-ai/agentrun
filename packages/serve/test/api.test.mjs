@@ -17,7 +17,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.contract, "agentrun.v2/0");
   assert.equal(body.limits.max_upload_bytes, 50 * 2 ** 20);
   assert.equal(body.limits.max_files_per_run, 20);
-  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null });
+  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null, priced: true });
   assert.equal(body.features.quotes, false);
   assert.deepEqual(body.features.home, { export: false, import: false, check: false });
   assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true });
@@ -27,7 +27,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.features.tool_permissions, true, "a tool setting carries a permission, which the tool gate holds every call to");
   const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]).length === 0 || !!process.env.KERNEL_API_KEY;
   const monid = !!process.env.MONID_API_KEY;
-  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, true, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash runs in no box on a server that has none");
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, true, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   // The browser runs on either vendor's keys, which no one list of variables says: its reason names both (tool-plane.ts).
   assert.match(body.tools.find((t) => t.name === "browser").reason ?? "", keyed ? /^$/ : /BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.*KERNEL_API_KEY/, "what browser lacks here, by name");
@@ -47,8 +47,8 @@ test("capabilities answer without a credential and say what this server offers: 
 test("without a default model a revision that names none is refused before it starts, and so is one whose model has no key here (409)", async (t) => {
   // No model key either: a provider's key gives the host a default (model.ts' MODEL_KEYS).
   withEnv(t, {}, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
-  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null, ready: false, needs: "key" });
-  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1", ready: true, needs: null }, "a tier with no model of its own takes the default");
+  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null, ready: false, needs: "key", priced: null });
+  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1", ready: true, needs: null, priced: false }, "a tier with no model of its own takes the default; m-1 has no price here");
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
@@ -264,7 +264,7 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.deepEqual(toolRefusal(["read", "shell", "constructor"], {}).unbound, ["shell", "constructor"], "nothing outside the table, not even a name every object has");
   assert.deepEqual(toolRefusal(["bash"], {}, "nodes").unbound, ["bash"], "a workflow's model node runs no shell");
   assert.deepEqual(toolRefusal(["ask_person"], {}, "nodes").unbound, ["ask_person"], "a workflow's model node cannot ask the person");
-  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", undefined], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["pdf_pages", undefined], ["llm", undefined]]);
+  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", undefined], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["pdf_pages", undefined], ["llm", undefined]]);
   // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
   // (Claude's own search is an explicit pick); Parallel picked
   // without its key, missing.
@@ -273,10 +273,9 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   // An unavailable tool always says why: a provider pick's own words, or the variables it needs.
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");
   assert.deepEqual([off.available, off.reason], [false, "web_search is turned off in settings"], "off: the server's reason, the one a client shows");
-  assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel picked, no PARALLEL_API_KEY");
-  assert.equal(toolsView({}).find((t) => t.name === "monid.discover").reason, "Needs MONID_API_KEY");
+  assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
+  assert.equal(toolsView({}).find((t) => t.name === "monid.discover").reason, "Needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)");
   for (const t of toolsView({}, { web_search: { provider: "off" } })) assert.equal(typeof t.reason === "string" && t.reason.length > 0, !t.available, `${t.name}: a reason exactly when it is unavailable`);
-  assert.deepEqual(toolRefusal(["fetch_page", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect, fetch_page as web_fetch's legacy name");
-  assert.equal(toolRefusal(["fetch_page"], {}), undefined, "fetch_page, no longer listed, is still a name a revision may grant");
+  assert.deepEqual(toolRefusal(["web_fetch", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect");
   assert.equal(toolRefusal(["browser"], {}), undefined, "the browser needs either vendor's keys: whether it runs is its plane's (tool-plane.ts), as web_search's is");
 });

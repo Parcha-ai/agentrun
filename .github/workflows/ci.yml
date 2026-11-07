@@ -131,6 +131,8 @@ jobs:
         run: node scripts/check-undici.mjs
       - if: matrix.shard == 'checks'
         run: node scripts/generate-schema.mjs --check
+      - if: matrix.shard == 'checks'
+        run: node scripts/generate-clients.mjs --check
       # The source export: checked here, and the archive the downloaded source's consumer installs.
       - if: matrix.shard == 'checks' || matrix.shard == 'source'
         run: npm run export:source
@@ -456,6 +458,37 @@ jobs:
           AGENTRUN_SERVE_LIVE_DOCKER_BUILD: '1'
         # The flag bounds the whole file, which builds the default box image (python, git, curl) once.
         run: node --test --test-timeout=900000 test/boxed-tools.docker.test.mjs
+
+  computer-docker:
+    # @parcha/agentrun-computer on real Docker: the daemon's vet and Go tests, then the live demo of a command run in a
+    # Docker computer. On an x64 and an arm64 runner, so each architecture's daemon runs on its own, not under emulation.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/computer/daemon/go.mod
+          cache: false
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - name: The daemon's vet and tests
+        working-directory: packages/computer/daemon
+        run: go vet ./... && go test ./...
+      - run: npm run build -w @parcha/agentrun-computer
+      - run: npm run build:daemon -w @parcha/agentrun-computer
+      - run: docker pull debian:bookworm-slim
+      - run: npm run test:docker -w @parcha/agentrun-computer
+        env:
+          AGENTRUN_COMPUTER_LIVE_DOCKER: '1'
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the coding agent's default provider, the cdp provider, Stagehand's

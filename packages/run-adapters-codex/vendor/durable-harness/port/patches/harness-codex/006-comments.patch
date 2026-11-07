@@ -104,7 +104,7 @@ index 8c1b93b..b389e23 100644
 -/** The stand-in's guard (`test`), the same as harness-world-sandbox's. */
  function testGuard(): void {
    if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-harness-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
-   if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
+   if (!process.env.NODE_TEST_CONTEXT) throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
 @@ -386,7 +377,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
  
    return {

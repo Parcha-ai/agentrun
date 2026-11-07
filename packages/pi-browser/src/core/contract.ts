@@ -39,10 +39,21 @@ const snapshot: ToolContract = {
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "none", listedWhen: "always",
 };
 
+/** What the browser keeps, as `run`'s description tells the model when it picks between the browser and web_fetch:
+ *  cookies across pages always, its agent's saved sign-ins only on a plane that has them (a local Chrome keeps none). */
+export const BROWSER_KEEPS = Object.freeze({
+  cookies: "It keeps cookies across pages: use it for a page that depends on an earlier one, or one that sets cookies.",
+  signIns: "It keeps this agent's saved sign-ins and cookies: use it for anything behind a sign-in, or a page that depends on an earlier one.",
+});
+
+const runDescription = (signIns: boolean): string =>
+  `Browse and automate websites in the persistent Stagehand browser. ${signIns ? BROWSER_KEEPS.signIns : BROWSER_KEEPS.cookies} ` +
+  'Navigate with JavaScript such as await page.goto("https://example.com"); there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. Each action must use "op" (never "kind") and "id" (never "ref"). Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.';
+
 const run: ToolContract = {
   name: "run",
   label: "Browser: run",
-  description: 'Browse and automate websites in the persistent Stagehand browser. Navigate with JavaScript such as await page.goto("https://example.com"); there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Code is the body of an async function with page, context and browser in scope: `return` the value you want back. Provide exactly one of code or actions. Each action must use "op" (never "kind") and "id" (never "ref"). Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.',
+  description: runDescription(false),
   // No top-level oneOf for "exactly one of code or actions": AI-SDK-based clients reject it, so the tool enforces it.
   parameters: object({
     code: { type: "string", minLength: 1 },
@@ -148,7 +159,7 @@ const browserDownloads: ToolContract = {
   label: "Browser: downloads",
   description:
     "Copy the files this browser session downloaded into the workspace under downloads/, with downloads/manifest.json listing each file's SHA-256. " +
-    "Returns the files fetched now, those fetched before and those skipped, never their bytes; open a fetched file with read.",
+    "Returns the files fetched now, those fetched before and those skipped with why, never their bytes; open a fetched file with read. A file the browser is still downloading is skipped as still downloading: call again to fetch it.",
   parameters: object({}),
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "files", listedWhen: "downloads",
 };
@@ -171,7 +182,8 @@ const webFetch: ToolContract = {
   label: "Web fetch",
   description:
     "Fetch one URL as clean markdown without a browser session: fast and cheap, and it handles most static and many dynamic pages. " +
-    "Use it for reading articles, filings, registries, PDFs-as-pages. If it returns blocked or empty content, drive the page with run/snapshot instead. " +
+    "It has no cookies, sign-ins or session: it reads one page cold. " +
+    "Use it for reading articles, filings, registries, PDFs-as-pages. If it returns blocked or empty content, or the page is behind a sign-in or depends on an earlier page, drive it with run/snapshot instead. " +
     "A page it returns is filed as evidence: that read, not a search result, is what a claim cites. " +
     "The result is persisted as evidence with its URL: a query value that is in the URL you asked for stays in it, any other value of the final URL is replaced by a redaction marker (the word redacted in square brackets).",
   parameters: object({
@@ -203,6 +215,11 @@ export const listedFor = (contract: ToolContract, offers: { readonly downloads: 
 
 export const BROWSER_TOOLS: readonly ToolContract[] = Object.freeze([snapshot, run, screenshot, browserRead, browserRelease, browserRelaunch, browserRequestHandoff, browserDownloads, browserUpload]);
 export const WEB_TOOLS: readonly ToolContract[] = Object.freeze([webFetch, webSearch]);
+
+/** The browser's contracts as a plane's model reads them: `run` says the plane keeps its agent's saved sign-ins where it
+ *  has them (a host's kept profile, or a session vault), and only cookies where it has none. */
+export const browserToolsFor = (signIns: boolean): readonly ToolContract[] =>
+  signIns ? Object.freeze(BROWSER_TOOLS.map((contract) => (contract === run ? { ...contract, description: runDescription(true) } : contract))) : BROWSER_TOOLS;
 
 export const BROWSER_TOOL_NAMES = Object.freeze(BROWSER_TOOLS.map((tool) => tool.name));
 export const WEB_TOOL_NAMES = Object.freeze(WEB_TOOLS.map((tool) => tool.name));

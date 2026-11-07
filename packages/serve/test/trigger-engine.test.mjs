@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Cron } from "croner";
 import { ApiError } from "../dist/errors.js";
-import { Triggers } from "../dist/triggers.js";
+import { firingKey, Triggers } from "../dist/triggers.js";
 import { fakeClock } from "./trigger-support.mjs";
 
 /** A promise and its settle functions, for a dependency the test holds open. */
@@ -162,6 +162,98 @@ test("an interval with no start_at, made part way through a second, first fires 
   }
 });
 
+test("a target changed to message_run while a start_run firing waits on its overlap check is sent to the new run, never left due with no time to drive it", async (t) => {
+  const sent = [];
+  let release;
+  const { triggers } = await engine(t, {
+    start: async () => ({ run_id: "run-1" }),
+    statusOf: () => new Promise((resolve) => (release = resolve)),
+    message: async (target, input, key) => void sent.push({ run_id: target.run_id, key }),
+    secrets: { mint: () => "unused", remove: () => {} },
+  });
+  const { id } = await triggers.create({ ...body({ cron: "0 9 * * *" }), enabled: false });
+  assert.equal((await triggers.fire(id, "first")).firing.status, "started");
+  const second = triggers.fire(id, "second");
+  await until(() => release, "the overlap check holds");
+  await triggers.update(id, { target: { kind: "message_run", run_id: "run-9", input: { content: "Hello." } } });
+  release("completed");
+  const { firing } = await second;
+  assert.deepEqual([firing.status, firing.run_id], ["sent", "run-9"], JSON.stringify(firing));
+  assert.deepEqual(sent, [{ run_id: "run-9", key: firing.key }]);
+});
+
+test("a message_run firing refused because its run is working is tried again every 5 s, uncounted, so it lands at most 5 s after the turn ends", async (t) => {
+  let working = 4;
+  const sent = [];
+  const { clock, triggers } = await engine(t, {
+    message: async (target, input, key) => {
+      if (working-- > 0) throw new ApiError("rate_limited", "The run is working.", { retry_after_ms: 5_000, details: { reason: "working" } });
+      sent.push(key);
+    },
+    secrets: { mint: () => "unused", remove: () => {} },
+  });
+  const { id } = await triggers.create({ ...body({ cron: "0 9 * * *" }), enabled: false, target: { kind: "message_run", run_id: "run-9", input: { content: "Hello." } } });
+  assert.equal((await triggers.fire(id, "now")).firing.status, "due");
+  // Four refusals while the run works, each followed by a try 5 s later; the fifth try finds it idle.
+  for (let n = 1; n <= 4; n++) {
+    const [firing] = triggers.firings(id).firings;
+    assert.equal(firing.status, "due", `refusal ${n}`);
+    assert.equal(firing.attempts ?? 0, 0, "a busy run's refusal is no failed try");
+    assert.equal(Date.parse(firing.retry_at) - clock.now(), 5_000, `after refusal ${n}: again in 5 s, never longer`);
+    clock.to(new Date(clock.now() + 5_000).toISOString());
+    await until(() => {
+      const [now] = triggers.firings(id).firings;
+      return now.status !== "due" || now.retry_at !== firing.retry_at;
+    }, `try ${n + 1}`);
+  }
+  await until(() => triggers.firings(id).firings[0].status === "sent", "sent once the run is idle");
+  assert.equal(sent.length, 1);
+});
+
+const WORKING = () => new ApiError("rate_limited", "The run is working.", { retry_after_ms: 5_000, details: { reason: "working" } });
+const toRun9 = { kind: "message_run", run_id: "run-9", input: { content: "Hello." } };
+
+test("a trigger holds at most 20 firings due: an event past them is refused, retryable, before anything is written, and said; a run now past them is refused; a schedule's time past them is skipped", async (t) => {
+  const said = [];
+  const { data, clock, triggers } = await engine(t, {
+    message: async () => {
+      throw WORKING();
+    },
+    secrets: { mint: () => "unused", remove: () => {} },
+    say: (fields) => said.push(fields),
+  });
+  const hook = await triggers.create({ name: "inbox", source: { kind: "webhook" }, target: toRun9 });
+  for (let n = 1; n <= 20; n++) assert.equal(triggers.receive(hook.id, `msg_${n}`, `{"n":${n}}`).created, true, `event ${n}`);
+  await until(() => triggers.firings(hook.id).firings.every((f) => f.status === "due" && f.retry_at), "each refused by the working run");
+  const before = await readFile(join(data, "triggers.json"), "utf8");
+  assert.throws(() => triggers.receive(hook.id, "msg_21", "{\"n\":21}"), (error) => {
+    assert.ok(error instanceof ApiError, String(error));
+    assert.deepEqual([error.code, error.status, error.headers["retry-after"], error.extra.retry_after_ms], ["rate_limited", 429, "30", 30_000]);
+    assert.match(error.message, /20 firings are still due/);
+    return true;
+  });
+  assert.equal(await readFile(join(data, "triggers.json"), "utf8"), before, "nothing written for the refused event");
+  const kept = JSON.parse(before).triggers.find((x) => x.id === hook.id);
+  assert.deepEqual([kept.firings.length, kept.firings.filter((f) => f.status === "due").length], [20, 20]);
+  assert.deepEqual(said.filter((f) => f.condition === "trigger_firings_full"), [{ condition: "trigger_firings_full", trigger: hook.id, due: 20 }]);
+  assert.equal(triggers.receive(hook.id, "msg_3", "{}").created, false, "an event already in still answers its firing");
+  await assert.rejects(triggers.fire(hook.id, "now"), (error) => error instanceof ApiError && error.code === "rate_limited" && error.headers["retry-after"] === "30");
+
+  // A schedule's message_run firings have no overlap check (the run's own state picks how a message lands), so a run
+  // that stays busy would hold one more due firing every time: past 20, its time is skipped.
+  const poll = await triggers.create({ name: "poll", source: { kind: "schedule", every_s: 60 }, target: toRun9 });
+  for (let n = 1; n <= 21; n++) {
+    clock.to(triggers.get(poll.id).next_at);
+    await until(() => {
+      const { firings } = triggers.firings(poll.id);
+      return firings.length === n && firings.every((f) => f.status !== "due" || f.retry_at);
+    }, `time ${n}`);
+  }
+  const [last, ...rest] = triggers.firings(poll.id).firings;
+  assert.deepEqual([last.status, last.reason], ["skipped", "20 earlier firings are still waiting to reach the run."]);
+  assert.equal(rest.filter((f) => f.status === "due").length, 20);
+});
+
 test("a trigger whose cron line or zone no longer reads is turned off with why, at start and when due, and every other schedule goes on firing; nothing is retried for it", async (t) => {
   const first = await engine(t, {});
   const good = await first.triggers.create(body({ cron: "*/5 * * * *" }));
@@ -193,28 +285,6 @@ test("a trigger whose cron line or zone no longer reads is turned off with why, 
   await assert.rejects(second.triggers.update(zoned.id, { enabled: true }), (error) => error.code === "input_invalid");
   const fixed = await second.triggers.update(zoned.id, { enabled: true, source: { kind: "schedule", cron: "*/5 * * * *", timezone: "Europe/Madrid" } });
   assert.deepEqual([fixed.enabled, fixed.disabled, fixed.next_at], [true, null, "2026-06-01T00:10:00.000Z"]);
-});
-
-test("failures a server before trigger.failed recorded are taken as told at the first start that sends it, so none is sent late; a later one is sent", async (t) => {
-  const first = await engine(t, {});
-  const old = await first.triggers.create(body({ every_s: 600 }));
-  const recent = await first.triggers.create(body({ every_s: 600 }));
-  first.triggers.close();
-  const file = join(first.data, "triggers.json");
-  const kept = JSON.parse(await readFile(file, "utf8"));
-  const failedAt = (n) => ({ key: `fir_${String(n).repeat(32)}`, by: "schedule", nominal_at: "2026-05-31T23:50:00Z", status: "failed", at: "2026-05-31T23:50:00.000Z", error: { code: "agent_not_runnable", message: "archived" } });
-  // An earlier server's trigger: no failures_in_a_row, and a failure it never told of.
-  const before = kept.triggers.find((x) => x.id === old.id);
-  delete before.failures_in_a_row;
-  delete before.disabled;
-  delete before.catchup_window_s;
-  before.firings.push(failedAt(1));
-  // This server's: a failure whose notice had not been queued yet.
-  kept.triggers.find((x) => x.id === recent.id).firings.push(failedAt(2));
-  await writeFile(file, JSON.stringify(kept));
-  const told = [];
-  await engine(t, { notify: (failed, key) => (told.push(failed.trigger_id), "queued") }, { data: first.data });
-  assert.deepEqual(told, [recent.id]);
 });
 
 test("a firing's input is checked as its run is given it: the trigger's input with the line saying what fired it", async (t) => {
@@ -316,4 +386,63 @@ test("a restart queues the failures it finds unsent before its first tick record
   const second = await engine(t, { notify: (failed, key) => (told.push(key), "queued") }, { data: first.data, at: "2026-06-01T00:10:00Z" });
   assert.deepEqual(told, [firing(1, "failed").key], "the unsent failure was queued");
   await until(() => second.triggers.firings(made.id).firings.length >= 200 && second.triggers.firings(made.id).firings.every((f) => f.status !== "due"), "the restart's firing settled");
+});
+
+test("a webhook event's firing is driven in its trigger's turn: a tick while its message is out sends it no second time, and a busy run's refusal is tried again 5 s later", async (t) => {
+  const calls = [];
+  const { clock, triggers } = await engine(t, {
+    message: () => {
+      const next = held();
+      calls.push(next);
+      return next.promise;
+    },
+    secrets: { mint: () => "unused", remove: () => {} },
+  });
+  const hook = await triggers.create({ name: "inbox", source: { kind: "webhook" }, target: toRun9 });
+  const poll = await triggers.create(body({ every_s: 60 }));
+  assert.equal(triggers.receive(hook.id, "msg_1", "{}").created, true);
+  await until(() => calls.length === 1, "the event's message out");
+  // A tick for another trigger's time: the event's firing is due, with no retry time, so the tick asks for it too.
+  clock.to(triggers.get(poll.id).next_at);
+  await until(() => triggers.firings(poll.id).firings[0]?.status === "started", "the schedule's own firing");
+  assert.equal(calls.length, 1, "the event's message is out once");
+  calls[0].reject(WORKING());
+  await until(() => triggers.firings(hook.id).firings[0].retry_at, "refused while the run works: due again");
+  clock.to(triggers.firings(hook.id).firings[0].retry_at);
+  await until(() => calls.length === 2, "tried again at its retry time");
+  calls[1].resolve();
+  await until(() => triggers.firings(hook.id).firings[0].status === "sent", "sent once the run is idle");
+});
+
+test("triggers.json is read in this build's shape alone: a trigger missing a field an earlier build left out makes the file unreadable, and run_now_kept is not read, nor shown: a stored field outside the contract reaches no GET, list or PATCH", async (t) => {
+  // A trigger with no failures_in_a_row, catchup_window_s or disabled: the file does not read, and nothing fires.
+  for (const field of ["failures_in_a_row", "catchup_window_s", "disabled"]) {
+    const first = await engine(t, {});
+    await first.triggers.create(body({ every_s: 600 }));
+    first.triggers.close();
+    const file = join(first.data, "triggers.json");
+    const kept = JSON.parse(await readFile(file, "utf8"));
+    delete kept.triggers[0][field];
+    await writeFile(file, `${JSON.stringify(kept)}\n`);
+    const next = await engine(t, {}, { data: first.data });
+    assert.throws(() => next.triggers.list(), (error) => error.code === "store_unreadable", `without ${field}`);
+  }
+  // A firing an earlier build kept under run_now_kept answers no run now: the same key fires anew.
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers[0].run_now_kept = [{ key: firingKey("manual", made.id, "press-1"), by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "started", at: "2026-06-01T00:00:00.000Z", run_id: "run-old" }];
+  kept.triggers[0].left_by_another_build = "not in the contract";
+  await writeFile(file, `${JSON.stringify(kept)}\n`);
+  const next = await engine(t, {}, { data: first.data });
+  // Shown by the trigger's fields alone (openapi.ts TRIGGER): neither stored field, wherever a trigger is answered.
+  const shown = { get: next.triggers.get(made.id), list: next.triggers.list().triggers.find((one) => one.id === made.id), patch: await next.triggers.update(made.id, { name: "renamed" }) };
+  for (const [where, view] of Object.entries(shown)) {
+    assert.ok(view, `${where}: the trigger`);
+    for (const field of ["run_now_kept", "left_by_another_build", "firings", "kept_firings"]) assert.equal(field in view, false, `${where}: no ${field}: ${JSON.stringify(view)}`);
+  }
+  const fired = await next.triggers.fire(made.id, "press-1");
+  assert.equal(fired.created, true, `a new firing, not the old one: ${JSON.stringify(fired)}`);
 });

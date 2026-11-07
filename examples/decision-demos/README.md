@@ -10,7 +10,9 @@ The decision models:
 
 - **Jev** (TypeSafe), the default. It answers yes/no questions with a probability, picks from a list with a
   confidence, and reads page images.
-- **Parallel**, for questions that need the web. Its answers come with citations.
+- **Parallel**, for questions that need the web. Its answers come with citations. With `PARALLEL_API_KEY` it runs on
+  Parallel's own API; without it, an OpenRouter key alone is enough: it runs on OpenRouter's `parallel/decisions-fast`,
+  with the same citations.
 - **OpenRouter decision models**, here `perplexity/pplx-decider-v1.2`, `liquid/d1` and `cloudflare/clef`, used as
   extra jurors.
 
@@ -71,7 +73,7 @@ that alone; the document checks and the cross-check still run, and `kyb-mismatch
 
 ### 4. Merchant category and risk (`merchant-mcc`)
 
-A merchant's home page. `fetch_page` reads it. Then two Jev decisions run at once: pick the merchant category code that
+A merchant's home page. `web_fetch` reads it. Then two Jev decisions run at once: pick the merchant category code that
 fits what the page sells (out of 24, or none), and say whether the page itself offers prohibited goods (replicas,
 drugs) or restricted ones (CBD, vapes). Parallel then checks public sources with the chosen category in hand: does this
 merchant sell prohibited goods, and how risky is it to process for? Code sets the tier from all of it, and the route
@@ -166,6 +168,6 @@ Other scripts:
 | `workflows/` | the five workflows, as the console shows and edits them |
 | `inputs/` | inputs per use case (`use-cases.json` maps them) |
 | `documents/` | 24 PDFs, `labels.json` (ground truth and the defect per document), the generator |
-| `faux/` | fake Jev, Parallel, OpenRouter, fetch_page network and `llm` model |
+| `faux/` | fake Jev, Parallel, OpenRouter, web_fetch network and `llm` model |
 | `run.mjs` | start serve, create the agents, start a run, print its console link |
 | `rehearse.mjs`, `validate.mjs`, `build.mjs` | offline rehearsal, validation, the workflow builder |

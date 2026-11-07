@@ -1,4 +1,4 @@
-// web_fetch: fetch_page's Page (fetch-page.ts) plus `via`, the path that served it. It is the kernel's guarded direct
+// web_fetch: the guarded fetch's Page (web-fetch-direct.ts) plus `via`, the path that served it. It is the kernel's guarded direct
 // fetch unless the run's plane resolves it to Parallel (tool-plane.ts: the agent's or the server's pick): then the page is
 // read through Parallel's Extract API (https://docs.parallel.ai/api-reference/extract-beta/extract, about $0.001 a URL),
 // and when Parallel answers no page (the URL in its `errors`, no content, a 5xx, a timeout) through the guarded direct
@@ -10,7 +10,7 @@
 // capabilities resolves to Parallel, read once and held in this module's memory: never in an environment, a child or a
 // file.
 //
-// A page is read once a run and given in parts (fetch-page.ts): the tool's `offset` and `max_chars` name the part. The
+// A page is read once a run and given in parts (web-fetch-direct.ts): the tool's `offset` and `max_chars` name the part. The
 // first call for a URL reads the page, through Parallel or the direct fetch, and the run keeps what it read by the URL
 // asked for (Pages, the last PAGES_HELD pages), from the moment the read starts: every later part of that URL, and a call
 // made while it is read, comes from it, with no request and, through Parallel, no bill. A read that fails is not kept.
@@ -20,15 +20,15 @@
 // known only when Parallel gave less than it was asked for (a cut text can be longer, in UTF-16 units, where Parallel
 // counts code points).
 import type { JsonValue } from "@earendil-works/chord";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./web-fetch-direct.js";
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
-import { isUnavailable, planeOf } from "./tool-plane.js";
+import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
 
 export const WEB_FETCH_TOOL = "web_fetch";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
@@ -123,7 +123,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
   };
 }
 
-/** Whether the public-host guard passes `url` within `ms` and the caller's signal: fetch_page's port check, then
+/** Whether the public-host guard passes `url` within `ms` and the caller's signal: the guarded fetch's port check, then
  *  publicFetch's own checks of the first hop (scheme, name, every address it resolves to), stopped before it dials. A
  *  check that runs out of time (a resolver that does not answer) does not pass; publicFetch ends a lookup at the abort. */
 async function passes(url: string, options: GuardOptions, ms: number): Promise<boolean> {
@@ -136,7 +136,7 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
 }
 
 /** The page at `url` read once: through `parallel` when it is given and live and the guard passes the URL within
- *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. A page
+ *  `checkMs` (default the guarded fetch's 30 s), else (or when it answers no page) through the guarded fetch. A page
  *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
  *  never a silent fallback. */
 async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
@@ -228,7 +228,7 @@ export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: Gu
   const problem = partProblem(options);
   if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
   const resolved = planeOf(env).web_fetch;
-  if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${resolved.slice("unavailable: ".length)}` };
+  if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${whyUnavailable(resolved)}` };
   const extract = resolved === "parallel" ? parallelOf(env) : null;
   const page = await webFetch(url, { ...options, parallel: extract });
   return resolved === "parallel" && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
@@ -263,14 +263,14 @@ export function webFetchText(page: WebPage | Page, name: string = WEB_FETCH_TOOL
   return lines.join("\n");
 }
 
-/** The agent's tool: the WebPage as JSON text (webFetchText), named `name` (fetch_page, its legacy name, runs it too). A
+/** The agent's tool: the WebPage as JSON text (webFetchText), named `name`. A
  *  run whose web_fetch resolves to Parallel reads its key as the tool is made, when the run opens. */
 /** Typed here, so its declaration names the schema type by a package serve declares (pi-ai), whatever else the build loads. */
 export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): ToolRegistration<TSchema, JsonValue> {
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {

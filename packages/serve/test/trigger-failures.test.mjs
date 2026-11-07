@@ -123,7 +123,7 @@ test("five failed firings in a row turn the trigger off; each sends one signed t
   assert.deepEqual([on.body.enabled, on.body.failures_in_a_row, on.body.disabled], [true, 0, null], "on again, a new count");
 });
 
-test("catchup_window_s is checked and taken by PATCH; overlap is skip alone, and no other is taken", { timeout: 60_000 }, async (t) => {
+test("catchup_window_s is checked and taken by PATCH; overlap is no field: one given is refused", { timeout: 60_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "settings");
   for (const [field, value, reason] of [["catchup_window_s", -1, "invalid"], ["catchup_window_s", 1.5, "invalid"], ["catchup_window_s", 366 * 86_400 + 1, "invalid"], ["overlap", "queue", "not_allowed"]]) {
@@ -132,7 +132,7 @@ test("catchup_window_s is checked and taken by PATCH; overlap is skip alone, and
     assert.deepEqual(answer.body.error.fields.map((f) => [f.field, f.reason]), [[field, reason]]);
   }
   const { body } = await api("POST", "/triggers", schedule("settings", { every_s: 600 }));
-  assert.deepEqual([body.overlap, body.catchup_window_s, body.failures_in_a_row, body.disabled], ["skip", 3600, 0, null]);
+  assert.deepEqual([body.overlap, body.catchup_window_s, body.failures_in_a_row, body.disabled], [undefined, 3600, 0, null]);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.deepEqual(schemaProblems(doc, doc.paths["/triggers"].post.responses["201"].content["application/json"].schema, body), []);
   const patched = await api("PATCH", `/triggers/${body.id}`, { catchup_window_s: 0 });

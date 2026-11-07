@@ -126,6 +126,8 @@ export const said = {
     return dropped ? `${base}${base.endsWith(".") ? "" : "."} ${dropped}` : base;
   },
   empty: "Nothing new to remember from this run.",
+  /** A merge whose every item the owner has since retired: nothing it learned is kept now. */
+  retiredSince: "What it learned was retired since.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
   unparsed: "Not kept: its notes weren't in the expected format.",
   /** The grader's word on why it kept nothing (a dropped note's why, or its reason), its first sentence. */
@@ -141,10 +143,8 @@ export const said = {
   stale: (problems: readonly Pick<Problem, "rule">[]) => problems.length && problems.every((problem) => problem.rule === "supersedes")
     ? "Not kept: a note it would replace is gone or was changed since."
     : `Not kept: the agent's notes changed while this run ran (${rulesIn(problems)}).`,
-  noWriteTool: "Not kept: this agent can't write notes (give it the write tool).",
   noBudget: "Skipped: no budget left in this run to look back.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover looking back.",
-  screen: "Not kept: a new note read like instructions planted in a page, not a lesson.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
 };
 
@@ -152,20 +152,34 @@ export const said = {
  *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
  *  did not keep every note). Found by asking it, so they follow it. */
 const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
+/** The skill or the workflow draft at `file` as a person names it ("the skill X", "the workflow Y"), or undefined for a
+ *  note's file or a draft's README.md. */
+const learnedWords = (file: string): string | undefined => {
+  const place = /^(skills)\/([^/]+)\/SKILL\.md$|^(workflows)\/([^/]+)\/workflow\.json$/.exec(file);
+  return place ? (place[1] ? `the skill ${place[2]}` : `the workflow ${place[4]}`) : undefined;
+};
 /** Why a verdict kept nothing, in a person's words: the grader's word on the first note it did not keep, since its
  *  reason may open on a note it kept; when it dropped none, or gave one no word, its own reason, unless that is
- *  parseVerdict's own; an answer that held neither is said as such. */
-export function notKept(verdict: Pick<Verdict, "reason" | "items">): string {
-  const why = verdict.items.find((item) => !item.keep)?.why;
-  if (why) return said.grader(why);
-  return OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
+ *  parseVerdict's own; an answer that held neither is said as such. Nothing merged, so the skill and the workflow draft
+ *  the run proposed (`lost`, from its proposal: a verdict the host refused has no items) are lost with it: named before
+ *  the why, so a long why cut short never cuts them off; the one the why speaks of as its subject ("Not kept, the
+ *  skill X: …"), any other as lost with it ("Not kept, with the skill X: …"). The caller cuts the line of the host's
+ *  secrets: a name is the run's to choose. */
+export function notKept(verdict: Pick<Verdict, "reason" | "items">, lost: readonly Pick<LearnedFile, "file">[] = []): string {
+  const dropped = verdict.items.find((item) => !item.keep);
+  const said_ = dropped?.why ? said.grader(dropped.why) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
+  const subject = dropped?.why ? learnedWords(dropped.file) : undefined;
+  const others = [...new Set(lost.flatMap(({ file }) => learnedWords(file) ?? []))].filter((words) => words !== subject);
+  if (!subject && !others.length) return said_;
+  const named = [subject, others.length ? `with ${listed(others)}` : ""].filter(Boolean).join(" ");
+  return said_.replace(/^Not kept: /, `Not kept, ${named}: `);
 }
 
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, or why the
  *  grader kept nothing, said again from its parts (`learned`, `pending`, `verdict`) each cut by `cut` first (the host's
  *  secrets as they are now); any other detail, the server's own sentence, cut as well. The caller cuts the words short
  *  after. */
-export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict" | "skills" | "workflows" | "problems">, cut: (text: string) => string): string | null {
+export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict" | "skills" | "workflows" | "problems" | "lost">, cut: (text: string) => string): string | null {
   const { learned, pending, verdict } = learning;
   if (learning.state === "merged") {
     const kept = Array.isArray(learned) ? learned : [];
@@ -173,6 +187,11 @@ export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" |
     const files = [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].filter((file) => typeof file?.file === "string" && typeof file.name === "string");
     if (kept.length || waiting.length || files.length) return said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), (verdict?.items ?? []).filter((item) => !item.keep && typeof item.why === "string").map((item) => ({ why: cut(item.why) })), Array.isArray(learning.problems) ? learning.problems : []);
   }
-  if (learning.state === "dropped" && learning.reason === "grader" && verdict) return notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) });
+  if (learning.state === "dropped" && learning.reason === "grader" && verdict) {
+    // serve.json's `lost` is read as untrusted: an entry out of shape is left out. The whole line is cut again, the names
+    // in it included.
+    const lost = Array.isArray(learning.lost) ? learning.lost.filter((file) => typeof file?.file === "string") : [];
+    return cut(notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) }, lost));
+  }
   return learning.detail === null ? null : cut(learning.detail);
 }

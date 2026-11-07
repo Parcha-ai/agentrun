@@ -1,7 +1,7 @@
 // A run's origin: the key its caller starts it under, recorded in the transaction that writes its row, so the same key
 // never starts a second run, after a crash or from two starts at once. Real stores in temp dirs; no model calls.
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -13,7 +13,11 @@ const rows = (dir, sql) => {
   const db = new DatabaseSync(path.join(dir, "store.sqlite"), { readOnly: true });
   try { return db.prepare(sql).all().map((row) => ({ ...row })); } finally { db.close(); }
 };
-const runDirs = (dir) => readdirSync(path.join(dir, "runs")).sort();
+/** Every run folder on the disk, across the agents' folders. */
+const runDirs = (dir) => {
+  const agents = path.join(dir, "disk", "agents");
+  return (existsSync(agents) ? readdirSync(agents) : []).flatMap((agent) => (existsSync(path.join(agents, agent, "runs")) ? readdirSync(path.join(agents, agent, "runs")) : [])).sort();
+};
 
 async function aStore() {
   const dir = await scratch();

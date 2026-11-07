@@ -50,8 +50,8 @@ Stop the server with SIGTERM to its exact PID. A busy run gets the drain timeout
 ## Auth recipe
 
 - API: `Authorization: Bearer $(cat DIR/.token)`. `GET /v2/health`, `GET /v2/capabilities` and `GET /v2/openapi.json`
-  need no credential. Anything else without a token is `401 unauthenticated`. A non-loopback `Host` on a loopback
-  bind is `403`.
+  need no credential. Anything else without a token is `401 unauthenticated`. A `Host` on a loopback bind
+  that is not `localhost`, `127.0.0.1`, `[::1]`, the public URL's name or an `--allow-host` name (any port) is `403`.
 - Console: `/` (`/console/`, `/setup` and `/sign-in` redirect there with 303). On the first visit, set the owner
   password (12 characters or more; labels `New password` and `Password again`). After that, sign in with the
   `Password` field. The session is a cookie, and the `?token=` link sets none while accounts are on.
@@ -78,18 +78,22 @@ Each row: entry point, then what makes it pass.
    `GET /v2/runs/{id}` to a terminal status (cap 300 s). Then check `GET /v2/runs/{id}/timeline` (`final: true`),
    `cost.usd`, `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/<path>`. Use a task that needs two files (two tool
    calls in one turn): see the open findings.
-9. **Spend cap**: a priced model and a `max_cost_usd` below its first request's worst case (see the caveats; `0.01` is
-   below it for most models) → `failed`, `error.code: spend_cap_reached`, `result: null`, no files. Check the worst
-   case first: a cap the first request fits under lets the run go on, and the check proves nothing.
+9. **Spend cap**: a priced model and a tiny `max_cost_usd`. A cap that can't buy the next request's least pauses the run:
+   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (with `cap_usd`, `spent_usd`, `needs_usd`,
+   `suggested_cap_usd`), a `spend_cap_reached` row on the timeline, the refused request unsent, no files; a higher cap
+   sends it. A cap that buys a smaller request limits it (its output is held to what the cap buys) and the run can
+   complete: e.g. `0.01` on luna completes and `0.0001` pauses. Only a refusal no cap fixes ends `failed`
+   (`spend_cap_reached`). See serve's README, "A run paused at its cap".
 10. **Cancel**: start a multi-step run, `POST /v2/runs/{id}/cancel` after its first tool_use → `cancelled` within a few
     seconds. Then `POST /v2/runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content` only.
 11. **Follow-up**: `POST /v2/runs/{id}/messages {content}` to a completed agentic run → back to `completed`. The
     timeline's user_message count goes up by exactly one and the original rows stay first.
-12. **Kernel durability, process crash**: during a multi-step run, take `holder.pid` from
-    `DIR/runs/<id>/run.json`. Check that its ppid is the server and its cmdline names the run dir, then `kill -KILL`
+12. **Kernel durability, process crash**: during a multi-step run, take the holder's `pid` from the run's row in the
+    agent's store (`runs.claim_holder`, JSON). Check that its ppid is the server and its cmdline names the run dir, then `kill -KILL`
     that exact PID. Pass: the server log says `its process went before the run ended; opening it again (1 of 3)`,
-    `run.json.generation` goes to 2, the run completes, and the timeline holds exactly one write per file.
-13. **Kernel durability, server restart**: SIGTERM the server mid-run; `run.json.status` reads `sleeping`. Restart on
+    the row's `claim_epoch` goes up by one, the run completes, and the timeline holds exactly one write per file.
+13. **Kernel durability, server restart**: SIGTERM the server mid-run; once its process is gone, the run's record in
+    `store/run.sqlite` (table `pda_run_status`) reads `sleeping`. Restart on
     the same data dir. Pass: the run resumes and completes with no duplicate writes. The prompt must say "do not
     reply or stop until …", or the model may end its turn with a progress note before the signal and the case proves
     nothing.
@@ -136,7 +140,7 @@ same ground with no key.
 | Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
 | Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
 | Journal | In the run's store, from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
-| Run directory | `DIR/runs/<id>/`: `run.json` (`status`, `holder.pid`, `generation`), `serve.json`, `store/run.sqlite`, `work/`, `process.log` |
+| Run directory | `DIR/disk/agents/<agent>/runs/<id>/`: `serve.json`, `store/run.sqlite` (with the run's record: `status`, `generation`, `holder.pid`), `work/`, `process.log`; the run's claim is its row in the agent's store (`claim_epoch`, `claim_holder`) |
 | Adapters it calls | `adapterFor(harness, env, needs: AdapterNeeds)` gives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`, driven by `createHarnessRunner`. There the cap is the runner's `beforeRequest`, asked by `startModelProxy` under a `ProviderPolicy`; on pi it wraps the models (`capModels`) |
 | Takes from the tool plane | `TOOLS` (`ToolEntry`), bound on pi as a `ToolBinding`; `hostTools()` gives claude-agent and codex `HostTool[]`, each with its `REPLAY` (`safe` or `never`) |
 | Takes from places | The revision's `definition.place`: `runner` (the default: a local process under `confinePrefix()`) or `sandbox` with a `box`. A sandbox run on a box this server lacks is `409 agent_not_runnable` naming it (`boxAvailability`); `places` in capabilities lists the boxes, none available yet. `startServe({ box })` takes a `BoxHost` that sweeps the boxes runs left (the run's `box.json`) |
@@ -177,14 +181,18 @@ The journal is the `entries` table of the run's `store/run.sqlite`.
 1. **Each harness answers.** For every entry of `harnesses[]` with `available: true`, a run ends `completed` with
    `result.final_answer` set and `cost.usd` a number. Each paid request is counted once. Alone: pi through the CLI
    (`What is six times seven?`); claude-agent and codex in `harness-run`, `claude-run` and `codex-run`.
-2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: `failed`,
-   `error.code: spend_cap_reached`, `result: null`, `cost.usd: 0`. The journal's only request mark is
-   `agentrun.request_started` with `capRefused: true`. Alone: pi through the CLI; claude-agent and codex in
-   `claude-run` and `codex-run`.
+2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: the run pauses,
+   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (`spent_usd` 0, `needs_usd` the request's
+   least), `result: null`, `cost.usd: 0`. The journal's only request mark is `agentrun.request_started` with
+   `capRefused: true`, and a higher cap sends it (`PATCH /v2/runs/{id}` `{max_cost_usd}`). Only a refusal no cap
+   fixes (a spend nobody knows, no output ceiling, no price) ends `failed`, `spend_cap_reached`. Alone: pi through the
+   CLI, `cap-pause` and `cap-raise`; claude-agent and codex in `claude-run`, `codex-run` and `cap-raise`.
 3. **A stopped request counts at the worst case the cap held.** `Take your time.` at `max_cost_usd: 2`; once it reads
    `working`, `POST /v2/runs/{id}/stop` (`stopped: true`) leaves it `input_required`. A message is a `follow_up`, and
-   the run ends `failed`, `spend_cap_reached`, its `error.message` saying `with $1.638400 spent`. At `10` the follow-up
-   completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
+   the cap counts the stopped request at the worst case it held ($1.6384). Its request is limited to what is left of
+   the cap; if what is left can't buy that request's least, the run pauses at it (`input_required`,
+   `pending.kind: "budget"`, `spent_usd` 1.6384) with nothing more sent. Either way the run never ends `failed` for room.
+   At `10` the follow-up completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
    can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
    mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
    `harness-cap` covers a crash mid-request and run-adapters' `held-worst-case.test.mjs` a request cut short; no test
@@ -194,9 +202,9 @@ The journal is the `entries` table of the run's `store/run.sqlite`.
    `409 not_continuable`. A request cut by the cancel leaves `cost.usd` `null`. Alone: `runs` (pi, on
    `Take your time.`) and `harness-run` (codex, cancelled while a request is out).
 5. **A crash or a restart resumes the run.** Restart: `Answer once <file> exists.`; once it reads `working`, SIGTERM
-   the server's own PID. It exits within `--drain-timeout` plus 3 s, the run's `holder.pid` exits with it, and
-   `run.json` reads `sleeping`. Start it again on the same `--data` and make the file: the run ends `completed` with
-   `Now.`. Crash: `kill -KILL` the run's `holder.pid`; the run opens again and completes, each paid request counted
+   the server's own PID. It exits within `--drain-timeout` plus 3 s, the run's holder process exits with it, and
+   the run's record in its store reads `sleeping`. Start it again on the same `--data` and make the file: the run ends `completed` with
+   `Now.`. Crash: `kill -KILL` the run's holder process (its row's `claim_holder`); the run opens again and completes, each paid request counted
    once. Alone: the restart on pi through the CLI, and `recovery`; the crash in `harness-run` and `claude-run`, and in
    `codex-run`, which checks that no Codex process is left behind.
 6. **A multi-tool turn completes on claude-agent and codex.** Two tool calls in one model response end `completed`,
@@ -227,21 +235,21 @@ land (native and picked web search and tool settings, monid on every harness, th
 - **Tests.** `startServe({ faux, fauxWeb, fauxParallel, fauxMonid })` in `packages/serve/test` replaces the model, the
   resolver and HTTP for fetches, Parallel and monid with `test/fixtures/faux-*.mjs`. The faux harness
   (`faux-harness.mjs`) stands in for claude-agent and codex.
-  `node --test packages/serve/test/{fetch-page,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
+  `node --test packages/serve/test/{web-fetch-direct,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
   runs the plane end to end that way.
 - **On a QA server.** `--faux MODULE` scripts the model's tool calls (see "The faux model" in `packages/serve/README.md`),
-  so a run calls `web_fetch` (or `fetch_page`, its legacy name), `read`, `write` and `edit` with no model key.
+  so a run calls `web_fetch`, `read`, `write` and `edit` with no model key.
   `web_fetch` then reads real public pages; nothing else leaves the box.
 
 **Checks when the tool plane changed.**
 1. Every name in `GET /v2/settings/tool-keys` `unlocks` is a tool `GET /v2/capabilities` binds, on the harnesses it lists,
    and `missing` names the key each tool still needs.
-2. `web_fetch`, under either name (`fetch_page` is its legacy one, no longer a tool of its own), refuses loopback,
+2. `web_fetch` refuses loopback,
    private, link-local and metadata addresses and ports other than 80/443, at the first hop and after a redirect; a
    refused URL is never sent to Parallel.
 3. A tool key reaches only a run that names a tool it unlocks, over the pipe, never in any process's environment; a saved
    key exists on disk only sealed (no plaintext under the data directory).
-4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, also as `fetch_page`, and
+4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, and
    `web_search` where it is not the harness's own) run and are journaled with their replay class; a `write` cut off by a
    crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
@@ -260,8 +268,7 @@ the run's files go to. It gives back:
   `mounts` (Docker, as bind mounts); every other provider refuses a spec with any as `unsupported`.
 - `@parcha/pi-transport/sync`: the safe extractor (`extractTar`, `openExtractor`, `removeEntries`) and the sync layer
   (`seedDir`/`pullDir`, `seedAgentHome`/`pullAgentHome`, `HOST_OWNED_HOME`), each answering with a receipt.
-- Not in the seam: `@parcha/pi-transport/home` (its checkpoint vault and store checks included), `./launch` and
-  `./place`. Serve imports none of them; they are deprecated and removed in 0.1.0-beta.31.
+- Not in the seam: `./launch`. Serve does not import it; it is deprecated, to be removed.
 - Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
@@ -274,7 +281,7 @@ the run's files go to. It gives back:
   `{mode: "sandbox", box}`, checked by `placeIssues`; `GET /v2/capabilities` answers `places` (`placesOf`). A sandbox
   place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
 - Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
-  (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
+  (`boxRegistry`); not set at all, it is `docker` (`DEFAULT_BOXES`), and empty or `none` is no box; and the start log's `event=boxes` line says which are available and why the others aren't. Box
   keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` and `daytona` are
   available when they are, and every other box says runs in it are not available yet.
 - Serve, a run's place and its box: a run takes its revision's place or the default (`resolvePlace`), and the run keeps
@@ -282,7 +289,7 @@ the run's files go to. It gives back:
   (`packages/serve/src/coding-tools.ts`) is the boxed coding source: on the runner pi's `read`, `write` and `edit`; in a
   box those and `bash`, each call on pi-transport's `boxEnv` over the run's box. pi's tool table and the other
   harnesses' `hostTools` both take it, and the tool plane's permission gate wraps it. `agentWorkDir(runDir, place)`
-  (`place.ts`) is the run's `work/` as its tools see it: `<runDir>/work` on the runner, `/run/agentrun/run/work` in a
+  (`place.ts`) is the run's `work/` as its tools see it: `<runDir>/work` on the runner, `/workspace` in a
   box. The box's lifecycle and mounts are `packages/serve/src/run-box.ts` (`runBox`, `boxMounts`, `mountSource`,
   `destroyRunBoxes`, `sweepRunBoxes`), labelled `agentrun.run=<id>`; pi-transport's `endLeftCommands` kills what a
   crashed run's process left running.
@@ -348,7 +355,7 @@ or a real `docker` on `PATH` for a server under test.
 7. **Boxed tools**: `boxed-tools.test.mjs` and `run-box.test.mjs` pass. A sandbox run's `bash` `printf hi > out.txt`
    shows in `GET /v2/runs/{id}/files` on pi, claude-agent and codex; the box's environment is `LANG`, `HOME=/tmp` and
    its `PATH`, with no key or token; every `docker run` has `--network none`, `--user` the server's uid:gid, one
-   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; a run request naming `place` is a 422 and
+   `--mount` of `work/` at `/workspace` and only `NAME=value` envs; a run request naming `place` is a 422 and
    makes no run; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
    and nothing is bound; the box is destroyed at completion, cancel and archive, adopted by its label after a crash
    (the left command killed), and swept at start once its run has ended.

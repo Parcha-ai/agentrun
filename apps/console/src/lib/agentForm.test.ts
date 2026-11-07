@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -83,6 +83,35 @@ describe("createBody", () => {
     expect(createBody({ name: "Changelog checker", description: "", instructions: "Read the change.", harness: "pi", tools: ["read"] })).toEqual({
       definition: { version: 1, name: "Changelog checker", instructions: "Read the change.", harness: "pi", skills: [], tools: ["read"] },
     });
+  });
+});
+
+describe("the agent's default spend cap per run (definition.max_cost_usd)", () => {
+  const capped = { ...(agent.body as object), definition: { ...agent.body.definition, max_cost_usd: 2.5, some_future_field: { kept: true } } } as never;
+  it("an edit keeps every field the form does not show: max_cost_usd and an unknown one", () => {
+    const body = editBody(capped, { instructions: "Check it twice." }, "");
+    expect(body.definition).toMatchObject({ max_cost_usd: 2.5, some_future_field: { kept: true }, instructions: "Check it twice." });
+  });
+  it("an edit sets a new cap, and a cleared one is sent as an explicit 0, never left out", () => {
+    expect(editBody(capped, { max_cost_usd: 4 }, "").definition.max_cost_usd).toBe(4);
+    const cleared = editBody(capped, { max_cost_usd: 0 }, "");
+    expect([cleared.unchanged, cleared.definition.max_cost_usd, cleared.definition.some_future_field]).toEqual([false, 0, { kept: true }]);
+  });
+  it("a new agent's first revision carries the cap typed, none when empty, and a starter never one", () => {
+    const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };
+    expect(createBody({ ...f, max_cost_usd: 0.75 }).definition.max_cost_usd).toBe(0.75);
+    expect(createBody(f).definition).not.toHaveProperty("max_cost_usd");
+    expect(createBody({ ...f, harness: DECISION, decisionProvider: "jev", max_cost_usd: 0.75 }).definition).not.toHaveProperty("max_cost_usd");
+  });
+});
+
+describe("capOf, the default cap field's text", () => {
+  it("empty is none, a number (with or without a leading $) is that number, and a $ alone or text is refused", () => {
+    expect(capOf("")).toEqual({ ok: true, value: undefined });
+    expect(capOf("   ")).toEqual({ ok: true, value: undefined });
+    expect(capOf("$2.50")).toEqual({ ok: true, value: 2.5 });
+    expect(capOf(" 4 ")).toEqual({ ok: true, value: 4 });
+    for (const text of ["$", " $ ", "ten"]) expect(capOf(text).ok, text).toBe(false);
   });
 });
 
@@ -233,24 +262,24 @@ describe("same", () => {
 describe("tools by default (tools on, Miguel's rule), and whether the agent reaches the web", () => {
   const offers = toolOffers([
     { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
-    { name: "fetch_page", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
+    { name: "web_fetch", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
   ]);
   it("takes the server's tools as objects", () => {
     expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] });
   });
   it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
-    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "fetch_page", "ask_person"]);
+    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "web_fetch", "ask_person"]);
   });
   it("on Claude or Codex, only the tools that harness runs here: the server's own rule until it says per harness", () => {
     expect(defaultTools("claude-agent", offers)).toEqual(["read", "write", "edit"]);
     expect(defaultTools("codex", offers)).toEqual(["read", "write", "edit"]);
   });
   it("follows the server when it says which harnesses run each tool", () => {
-    const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "fetch_page", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
-    expect(defaultTools("codex", said)).toEqual(["read", "fetch_page"]);
+    const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "web_fetch", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
+    expect(defaultTools("codex", said)).toEqual(["read", "web_fetch"]);
   });
-  it("reaches the web with any of fetch_page, web_fetch and web_search, and with none of them does not", () => {
-    for (const web of ["fetch_page", "web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
+  it("reaches the web with web_fetch or web_search, and with neither does not", () => {
+    for (const web of ["web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
     expect(reachesWeb(["read", "write", "ask_person"])).toBe(false);
     expect(reachesWeb([])).toBe(false);
   });

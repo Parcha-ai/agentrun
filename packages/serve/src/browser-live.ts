@@ -150,6 +150,43 @@ export function proxyLiveHttp(req: IncomingMessage, res: ServerResponse, handove
   });
 }
 
+/** How often an open viewer's session is checked again. A reset-password run in another process and a cookie past its end
+ *  are seen by no call in this one, so a viewer they end closes within this. */
+export const LIVE_RECHECK_MS = 2_000;
+
+/** The viewers' sockets open now, each with the check of the sessions that let it in. A socket whose sessions no longer
+ *  hold is destroyed, which takes its way to the run with it (proxyLiveUpgrade): at once on `recheck()` (a sign-out or a
+ *  password set in this process), else within LIVE_RECHECK_MS. The timer runs only while a viewer is open. */
+export class LiveViewers {
+  private readonly open = new Map<Duplex, () => boolean>();
+  private timer: NodeJS.Timeout | undefined;
+
+  watch(socket: Duplex, admitted: () => boolean): void {
+    this.open.set(socket, admitted);
+    socket.once("close", () => this.drop(socket));
+    this.timer ??= setInterval(() => this.recheck(), LIVE_RECHECK_MS).unref();
+  }
+
+  recheck(): void {
+    for (const [socket, admitted] of this.open) if (!admitted()) this.end(socket);
+  }
+
+  /** The server closes: every viewer goes. */
+  close(): void {
+    for (const socket of this.open.keys()) this.end(socket);
+  }
+
+  private end(socket: Duplex): void {
+    socket.destroy();
+    this.drop(socket);
+  }
+
+  private drop(socket: Duplex): void {
+    this.open.delete(socket);
+    if (this.open.size === 0 && this.timer) (clearInterval(this.timer), (this.timer = undefined));
+  }
+}
+
 /** The viewer's WebSocket to the run's port: the request line and the handshake's own headers, the Host and Origin the
  *  run's viewer takes (its own), and nothing else of the owner's (no cookie); then both ways, unread. */
 export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, handover: LiveHandover, rest: string): void {

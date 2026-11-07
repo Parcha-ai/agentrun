@@ -35,25 +35,34 @@ test("no tool the table binds registers bash on the runner: what each installs a
   const bound = BOUND_TOOLS.filter((name) => missingEnv(TOOLS[name], {}).length === 0 && name !== "browser");
   for (const name of ["read", "write", "edit", "ask_person", "web_fetch"]) assert.ok(bound.includes(name), `${name} binds with no key`);
   assert.ok(bound.includes("bash"), "bash is in the table, for a box");
-  assert.deepEqual(await TOOLS.bash.bind(host), { tools: [], extensions: [] }, "on the runner bash binds nothing");
-  for (const name of bound.filter((name) => name !== "bash")) {
+  // bash and the background tools (background.ts) are sandbox-only: on the runner they bind nothing.
+  const shells = bound.filter((name) => TOOLS[name].sandboxOnly);
+  assert.deepEqual(shells, ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
+  for (const name of shells) assert.deepEqual(await TOOLS[name].bind(host), { tools: [], extensions: [] }, `on the runner ${name} binds nothing`);
+  for (const name of bound.filter((name) => !TOOLS[name].sandboxOnly)) {
     const binding = await TOOLS[name].bind(host);
     assert.deepEqual(binding.tools.map((tool) => tool.name), [name]);
     if (["read", "write", "edit"].includes(name)) assert.deepEqual(binding.extensions, [CodingTools], name);
-    for (const extension of [...installed, ...binding.extensions]) assert.ok(!names(extension).includes("bash"), `${name}: ${extension.name}`);
+    for (const extension of [...installed, ...binding.extensions]) assert.ok(!names(extension).some((tool) => shells.includes(tool)), `${name}: ${extension.name}`);
   }
 });
 
-test("in a box the source is pi's read, write, edit and bash, each call made on the box's environment, nothing else of a call changed", async () => {
+test("in a box the source is pi's read, write, edit and bash, and the background tools, each call made on the box's environment, nothing else of a call changed", async () => {
   const calls = [];
-  const boxEnv = { cwd: "/run/agentrun/run/work", marker: "the box's" };
+  const boxEnv = { cwd: "/workspace", marker: "the box's" };
   const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async (context) => (calls.push(context), boxEnv) });
-  assert.deepEqual(source.tools.map((tool) => tool.name).sort(), ["bash", "edit", "read", "write"]);
+  assert.deepEqual(source.tools.map((tool) => tool.name).sort(), ["bash", "bash_background", "bash_input", "bash_list", "bash_output", "bash_signal", "edit", "read", "write"]);
   assert.deepEqual(source.extension.tools, source.tools);
   assert.equal(source.extension.name, ArchilCodingTools.name, "the extension keeps pi's name");
   const pis = Object.fromEntries(ArchilCodingTools.tools.map((tool) => [tool.name, tool]));
-  for (const tool of source.tools) {
-    assert.equal(tool.parameters, pis[tool.name].parameters, `${tool.name} keeps pi's schema`);
+  for (const tool of source.tools.filter((tool) => !tool.name.startsWith("bash_"))) {
+    // bash's schema is pi's in shape; only its timeout's words say the default and the ceiling (bench-tools.test.mjs).
+    if (tool.name === "bash") {
+      const { timeout: ours, ...rest } = tool.parameters.properties;
+      const { timeout: theirs, ...pisRest } = pis.bash.parameters.properties;
+      assert.deepEqual(rest, pisRest, "bash keeps pi's other parameters");
+      assert.deepEqual({ ...ours, description: undefined }, { ...theirs, description: undefined }, "bash's timeout keeps pi's type");
+    } else assert.equal(tool.parameters, pis[tool.name].parameters, `${tool.name} keeps pi's schema`);
     assert.equal(tool.replay, pis[tool.name].replay, `${tool.name} keeps pi's replay`);
     assert.deepEqual(tool.outputLimits, pis[tool.name].outputLimits);
   }
@@ -64,20 +73,27 @@ test("in a box the source is pi's read, write, edit and bash, each call made on 
   const bash = source.tools.find((tool) => tool.name === "bash");
   const context = { marker: "ctx" };
   await bash.execute({ command: "printf hi > out.txt" }, api, context);
-  assert.deepEqual(seen, [{ command: "printf hi > out.txt", cwd: "/run/agentrun/run/work", env: {}, inherit: true }], "pi's bash, run in the box's cwd, on the box's own env alone");
+  assert.deepEqual(seen, [{ command: "printf hi > out.txt", cwd: "/workspace", env: {}, inherit: true }], "pi's bash, run in the box's cwd, on the box's own env alone (its timeout, the default, is bench-tools.test.mjs's)");
   assert.deepEqual(calls, [context]);
+  // A background tool's call is one command in the box, from the box's work dir (background.ts).
+  seen.length = 0;
+  boxEnv.exec = async (command) => (seen.push([...command.slice(0, 2), ...command.slice(4, 6)]), { ok: true, value: { exitCode: 0 } });
+  const list = source.tools.find((tool) => tool.name === "bash_list");
+  assert.match((await list.execute({}, api, context)).content[0].text, /^No background processes in this run's box/);
+  assert.deepEqual(seen, [["sh", "-c", "/workspace", "list"]]);
+  assert.deepEqual(calls, [context, context]);
   assert.throws(() => codingSource({ mode: "sandbox", box: "docker" }), /needs its box/);
 });
 
 test("in a box a file tool's path stays in the box's work dir: a host path, a way out, ~ or a file: URL is refused as the confined tools refuse, naming only the path given, before the box is asked", async () => {
   const asked = [];
-  const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => (asked.push("env"), { cwd: "/run/agentrun/run/work" }) });
+  const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => (asked.push("env"), { cwd: "/workspace" }) });
   const read = source.tools.find((tool) => tool.name === "read");
-  for (const path of ["/var/lib/agentrun/runs/r1/work/x.md", "../x.md", "/run/agentrun/run/workx/y", "~/x", "file:///etc/passwd", "/etc/passwd"]) {
+  for (const path of ["/var/lib/agentrun/runs/r1/work/x.md", "../x.md", "/workspacex/y", "~/x", "file:///etc/passwd", "/etc/passwd"]) {
     await assert.rejects(read.execute({ path }, {}, {}), { name: "PathOutsideWorkError", message: `${path}: outside the workspace` }, path);
   }
   assert.deepEqual(asked, [], "no box was asked for a refused path");
-  for (const path of ["x.md", "sub/../x.md", "/run/agentrun/run/work/x.md"]) {
+  for (const path of ["x.md", "sub/../x.md", "/workspace/x.md"]) {
     await read.execute({ path }, { output() {}, diagnostic() {} }, {}).catch(() => undefined);
   }
   assert.equal(asked.length, 3, "each path in the work dir reaches the box");
@@ -85,16 +101,16 @@ test("in a box a file tool's path stays in the box's work dir: a host path, a wa
 
 test("in a box a path under the run's own host work dir is the same file at the box's work dir, one for one; every other host path stays refused", async () => {
   const hostWork = "/var/lib/agentrun/runs/r1/work";
-  assert.equal(boxPath(`${hostWork}/x.md`, hostWork), "/run/agentrun/run/work/x.md");
-  assert.equal(boxPath(`${hostWork}/sub/y.md`, hostWork), "/run/agentrun/run/work/sub/y.md");
-  assert.equal(boxPath(hostWork, hostWork), "/run/agentrun/run/work");
+  assert.equal(boxPath(`${hostWork}/x.md`, hostWork), "/workspace/x.md");
+  assert.equal(boxPath(`${hostWork}/sub/y.md`, hostWork), "/workspace/sub/y.md");
+  assert.equal(boxPath(hostWork, hostWork), "/workspace");
   for (const path of ["/var/lib/agentrun/runs/r1/x.md", "/var/lib/agentrun/runs/r1/harness/work/x.md", "/var/lib/agentrun/.token", `${hostWork}/../x.md`, `${hostWork}x/y.md`, "/var/lib/agentrun/runs/r2/work/x.md"]) {
     assert.equal(boxPath(path, hostWork), undefined, path);
   }
   assert.equal(boxPath("x.md", hostWork), "x.md", "a relative path is the box's own");
   // Through the tools: the mapped call reaches the box under the box's path; a refused one never asks for the box.
   const asked = [];
-  const source = codingSource({ mode: "sandbox", box: "docker" }, { hostWork, env: async () => (asked.push("env"), { cwd: "/run/agentrun/run/work" }) });
+  const source = codingSource({ mode: "sandbox", box: "docker" }, { hostWork, env: async () => (asked.push("env"), { cwd: "/workspace" }) });
   const read = source.tools.find((tool) => tool.name === "read");
   await assert.rejects(read.execute({ path: "/var/lib/agentrun/runs/r1/x.md" }, {}, {}), { name: "PathOutsideWorkError", message: "/var/lib/agentrun/runs/r1/x.md: outside the workspace" });
   assert.deepEqual(asked, []);

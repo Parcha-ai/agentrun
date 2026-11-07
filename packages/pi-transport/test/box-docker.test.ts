@@ -410,6 +410,64 @@ describe("docker boxes: mounts", () => {
 		}));
 });
 
+describe("docker boxes: named volumes", () => {
+	it("become --mount type=volume after the binds, read-only where asked, on every box", () =>
+		withScriptedDocker(
+			async (provider, directory, calls) => {
+				const run = join(directory, "run");
+				mkdirSync(run);
+				const made = await provider.create(
+					{ maxLifetimeMs: 60_000, network: "none", mounts: [{ source: run, target: "/workspace/run" }] },
+					context,
+				);
+				if (!made.ok) throw made.error;
+				const bare = await provider.create({ maxLifetimeMs: 60_000 }, context);
+				if (!bare.ok) throw bare.error;
+				for (const args of calls()) {
+					const mounts = args.flatMap((arg, n) => (args[n - 1] === "--mount" ? [arg] : []));
+					expect(mounts.at(-1)).toBe(
+						"type=volume,source=agentrun-egress-0123456789ab,target=/run/agentrun/egress,readonly",
+					);
+					expect(args.lastIndexOf("--mount")).toBeLessThan(args.indexOf("--entrypoint"));
+					for (const flag of ["-v", "--volume", "--volumes-from"]) expect(args).not.toContain(flag);
+				}
+				const [first = []] = calls();
+				expect(first.flatMap((arg, n) => (first[n - 1] === "--mount" ? [arg] : []))[0]).toBe(
+					`type=bind,source=${run},target=/workspace/run`,
+				);
+				expect(first[first.indexOf("--network") + 1]).toBe("none");
+			},
+			{ volumes: [{ name: "agentrun-egress-0123456789ab", target: "/run/agentrun/egress", readOnly: true }] },
+		));
+
+	it("refuse a name or target Docker's --mount cannot carry, at once, and a spec's bind on a volume's target", async () => {
+		for (const name of ["", "-x", "a,b", "a/b", "a b", "a=b"]) {
+			expect(() =>
+				dockerBoxes({ docker: "/nonexistent/pi-transport-docker", volumes: [{ name, target: "/x" }] }),
+			).toThrow(/^the docker volume name /);
+		}
+		for (const target of ["x", "/", "/a/../b", "/a,b", "/a/"]) {
+			expect(() =>
+				dockerBoxes({ docker: "/nonexistent/pi-transport-docker", volumes: [{ name: "v", target }] }),
+			).toThrow(/^the docker volume v's target /);
+		}
+		await withScriptedDocker(
+			async (provider, directory, calls) => {
+				const refused = await provider.create(
+					{ maxLifetimeMs: 60_000, mounts: [{ source: directory, target: "/x" }] },
+					context,
+				);
+				expect(!refused.ok && [refused.error.code, refused.error.message]).toEqual([
+					"invalid",
+					"the mount target /x is a volume's",
+				]);
+				expect(calls()).toEqual([]);
+			},
+			{ volumes: [{ name: "v", target: "/x" }] },
+		);
+	});
+});
+
 /** Each resource flag of `args` with its value, in order: `--cpus`, `--memory`, `--memory-swap`, `--pids-limit` and any other. */
 const limits = (args: readonly string[]) =>
 	args.flatMap((arg, n) => (/^--(cpu|memory|pids)/.test(arg) ? [[arg, args[n + 1]]] : []));
@@ -523,4 +581,96 @@ describe("docker boxes: resource limits", () => {
 		expect(make({ cpus: 0.01, memory: "512M", pidsLimit: 1 })).not.toThrow();
 		expect(make({ pidsLimit: 4_194_304 })).not.toThrow();
 	});
+});
+
+describe("docker boxes: a server in a container, whose files the daemon has only as its named volume", () => {
+	/** The `--mount` values of the first call, and whether it was a `run`. */
+	const mountsOf = (calls: () => string[][]) => {
+		const [args = []] = calls();
+		return { run: args[0] === "run", mounts: args.flatMap((arg, n) => (args[n - 1] === "--mount" ? [arg] : [])) };
+	};
+
+	it("with a named volume at `at`: a source under it becomes that volume's subpath, read-only where asked, never its root and never a bind", async () => {
+		const directory = realpathSync(mkdtempSync(join(tmpdir(), "pi-transport-docker-paths-")));
+		try {
+			const work = join(directory, "disk", "agents", "a-0123456789abcdef", "runs", "r1", "work");
+			const egress = join(directory, "box-egress", "0123456789abcdef");
+			mkdirSync(work, { recursive: true });
+			mkdirSync(egress, { recursive: true });
+			await scripted(
+				{ paths: { at: directory, volume: "agentrun_agentrun-data" } },
+				LOCAL,
+				async (provider, _dir, calls) => {
+					const made = await provider.create(
+						{
+							maxLifetimeMs: 60_000,
+							mounts: [
+								{ source: work, target: "/run/agentrun/run/work" },
+								{ source: egress, target: "/run/agentrun/egress", readOnly: true },
+							],
+						},
+						context,
+					);
+					if (!made.ok) throw made.error;
+					const { run, mounts } = mountsOf(calls);
+					expect(run).toBe(true);
+					expect(mounts).toEqual([
+						"type=volume,source=agentrun_agentrun-data,target=/run/agentrun/run/work,volume-subpath=disk/agents/a-0123456789abcdef/runs/r1/work,volume-nocopy",
+						"type=volume,source=agentrun_agentrun-data,target=/run/agentrun/egress,volume-subpath=box-egress/0123456789abcdef,volume-nocopy,readonly",
+					]);
+				},
+			);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses, before docker run, a source outside `at` (the daemon has no such path) and `at` itself (a box never gets the whole data)", async () => {
+		const directory = realpathSync(mkdtempSync(join(tmpdir(), "pi-transport-docker-paths-")));
+		const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "pi-transport-docker-elsewhere-")));
+		try {
+			await scripted({ paths: { at: directory, volume: "data" } }, LOCAL, async (provider, _dir, calls) => {
+				const outside = await provider.create(
+					{ maxLifetimeMs: 60_000, mounts: [{ source: elsewhere, target: "/run/agentrun/run/work" }] },
+					context,
+				);
+				expect(!outside.ok && outside.error.code).toBe("unsupported");
+				expect(!outside.ok && outside.error.message).toBe(
+					`the mount source ${elsewhere} is not under ${directory}, the only files of this server's that its Docker can mount`,
+				);
+				const whole = await provider.create(
+					{ maxLifetimeMs: 60_000, mounts: [{ source: directory, target: "/run/agentrun/run/work" }] },
+					context,
+				);
+				expect(!whole.ok && whole.error.code).toBe("invalid");
+				expect(calls()).toEqual([]);
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+			rmSync(elsewhere, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses paths that are not one, before any box: an `at` not absolute in normal form, a volume name Docker would not take", () => {
+		expect(() => dockerBoxes({ paths: { at: "data", volume: "v" } })).toThrow(
+			/the docker paths' at "data" is not an absolute path in normal form/,
+		);
+		expect(() => dockerBoxes({ paths: { at: "/data/../x", volume: "v" } })).toThrow(
+			/not an absolute path in normal form/,
+		);
+		expect(() => dockerBoxes({ paths: { at: "/data", volume: "-v" } })).toThrow(
+			/the docker paths' volume "-v" is not a letter or digit/,
+		);
+		expect(() => dockerBoxes({ paths: { at: "/data", volume: "a,b" } })).toThrow(/is not a letter or digit/);
+	});
+
+	it("without paths, a mount is the bind it always was, byte for byte", () =>
+		withScriptedDocker(async (provider, directory, calls) => {
+			const made = await provider.create(
+				{ maxLifetimeMs: 60_000, mounts: [{ source: directory, target: "/w" }] },
+				context,
+			);
+			if (!made.ok) throw made.error;
+			expect(mountsOf(calls).mounts).toEqual([`type=bind,source=${directory},target=/w`]);
+		}));
 });

@@ -1,13 +1,13 @@
 // The host tools of a run on a harness other than pi: its coding tools, from the run's coding source (coding-tools.ts:
-// pi's own read, write and edit on the run's environment, or in a box those and bash on the box's), so their arguments,
-// their confinement and their refusals are pi's, word for word, pi's web_fetch (also under its legacy name,
-// fetch_page), the public-host guard included, web_search, and monid's three (monid.ts), which stay on this machine.
+// pi's own read, write and edit on the run's environment, or in a box those, bash and the background tools on the
+// box's), so their arguments, their confinement and their refusals are pi's, word for word, pi's web_fetch, the public-host
+// guard included, web_search, and monid's three (monid.ts), which stay on this machine.
 // pi's tools take only the environment, their output and their diagnostics from a call's API, and a paid one its call's
 // id and the run's store, so that is all a call here gives them: the output's tail or head as the tool keeps it (pi's
-// limits), then the diagnostics, also when the tool failed. read, the web tools, monid.discover and monid.inspect may
-// run again after a crash; write, edit, bash and monid.run never: the kernel records each one's intent before it runs,
-// and a call a crash cut off is answered interrupted, not run again. A tool is named by its catalog name here and goes
-// to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
+// limits), then the diagnostics, also when the tool failed. read, the web tools, monid.discover, monid.inspect,
+// bash_output and bash_list may run again after a crash; write, edit, bash, monid.run, bash_background, bash_input and
+// bash_signal never: the kernel records each one's intent before it runs, and a call a crash cut off is answered
+// interrupted, not run again. A tool is named by its catalog name here and goes to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
 // refusal, an error and a write's or edit's result name a path in the workspace relative to it (`hello.md`), never by
 // the server's data directory (`workspaceRelative`); in a box they name the box's paths. Each call passes the run's tool
 // gate first (tool-gate.ts): a denied call is refused, an asked one parked, and the harness is told so it ends the turn.
@@ -19,7 +19,6 @@ import type { HostTool } from "@parcha/agentrun-kernel";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { wireName } from "./catalog.js";
 import { BOXED_TOOLS, CodingTools } from "./coding-tools.js";
-import { FETCH_PAGE_TOOL } from "./fetch-page.js";
 import { monidTools } from "./monid.js";
 import { booking } from "./paid-calls.js";
 import { withSecrets } from "./secrets.js";
@@ -30,8 +29,10 @@ import type { Park, RunGate } from "./tool-gate.js";
 
 export { workspaceRelative } from "./workspace-paths.js";
 
-/** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again. */
-export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never" };
+/** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again.
+ *  `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL, named here as a string so the modules do not import
+ *  each other) is never run again. */
+export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe", learned_workflow: "never" };
 
 /** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
  *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
@@ -103,21 +104,28 @@ const SAYS_PATH = new Set(["write", "edit"]);
 const textOf = (content: unknown): string =>
   Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
 
+/** A result's image blocks (pi-ai's `ImageContent`: read's image in a box), as HostTool's `images`: the harness sends
+ *  them with the text, where `textOf` alone would drop them. */
+const imagesOf = (content: unknown): { mimeType: string; data: string }[] =>
+  Array.isArray(content) ? content.flatMap((block) => (block && typeof block === "object" && block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? [{ mimeType: block.mimeType, data: block.data }] : [])) : [];
+
 
 /** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
  *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
- *  gate's own run of an approved call), each call runs as asked. */
-export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], gated?: { gate: RunGate; park: Park }): HostTool[] {
+ *  gate's own run of an approved call), each call runs as asked. `extra`: the run's own tools beyond the table (its
+ *  learned_workflow, learned-workflow.ts), which the gate passes like the rest. */
+export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], gated?: { gate: RunGate; park: Park }, extra: readonly ToolRegistration[] = []): HostTool[] {
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.
   const stray = coding.map((tool) => tool.name).filter((name) => !BOXED_TOOLS.includes(name));
   if (stray.length) throw new Error(`the coding source holds ${stray.join(", ")}, which is no coding tool`);
   // Their paid requests (Parallel's) are booked under the call, in the run's store, as pi's are (paid-calls.ts).
-  const web = [webFetchTool(process.env), webFetchTool(process.env, FETCH_PAGE_TOOL), webSearchTool(process.env)].map(booking) as unknown as ToolRegistration[];
+  const web = [webFetchTool(process.env), webSearchTool(process.env)].map(booking) as unknown as ToolRegistration[];
   // monid's, only for a run that names one: its key is the one this process was handed over its pipe (secrets.ts),
   // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
   // the call. They are outside the coding source, which holds the coding tools only.
   const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => run.claim.work) : [];
-  const tools = new Map([...coding, ...web, ...monid].map((tool) => [tool.name, tool as ToolRegistration] as const));
+  // `extra`: the run's own tools beyond the table, its learned_workflow (learned-workflow.ts) when its pin names one.
+  const tools = new Map([...coding, ...web, ...monid, ...extra].map((tool) => [tool.name, tool as ToolRegistration] as const));
   return names.flatMap((name) => {
     // The registrations are keyed by their wire names: the same name for every tool here but monid's.
     const tool = tools.get(wireName(name));
@@ -128,12 +136,14 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
       description: tool.description,
       inputSchema: tool.parameters as unknown as Record<string, unknown>,
       replay,
-      async call(args, { callId, signal }) {
-        const refused = await gated?.gate.enter(name, args, callId, gated.park);
+      async call(args, { callId, signal, attempt }) {
+        // A replay (the kernel's attempt above 0) may follow an attempt that was sent: the gate's refusal then says so.
+        const refused = await gated?.gate.enter(name, args, callId, gated.park, (attempt ?? 0) > 0 ? { replayed: true } : {});
         if (refused) {
           const answer = { text: refused.text, isError: refused.isError };
           results.set(callId, answer);
-          return answer;
+          // A parked call did not run: the harness's session records it so (HostTool's `parked`).
+          return refused.parked ? { ...answer, parked: true as const } : answer;
         }
         const out = bounded(tool.outputLimits);
         const notes: string[] = [];
@@ -152,7 +162,8 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
         const works = typeof work === "string" ? [work, realOf(work)] : [];
         const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
         results.set(callId, answer);
-        return answer;
+        const images = imagesOf(given.content ?? given.output);
+        return images.length ? { ...answer, images } : answer;
       },
     };
     return [host];

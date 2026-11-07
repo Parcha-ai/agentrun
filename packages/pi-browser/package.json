@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-browser",
-  "version": "0.1.0-beta.29",
+  "version": "0.1.0-beta.31",
   "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
     "pi-package",
@@ -92,9 +92,10 @@
     "verify:tarball": "node scripts/verify-tarball.mjs"
   },
   "dependencies": {
-    "@browserbasehq/stagehand": "~4.1.0",
+    "@browserbasehq/stagehand": "~4.4.0",
     "node-html-markdown": "^2.0.0",
     "node-html-parser": "^6.1.13",
+    "typebox": "1.3.27",
     "undici": "^6.29.1",
     "zod": "~4.6.6"
   },
@@ -122,8 +123,7 @@
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-coding-agent": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0",
-    "typebox": "1.3.7"
+    "@earendil-works/pi-durable": "1.1.0"
   },
   "repository": {
     "type": "git",

@@ -8,20 +8,24 @@
 // `beforeRequest` first, and its usage comes back through `afterRequest`. The runner alone accounts model spend.
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
+import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
-import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
-import { type ConfineChild, localMachine } from "./host/machine.js";
+import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
+import { JournalSessionStore } from "./store.js";
+import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
+import { MCP_SERVER } from "./transcript.js";
+import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
@@ -120,6 +124,10 @@ export interface ClaudeAgentAdapterOptions {
   sdk?: ClaudeAgentSdk;
   /** The injected module's version, as its package.json says: checked when the adapter is made. */
   sdkVersion?: string;
+  /** The MCP library the session's tools are served with (`@modelcontextprotocol/sdk`'s `server/mcp.js` and
+   *  `types.js`), loaded by the host from where it installed the SDK, its peer. Default: imported by name, beside this
+   *  package. */
+  mcp?: ToolServerModules;
   /** The CLI to run (the SDK's platform package's `claude`). Default: found beside the SDK. Its sha256 and version are
    *  checked against the pins when the adapter is made. */
   cliPath?: string;
@@ -142,6 +150,24 @@ export function thinkingOf(spec: Pick<SessionSpec, "thinking" | "effort">, fallb
   const asked = (spec.thinking ?? spec.effort) as string | undefined;
   if (asked === "minimal") return "low";
   return asked && THINKING.has(asked) ? (asked as ClaudeAgentThinking) : fallback;
+}
+
+/**
+ * The SDK that is handed no message once the drive is stopped: its prompt stream ends instead, so no turn starts after a
+ * stop. Whether a placed message reached the CLI is the CLI's own record, not this hand-over: the SDK writes a message to
+ * the CLI's stdin at once, and a stop can kill the CLI before it reads it (settleOpenTurn reads the transcript).
+ */
+export function withStopEndingPrompts(sdk: ClaudeAgentSdk, signal: () => AbortSignal): ClaudeAgentSdk {
+  const until = async function* <T>(prompt: AsyncIterable<T>) {
+    for await (const message of prompt) {
+      if (signal().aborted) return;
+      yield message;
+    }
+  };
+  return {
+    ...sdk,
+    query: ((args: Parameters<ClaudeAgentSdk["query"]>[0]) => sdk.query({ ...args, prompt: (typeof args.prompt === "string" ? args.prompt : until(args.prompt as AsyncIterable<unknown>)) as typeof args.prompt })) as ClaudeAgentSdk["query"],
+  };
 }
 
 /** The SDK with every query thinking at `level`: adaptive thinking, at that effort. */
@@ -197,20 +223,21 @@ function checkCli(path: string, pins: { sha256?: string; version: string }): { p
 
 /** What the adapter runs with, or the typed reason it cannot: the SDK (injected or installed) and its CLI, each the
  *  pinned build. `installed` looks a package's version up (default: where Node would import it from here). */
-export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk" | "sdkVersion" | "cliPath">, installed: (name: string) => string | undefined = installedVersion): { cliPath: string } {
+export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk" | "sdkVersion" | "cliPath" | "mcp">, installed: (name: string) => string | undefined = installedVersion): { cliPath: string } {
   const sdkVersion = options.sdk ? options.sdkVersion : installed("@anthropic-ai/claude-agent-sdk");
   if (!options.sdk && sdkVersion === undefined) throw new ClaudeAgentNotInstalled(`@anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} is not installed beside ${CLAUDE_AGENT_PACKAGE}, and no module was given (sdk)`, CLAUDE_AGENT_SDK_INSTALL);
   if (sdkVersion !== undefined && sdkVersion !== CLAUDE_AGENT_SDK_VERSION) throw new ClaudeAgentPinMismatch("sdk_version", CLAUDE_AGENT_SDK_VERSION, sdkVersion);
   // The session's tools are served by an MCP server built here (host/tool-server.ts), whichever SDK runs: an injected
   // SDK does not bring the MCP library, so a missing one is refused now, not at the first turn.
-  if (installed("@modelcontextprotocol/sdk") === undefined) throw new ClaudeAgentNotInstalled(`@modelcontextprotocol/sdk is not installed beside ${CLAUDE_AGENT_PACKAGE} (the Agent SDK's peer, which serves the session's tools; npm installs it with the SDK)`, CLAUDE_AGENT_SDK_INSTALL);
+  if (!options.mcp && installed("@modelcontextprotocol/sdk") === undefined) throw new ClaudeAgentNotInstalled(`@modelcontextprotocol/sdk is not installed beside ${CLAUDE_AGENT_PACKAGE} (the Agent SDK's peer, which serves the session's tools; npm installs it with the SDK)`, CLAUDE_AGENT_SDK_INSTALL);
   const cli = verifyClaudeAgentCli(options.cliPath ?? findClaudeExecutable());
   if (cli instanceof Error) throw cli;
   return { cliPath: cli.path };
 }
 
-/** A stand-in CLI is for a test runner only. */
-const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === "test") && process.env.NODE_ENV !== "production";
+/** A stand-in CLI is for a test runner only: node --test's own mark (NODE_TEST_CONTEXT), never NODE_ENV=test, which a
+ *  production server can carry. */
+const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT) && process.env.NODE_ENV !== "production";
 
 /** The kernel's tool for a host tool: the same name, schema and replay policy, reported to the host under that name. */
 /** The most a tool's image may be, as base64, by default: the strictest of the platforms Claude runs on (Anthropic's API
@@ -277,13 +304,15 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
     async execute(input, effect) {
       // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
       calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      const result = await tool.call(input, { callId, signal: effect.signal });
+      const result = await tool.call(input, { callId, signal: effect.signal, attempt });
       if (result.isError) throw new Error(result.text);
       if (!result.images?.length) return result.text;
       // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
@@ -334,7 +363,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   return {
     id: CLAUDE_AGENT_ID,
     version: CLAUDE_AGENT_SDK_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CLAUDE_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -348,6 +377,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         const common = toolSchemaProblems(tool.name, tool.inputSchema);
         problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(tool.name, tool.inputSchema)));
       }
+      for (const server of spec.mcp?.servers ?? []) {
+        if (server.name === MCP_SERVER) problems.push(`the MCP server name ${MCP_SERVER} is the adapter's own`);
+        for (const tool of server.tools) {
+          const name = `mcp__${server.name}__${tool.name}`;
+          if (!TOOL_NAME.test(name)) problems.push(`the MCP tool ${name.slice(0, 80)} is not a name the Claude Agent CLI takes (letters, digits, _ and -, at most 64)`);
+          // A remote tool's schema meets the same checks as the host's: the CLI would drop it without a word.
+          const common = toolSchemaProblems(name, tool.inputSchema);
+          problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(name, tool.inputSchema)));
+        }
+      }
       return problems;
     },
     async open(spec, io) {
@@ -359,6 +398,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // The remote MCP servers' granted tools, as the CLI names them: its own MCP client calls them at the proxy.
+      const mcpServers = spec.mcp?.servers ?? [];
+      const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)));
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
@@ -377,11 +419,13 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
+          ...(spec.mcp ? { mcp: { session: spec.mcp, tools: [...mcpNames] } } : {}),
         },
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
       // the session's level.
-      const sdk = thinkingAt(options.sdk ?? (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeAgentSdk, thinkingOf(spec, thinking));
+      // Handed nothing once the drive of the moment is stopped (withStopEndingPrompts).
+      const sdk = withStopEndingPrompts(thinkingAt(options.sdk ?? (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeAgentSdk, thinkingOf(spec, thinking)), () => drive.signal);
       const harness = claudeCodeHarness({
         name: CLAUDE_AGENT_ID,
         sandbox: {
@@ -397,6 +441,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
         disallowedTools: CLAUDE_AGENT_ALSO_OFF.filter((name) => !(webSearch && name === "WebSearch")),
         ...(webSearch ? { providerTools: ["web_search" as const] } : {}),
+        ...(mcpServers.length ? { mcpServers: mcpServers.map((server) => ({ name: server.name, tools: server.tools.map((tool) => tool.name) })) } : {}),
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
@@ -405,12 +450,18 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         gatewayUrl: options.provider.origin,
         executable,
         sdk,
+        ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
       });
 
       const live = (event: unknown) => {
         const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // An MCP call, recorded as a built-in's: the host hears of it once its intent is in the session's records.
+        if (e?.type === "tool_start" && typeof e.callId === "string" && typeof e.name === "string" && mcpNames.has(e.name)) {
+          calls.begin(e.callId);
+          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
+        }
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
@@ -477,6 +528,39 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
+      // The session's host port (AdapterSession.port): the host's own requests beside the CLI's (a learned workflow's node)
+      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price, headers
+      // and the session's booking, io.models), but on a listener the session holds: a drive's proxy closes with its drive
+      // (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side keys only:
+      // the CLI never holds its key. Its policy object is its own: anything a policy keeps per instance stays apart from the
+      // drive's, as a side call's should. Closed with the session, or when the host lets the session go (io.signal).
+      // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
+      const hostPort = await startModelProxy({
+        policy: anthropicPolicy({
+          model: modelFor(spec),
+          ...(options.smallModel ? { smallModel: options.smallModel } : {}),
+          tools: [],
+          ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
+          ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
+        }),
+        hooks: io.models,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: withWebSearches(options.price) } : {}),
+        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
+      if (io.signal.aborted) await closeHost();
       return {
         get state() { return state; },
         async send(text) {
@@ -490,12 +574,19 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           await ready();
           void run();
         },
-        async settleOpenTurn() {
+        async settleOpenTurn(options = {}) {
           if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to settle");
           await ready();
           // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
-          // and the next turn carries no recovery of this one. Nothing is sent.
-          await settleTurn(drive);
+          // and the next turn carries no recovery of this one. Nothing is sent. A prompt the turn placed that the CLI never
+          // recorded (the stop came before the CLI read it) is carried into the next message, as an unplaced one is; a
+          // follow-up's own is not. The record is the CLI's transcript as the session keeps it (lostPrompts over the
+          // journal's transcript store), the history a resumed CLI is given: a message it lacks the next turn's model never
+          // saw, so carrying it never sends it twice.
+          const folded = drive.state();
+          const transcript = new JournalSessionStore(new NativeJournal(drive), { records: await new NativeJournal(drive).read() });
+          const unsent = lostPrompts(folded, recoveryNote(folded)?.turn.placed ?? [], transcript);
+          await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
           state = "idle";
         },
         async turnEnd() {
@@ -526,7 +617,11 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           closed = true;
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
+          await closeHost();
         },
+        // The session's one model route, for the host's own request beside the CLI's: the session's host port, which
+        // never restarts once closed.
+        port: (label: string) => (closed || hostClosed ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "anthropic-messages" as const }),
       };
     },
   };

@@ -63,7 +63,8 @@ if (!existsSync(cli)) {
 // ---- the server's environment
 const token = `demo_${randomBytes(24).toString("base64url")}`;
 const data = opts.data ? resolve(opts.data) : mkdtempSync(join(tmpdir(), "dwf-usecases-"));
-const env = { ...process.env, AGENTRUN_TOKEN: token, AGENTRUN_ACCOUNTS: "0", AGENTRUN_LOG: "quiet" };
+// No box unless the caller names one: unset, AGENTRUN_BOXES turns Docker on where it answers (boxes.ts).
+const env = { ...process.env, AGENTRUN_BOXES: process.env.AGENTRUN_BOXES ?? "none", AGENTRUN_TOKEN: token, AGENTRUN_ACCOUNTS: "0", AGENTRUN_LOG: "quiet" };
 // The fakes reach a run only through startServe's options (the server takes no test hook from its environment), so a
 // faux server runs in-process, through serve's smoke launcher; a live one is the CLI.
 const FAUX = { fauxJev: "jev.mjs", fauxParallel: "parallel.mjs", fauxOpenrouter: "openrouter.mjs", fauxWeb: "web.mjs" };

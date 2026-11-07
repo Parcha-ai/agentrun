@@ -1,14 +1,14 @@
 {
   "request": {
     "method": "GET",
-    "path": "/runs/01a1a2bf-8ddd-71cc-b780-5e9b78b9f063"
+    "path": "/runs/01a1addb-61d4-7bef-9908-3be8d605a371"
   },
   "status": 200,
   "headers": {
     "content-type": "application/json"
   },
   "body": {
-    "run_id": "01a1a2bf-8ddd-71cc-b780-5e9b78b9f063",
+    "run_id": "01a1addb-61d4-7bef-9908-3be8d605a371",
     "agent_id": "refund-finder",
     "agent_version": 1,
     "revision": "c5556e160672df38c594257f29053130d928130c0c4c850337bc5254db369b6f",
@@ -17,9 +17,12 @@
     "status": "completed",
     "state": "idle",
     "title": "Find this shop's refund policy page: https://www.brooklinen.com",
-    "created_at": "2026-11-03T18:50:25.126Z",
-    "updated_at": "2026-11-03T18:50:29.425Z",
-    "ended_at": "2026-11-03T18:50:29.276Z",
+    "place": {
+      "mode": "runner"
+    },
+    "created_at": "2026-11-05T22:36:38.244Z",
+    "updated_at": "2026-11-05T22:36:41.386Z",
+    "ended_at": "2026-11-05T22:36:41.234Z",
     "result": {
       "output": null,
       "final_answer": "**Refund policy URL:** https://www.brooklinen.com/policies/refund-policy\n\n- **Return window:** 30 days from delivery, unworn with tags on.\n- **Return shipping:** free for exchanges; a $7.50 label fee is taken from refunds.\n\nFound on the first try: Shopify stores keep the policy at /policies/refund-policy."
@@ -28,19 +31,20 @@
     "review": null,
     "pending": null,
     "cost": {
-      "usd": 0.013566,
+      "usd": 0.018522,
       "basis": "estimate",
       "charge_state": null,
       "cap_usd": null
     },
     "archived_at": null,
     "imported_from": null,
+    "trigger": null,
     "learning": {
       "state": "merged",
       "reason": null,
       "detail": "Learned: Try /policies/refund-policy first (replaces 1 older note)",
-      "at": "2026-11-03T18:50:29.424Z",
-      "used": [
+      "at": "2026-11-05T22:36:41.386Z",
+      "given": [
         {
           "file": "shopify-refund-policy-path.md",
           "name": "Shopify refund policy path"
@@ -56,6 +60,7 @@
         }
       ]
     },
-    "poll_after_ms": 0
+    "poll_after_ms": 0,
+    "last_progress_at": null
   }
 }

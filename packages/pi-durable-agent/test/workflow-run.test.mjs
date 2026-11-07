@@ -223,6 +223,19 @@ test("a running run is read plain even with no write-ahead log beside its store,
   assert.equal(existsSync(`${run.storePath}-wal`), true, "the read opened the store plain");
 });
 
+test("an unlocked read (a server's, of a run whose process may still hold it) makes no file beside the store, and reads what a plain read does; the summary reads the same way", async () => {
+  const run = await runOf();
+  const host = await hostFor(run);
+  const { outcome } = await runOn(run, host);
+  await host.close();
+  const files = filesUnder(run.dir);
+  const unlocked = await readWorkflowRun({ ...run, state: "running" }, { unlocked: true });
+  const carried = await workflowCarry(run, outcome, { unlocked: true });
+  assert.deepEqual(filesUnder(run.dir), files, "the reads made no file: no -wal, no -shm");
+  assert.deepEqual(await readWorkflowRun(run), unlocked, "a plain read gives the same view");
+  assert.deepEqual(await workflowCarry(run, outcome), carried, "and the same summary");
+});
+
 test("an ended run whose last commits are still in the write-ahead log of a writer still open is read plain: its outcome and output", async () => {
   const run = await runOf();
   const host = await hostFor(run, { storage: { walAutoCheckpointPages: 0 } });

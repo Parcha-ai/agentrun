@@ -35,10 +35,12 @@ export type StoreDeps = {
   handoff?: HandoffPort;
   /** A handoff's session came back under `fence`. */
   handedBack?(tag: string, fence: number): void;
+  /** A release task (an attempt, or its abort handler) had the provider release `tag`'s session, and the provider answered. */
+  stopped?(tag: string): void;
 };
 
-export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack }: StoreDeps) {
-  const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }) });
+export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack, stopped: stoppedHook }: StoreDeps) {
+  const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }), checkpointWhen: () => false });
 
   /** One state change: the record and the open-session inventory move in the same commit. */
   async function move(tx: Tx, row: InventoryRow, next: Move): Promise<void> {
@@ -151,6 +153,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const released = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal, keep), null);
         // What the lookup found goes on to the next attempt even when its release failed: the stop may have landed.
         if (!released) return retry(runtime, row, attempt, context, union(found, seen));
+        stoppedHook?.(row.tag);
         // Confirmed together: what this attempt released and what earlier ones did.
         const ids = union(found, released);
         await runtime.commit(() => ({ status: "running", checkpoint: { phase: "confirm", attempt, ids, polls: 0 } }), context);
@@ -184,6 +187,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       let stopped: string[] | null = null;
       // Before the create deadline nothing found is proof of nothing: the successor keeps the delayed lookup.
       if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedIds(provider, row, context.abortSignal, (ids) => void (found = union(found, ids)))).catch(() => null);
+      if (stopped) stoppedHook?.(row.tag);
       await runtime.commit(async (tx) => {
         if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()), ...foundId(row, union(found, stopped)) });
         else await tx.createTask(ReleaseTask, { ...task.input, ...(found.length ? { found } : {}) }, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });

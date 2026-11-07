@@ -9,24 +9,26 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 import { wireName } from "../dist/catalog.js";
+import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
-import { LEGACY_NAMES, TABLE_TOOLS } from "../dist/tool-plane.js";
+import { SERVE_OWN_TOOLS, TABLE_TOOLS } from "../dist/tool-plane.js";
 import { scratch } from "./support.mjs";
 
 const { deniedText, noApproverText, RunGate, waitingText } = gate;
 /** The mapping, where the module has one; none (the red), every name maps to nothing. */
 const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
-const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
+const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || SERVE_OWN_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
-/** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into. */
-const folded = (name) => LEGACY_NAMES[name] ?? name;
+/** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into; a
+ *  background tool (background.ts) is held to bash's. */
+const folded = (name) => (BACKGROUND_TOOLS.includes(name) ? "bash" : name);
 
 /** Every name a call reaches the gate by, on each harness, and the key it must map to. */
 const NAMES = {
   pi: [
     ...["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search"].map((name) => [name, name]),
-    ["fetch_page", "web_fetch"],
+    ...BACKGROUND_TOOLS.map((name) => [name, "bash"]),
     ...MONID.map((name) => [wireName(name), name]),
     ...BROWSER_TOOL_NAMES.map((name) => [name, "browser"]),
     ["mcp__srv__echo", "mcp:srv/echo"],
@@ -106,7 +108,7 @@ test("OpenCode's <server>_<tool> is an MCP tool only for a server the run has co
   assert.equal(keyOf("opencode", "ask_person", ["ask"]), "ask_person");
 });
 
-test("an MCP-named call reaches no enter() of this gate's on any harness: the MCP gateway enters it once, itself", async (t) => {
+test("an MCP call enters this gate once on every harness: the host tools bind none, and pi's extension skips only a registration the MCP gateway marks as gated by itself", async (t) => {
   const { hostTools } = await import("../dist/host-tools.js");
   const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
   const runGate = new RunGate({ root, work, data, runId: "r1", harness: "claude-agent" });
@@ -116,20 +118,9 @@ test("an MCP-named call reaches no enter() of this gate's on any harness: the MC
   // claude-agent and codex: the host tools bind no MCP tool, by any of its names.
   const bound = hostTools({}, ["mcp:srv/echo", "mcp__srv__echo", "srv_echo"], {}, new Map(), [], { gate: runGate, park });
   assert.deepEqual(bound.map((tool) => tool.name), []);
-  // pi: the gate's extension wraps no MCP tool.
+  // pi: a registration the gateway marks (it enters the gate itself) is not wrapped again; an unmarked one is wrapped.
   const registration = { name: "mcp__srv__echo", description: "", parameters: {}, execute: async () => ({ content: [] }) };
-  assert.deepEqual(runGate.extension([registration]).wraps, []);
+  assert.deepEqual(runGate.extension([{ ...registration, [gate.GATED_BY_GATEWAY]: true }]).wraps, [], "the gateway's own: gated there");
+  assert.deepEqual(runGate.extension([registration]).wraps.map((wrap) => wrap.tool), ["mcp__srv__echo"], "unmarked: wrapped here");
   assert.equal(entered, 0);
-});
-
-test("a legacy name the tool plane folds into a capability (fetch_page, web_fetch's) is held to that capability's setting: asked where it asks, refused where it denies, and never a settings key of its own", async (t) => {
-  const { LEGACY_NAMES, settingsIssues } = await import("../dist/tool-plane.js");
-  for (const [legacy, target] of Object.entries(LEGACY_NAMES)) {
-    for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(keyOf(harness, legacy), target, `${harness} ${legacy}`);
-    assert.deepEqual(settingsIssues({ [legacy]: { permission: "deny" } }).map((issue) => [issue.field, issue.reason]), [[legacy, "not_allowed"]], `${legacy} is set by ${target}`);
-  }
-  const asked = await onPi(t, { web_fetch: { permission: "ask" } }, "fetch_page");
-  assert.deepEqual([asked.text, asked.ran, asked.kept.map((entry) => entry.data?.tool)], [waitingText("web_fetch"), 0, ["web_fetch"]], "web_fetch: ask parks a fetch_page call");
-  const denied = await onPi(t, { web_fetch: { permission: "deny" } }, "fetch_page");
-  assert.deepEqual([denied.text, denied.ran], [deniedText("web_fetch"), 0], "web_fetch: deny refuses it");
 });

@@ -19,6 +19,12 @@ describe("route", () => {
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
   });
+  it("opens the schedules list, a new schedule, one schedule, and its editor at their own addresses", () => {
+    expect(route("#/schedules")).toEqual({ section: "schedules" });
+    expect(route("#/schedules/new")).toEqual({ section: "schedules", schedule: null });
+    expect(route("#/schedules/trg_1")).toEqual({ section: "schedules", schedule: "trg_1" });
+    expect(route("#/schedules/trg_1/edit")).toEqual({ section: "schedules", schedule: "trg_1", edit: true });
+  });
   it("opens Settings → Tool keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
@@ -130,6 +136,7 @@ describe("App, Settings", () => {
       if (path === "/v2/settings/tool-keys") return json(200, keys);
       if (path === "/v2/settings/webhook") return json(200, { configured: false });
       if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: [] });
+      if (path === "/v2/settings/mcp-servers") return json(200, { servers: [] });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
@@ -178,16 +185,18 @@ describe("App, Settings", () => {
     expect(row).not.toContain("pi: native");
   });
 
-  it("has no Settings in the nav when the server has no features.tool_keys", async () => {
+  it("has Settings in the nav on a server with no features.tool_keys too: every server has MCP servers", async () => {
     const page = await open({}, "#/runs");
     expect(page.nav()).toContain("Runs");
-    expect(page.nav()).not.toContain("Settings");
+    expect(page.nav()).toContain("Settings");
+    await act(async () => { [...page.host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === "Settings")!.click(); });
+    expect(location.hash).toBe("#/settings/mcp");
   });
 
   it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"]]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"], ["MCP servers", null]]);
     expect(page.host.querySelector('tr[data-tool="web_search"] select')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
   });
@@ -199,7 +208,7 @@ describe("App, Settings", () => {
     for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect(location.hash).toBe("#/settings/tools");
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect(page.host.querySelector('nav[aria-label="Settings"]')).toBeNull();
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers"]);
   });
 
   it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {
@@ -215,19 +224,27 @@ describe("App, Settings", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     expect(page.asked).toContain("GET /v2/settings/webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["Webhook", "#/settings/webhook", "page"]]);
   });
 
   it("has a tab for each of the three settings pages on a server with tool keys, a choice of provider and the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, webhooks: { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" } }, "#/settings/webhook", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["Webhook", "#/settings/webhook", "page"]]);
   });
 
   it("has no Webhook tab on a server without the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
-    expect(page.host.querySelector('nav[aria-label="Settings"]')).toBeNull();
+    const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim());
+    expect(tabs).toEqual(["Tool keys", "MCP servers"]);
+  });
+
+  it("lists MCP servers in Settings on every server, its capabilities naming no MCP routes, and opens the page there", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, mcp_client: { transports: ["streamable-http"], auth: ["none", "bearer"], at_rest: "sealed", harnesses: ["pi"] } }, "#/settings/mcp");
+    const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
+    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"]]);
+    expect(page.asked).toContain("GET /v2/settings/mcp-servers");
   });
 
   it("reads the capabilities again after a key is saved, so the tools it unlocks are offered without a reload", async () => {

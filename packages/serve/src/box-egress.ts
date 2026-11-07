@@ -71,14 +71,27 @@ export const MAX_CONNECTIONS = 20_000;
  *  a test's box reaches no host but its fake. */
 export const FAUX_EGRESS_ENV = "AGENTRUN_SERVE_FAUX_EGRESS";
 
+/** The parent of this user's proxy directories on a host: in /tmp, so a socket's path stays short. */
+const hostParent = (uid: number): string => join("/tmp", `agentrun-egress-${uid}`);
+
 /** The proxy's directory for run `runId`: short, so its socket's path stays within a Unix socket's limit (107 bytes)
- *  wherever the data root is, and the same each time the run's process starts, since the box keeps its bind. */
-export function egressDir(runId: string, uid: number = process.getuid?.() ?? 0): string {
-  return join("/tmp", `agentrun-egress-${uid}`, createHash("sha256").update(runId).digest("hex").slice(0, 16));
+ *  wherever the data root is, and the same each time the run's process starts, since the box keeps its bind. `parent`,
+ *  for a server in a container: a directory on the data directory's mount (box-paths.ts egressParentOf), which the box can
+ *  get from Docker; a host's is in /tmp. */
+export function egressDir(runId: string, uid: number = process.getuid?.() ?? 0, parent: string = hostParent(uid)): string {
+  return join(parent, createHash("sha256").update(runId).digest("hex").slice(0, 16));
 }
 
+/** The longest a parent of the proxy directories may be, in bytes: its longest socket path then fits a Unix socket's 107
+ *  bytes. That is the temporary one the proxy listens on first (run-adapters egress-proxy.ts, `.egress-<12 hex>.sock`)
+ *  before it links it to egress.sock; Node cuts a longer path without a word, so the link would miss it. */
+export const MAX_EGRESS_PARENT = 107 - Buffer.byteLength("/0123456789abcdef/.egress-0123456789ab.sock");
+
+/** Whether `parent` is too long, in bytes, for a run's proxy directories (MAX_EGRESS_PARENT). */
+export const egressParentTooLong = (parent: string): boolean => Buffer.byteLength(parent) > MAX_EGRESS_PARENT;
+
 /** Removes a run's proxy directory once its box is gone. */
-export const removeEgressDir = (runId: string): Promise<void> => rm(egressDir(runId), { recursive: true, force: true });
+export const removeEgressDir = (runId: string, parent?: string): Promise<void> => rm(egressDir(runId, undefined, parent), { recursive: true, force: true });
 
 /** This user's parent directory in /tmp: made 0700, and refused unless it is a directory of this user's, not a link. */
 async function ownParent(dir: string): Promise<void> {
@@ -94,12 +107,12 @@ async function ownParent(dir: string): Promise<void> {
  *  seam between the box's side, which is the same wherever the proxy runs (the mount, the relay, the proxy variables),
  *  and where the proxy runs. Today that is hostEgress: the run's own process, its socket's directory on this machine
  *  bound into the box. */
-export type BoxEgress = (runId: string) => Promise<{ mount: { source: string; target: typeof EGRESS_MOUNT; readOnly: true }; socket: string; fresh: boolean }>;
+export type BoxEgress = (runId: string) => Promise<{ mount?: { source: string; target: typeof EGRESS_MOUNT; readOnly: true }; socket: string; fresh: boolean }>;
 
 /** The proxy in the run's process (hostEgress): for a Docker daemon on this Linux machine, which can reach a socket in a
  *  directory of this machine bound into a container. */
-export const hostEgress = (allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): BoxEgress => async (runId) => {
-  const { dir, fresh } = await runProxy(runId, allow, env, log);
+export const hostEgress = (allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void, parent?: string): BoxEgress => async (runId) => {
+  const { dir, fresh } = await runProxy(runId, allow, env, log, parent);
   return { mount: { source: dir, target: EGRESS_MOUNT, readOnly: true }, socket: EGRESS_SOCKET, fresh };
 };
 
@@ -109,8 +122,8 @@ const opened = new Set<string>();
 /** Run `runId`'s proxy in this process, with `allow`, started once: its directory, to bind into the box, and whether that
  *  directory was made now (`fresh`): a box bound to one an earlier process made, which the start's sweep took since, holds
  *  the old directory, not this one. Its decisions go to `log`. */
-async function runProxy(runId: string, allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<{ dir: string; fresh: boolean }> {
-  const dir = egressDir(runId);
+async function runProxy(runId: string, allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void, parent?: string): Promise<{ dir: string; fresh: boolean }> {
+  const dir = egressDir(runId, undefined, parent);
   let proxy = started.get(runId);
   if (!proxy) {
     proxy = (async () => {
@@ -171,10 +184,11 @@ export const dockerInfo: DockerInfo = (env, timeoutMs) =>
  * VM in between; and the directory it keeps its data in (DockerRootDir) is one this server sees. A server in a container
  * given the host's docker socket shares the host's kernel, but not its files: it would bind a directory the daemon does
  * not have, so every box would fail to start. Anything else is no network, and the reason says what was seen, naming the
- * runtime docker info gives. A kernel is the evidence, not a runtime's name: Docker Desktop on WSL2 runs the kernel this
+ * runtime docker info gives; unless the server found its own container's mount of its data directory (`mapped`,
+ * box-paths.ts), on which the proxy's directory is then put. A kernel is the evidence, not a runtime's name: Docker Desktop on WSL2 runs the kernel this
  * server does, but keeps its data outside the distro, so it passes only where the distro has that directory too.
  */
-export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: DockerInfo; platform?: string; kernel?: string; timeoutMs?: number; sees?: (dir: string) => boolean } = {}): Promise<string | undefined> {
+export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: DockerInfo; platform?: string; kernel?: string; timeoutMs?: number; sees?: (dir: string) => boolean; mapped?: boolean } = {}): Promise<string | undefined> {
   const platform = options.platform ?? process.platform;
   if (platform !== "linux") return `this server runs on ${PLATFORM_NAMES[platform] ?? platform}, where Docker runs in a VM that can't reach this server's egress proxy yet`;
   const { dockerDaemon } = await import("@parcha/pi-transport/box/docker");
@@ -201,7 +215,9 @@ export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: 
       return false;
     }
   });
-  if (!sees(root)) return `${runtime} keeps its data in ${shown(root)}, which this server can't see: it runs on another machine's files (this server in a container, given the host's docker socket), so it can't reach this server's egress proxy`;
+  // A server in a container whose Docker gives a box the data directory's mount (box-paths.ts): the proxy's socket is on
+  // that mount too, so the box reaches it, though the server sees none of Docker's own files.
+  if (!options.mapped && !sees(root)) return `${runtime} keeps its data in ${shown(root)}, which this server can't see: it runs on another machine's files (this server in a container, given the host's docker socket), so it can't reach this server's egress proxy`;
   return undefined;
 }
 
@@ -214,8 +230,7 @@ export const STALE_EGRESS_MS = 60_000;
  * none) and that is older than STALE_EGRESS_MS is a run's process that is gone, and is removed, by its exact path. One
  * whose socket answers is a live run's, this server's or another's under this uid, and stays. Returns how many went.
  */
-export async function sweepEgressDirs(uid: number = process.getuid?.() ?? 0, now: number = Date.now()): Promise<number> {
-  const parent = join("/tmp", `agentrun-egress-${uid}`);
+export async function sweepEgressDirs(uid: number = process.getuid?.() ?? 0, now: number = Date.now(), parent: string = hostParent(uid)): Promise<number> {
   let names: string[];
   try {
     const at = await lstat(parent);
@@ -252,7 +267,7 @@ function answers(path: string): Promise<boolean> {
 }
 
 /** What a server's Docker boxes reach, resolved once at its start (run-box.ts boxNetworkOf): the list, or none and why. */
-export type DockerNetwork = { allow: readonly string[] } | { allow: "none"; reason: string };
+export type DockerNetwork = { allow: readonly string[]; /** On a Mac, the VM runtime whose proxy container serves the list (box-egress-vm.ts). */ vm?: string } | { allow: "none"; reason: string };
 
 /** What the server hands a run's process: the list its box reaches, resolved (boxNetworkOf), or `none`. The run's
  *  process reads this, never AGENTRUN_BOX_ALLOW: unset, it is none. */

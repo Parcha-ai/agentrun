@@ -51,3 +51,17 @@ describe("Shell's sidebar on a short screen", () => {
     expect(aside.className.split(" ")).toContain("md:overflow-y-auto");
   });
 });
+
+describe("Shell's navigation", () => {
+  const items = (schedules?: boolean) => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Shell, { active: "schedules", schedules, children: "page" })));
+    return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
+  };
+  it("offers Schedules where the server has them, after Runs, and not where it does not", () => {
+    expect(items(true)).toEqual(["Mission Control", "Playground", "Agents", "Runs", "Schedules"]);
+    act(() => root?.unmount());
+    expect(items(false)).toEqual(["Mission Control", "Playground", "Agents", "Runs"]);
+  });
+});

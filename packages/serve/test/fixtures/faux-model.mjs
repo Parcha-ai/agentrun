@@ -1,5 +1,10 @@
 // A faux model for the tests and the conformance scenarios: replies chosen from the conversation, no key, no network.
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+/** A user message that is only a `<system-reminder>` (the spend cap's wrap-up note): the server's words, which a model
+ *  reads as an aside, never as the person's. The replies below count and quote the person's messages only. */
+export const isReminder = (message) => message?.role === "user" && /^<system-reminder>[\s\S]*<\/system-reminder>$/.test(textOf(message).trim());
+/** The person's messages: the user messages that are not a reminder. */
+export const personOf = (context) => context.messages.filter((m) => m.role === "user" && !isReminder(m));
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
 const slow = (faux, ms, text) =>
@@ -17,7 +22,7 @@ const untilExists = async (file) => {
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 
 export default function reply(context, faux) {
-  const users = context.messages.filter((m) => m.role === "user").map(textOf);
+  const users = personOf(context).map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
@@ -26,7 +31,14 @@ export default function reply(context, faux) {
   const browse = first.includes("Browse the example page");
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
-  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+  // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
+  const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
+  // A workflow's model node on pi-durable (its submit tool added by a system message), or in a session of its own (a
+  // learned workflow's: agentrun-pi's host runner, its tools in the context).
+  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) || context.tools?.some((tool) => tool.name === "submit")) {
     // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
     // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
     // and a program it starts.
@@ -99,7 +111,11 @@ export default function reply(context, faux) {
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
-    const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+    const submitTool = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit");
+    const params = submitTool?.parameters;
+    const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1 && params.required?.includes("value"));
+    const submit = faux.message(faux.toolCall("submit", enveloped ? { value: { answer: 42 } } : { answer: 42 }), { stopReason: "toolUse" });
     // "Answer once <file> exists.": the node submits when the test has made that file.
     const gate = /Answer once (\S+?) exists\./.exec(first)?.[1];
     if (gate) return untilExists(gate).then(() => submit);
@@ -124,7 +140,7 @@ export default function reply(context, faux) {
   }
   // A follow-up that fetches the public page once more with web_fetch, then says so.
   if (users.length > 1 && last === "Fetch again.") {
-    const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user");
+    const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user" && !isReminder(m));
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
   }
   // Runs monid's /slow, which holds until it is stopped; then, or on a follow-up (the run stopped), says so.
@@ -154,6 +170,17 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
     return faux.message(`Done with ${key}.`);
   }
+  // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
+  if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
+    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
+  }
+  // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
+  // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
+  if (first.includes("Run monid's /person/enrich, called again after a raise")) {
+    const calls = first.includes("twice") ? 2 * users.length - 1 : users.length;
+    return results < calls ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
@@ -181,11 +208,11 @@ export default function reply(context, faux) {
     if (results >= paths.length) return faux.message("Read them.");
     return reads[1] && results === 0 ? untilExists(reads[1]).then(call) : call();
   }
-  // Fetches each URL its first message lists with fetch_page (or the tool it names), one per turn, then says so.
+  // Fetches each URL its first message lists with web_fetch (or the tool it names), one per turn, then says so.
   const fetches = /^Fetch these pages(?: with (\w+))?: (.*)$/s.exec(first);
   if (fetches) {
     const urls = JSON.parse(fetches[2]);
-    return results < urls.length ? faux.message(faux.toolCall(fetches[1] ?? "fetch_page", { url: urls[results] }), { stopReason: "toolUse" }) : faux.message("Fetched.");
+    return results < urls.length ? faux.message(faux.toolCall(fetches[1] ?? "web_fetch", { url: urls[results] }), { stopReason: "toolUse" }) : faux.message("Fetched.");
   }
   // Researches: web_search, then web_fetch of the public page, then report.md citing the page it read, then says so.
   const topic = /^Research (.+) on the web and write report\.md\.$/s.exec(first)?.[1];
@@ -201,9 +228,19 @@ export default function reply(context, faux) {
   if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
   // A follow-up that browses once more: a snapshot, then what it saw.
   if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+  // "Browse the example page, then ask me once <file> exists.": a snapshot, then, once the test has made that file, an
+  // ask_person whose question is `<file>.echo`'s text (a model that repeats what it was given); answered, it says it again.
+  const browseAsk = /^Browse the example page, then ask me once (\S+) exists\.$/.exec(first)?.[1];
+  if (browse && browseAsk) {
+    const echo = async () => (await import("node:fs/promises")).readFile(`${browseAsk}.echo`, "utf8").catch(() => "Which one?");
+    if (results === 0) return faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+    if (users.length === 1 && results === 1) return untilExists(browseAsk).then(async () => faux.message(faux.toolCall("ask_person", { question: await echo() }), { stopReason: "toolUse" }));
+    return echo().then((text) => faux.message(`Noted: ${text}`));
+  }
   // "Browse the example page once <file> exists." answers, its browser still open, only once the test has made that file.
   const browseGate = /^Browse the example page once (\S+) exists\.$/.exec(first)?.[1];
-  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(() => faux.message(`Seen: ${textOf(context.messages.at(-1))}`));
+  // With `<file>.echo` there too, it answers that file's text instead (a model that repeats what it was given).
+  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(async () => faux.message(await (await import("node:fs/promises")).readFile(`${browseGate}.echo`, "utf8").catch(() => `Seen: ${textOf(context.messages.at(-1))}`)));
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
@@ -226,6 +263,10 @@ export default function reply(context, faux) {
   // answered in a run of its own.
   const held = /Hold the answer until (\S+)\./.exec(first)?.[1];
   if (held) return users.length > 1 ? faux.message("Answer 2.") : untilExists(held).then(() => faux.message("Answer 1."));
+  // Holds its answer until the file exists, then answers as the default does, echoing the message: what the message held
+  // reaches the answer too (timeline-trigger-secret.test.mjs).
+  const echoed = /Hold, then echo, until (\S+)\./.exec(first)?.[1];
+  if (echoed) return untilExists(echoed).then(() => faux.message(`On ${last}: done.`));
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   // An answer of nothing: one empty thinking block and one empty text block, a stop with no tool call.
   if (first.includes("Answer with nothing")) return faux.message([faux.thinking(""), faux.text("")]);
@@ -300,7 +341,7 @@ export default function reply(context, faux) {
   }
   // A long tool phase on pi: two fetches, each held until its file exists (faux-web-hold.mjs), then the answer.
   const gated = /Fetch the pages held until (\S+) and (\S+)\./.exec(first);
-  if (gated) return results < 2 ? faux.message(faux.toolCall("fetch_page", { url: `http://public.example/hold?until=${encodeURIComponent(gated[results + 1])}` }), { stopReason: "toolUse" }) : faux.message("Fetched both.");
+  if (gated) return results < 2 ? faux.message(faux.toolCall("web_fetch", { url: `http://public.example/hold?until=${encodeURIComponent(gated[results + 1])}` }), { stopReason: "toolUse" }) : faux.message("Fetched both.");
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   // Asked at a learning run's end what to keep (learn/reflect.ts reflectPrompt): nothing.
