@@ -18,12 +18,14 @@ import {
 } from "@earendil-works/pi-durable";
 import { err, ok, type Result, toError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type App, type AppContext, type AppOptions, appOptions } from "./app.ts";
 import { type CallEvent, callsExtension } from "./calls.ts";
 import { createGate, type DrainError, type Drained, type DrainOptions, type Gate } from "./gate.ts";
 import { holdStore, type StoreHold } from "./lock.ts";
 import { checkpointStore, type Seal, sealStore, verifyStore } from "./store.ts";
+import { toolBarrier } from "./tool-barrier.ts";
 
 /** The entry kind of the notice a session gets when its home moved. */
 export const MOVE_ENTRY = "transport.move";
@@ -621,7 +623,11 @@ class SessionHome implements Home {
 		let wrapped: WrappedStore | undefined;
 		try {
 			await mkdir(dirname(store), { recursive: true });
-			storage = await openNodeSqliteStorage(store);
+			// pi-durable's own opener: WAL at synchronous = NORMAL. Every tool call that is not replay-safe syncs before it
+			// runs (tool-barrier.ts), so a box loss never runs one twice.
+			const database = await openNodeSqliteDatabase(store);
+			storage = await SqliteStorage.open(database);
+			registry.install(toolBarrier(registry, { database, synchronous: "NORMAL" }));
 			wrapped = await this.#options.wrapStore?.(storage, context);
 			harness = await Harness.open(wrapped?.storage ?? storage, { ...rest, registry, models, env }, context);
 		} catch (cause) {

@@ -17,7 +17,8 @@ import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef 
 import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
 import { BoxUnavailableError, EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
-import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
+import { BARRIER, syncNow, type SyncTarget } from "./barriers.ts";
+import { openArchilStore, type ArchilStore, type Profile, type Synchronous } from "./store.ts";
 import { LeaseWatchdog } from "./watchdog.ts";
 import {
   currentHolder,
@@ -217,6 +218,8 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
   readonly env?: (claim: Claim) => RunEnv;
   /** Wraps the raw database inside the store's fence (instrumentation, fault injection). */
   readonly decorateStore?: (database: SqliteDatabase) => SqliteDatabase;
+  /** The store's `synchronous` level; default the journal's (JOURNAL_SYNCHRONOUS in store.ts). */
+  readonly synchronous?: Synchronous;
   /**
    * Awaited once the Harness is open (its registry installed) and the run is live, before the Harness resumes: no
    * resumed task takes a step until it settles, and what it admits (a submission, a write) is committed before anything
@@ -255,6 +258,11 @@ export interface BeforeResume {
    */
   readonly previous: RunRecord | null;
   readonly claim: RunClaim;
+  /**
+   * The run's store as a barrier takes it (`syncNow`, barriers.ts): for a host that guards the effects a resumed task
+   * sends, before its own onOpen. For the barrier only; the store's writes are the Harness's.
+   */
+  readonly syncTarget: SyncTarget;
   /** The store the Harness was opened over, read-only: four reads on an object of their own, and no way to a write. */
   readonly storage: StoreReads;
   /**
@@ -1139,6 +1147,7 @@ class Run implements DurableRun {
         onFenced: (error) => void lease.fence(error),
         ...(this.#options.keepWal ? { keepWal: true } : {}),
         ...(this.#options.decorateStore === undefined ? {} : { decorate: this.#options.decorateStore }),
+        ...(this.#options.synchronous === undefined ? {} : { synchronous: this.#options.synchronous }),
       }),
     );
     // Both refusals here are terminal: the run is marked `failed`, keeping its seal, so the supervisor stops on it.
@@ -1163,7 +1172,7 @@ class Run implements DurableRun {
       // between the open and the hook, since the Harness has not resumed.
       await step("before-resume", async () => {
         const head = (await storeHead(this.#store!)) as Seq;
-        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, previous: lease.previous, claim: lease.claim, storage: storeReads(storage), head });
+        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, previous: lease.previous, claim: lease.claim, syncTarget: this.#store!, storage: storeReads(storage), head });
       });
     }
     await step("resume", () => this.#harness!.resume());
@@ -1183,8 +1192,14 @@ class Run implements DurableRun {
 
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
     if (!this.#lease.fenced && (this.#released || this.#releasing)) throw new RunError("RUN_RELEASED", `run ${this.ref.id} is released`);
+    // What the run committed is durable before a status says where it stands: under a host's epoch the status is a
+    // commit of the store, synced after it; otherwise it is run.json, written after the sync.
+    if (this.#lease.epoch === undefined) await syncNow(this.#store!, BARRIER.runStatus);
     await this.#lease.setStatus(status, detail, options);
-    if (this.#lease.epoch !== undefined) await this.#keepStatus(this.#lease.record);
+    if (this.#lease.epoch !== undefined) {
+      await this.#keepStatus(this.#lease.record);
+      await syncNow(this.#store!, BARRIER.runStatus);
+    }
   }
 
   /** Under a host's epoch: the run's record, written in its store (its one row of RUN_STATUS_TABLE); a failed write fences. */
@@ -1212,6 +1227,9 @@ class Run implements DurableRun {
     await step("close", async () => {
       try {
         await this.#harness!.close(this.#context);
+        // A close that checkpoints synced the WAL; one that keeps it (keepWal) left it as it was: what the run committed,
+        // its release record among it, is durable before the claim is sealed and let go.
+        if (this.#options.keepWal) await syncNow(this.#store!, BARRIER.runRelease);
       } catch (error) {
         throw this.#lease.fence(asFenced(error, "closing the Harness"));
       }

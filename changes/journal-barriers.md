@@ -1,0 +1,10 @@
+---
+packages: @parcha/pi-durable-disk, @parcha/pi-transport, @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-serve
+kind: feature
+---
+A run's store can now run at `synchronous = NORMAL` and still never repeat a side effect after a box is lost. `syncNow(store, BARRIER.<name>)` makes every commit the store has made durable with one small commit at FULL. A FULL commit syncs the write-ahead log, so it makes every earlier commit durable too, not only its own. The barriers and the stores they guard are listed in one table (`barriers.ts`). A test holds that table to the source: every barrier call is named and in its listed file, every store that is opened is listed, a store with no effects runs no tool or model, and no barrier may still be planned once the run's store runs at NORMAL.
+- The run's store still opens at FULL (`JOURNAL_SYNCHRONOUS`), so nothing is synced twice yet. `openArchilStore` and `openDurableRun` take `synchronous: "NORMAL"` for a store that should run at NORMAL.
+- A pi tool call that is not replay-safe (or a billed replay-safe one) goes out only after the server's tool gate synced the store, once pi-durable has committed its intent. A kernel effect (claude-agent, codex, opencode) that is not replay-safe runs only after its start record is synced: `SessionWriter` has an optional `sync()`, and `serialWriter` passes it on.
+- A non-pi harness's model request leaves only once the server's start mark for it is committed and synced. `ModelPortOptions.onEvent` may return a promise for `request_start`; the runner awaits it, and a rejection refuses the request.
+- A run syncs its store after each status it writes and when it is released. The server's checkpoint of a run it takes back stays at FULL, whatever level the run's store runs at.
+- The home runner already kept its store at NORMAL. Every home tool call that is not replay-safe now syncs once its intent is committed and before it runs, so a lost box can no longer make it run twice.

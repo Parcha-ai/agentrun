@@ -97,8 +97,8 @@ export interface HarnessRunnerOptions {
   signal?: AbortSignal;
   /** The host's check before each paid request: its budget, `max_cost_usd`. */
   beforeRequest?: BeforeRequest;
-  /** Every event, with the node it belongs to. */
-  onEvent?: (event: HarnessEvent) => void;
+  /** Every event, with the node it belongs to. A `request_start` handler's promise is awaited before the request leaves. */
+  onEvent?: (event: HarnessEvent) => void | Promise<void>;
   /** The private directory of a session, when the adapter needs one. */
   sessionDir?: (key: string) => string;
 }
@@ -126,7 +126,9 @@ export interface ModelPortOptions {
   budgetUsd?: number;
   /** Asked before every paid request; a `refuse` ends the attempt. */
   beforeRequest?: BeforeRequest;
-  onEvent?: (event: ModelPortEvent & { key: string; label: string; executionPath?: string }) => void;
+  /** Every event. For `request_start` its promise is awaited before the request leaves, and a rejection refuses it: a
+   *  host's start mark, made durable there, is never behind a request that was sent. */
+  onEvent?: (event: ModelPortEvent & { key: string; label: string; executionPath?: string }) => void | Promise<void>;
   /** The session's records, as already read (default: read from the writer). */
   records?: readonly SessionRecord[];
   /** How a record is written (default: the writer's append, which a newer open fences). */
@@ -270,7 +272,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       throw stoppedNow;
     }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }) });
-    emit({ type: "request_start", turn, model });
+    await emit({ type: "request_start", turn, model });
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
   const models: ModelPort = {
