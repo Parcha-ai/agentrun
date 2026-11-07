@@ -160,11 +160,15 @@ test("commit, then cp only store.sqlite to a fresh folder: every row is there", 
 test("the reader opens the file read-only, writes nothing, and gives a run's store path inside the folder", async () => {
   const dir = await scratch();
   const store = openStore(dir);
-  store.createAgent({ name: "R" });
+  const agent = store.createAgent({ name: "R" });
+  await store.commitRevision(agent.id, { kind: "agentic", instructions: "Read.", skills: {}, tools: ["read"] }, { setCurrent: true });
+  const run = await store.startRun({ agent: agent.id });
   store.close();
   const reader = openStoreReader(dir);
   assert.throws(() => reader.db.exec("INSERT INTO agents (id, name, created_at) VALUES ('z', 'z', 'z')"), /readonly/i);
-  assert.equal(reader.runStorePath("run-1"), path.join(path.resolve(dir), "runs", "run-1", "store", "run.sqlite"));
+  assert.equal(reader.runStorePath(run.runId), run.storePath);
+  assert.ok(run.storePath.startsWith(path.join(path.resolve(dir), "disk", "agents") + path.sep), "on the disk, inside the folder");
+  assert.throws(() => reader.runStorePath("run-1"), refused("missing"));
   assert.throws(() => reader.runStorePath("../x"), refused("invalid"));
   const nowhere = path.join(dir, "nowhere");
   assert.throws(() => openStoreReader(nowhere), refused("missing", /^there is no store\.sqlite in that folder$/));
@@ -268,7 +272,7 @@ test("a store written by a newer version is refused, by openStore and by openSto
   const dir = await scratch();
   openStore(dir).close();
   const db = new DatabaseSync(path.join(dir, "store.sqlite"));
-  db.exec("PRAGMA user_version = 2");
+  db.exec("PRAGMA user_version = 3");
   db.close();
   assert.throws(() => openStore(dir), refused("format", /^this store was written by a newer version$/));
   assert.throws(() => openStoreReader(dir), refused("format", /^this store was written by a newer version$/));
@@ -354,7 +358,7 @@ test("a failing open closes its handle: a newer version and a file that is no da
     const dir = await scratch();
     openStore(dir).close();
     const file = path.join(dir, "store.sqlite");
-    const db = new DatabaseSync(file); db.exec("PRAGMA user_version = 2"); db.close();
+    const db = new DatabaseSync(file); db.exec("PRAGMA user_version = 3"); db.close();
     for (let i = 0; i < 3; i++) assert.throws(() => openStore(dir), refused("format"));
     assert.equal(openOn(file), 0, "the version refusal left no handle");
     const bad = await scratch();

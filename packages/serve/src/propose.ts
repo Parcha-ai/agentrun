@@ -6,8 +6,8 @@
 // agent's queue. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse
 // (a note holding a secret among them) is never kept anywhere.
 import { join } from "node:path";
-import { type Change, checkProposal, draftFiles, unstorable, GRADE_CAPS, learnedStatus, parseReflection, type Problem, redactSecrets, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
-import { homeOf, writeDurable } from "./files.js";
+import { type Change, checkProposal, draftFiles, unstorable, learnedStatus, parseReflection, type Problem, redactSecrets, shortMessage, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
+import { agentFolderOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, git, type Proposal, PROPOSAL, readBlobs, readSeed, type Turn, withAgentRepo } from "./learning.js";
 
 export type Proposed =
@@ -25,8 +25,6 @@ const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["too_many_files", "too_many
 /** The item a changed file belongs to: a draft's two files are one item (its folder), every other file is itself. */
 const itemOf = (path: string) => (path.startsWith(`${WORKFLOWS_DIR}/`) ? path.split("/").slice(0, 2).join("/") : path);
 
-/** `text`'s first `max` UTF-16 units, never half a character. */
-const cut = (text: string, max: number) => (text.length <= max ? text : [...text].reduce((out, ch) => (out.length + ch.length > max ? out : out + ch), ""));
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** The skills and drafts on the seed `sha`: every path under skills/ and workflows/, and the text of each regular file of
@@ -51,15 +49,15 @@ async function seedFiles(home: string, repo: string, sha: string, wanted: readon
 
 /** What a run's end-of-run turn answered (`turn`, as its directory kept it), parsed, checked against its seed `seed` (its
  *  pin) and kept in `runDir` as its proposal, with what the user said in the run as the grader reads it (each message
- *  cut of the host's secrets, then to GRADE_CAPS.askedMessage); or `empty` when it gave nothing, `unparsed` when its
+ *  cut of the host's secrets, then shortened to its head and tail by shortMessage); or `empty` when it gave nothing, `unparsed` when its
  *  answer is out of format, or `checker` with the problems, printable. A note, skill or draft the answer gives with the
  *  very text the seed holds is no change, and `MEMORY.md` is the host's (the checker ignores it). A skill is laid at
  *  `skills/<name>/SKILL.md`; a draft at `workflows/<name>/workflow.json`, with the README.md the host writes from the
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. In the agent's
  *  queue. */
-export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>> }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
-  const home = homeOf(input.data, input.agentId);
+export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">> }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
+  const home = agentFolderOf(input.data, input.agentId);
   const repo = await agentFolder(input.data, input.agentId);
   const seed = await readSeed(home, repo, input.seed);
   const parsed = parseReflection(input.turn.answer);
@@ -82,7 +80,7 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   const dsl = files.some(({ file }) => file.endsWith("/workflow.json")) ? await import("@parcha/agentrun-dsl") : undefined;
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const kept = [...held.texts].filter(([file, text]) => (file.endsWith("/SKILL.md") || file.endsWith("/README.md")) && learnedStatus(text) !== "active").map(([file]) => file);
-  const check = (some: Change[]) => checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(dsl ? { dsl } : {}) });
+  const check = (some: Change[]) => checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(dsl ? { dsl } : {}) });
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
   // and the rest is checked again; a problem that names no item, or one that refuses the whole (WHOLE), drops it all,
   // as does a rest the checks still refuse.
@@ -109,8 +107,10 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   // Each message cut of the host's secrets whole first, and only then shortened: a secret the cut fell inside would
   // leave a part of itself that no longer matches. The whole message is read, however long (a message is bounded by
   // the run's own request limits), so a long one is not lost to the grader as one "[redacted]".
-  const asked = input.turn.asked.map((message) => cut(redactSecrets(message, input.refuse, Number.POSITIVE_INFINITY), GRADE_CAPS.askedMessage));
-  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), asked };
+  const asked = input.turn.asked.map((message) => shortMessage(redactSecrets(message, input.refuse, Number.POSITIVE_INFINITY)));
+  // A trigger's input, apart from what the user said, cut and shortened the same way.
+  const triggered = (input.turn.triggered ?? []).map(({ source, text }) => ({ source, text: shortMessage(redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY)) }));
+  const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), ...(passing.length ? { files: passing } : {}), asked, ...(triggered.length ? { triggered } : {}) };
   await writeDurable(join(input.runDir, PROPOSAL), `${JSON.stringify(proposal)}\n`);
   const count = (suffix: string) => passing.filter(({ file }) => file.endsWith(suffix)).length;
   return { state: "proposed", notes: proposal.notes.length, skills: count("/SKILL.md"), workflows: count("/workflow.json"), ...(left.length ? { left } : {}) };

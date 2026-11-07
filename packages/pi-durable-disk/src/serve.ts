@@ -6,7 +6,7 @@
 // starts the run through `ensureRunning` (with demand) when it is released or gone, and retries while it starts.
 // Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
 // address it is required, read from a private file, and checked in constant time on every route.
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP, type AddressInfo } from "node:net";
@@ -24,6 +24,9 @@ import { CONTROL_TIMEOUT_MS, ensureRunning, LEASE_EXPIRY_MS, readRunStatus, with
 
 /** 503 codes the client answers by asking the supervisor again and retrying. */
 export const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"] as const;
+
+/** What a door answers a host's `challenge` with, given the nonce the host handed its process: HMAC-SHA256, hex. */
+export const doorProof = (nonce: string, challenge: string): string => createHmac("sha256", nonce).update(challenge).digest("hex");
 export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHORIZED" | "NOT_FOUND" | "BUSY" | "WAITING" | "FAILED" | "UNKNOWN";
 
 const MAX_BODY = 1 << 20;
@@ -39,10 +42,17 @@ export const MESSAGE_ORIGIN_KIND = "agentrun.message_origin";
 /** The reasons a server-written message has, the ones the Timeline reads (pi-durable-agent's MessageOrigin): any other
  *  is refused, never accepted and then shown as the person's. */
 const ORIGIN_REASONS: ReadonlySet<string> = new Set(["cap_raised", "approval", "approval_declined"]);
-/** A submit's `origin`: `{ kind: "server", reason }`, who wrote a message the person did not; with `said` (a non-empty
- *  string, the person's own words) only for `approval_declined`. */
+/** The sources a trigger's message has (pi-durable-agent's TRIGGER_SOURCES). */
+const TRIGGER_SOURCES: ReadonlySet<string> = new Set(["schedule", "webhook", "slack", "github"]);
+/** A submit's `origin`, who wrote a message the person did not: `{ kind: "server", reason }`, with `said` (a non-empty
+ *  string, the person's own words) only for `approval_declined`; or `{ kind: "trigger", trigger_id, source, owner }`, a
+ *  trigger's firing (a non-empty id, a known source, a boolean owner). Nothing else, and no other field. */
 const isOrigin = (value: unknown): boolean => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if ((value as Record<string, unknown>).kind === "trigger") {
+    const { trigger_id, source, owner, ...more } = value as Record<string, unknown>;
+    return typeof trigger_id === "string" && trigger_id !== "" && typeof source === "string" && TRIGGER_SOURCES.has(source) && typeof owner === "boolean" && Object.keys(more).every((key) => key === "kind");
+  }
   const { kind, reason, said, ...rest } = value as Record<string, unknown>;
   if (kind !== "server" || typeof reason !== "string" || !ORIGIN_REASONS.has(reason) || Object.keys(rest).length) return false;
   return reason === "approval_declined" ? typeof said === "string" && said.trim() !== "" : said === undefined;
@@ -63,6 +73,10 @@ export interface ServeOptions {
   readonly url?: string;
   /** Every request must carry `authorization: Bearer <token>` (see `readServeToken`). Optional on loopback only. */
   readonly token?: string;
+  /** The nonce the host handed this process (run's `--door-nonce-fd`): `POST /door-proof` answers `{challenge}` with
+   *  `{proof: doorProof(nonce, challenge)}`, from the moment the server listens, so the host knows this door is the one it
+   *  launched before it records it. Absent: no such route. */
+  readonly proof?: string;
   /** How the root conversation is created when absent (pi's `root()` options); a submit without `conversationId` goes there. */
   readonly root?: Parameters<Harness["root"]>[1];
   /** Called each time the last open request ends (parking looks again). */
@@ -310,12 +324,13 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (parks !== undefined && !(Array.isArray(parks) && parks.every((kind) => typeof kind === "string"))) throw new HttpError(400, "BAD_REQUEST", "parks is a list of entry kinds");
     const waiting = (tx: Tx, conversationId: ConversationId) => waitsOnPerson(tx, conversationId, (asks as string[] | undefined) ?? [], (parks as string[] | undefined) ?? []);
     const guarded = answers === false;
-    // A guarded input could be refused after its origin's entry is queued (a busy run): the server's messages carry none.
-    if (guarded && origin !== undefined) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin");
+    // A guarded input (one that may not answer a person) takes only a trigger's origin: the server's own messages are
+    // never guarded. Its marker is withdrawn if the input is refused busy (below).
+    if (guarded && origin !== undefined && !(isOrigin(origin) && (origin as { kind?: unknown }).kind === "trigger")) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin but a trigger's");
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");
-    if (origin !== undefined && !isOrigin(origin)) throw new HttpError(400, "BAD_REQUEST", "origin is { kind: \"server\", reason }, a reason cap_raised, approval or approval_declined, with said (the person's words) for approval_declined");
+    if (origin !== undefined && !isOrigin(origin)) throw new HttpError(400, "BAD_REQUEST", "origin is { kind: \"server\", reason }, a reason cap_raised, approval or approval_declined, with said (the person's words) for approval_declined; or { kind: \"trigger\", trigger_id, source, owner }, a source schedule, webhook, slack or github and a boolean owner");
     if (pauses > 0) throw unavailable("PARKING", "the run is parking or draining");
     if (door) {
       if (body.conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook takes its input in the root conversation: no conversationId");
@@ -338,8 +353,18 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     // under another id) writes no second marker: pi takes the input again as the same submission, and a second marker
     // would be left open for a later message with the same text, a person's.
     const known = origin ? await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context) : undefined;
-    if (origin && known === undefined) await conversation.submit({ type: "write", requestId: originMarkId(requestId), entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin: origin as JsonObject, text: textOfInput(content as UserInput) } } }, context);
-    const submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(guarded ? { whenBusy: "reject" as const } : whenBusy === undefined ? {} : { whenBusy }) }, context);
+    const marker = origin && known === undefined ? { origin: origin as JsonObject, text: textOfInput(content as UserInput) } : undefined;
+    // A guarded input (a trigger's) can still be refused once its marker is in, the run busy: each try's marker is its
+    // own, and a refused try's is withdrawn, so no marker is left open for a later message with the same text.
+    const markId = guarded ? `${originMarkId(requestId)} ${randomUUID()}` : originMarkId(requestId);
+    if (marker) await conversation.submit({ type: "write", requestId: markId, entry: { kind: MESSAGE_ORIGIN_KIND, data: marker } }, context);
+    let submission;
+    try {
+      submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(guarded ? { whenBusy: "reject" as const } : whenBusy === undefined ? {} : { whenBusy }) }, context);
+    } catch (error) {
+      if (marker && guarded && error instanceof ConversationBusy) await conversation.submit({ type: "write", requestId: `${markId} withdrawn`, entry: { kind: MESSAGE_ORIGIN_KIND, data: { ...marker, withdrawn: true } } }, context);
+      throw error;
+    }
     let record: SubmissionRecord = await submission.status(context);
     if (wait === true) record = await submission.wait(context);
     const answer = record.type === "input" && record.status === "done" ? await answerOf(conversation, record.answer, context) : undefined;
@@ -463,6 +488,12 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
           return send(res, 200, await abort(await readJson(req), context));
         case "GET /status":
           return send(res, 200, await status(context));
+        case "POST /door-proof": {
+          if (options.proof === undefined) throw new HttpError(404, "NOT_FOUND", `no route ${route}`);
+          const body = (await readJson(req)) as { challenge?: unknown };
+          if (typeof body?.challenge !== "string" || !/^[0-9a-f]{16,128}$/.test(body.challenge)) throw new HttpError(400, "BAD_REQUEST", "challenge is 16 to 128 hex digits");
+          return send(res, 200, { proof: doorProof(options.proof, body.challenge) });
+        }
         case "GET /events":
           return events(req, res, url, context);
         default:
