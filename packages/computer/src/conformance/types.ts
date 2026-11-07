@@ -53,6 +53,11 @@ export interface CaseContext {
 	spec(extra?: Partial<ComputerSpec>): ComputerSpec;
 	/** Makes a computer for this case; fails the case when create refuses. */
 	create(extra?: Partial<ComputerSpec>): Promise<ComputerRef>;
+	/**
+	 * Calls create with this whole spec, through by (default the provider), and gives its result as it is. The runner
+	 * waits for it: a computer it makes is deleted when the case ends, or as it comes after that, named in cleanup.late.
+	 */
+	attempt(spec: ComputerSpec, by?: ComputerProvider): Promise<Result<ComputerRef>>;
 	/** A computer the case made through another provider (the drifted one): deleted through it when the case ends. */
 	track(ref: ComputerRef, by?: ComputerProvider): void;
 	/** A further connection, to the case's computer or another; fails the case when connect refuses. */
@@ -111,9 +116,15 @@ export interface ConformanceReport {
 	daemon: { version: string; arch: string } | null;
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
+	/** When only was given: the Core cases it left out, which did not run. */
+	coreNotRun?: string[];
 	results: CaseResult[];
-	/** pass when every Core case ran and passed, and the run left no computer behind. */
-	core: "pass" | "fail";
+	/**
+	 * pass when every Core case ran and passed, and the run left no computer behind. partial when only left Core cases
+	 * out and every case that ran passed (a Core case skipped is not a pass), with nothing left behind: no Core verdict.
+	 * fail otherwise.
+	 */
+	core: "pass" | "partial" | "fail";
 	/** Capabilities Full cases needed that the provider or the daemon does not declare. */
 	undeclared: Capability[];
 	/**
