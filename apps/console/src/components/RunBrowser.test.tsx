@@ -23,6 +23,8 @@ const working = { ...f.run, kind: "agentic", status: "working", state: "working"
 const RUN = working.run_id;
 const VIEWER = `/v2/runs/${RUN}/browser/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET-TOKEN-one-1234567890`;
 const VIEWER2 = `/v2/runs/${RUN}/browser/live/v/ZyXwVuTsRqPoNmLkJiHgFe#t=SECRET-TOKEN-two-0987654321`;
+/** What the iframe frames: the served viewer resolved against this page's origin (a same-origin path, its fragment kept). */
+const FRAMED = (viewer: string) => new URL(viewer, location.origin).href;
 const settle = async (ms = 60) => { await act(async () => { await new Promise((r) => setTimeout(r, ms)); }); };
 
 async function page(read: () => Promise<RunBrowser>, run: Run = working, tab?: "browser") {
@@ -32,7 +34,7 @@ async function page(read: () => Promise<RunBrowser>, run: Run = working, tab?: "
     root!.render(createElement(RunDetail, { run, agentName: "browsing", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readBrowser: read, browserEvery: 20, ...(tab ? { tab } : {}) } as never));
   });
   await settle();
-  const tabButton = () => [...host.querySelectorAll('[role="tab"]')].find((b) => /^Browser/.test(b.textContent ?? "")) as HTMLElement | undefined;
+  const tabButton = () => [...host.querySelectorAll('[role="tab"]')].find((b) => /^(Browser|Watch live)$/.test(b.textContent ?? "")) as HTMLElement | undefined;
   const open = async () => { const b = tabButton(); expect(b, "the Browser tab").toBeTruthy(); await act(async () => { b!.click(); }); await settle(); };
   const frame = () => host.querySelector("iframe") as HTMLIFrameElement | null;
   return { host, tabButton, open, frame };
@@ -74,7 +76,7 @@ describe("the run page reads the browser only from a server that serves it", () 
   it("with features.browser_live, it reads the run's browser and offers the tab", async () => {
     const p = await live({ harnesses: [{ id: "pi", available: true }], features: { messages: MESSAGES, browser_live: { read_only: true } } });
     expect(p.reads[0]).toBe(RUN);
-    expect([...p.host.querySelectorAll('[role="tab"]')].some((b) => /^Browser/.test(b.textContent ?? ""))).toBe(true);
+    expect([...p.host.querySelectorAll('[role="tab"]')].some((b) => b.textContent === "Watch live")).toBe(true);
   });
   it("without it (an older server), it never asks", async () => {
     const p = await live({ harnesses: [{ id: "pi", available: true }], features: { messages: MESSAGES } });
@@ -97,25 +99,26 @@ describe("the run page's Browser tab", () => {
     }
   });
 
-  it("waits for the browser when the run has one and no page is open yet", async () => {
+  it("waits for the browser when the run has one and no page is open yet: the tab reads Browser", async () => {
     const p = await page(async () => ({ state: "none" }));
+    expect(p.tabButton()!.textContent).toBe("Browser");
     await p.open();
     expect(p.host.textContent).toContain("Waiting for the browser");
     expect(p.frame()).toBeNull();
   });
 
-  it("embeds the live session's viewer: the iframe's src is the viewer exactly, and the viewer is nowhere else", async () => {
+  it("embeds the live session's viewer under Watch live: the iframe's src is the viewer on this origin, and the viewer is nowhere else", async () => {
     const p = await page(async () => ({ state: "live", viewer: VIEWER }));
-    expect(p.tabButton()!.textContent).toMatch(/live/i);
+    expect(p.tabButton()!.textContent).toBe("Watch live");
     await p.open();
-    expect(p.frame()!.getAttribute("src")).toBe(VIEWER);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
     expect(p.frame()!.getAttribute("title")).toBe("The run's browser");
     nowhereBut(p.frame(), VIEWER);
   });
 
-  it("frames the viewer with only what its page needs: its own scripts, and its own origin for the WebSocket and the cookie", async () => {
+  it("frames the viewer with only what its page needs: its own scripts, its own origin for the WebSocket and the cookie, and its address bar's form", async () => {
     const p = await page(async () => ({ state: "live", viewer: VIEWER }), working, "browser");
-    expect(p.frame()!.getAttribute("sandbox")?.split(/\s+/).sort()).toEqual(["allow-same-origin", "allow-scripts"]);
+    expect(p.frame()!.getAttribute("sandbox")?.split(/\s+/).sort()).toEqual(["allow-forms", "allow-same-origin", "allow-scripts"]);
     expect(p.frame()!.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
@@ -125,7 +128,7 @@ describe("the run page's Browser tab", () => {
     const p = await page(async () => answers[Math.min(i++, answers.length - 1)], working, "browser");
     for (let n = 0; n < 20 && i < answers.length; n++) await settle(30);
     await settle(60);
-    expect(p.frame()!.getAttribute("src")).toBe(VIEWER2);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER2));
     expect(p.host.innerHTML).not.toContain("SECRET-TOKEN-one");
     nowhereBut(p.frame(), VIEWER2);
   });
@@ -134,10 +137,10 @@ describe("the run page's Browser tab", () => {
     // The server answers the newest live session (#1685: one hand-over per session; GET /browser the newest that answers).
     let newer = false;
     const p = await page(async () => ({ state: "live", viewer: newer ? VIEWER2 : VIEWER }), working, "browser");
-    expect(p.frame()!.getAttribute("src")).toBe(VIEWER);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
     newer = true;
     await settle(120);
-    expect(p.frame()!.getAttribute("src")).toBe(VIEWER2);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER2));
     expect(p.host.querySelectorAll("iframe")).toHaveLength(1);
     expect(p.host.innerHTML).not.toContain("SECRET-TOKEN-one");
     nowhereBut(p.frame(), VIEWER2);
@@ -147,7 +150,7 @@ describe("the run page's Browser tab", () => {
     let i = 0;
     const p = await page(async () => { if (i++ === 0) return { state: "live", viewer: VIEWER }; throw new Error(`GET /v2/runs/${RUN}/browser: 502`); }, working, "browser");
     await settle(120);
-    expect(p.frame()!.getAttribute("src")).toBe(VIEWER);
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
     nowhereBut(p.frame(), VIEWER);
   });
 
@@ -182,11 +185,27 @@ describe("the run page's Browser tab", () => {
     expect(reads).toBeGreaterThan(1);
   });
 
-  it("leaves room for taking over: an actions area and a line for what the agent waits on, both empty for now", async () => {
+  it("has no controls of its own: taking over and handing back are the viewer's", async () => {
     const p = await page(async () => ({ state: "live", viewer: VIEWER }), working, "browser");
     const panel = p.host.querySelector('section[aria-label="Browser"]') as HTMLElement;
     expect(panel).toBeTruthy();
-    expect(panel.querySelector("[data-browser-actions]")?.children.length).toBe(0);
+    expect(panel.querySelector("[data-browser-actions]")).toBeNull();
     expect(panel.querySelector("button")).toBeNull();
   });
+
+  // Only a viewer on this page's own origin, under this run's own path, is framed: anything else says so in words, with
+  // no iframe, and the served value is not shown.
+  for (const [what, viewer] of [
+    ["another origin", `https://elsewhere.example/v2/runs/${RUN}/browser/live/v/AbCd#t=SECRET-TOKEN-foreign-111`],
+    ["another run's path", `/v2/runs/someone-elses-run/browser/live/v/AbCd#t=SECRET-TOKEN-other-222`],
+    ["no http(s) URL", `javascript:alert(1)//#t=SECRET-TOKEN-script-333`],
+  ] as const) {
+    it(`a viewer on ${what} is never framed: no iframe, a line in its place, and the value nowhere`, async () => {
+      const p = await page(async () => ({ state: "live", viewer }), working, "browser");
+      expect(p.frame()).toBeNull();
+      const panel = p.host.querySelector('section[aria-label="Browser"]') as HTMLElement;
+      expect(panel.textContent).toContain("The live view can't be shown here.");
+      expect(document.body.innerHTML).not.toContain(viewer.split("#t=")[1]);
+    });
+  }
 });
