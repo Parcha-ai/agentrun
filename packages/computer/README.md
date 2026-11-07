@@ -504,6 +504,9 @@ const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
+- **Capabilities.** Kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs` the
+  instance's cap (24 hours, or less with the `maxLifetimeMs` option). Daemon `pid1` because init is the sandbox's main
+  process and its exit ends the computer (next item); no `extend` or `stream`.
 - **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
   alike): it waits for `/opt/agentrun/computerd` to be there and executable, then `exec`s `computerd init --deadline
   <iso> --user <uid:gid>` with `HOME=/work`. Modal runs the command as the sandbox's main process and finishes the
@@ -545,8 +548,8 @@ of that slice, and the live conformance file waits for a key (below).
   `DaemonClient`'s stream. Modal has no kill for an exec, so `close()` ends the bridge's stdin and waits up to 5 s for
   it to exit.
 - **Lifetime is Modal's.** Every sandbox's `timeoutMs` is its lifetime, rounded up to whole seconds, so Modal ends it
-  then whatever runs in it. The longest is 24 hours, or less with the `maxLifetimeMs` option; `check` refuses a longer
-  one in words. The daemon's deadline ends it first. `sweep` refuses a Modal provider.
+  then whatever runs in it. The longest is 24 hours, or less with the `maxLifetimeMs` option, declared as
+  `capabilities().maxLifetimeMs`; `check` refuses a longer one with `checkLifetime`, the rule every provider shares. The daemon's deadline ends it first. `sweep` refuses a Modal provider.
 - **Network.** `none` is `blockNetwork: true`; `open` passes no network field. Modal has no read-back of a sandbox's
   policy, so `networkReadBack` is false and the daemon's probe stands for one: `create`, `attach` and `network(ref)` run
   `computerd probe` through `exec.run`, as the computer's user, against public addresses (`1.1.1.1:443`,
@@ -557,7 +560,7 @@ of that slice, and the live conformance file waits for a key (below).
   allowlist counts only once the live bypass cases pass. A change of network is refused: blockNetwork cannot be
   updated, and an allowlist only if one was set at create.
 - **The drift check** after create: `poll()` is null (it runs), `getTags()` reads back exactly the tags given, hello's
-  version, os, arch (`amd64`) and capabilities match, and the probe's uid:gid is the computer's user, its kernel is
+  version, os, arch (`amd64`), kind (`linux`) and exact groups match, and the probe's uid:gid is the computer's user, its kernel is
   not gVisor's (`4.19.0-gvisor`), and with network none it reached nothing. A mismatch, an abort or a timeout
   terminates the sandbox and refuses in words. The SDK reads back no runtime, image or size: the probe's kernel is the
   only runtime read-back, and image and sizes are what create recorded in a tag only the host's token writes.
@@ -570,7 +573,7 @@ of that slice, and the live conformance file waits for a key (below).
   network is the one create recorded (`network(ref)` probes it). Modal still lists a sandbox for a while after its
   terminate, so each one listed is polled, and one `poll()` reads finished, or that Modal no longer knows, is left out.
 - **attach** by id or labels runs the same drift check on what it finds and refuses a drifted computer in words, left
-  running. Its `spec.user` is the probe's uid:gid; the rest is as recorded.
+  running. Its `spec.user` is the probe's uid:gid and its `spec.kind` hello's; the rest is as recorded.
 - **release** `delete` is `terminate()`, idempotent: a sandbox that has finished, or that Modal no longer knows, is ok.
   Modal ends a sandbox asynchronously, so after the terminate `release` polls (`untilFinished`, on `waitUntil` above) until `poll()` reads
   an exit code or Modal no longer knows the sandbox, with pauses that double from `releasePollMs` (500 ms) to 5 s,

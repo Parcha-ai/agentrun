@@ -7,18 +7,19 @@ import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, helloDrift, WORK } from "./drift.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	checkLifetime,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
 import { waitUntil } from "./wait.js";
@@ -120,7 +121,7 @@ export interface ModalProviderOptions {
 	 * daemonImage is given. Default this package's dist/computerd-linux-amd64 (npm run build:daemon).
 	 */
 	daemonPath?: string;
-	/** The longest lifetime check takes, in ms: at most 24 hours, Modal's longest timeout, which is the default. */
+	/** The longest lifetime check takes, in ms, declared as capabilities().maxLifetimeMs: at most 24 hours, Modal's longest timeout, which is the default. */
 	maxLifetimeMs?: number;
 	/** Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 1000:1000. */
 	user?: string;
@@ -250,8 +251,6 @@ const isNumber = (value: unknown): value is number => typeof value === "number" 
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const seconds = (ms: number) => `${ms / 1000} s`;
-const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
-const minutes = (ms: number) => (ms % 3_600_000 === 0 ? plural(ms / 3_600_000, "hour") : ms % 60_000 === 0 ? plural(ms / 60_000, "minute") : seconds(ms));
 const pause = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((resolve) => {
 		const timer = setTimeout(done, ms);
@@ -530,17 +529,32 @@ export class ModalProvider implements ComputerProvider {
 		this.#probeTargets = [...probeTargets];
 	}
 
+	/**
+	 * daemon pid1: the sandbox's command is init itself (with daemonImage) or the entrypoint that execs into it, and Modal
+	 * finishes the sandbox when that main process exits (sandbox.ts:384-388), so init's exit ends the computer. Whether
+	 * Modal gives that process the number 1 is not documented; init reaps as a subreaper either way. maxLifetimeMs is this
+	 * instance's cap: Modal's 24 hours unless the provider was made with less.
+	 */
 	capabilities(): ComputerCapabilities {
 		return {
+			kind: "linux",
 			lifetime: "vendor",
 			network: ["none", "open"],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",
-			daemon: ["exec", "files", "processes"],
+			daemon: "pid1",
+			groups: ["exec", "files", "processes"],
+			maxLifetimeMs: this.#maxLifetimeMs,
 			user: ["root", "uid"],
 			release: ["delete"],
 		};
+	}
+
+	/** What hello must report: this package's version, the kind and groups declared, and Modal's one architecture. */
+	#expected() {
+		const { kind, groups } = this.capabilities();
+		return { version: VERSION, kind, groups, arch: "amd64" };
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
@@ -551,16 +565,7 @@ export class ModalProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
 			refuse("image", "an image is required: a registry tag for linux/amd64 that Modal can pull, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
-		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
-			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which Modal ends the computer");
-		} else if (lifetimeMs > this.#maxLifetimeMs) {
-			refuse(
-				"lifetimeMs",
-				this.#maxLifetimeMs === MAX_LIFETIME_MS
-					? `lifetimeMs is at most 24 hours (${MAX_LIFETIME_MS} ms), the longest timeout Modal gives a sandbox; ask for a new computer after that`
-					: `lifetimeMs is at most ${minutes(this.#maxLifetimeMs)} (${this.#maxLifetimeMs} ms): this provider was made with that maxLifetimeMs, so none of its sandboxes outlives it (Modal itself allows 24 hours)`,
-			);
-		}
+		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
 		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= CPU_REQUEST * CPUS_PER_CORE)) {
@@ -730,7 +735,7 @@ export class ModalProvider implements ComputerProvider {
 		if (!inside.ok) return inside;
 		const found = [
 			...tagDrift(tags, read.value),
-			...helloDrift(inside.value.hello, { version: VERSION, capabilities: this.capabilities().daemon, arch: "amd64" }),
+			...helloDrift(inside.value.hello, this.#expected()),
 			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network }),
 		];
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
@@ -802,7 +807,7 @@ export class ModalProvider implements ComputerProvider {
 		if (!found.ok) return found;
 		const opened = await this.#open(found.value.sandbox, ref.name);
 		if (!opened.ok) return opened;
-		const drift = helloDrift(opened.value.hello, { version: VERSION, capabilities: this.capabilities().daemon, arch: "amd64" });
+		const drift = helloDrift(opened.value.hello, this.#expected());
 		if (drift.length === 0) return opened;
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drift.join("; ")}`);
@@ -913,13 +918,13 @@ export class ModalProvider implements ComputerProvider {
 		const inside = await this.#inside(sandbox, name, signal);
 		if (!inside.ok) return inside;
 		const { hello, probe } = inside.value;
-		found.push(...helloDrift(hello, { version: VERSION, capabilities: this.capabilities().daemon, arch: "amd64" }));
+		found.push(...helloDrift(hello, this.#expected()));
 		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network }));
 		if (found.length > 0 || typeof recorded === "string" || deadline === undefined) {
 			return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
 		const { image, network, cpus, memoryMb, workdir } = recorded;
-		return ok({ ...ref, spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline } });
+		return ok({ ...ref, spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind } });
 	}
 
 	/**
