@@ -59,6 +59,9 @@ export class SealedSettings {
       return;
     }
     this.sealed = read.sealed;
+    if (!this.key && Object.values(this.sealed).some((fields) => Object.keys(fields).length)) {
+      say({ condition: "trigger_settings_no_seal_key", adapter: adapterId, file: this.file, effect: `this server was handed no ${SEAL_KEY_ENV}: none of its sealed settings is read` });
+    }
     for (const [scope, fields] of Object.entries(this.sealed)) {
       for (const [field, value] of Object.entries(fields)) {
         if (!this.key) continue;
