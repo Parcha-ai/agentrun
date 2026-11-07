@@ -20,7 +20,7 @@
 // known only when Parallel gave less than it was asked for (a cut text can be longer, in UTF-16 units, where Parallel
 // counts code points).
 import type { JsonValue } from "@earendil-works/chord";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { capRefusals } from "./cap.js";

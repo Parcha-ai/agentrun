@@ -43,7 +43,7 @@ import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCooki
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveHttp, proxyLiveUpgrade, readHandover, readHandovers, viewerAnswers, viewerLink } from "./browser-live.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
+import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
@@ -419,6 +419,12 @@ export const ROUTES: readonly Route[] = [
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
+/** A run's files (its work/), refused while it is hidden (runs.ts meta.unshown: this server can't read the browser
+ *  sign-in it was handed), as its graph is: a page it saved signed in is what it saw, and no file is cut. */
+function filesShown(run: Run): void {
+  if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+}
+
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
 /** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
@@ -918,8 +924,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const agents = new Agents(data);
   triggerSecrets = new TriggerSecrets(data, env, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)));
   // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
-  // server's keys (under faux, the vendor's fake alone), and a lease held while the run it names has not ended.
-  const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running");
+  // server's keys (under faux, the vendor's fake alone), a lease held while the run it names has not ended, and a
+  // pointer never forgotten while a run it was handed is going (runs.ts handedTo; `runs` is made below, before any request).
+  const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running", { handedTo: (agentId: string, hash: string | undefined): Promise<string | undefined> => runs.handedTo(agentId, hash) });
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   stops.push(() => webhooks.close());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
@@ -2097,20 +2104,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "getRunBrowser": {
         const run = await needRun(id);
-        // Whether the run has a browser at all: its kept plane's (a run from before the plane names none, and is Browserbase's
-        // where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
+        // The run's open viewer first: its process holds the keys it started with, so a key deleted here since (the server's
+        // keys now) never hides a browser that runs. Only the run's live process serves its view: a file one that is gone
+        // left behind names none, whatever answers its port. The newest session whose viewer answers: an older one still open
+        // is the next, one that went quiet none.
+        let live: LiveHandover | undefined;
+        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
+        if (live) return send(res, 200, { state: "live", viewer: viewerLink(run.id, live) }, { "cache-control": "no-store" });
+        // None open: whether the run has a browser at all, its kept plane's (a run from before the plane names none, and is
+        // Browserbase's where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
         const granted = run.tooling?.tools.map(capabilityOf).includes("browser") === true;
         const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
         const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
-        // Only the run's live process serves its view: a file one that is gone left behind names none, whatever answers its port.
-        // The newest session whose viewer answers: an older one still open is the next, one that went quiet none.
-        let live: LiveHandover | undefined;
-        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
-        return send(res, 200, live ? { state: "live", viewer: viewerLink(run.id, live) } : { state: "none" }, { "cache-control": "no-store" });
+        return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
         const run = await needRun(id);
+        filesShown(run);
         // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
         await runs.pulled(run.id);
         const { files, deep } = await walk(join(run.dir, "work"));
@@ -2183,6 +2194,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await runs.pause(await needRun(id), found.name === "pauseRun"));
       case "readRunFile": {
         const run = await needRun(id);
+        filesShown(run);
         await runs.pulled(run.id);
         return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
       }
