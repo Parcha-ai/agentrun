@@ -8,7 +8,7 @@
 import { appendFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxToolCall, fauxProvider, Type } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxToolCall, fauxProvider } from "@earendil-works/pi-ai";
 import type { FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Conversation, EntryRecord } from "@earendil-works/pi-durable";
@@ -48,7 +48,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const charge = defineTool({
     name: "charge",
     description: "Charge an invoice through the paid API. Costs real money; call it once per invoice.",
-    parameters: Type.Object({ invoice: Type.Number(), amount: Type.Number() }),
+    parameters: { type: "object", required: ["invoice", "amount"], properties: { invoice: { type: "number" }, amount: { type: "number" } } },
     async execute(args, call) {
       log("dispatch", { invoice: args.invoice, key: call.callId, generation, host });
       // The call's id is stable across incarnations, so it is the idempotency key a real paid API would want.

@@ -13,7 +13,7 @@ import {
   defineDoc, defineTool, GenerationTask, hook, type ConversationId, type DocumentReader, type HookApi, type HookRegistration,
   type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import {
   DELIVERY_ATTEMPTS, deliver, deliveryTerminates, deliveryText, fileSubmission, mixedFileSubmission, nudgeText, repairRecord,
   VIOLATIONS_SHOWN, type Delivery, type Disagreement, type RecordContract, type RecordStore,
