@@ -12,6 +12,11 @@ export function closed(key) {
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_CLOSED, `${key}\n`);
 }
 
+/** How long the faux adapter's open takes (FauxOptions.openDelayMs), from the test's environment: a slow harness start. */
+export function openDelayMs() {
+  return Number(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPEN_DELAY_MS ?? 0);
+}
+
 /** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
 export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
 

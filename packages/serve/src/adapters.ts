@@ -620,11 +620,12 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const faux = env[FAUX_HARNESS_ENV];
   if (faux) {
-    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[]; opened?: (harness: string, options: Record<string, unknown>) => void; closed?: (key: string) => void }>]);
+    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[]; opened?: (harness: string, options: Record<string, unknown>) => void; closed?: (key: string) => void; openDelayMs?: () => number }>]);
     if (typeof module.script !== "function") throw new Error(`${FAUX_HARNESS_ENV} names ${faux}, which exports no script(spec)`);
     // The options the harness's own adapter would be built with from the run (its web search), told to the module.
     module.opened?.(harness, nativeOptions(harness, env));
-    return fauxAdapter({ script: module.script, ...(module.closed ? { onClose: module.closed } : {}) });
+    const openDelayMs = module.openDelayMs?.() ?? 0;
+    return fauxAdapter({ script: module.script, ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}) });
   }
   if (harness === "codex") return codexOf(env, needs);
   if (harness === "opencode") return opencodeOf(env, needs);
