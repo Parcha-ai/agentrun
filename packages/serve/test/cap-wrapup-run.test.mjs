@@ -164,9 +164,10 @@ test("claude-agent on the faux harness: a side call admitted between the note's 
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.result?.final_answer], ["completed", "Done."], JSON.stringify(run.pending ?? run.error));
   // $0.40 spent: $0.60 left, under 3 x $0.40, as request 1 takes the note; the side call's admission comes before its own.
-  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP("$0.60")], "one row");
+  // Due at request 1's admission with nothing priced (step 0): its words, however request 1 is priced by the take.
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$0.60")], "one row");
   await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the note went once: request 2 did not take it again");
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$0.60")], "the note went once: request 2 did not take it again");
 });
 
 /** A run of `agentId` on Sonnet 4.5 pricing (faux-sonnet45.mjs) under `cap`, its harness `harness` ("pi" or a faux CLI),
