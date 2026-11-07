@@ -8,7 +8,7 @@ import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec } 
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
 import { conformanceCases } from "./cases/index.js";
 import { type StartedFixture, startFixture } from "./fixture.js";
-import { type Capability, type Case, type CaseContext, type CaseResult, type ConformanceOptions, type ConformanceReport, coreGroups, type Ran } from "./types.js";
+import { type Capability, type Case, type Clock, type CaseContext, type CaseResult, type ConformanceOptions, type ConformanceReport, coreGroups, type Ran } from "./types.js";
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
@@ -70,6 +70,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	const { image, only, signal, cases = conformanceCases, drifted, onResult, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
+	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
 	const capabilities = provider.capabilities();
@@ -329,6 +330,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					return started;
 				},
 				fetch: (url, init) => fetcher(url, { ...init, signal: init?.signal ?? caseSignal }),
+				clock,
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();

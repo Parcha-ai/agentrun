@@ -68,7 +68,22 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
  * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready.
  */
+/**
+ * The clock the fake devices and the group tests' runs share: it reads the wall clock plus whatever its sleeps skipped,
+ * so a case that waits a minute on a deadline (lifetime.extend) waits no time in a test.
+ */
+export const testClock = (() => {
+	let skipped = 0;
+	return {
+		now: () => Date.now() + skipped,
+		sleep: async (ms) => {
+			skipped += Math.max(0, ms);
+		},
+	};
+})();
+
 export function fakeDevices({
+	clock = testClock,
 	id = "fake-device",
 	kind = "desktop",
 	mode = kind === "desktop" ? "pid1" : "none",
@@ -260,7 +275,7 @@ export function fakeDevices({
 			async call(method, params, { signal } = {}) {
 				if (closed) return fail("gone", "the connection was closed");
 				if (signal?.aborted) return fail("aborted", `${method} was aborted`);
-				if (!computers.has(c.ref.name) || Date.now() > c.deadline.getTime()) return fail("gone", `${c.ref.name} has ended`);
+				if (!computers.has(c.ref.name) || clock.now() > c.deadline.getTime()) return fail("gone", `${c.ref.name} has ended`);
 				const answer = methods[method];
 				if (answer === undefined || (method !== "hello" && method !== "ping" && !declares(method))) return fail("unsupported", `${method} is not a method of this computer`);
 				return answer(params ?? {});
@@ -293,7 +308,7 @@ export function fakeDevices({
 			const refusals = provider.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((r) => r.message).join("; "));
 			const name = `${kind}-${++next}`;
-			const created = Date.now();
+			const created = clock.now();
 			computers.set(name, {
 				ref: { id: `id-${name}`, name },
 				labels: { ...spec.labels },
@@ -316,7 +331,7 @@ export function fakeDevices({
 		},
 		async list(labels) {
 			const found = [...computers.values()].filter((c) => Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: Date.now() > c.deadline.getTime() ? "stopped" : "running", network: c.network })));
+			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: clock.now() > c.deadline.getTime() ? "stopped" : "running", network: c.network })));
 		},
 		async network(ref) {
 			const c = computers.get(ref.name);
@@ -325,7 +340,7 @@ export function fakeDevices({
 		async connect(ref) {
 			const c = computers.get(ref.name);
 			if (c === undefined) return fail("not_found", `no computer ${ref.name}`);
-			if (Date.now() > c.deadline.getTime()) return fail("gone", `${ref.name} has ended`);
+			if (clock.now() > c.deadline.getTime()) return fail("gone", `${ref.name} has ended`);
 			const client = clientOf(c);
 			const said = await client.call("hello", { client: "fake" });
 			return ok({ client, hello: said.value, close: async () => client.close() });
@@ -339,7 +354,7 @@ export function fakeDevices({
 		provider.extend = async (ref, ttlMs) => {
 			const c = computers.get(ref.name);
 			if (c === undefined) return fail("not_found", `no computer ${ref.name}`);
-			const at = Date.now() + ttlMs;
+			const at = clock.now() + ttlMs;
 			// Broken: extend-per-call holds each ttlMs to the cap on its own, so extends move the deadline past created + cap.
 			const past = broken === "extend-per-call" ? ttlMs > maxLifetimeMs : at > c.created + maxLifetimeMs;
 			if (past && broken !== "extend-past-cap") return fail("refused", `a deadline ${ttlMs} ms from now is past this provider's cap of ${maxLifetimeMs} ms from create`);

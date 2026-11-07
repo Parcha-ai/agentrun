@@ -25,7 +25,7 @@ import {
 	runConformance,
 } from "../dist/index.js";
 import { fakeComputers } from "./fake-computer.mjs";
-import { fakeDevices, fakeFetch, png, pngOf } from "./fake-device.mjs";
+import { fakeDevices, fakeFetch, png, pngOf, testClock } from "./fake-device.mjs";
 
 const IMAGE = "fixture:image";
 const dir = mkdtempSync(join(tmpdir(), "computer-groups-"));
@@ -41,7 +41,7 @@ const byId = (...ids) => {
 	assert.deepEqual(found.map((c) => c.id).sort(), [...ids].sort(), "every case asked for is in the suite");
 	return found;
 };
-const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMAGE, cases: byId(...ids), fixture: FIXTURE, fetch: fakeFetch, patience: 1000, ...extra });
+const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMAGE, cases: byId(...ids), fixture: FIXTURE, fetch: fakeFetch, clock: testClock, patience: 1000, ...extra });
 
 const NEW_CASES = [
 	"health.kind-consistent",
