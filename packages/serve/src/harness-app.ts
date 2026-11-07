@@ -450,7 +450,10 @@ export function adapterRun(
     if (at < 0 && !final) return false;
     const request = at >= 0 ? costed.splice(at, 1)[0] : undefined;
     // At a turn's end with no cost in: its own request, still unbooked, is written at unknown cost and marked booked.
-    const unbooked = !request ? (owner !== undefined && open.has(owner) ? owner : owner === undefined && open.size ? Math.min(...open) : undefined) : undefined;
+    // Content with no request of this process's own (a call a resumed turn ran before any request here) is the oldest
+    // session request still unbooked: never a side call's, which streams nothing of the session's.
+    const mains = owner === undefined ? [...open].filter((r) => !sides.has(r)) : [];
+    const unbooked = !request ? (owner !== undefined && open.has(owner) ? owner : mains.length ? Math.min(...mains) : undefined) : undefined;
     if (unbooked !== undefined) open.delete(unbooked);
     const marked = request?.request ?? unbooked ?? owner;
     if (marked !== undefined) answered.add(marked);
