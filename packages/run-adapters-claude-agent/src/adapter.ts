@@ -402,37 +402,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)));
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
-      // The session's host port (AdapterSession.port): the host's own requests beside the CLI's (a learned workflow's node)
-      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price, headers
-      // and the session's booking, io.models), but on a listener the session holds: a drive's proxy closes with its drive
-      // (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side keys only:
-      // the CLI never holds its key. Its policy object is its own: anything a policy keeps per instance stays apart from the
-      // drive's, as a side call's should. Closed with the session, or when the host lets the session go (io.signal).
-      const hostPort = await startModelProxy({
-        policy: anthropicPolicy({
-          model: modelFor(spec),
-          ...(options.smallModel ? { smallModel: options.smallModel } : {}),
-          tools: [],
-          ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
-          ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
-        }),
-        hooks: io.models,
-        model: modelFor(spec),
-        origin: options.provider.origin,
-        credential: async () => (await options.provider.credential()) ?? "",
-        ...(options.price ? { price: withWebSearches(options.price) } : {}),
-        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
-        ...(options.log ? { log: options.log } : {}),
-        ...(options.fetch ? { fetch: options.fetch } : {}),
-      }, randomBytes(32).toString("base64url"));
-      let hostClosed = false;
-      const closeHost = async () => {
-        if (hostClosed) return;
-        hostClosed = true;
-        await hostPort.close().catch(() => {});
-      };
-      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       const acquire = localMachine({
         dir,
         // The host's workspace, when it names one: the CLI works where the host's file tools write (io.cwd).
@@ -558,6 +527,39 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
+      // The session's host port (AdapterSession.port): the host's own requests beside the CLI's (a learned workflow's node)
+      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price, headers
+      // and the session's booking, io.models), but on a listener the session holds: a drive's proxy closes with its drive
+      // (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side keys only:
+      // the CLI never holds its key. Its policy object is its own: anything a policy keeps per instance stays apart from the
+      // drive's, as a side call's should. Closed with the session, or when the host lets the session go (io.signal).
+      // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
+      const hostPort = await startModelProxy({
+        policy: anthropicPolicy({
+          model: modelFor(spec),
+          ...(options.smallModel ? { smallModel: options.smallModel } : {}),
+          tools: [],
+          ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
+          ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
+        }),
+        hooks: io.models,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: withWebSearches(options.price) } : {}),
+        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
+      if (io.signal.aborted) await closeHost();
       return {
         get state() { return state; },
         async send(text) {
