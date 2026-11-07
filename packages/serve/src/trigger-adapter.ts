@@ -56,6 +56,9 @@ export type TriggerAdapter = {
   /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
    *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
   push?: Push;
+  /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
+   *  `scope` to find the triggers it fires. */
+  scopeOf?(source: Source): string;
 };
 
 /** Request headers, as Node gives them. */
@@ -72,10 +75,14 @@ export type Push = {
   verify(key: string, headers: Headers, body: Buffer, nowMs: number): string | undefined;
   /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
   handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
-  /** The event: its id (the sender's, which a retry repeats), the text its run is given, and its trigger when the path
-   *  names none. Undefined when it is no event this source takes: answered 200, and said. */
-  parse(headers: Headers, body: Buffer): { eventId: string; payload: string; triggerId?: string } | undefined;
+  /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
+   *  said). */
+  parse(headers: Headers, body: Buffer): PushEvent[];
 };
+/** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
+ *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
+ *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */
+export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string> };
 
 /** A closed object schema: every field in `required` is, and `optional`'s may be. */
 export const closedSchema = (required: Json, optional: Json = {}): Json => ({ type: "object", additionalProperties: false, required: Object.keys(required), properties: { ...required, ...optional } });

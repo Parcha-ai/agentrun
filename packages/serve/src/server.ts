@@ -1828,7 +1828,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
-      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), readBody: bytesOf, refused: authFailed, say: (fields) => log?.(logLine("trigger", fields)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), readBody: bytesOf, refused: authFailed, say: (fields) => log?.(logLine("trigger", fields)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state

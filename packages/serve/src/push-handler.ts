@@ -23,6 +23,8 @@ export type PushDeps = {
   hookable(id: string, kind: string): boolean;
   /** Its firing for the event, recorded (triggers.ts receive). */
   receive(id: string, eventId: string, payload: string): { created: boolean; firing: unknown };
+  /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
+  scoped(kind: string, scope: string): string[];
   /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
   setting(adapterId: string, scope: string, field: string): string | undefined;
   readBody(req: IncomingMessage, max: number): Promise<Buffer>;
@@ -57,16 +59,22 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
   const handshake = push.handshake?.(req.headers as Headers, body);
   if (handshake) return handshake;
-  const event = push.parse(req.headers as Headers, body);
-  if (!event) {
+  const events = push.parse(req.headers as Headers, body);
+  if (!events.length) {
     deps.say({ condition: "hook_unparsed", source: adapter.id, route });
-    return { status: 200, body: { received: false, reason: "not an event this source takes" } };
+    return { status: 200, body: { firings: [] } };
   }
-  const id = pathTrigger ?? event.triggerId;
-  if (!id || !ID.test(id) || !deps.hookable(id, adapter.id)) {
-    deps.say({ condition: "hook_no_trigger", source: adapter.id, route, trigger: String(id ?? "") });
-    return { status: 200, body: { received: false, reason: "no trigger of this source takes it" } };
+  // A trigger's own path: its one event is its firing, answered as the firing.
+  if (pathTrigger) {
+    const { created, firing } = deps.receive(pathTrigger, events[0]!.key, events[0]!.text);
+    return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
   }
-  const { created, firing } = deps.receive(id, event.eventId, event.payload);
-  return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
+  // A server-wide source's: each event fires every trigger listening on its scope; one no trigger takes is said.
+  const fired: { created: boolean; firing: unknown }[] = [];
+  for (const event of events) {
+    const ids = event.scope === undefined ? [] : deps.scoped(adapter.id, event.scope);
+    if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
+    for (const id of ids) fired.push(deps.receive(id, event.key, event.text));
+  }
+  return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
 }

@@ -24,6 +24,6 @@ export const webhook: TriggerAdapter = {
     headers: headersRefusal,
     verify,
     // The request is the firing: its webhook-id keys it, and its body, whatever it holds, is what the run is given.
-    parse: (headers, body) => ({ eventId: String(headers["webhook-id"]), payload: body.toString("utf8") }),
+    parse: (headers, body) => [{ key: String(headers["webhook-id"]), text: body.toString("utf8") }],
   },
 };

@@ -330,6 +330,14 @@ export class Triggers {
     return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source).delivery === "push" && trigger.enabled;
   }
 
+  /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
+   *  event there fires. */
+  scoped(kind: string, scope: string): string[] {
+    const adapter = adapterIn(this.adapters, kind);
+    if (this.unreadable || !adapter?.scopeOf) return [];
+    return this.triggers.filter((t) => t.enabled && t.source.kind === kind && adapter.scopeOf!(t.source) === scope).map((t) => t.id);
+  }
+
   /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
    *  sender's own id for it (a webhook's `webhook-id`), recorded due in one write and driven after the answer. `created`
    *  false: that id's firing, as it stands. */
