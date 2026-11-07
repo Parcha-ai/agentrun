@@ -47,8 +47,9 @@ export const KIND_LABEL = "agentrun.box";
 export const BOX_ENV: Readonly<Record<string, string>> = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 /** How long a box lives whatever happens to the server: a bound on a leaked box, never its clean end. */
 export const BOX_LIFETIME_MS = 24 * 60 * 60_000;
-/** A bash command's timeout when the model names none. */
-export const BASH_TIMEOUT_MS = 300_000;
+/** A box command's deadline when its call names none: bash's own default (coding-tools.ts BASH_DEFAULT_TIMEOUT_S), which
+ *  bash always names, so this is the backstop for any other command. */
+export const BASH_TIMEOUT_MS = 120_000;
 /** The image a Docker box starts from (box-image.ts, where the server makes it ready). */
 export { DEFAULT_DOCKER_IMAGE, DOCKER_IMAGE_ENV } from "./box-image.js";
 /** The settings that bound a Docker box; unset, their defaults: enough for a build, and safe on a laptop, where one run's

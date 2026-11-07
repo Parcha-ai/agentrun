@@ -816,10 +816,10 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 
 | Tool | What it does | Needs | A workflow's model node may name it, a call node run it |
 | --- | --- | --- | --- |
-| `read` | Read a file in the run's `work/` | nothing | yes, no |
+| `read` | Read a file in the run's `work/`; in a box, also an image (png, jpg, gif, webp, by its bytes) at any absolute path in the box, such as one rendered to `/tmp`, read through the box and never from the host | nothing | yes, no |
 | `write` | Write a file in the run's `work/` | nothing | yes, no |
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
-| `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
+| `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 120 s when the call names no timeout and at most 600 s (a longer one runs at 600 s and says so; longer work is `bash_background`) | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `bash_background` | Start a shell command in the background in the run's box, from its `work/`, and answer its id at once: `{command, tty?}` in, `tty: true` for a terminal. Its stdout and stderr go to `work/background/<id>/output.log`, the first 16 MiB; at most 8 run at once ([background processes](#background-processes)) | an agentic definition whose place is a sandbox | no, no |
 | `bash_output` | Read a background process's output from a byte offset: `{id, offset?, max_bytes?}` in (at most 48 KiB a call), its state, exit code, the log's size and the next offset out | an agentic definition whose place is a sandbox | no, no |
 | `bash_input` | Write to a running background process's stdin: `{id, text, close?}` (at most 64 KiB a call) | an agentic definition whose place is a sandbox | no, no |
