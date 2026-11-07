@@ -439,3 +439,39 @@ test("triggers.json is read in this build's shape alone: a trigger missing a fie
   const fired = await next.triggers.fire(made.id, "press-1");
   assert.equal(fired.created, true, `a new firing, not the old one: ${JSON.stringify(fired)}`);
 });
+
+test("a source is one adapter the engine is given: its kind, its check, its firings' by and key, its payload's tag and its runs' line come from the adapter alone", async (t) => {
+  // A pushed source no other code knows of: given to the engine, nothing else changes.
+  const ping = {
+    id: "ping", label: "ping trigger", delivery: "push", owner: false, secret: false,
+    describe: '{kind: "ping", channel}', fires: "a ping", schemas: [],
+    parse(value, _now, bad, issues) {
+      issues.push(...Object.keys(value).filter((k) => k !== "kind" && k !== "channel").map((k) => ({ field: `source.${k}`, reason: "not_allowed", message: k })));
+      if (typeof value.channel !== "string") return bad("channel", "missing", "channel is a string"), undefined;
+      return { kind: "ping", channel: value.channel };
+    },
+    wellFormed: (source) => typeof source.channel === "string",
+  };
+  const started = [];
+  const { data, triggers } = await engine(t, { adapters: [ping], start: async (target, input, origin, from) => (started.push({ input, origin, from }), { run_id: "run-ping" }) });
+  const pingBody = { name: "pings", source: { kind: "ping", channel: "c1" }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } };
+  const made = await triggers.create(pingBody);
+  assert.deepEqual([made.source, made.next_at], [{ kind: "ping", channel: "c1" }, null], "a pushed source has no next time");
+  await assert.rejects(triggers.create({ ...pingBody, source: { kind: "schedule", every_s: 600 } }), (error) => error.code === "input_invalid" && JSON.stringify(error.extra).includes("source.kind is one of ping"));
+  await assert.rejects(triggers.create({ ...pingBody, source: { kind: "ping" } }), (error) => error.code === "input_invalid" && JSON.stringify(error.extra).includes("source.channel"));
+  assert.equal(triggers.hookable(made.id, "ping"), true);
+  const first = triggers.receive(made.id, "evt-1", "hello there");
+  assert.deepEqual([first.created, first.firing.by, first.firing.key], [true, "ping", firingKey("ping", made.id, "evt-1")]);
+  await until(() => started.length === 1, "its run started");
+  const { input, from } = started[0];
+  assert.match(input.content, /^Hello\.\n\n<trigger-payload source="ping" untrusted>\nhello there\n<\/trigger-payload>\n\n\(From the ping trigger "pings", received at .+\.\)$/);
+  assert.deepEqual(from, { kind: "trigger", trigger_id: made.id, source: "ping", owner: false });
+  assert.equal(triggers.receive(made.id, "evt-1", "hello there").created, false, "the same event is the same firing");
+  triggers.close();
+  // Kept by its adapter's shape: an engine with the source reads the file; one without it does not.
+  const again = await engine(t, { adapters: [ping] }, { data });
+  assert.equal(again.triggers.get(made.id).source.channel, "c1");
+  again.triggers.close();
+  const without = await engine(t, {}, { data });
+  assert.throws(() => without.triggers.list(), (error) => error.code === "store_unreadable");
+});
