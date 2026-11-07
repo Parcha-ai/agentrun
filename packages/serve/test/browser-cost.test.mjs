@@ -317,6 +317,8 @@ test("a person's minutes are held once while they still have the browser: ten mi
   assert.ok(Math.abs(paidHolds() - base - 0.019) < 1e-9, `the reserve and the take-over's five minutes left: ${paidHolds() - base}`);
   take.drop();
   assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "handed back: the reserve alone");
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, true), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge: nothing left held");
 });
 
 test("a person's time the cap refuses pauses the run only when it is the agent's own step: an ask's does, the owner's take-over's does not", async (t) => {
