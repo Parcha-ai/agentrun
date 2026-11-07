@@ -41,10 +41,17 @@ const (
 	// MaxImagePixels is the most pixels one GetImage reads: 16384 x 16384, the largest image a screen shot is read back
 	// as (MAX_SIDE in src/conformance/png.ts).
 	MaxImagePixels = 16384 * 16384
-	// maxReply is the most bytes a reply may carry past its first 32: the largest one this client asks for is a GetImage
-	// of MaxImagePixels at 32 bits a pixel, 1 GiB (2^30 bytes, 2^28 words). Every other reply it asks for is under a
-	// few kilobytes. A longer one is refused, and the connection closed, before anything is allocated for it.
+	// Each request with a reply gives the most bytes its reply may carry past the first 32; a longer one is refused, and
+	// the connection closed, before anything is allocated for it. smallReply is the bound of a reply the protocol makes
+	// 32 bytes in all (GetInputFocus, QueryPointer, GetGeometry, QueryExtension, XTEST's GetVersion): 4 KiB, a margin a
+	// server that pads one stays inside. GetKeyboardMapping's is 4 bytes a keysym for each keycode it asks for, at most
+	// 255 keysyms each; GetImage's is 4 bytes a pixel of its rectangle.
+	smallReply = 4 << 10
+	// maxReply is the largest bound of any request: a GetImage of MaxImagePixels, 1 GiB (2^30 bytes, 2^28 words). A
+	// reply no request waits for is read past up to it, and never kept.
 	maxReply = MaxImagePixels * 4
+	// noReply is a request's bound when it has no reply.
+	noReply = -1
 	// maxEvent is the most bytes a GenericEvent may carry past its first 32. This client asks for none: the X Input 2
 	// and Present events that are GenericEvents are a few hundred bytes. Its bytes are read and dropped, never kept.
 	maxEvent = 1 << 20
@@ -90,6 +97,12 @@ type packet struct {
 	err  error
 }
 
+// waiter is a request that waits for its reply: where to hand it, and the most bytes it may carry past its first 32.
+type waiter struct {
+	ch    chan packet
+	limit int
+}
+
 // Conn is one connection to an X server.
 type Conn struct {
 	sock net.Conn
@@ -110,7 +123,7 @@ type Conn struct {
 
 	mu        sync.Mutex
 	cond      *sync.Cond
-	pending   map[uint16]chan packet
+	pending   map[uint16]waiter
 	errs      []*Error
 	err       error
 	keep      bool
@@ -270,7 +283,7 @@ func Open(sock net.Conn, auth Auth, screen int) (*Conn, error) {
 	default:
 		return nil, fmt.Errorf("the X server's setup reply has status %d", head[0])
 	}
-	c := &Conn{sock: sock, pending: map[uint16]chan packet{}, formats: map[byte]format{}, visuals: map[uint32]visual{}}
+	c := &Conn{sock: sock, pending: map[uint16]waiter{}, formats: map[byte]format{}, visuals: map[uint32]visual{}}
 	c.cond = sync.NewCond(&c.mu)
 	if err := c.parseSetup(body, screen); err != nil {
 		return nil, err
@@ -290,10 +303,16 @@ func (c *Conn) parseSetup(b []byte, want int) error {
 	screens, formats := int(b[20]), int(b[21])
 	c.imageMSB = b[22] == 1
 	c.minKey, c.maxKey = b[26], b[27]
+	if c.minKey < 8 || c.maxKey < c.minKey {
+		return fmt.Errorf("the X server's setup announces keycodes %d to %d; X11's are a range from 8 up", c.minKey, c.maxKey)
+	}
 	at := 32 + vendor + pad(vendor)
 	for i := 0; i < formats; i++ {
 		if at+8 > len(b) {
 			return short
+		}
+		if p := b[at+2]; p != 8 && p != 16 && p != 32 {
+			return fmt.Errorf("the X server's setup announces a scanline pad of %d bits for depth %d; X11's is 8, 16 or 32", p, b[at])
 		}
 		c.formats[b[at]] = format{bpp: int(b[at+1]), pad: int(b[at+2])}
 		at += 8
@@ -379,22 +398,26 @@ func (c *Conn) read() {
 		case 0:
 			e := &Error{Code: head[1], Seq: seq, Value: le.Uint32(head[4:]), Minor: le.Uint16(head[8:]), Major: head[10]}
 			c.mu.Lock()
-			if ch, ok := c.pending[seq]; ok {
+			if w, ok := c.pending[seq]; ok {
 				delete(c.pending, seq)
-				ch <- packet{err: e}
+				w.ch <- packet{err: e}
 			} else {
 				c.errs = append(c.errs, e)
 			}
 			c.mu.Unlock()
 		case 1:
-			n, err := announced(head, "a reply", maxReply)
+			c.mu.Lock()
+			w, waited := c.pending[seq]
+			c.mu.Unlock()
+			limit := maxReply
+			if waited {
+				limit = w.limit
+			}
+			n, err := announced(head, "a reply", limit)
 			if err != nil {
 				failure = err
 				break
 			}
-			c.mu.Lock()
-			_, waited := c.pending[seq]
-			c.mu.Unlock()
 			if !waited { // a reply nothing waits for: read past it
 				if _, err := io.CopyN(io.Discard, c.sock, int64(n)); err != nil {
 					failure = err
@@ -408,9 +431,9 @@ func (c *Conn) read() {
 				break
 			}
 			c.mu.Lock()
-			if ch, ok := c.pending[seq]; ok {
+			if w, ok := c.pending[seq]; ok {
 				delete(c.pending, seq)
-				ch <- packet{data: data}
+				w.ch <- packet{data: data}
 			}
 			c.mu.Unlock()
 		default:
@@ -437,8 +460,8 @@ func (c *Conn) read() {
 	}
 	c.fail(failure)
 	c.mu.Lock()
-	for seq, ch := range c.pending {
-		ch <- packet{err: c.err}
+	for seq, w := range c.pending {
+		w.ch <- packet{err: c.err}
 		delete(c.pending, seq)
 	}
 	c.cond.Broadcast()
@@ -462,9 +485,11 @@ func (c *Conn) Seq() uint16 {
 	return c.seq
 }
 
-// buffer adds one request, padded to 4 bytes: opcode, data, then body. With a reply it is flushed at once and the
-// reply's channel returned.
-func (c *Conn) buffer(opcode, data byte, body []byte, reply bool) (chan packet, error) {
+// buffer adds one request, padded to 4 bytes: opcode, data, then body. A request with a reply gives the most bytes
+// the reply may carry past its first 32 as limit (noReply for none); it is flushed at once and the reply's channel
+// returned.
+func (c *Conn) buffer(opcode, data byte, body []byte, limit int) (chan packet, error) {
+	reply := limit != noReply
 	if err := c.Err(); err != nil {
 		return nil, err
 	}
@@ -484,7 +509,7 @@ func (c *Conn) buffer(opcode, data byte, body []byte, reply bool) (chan packet, 
 			c.mu.Unlock()
 			return nil, c.err
 		}
-		c.pending[c.seq] = ch
+		c.pending[c.seq] = waiter{ch, limit}
 		c.mu.Unlock()
 	}
 	c.out = append(c.out, opcode, data)
@@ -527,9 +552,9 @@ func (c *Conn) fail(why error) error {
 	return c.err
 }
 
-// call sends a request with a reply and waits for it.
-func (c *Conn) call(opcode, data byte, body []byte) ([]byte, error) {
-	ch, err := c.buffer(opcode, data, body, true)
+// call sends a request with a reply of at most limit bytes past its first 32, and waits for it.
+func (c *Conn) call(opcode, data byte, body []byte, limit int) ([]byte, error) {
+	ch, err := c.buffer(opcode, data, body, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -547,7 +572,7 @@ func (c *Conn) call(opcode, data byte, body []byte) ([]byte, error) {
 // Sync waits until the server has handled every request sent before it, with one round trip (GetInputFocus), and
 // returns the errors of requests with no reply since the last Sync.
 func (c *Conn) Sync() ([]*Error, error) {
-	if _, err := c.call(43, 0, nil); err != nil {
+	if _, err := c.call(43, 0, nil, smallReply); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
