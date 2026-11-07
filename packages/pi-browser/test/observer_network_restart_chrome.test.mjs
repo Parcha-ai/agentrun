@@ -63,6 +63,50 @@ async function killAtPreflight(server, target) {
   };
 }
 
+/** The network service's pid once Chrome names one again: after a crash the new service takes a moment to show. */
+async function serviceNow(target) {
+  for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
+    const pid = await networkService(target);
+    if (pid) return pid;
+  }
+  return null;
+}
+
+/** One call of a case whose request Chrome's network service may take with it on its own: Chrome for Testing 155
+ *  sometimes restarts it while Fetch holds a cross-origin preflight, more often on a busy runner, as CI's is. The pid is
+ *  read before and after. Unchanged: exactly the expected row and nothing lost, and under allow the request reached the
+ *  server. Changed: a request told lost is exactly the case's, has no row and never reached the server; one not told lost
+ *  has the expected row (and under allow reached the server), or, lost in the observer's one round trip before it
+ *  confirmed the old service (told nothing, by design), no row and nothing at the server. */
+async function checkedCall({ server, target, call }, c, policy, origin = server.base) {
+  const key = c.expected[0];
+  const row = `${key} ${policy === "allow" ? "allowed" : "denied"}`;
+  const before = await serviceNow(target);
+  assert.ok(before, "Chrome names its network service's process");
+  const sent = server.count(key);
+  const { rows, lost } = await call(c);
+  const after = await serviceNow(target);
+  const arrived = async (ms) => { for (const end = Date.now() + ms; server.count(key) === sent && Date.now() < end; await new Promise((r) => setTimeout(r, 50))); return server.count(key) - sent; };
+  const delivered = async () => assert.equal(await arrived(policy === "allow" ? 10_000 : 500), policy === "allow" ? 1 : 0, `${c.name}: ${policy === "allow" ? "the request reached the server once" : "nothing reached the server"}`);
+  const never = async (why) => assert.equal(await arrived(2_000), 0, `${c.name}: ${why}`);
+  if (after === before) {
+    assert.deepEqual({ rows, lost }, { rows: [row], lost: [] }, c.name);
+    return delivered();
+  }
+  const restarted = `${c.name}, the network service restarted (${before} -> ${after})`;
+  if (lost.length) {
+    assert.deepEqual(lost, [`${key.split(" ")[0]} ${origin}${key.split(" ")[1]}`], `${restarted}: the lost request is told`);
+    assert.deepEqual(rows, [], `${restarted}: a lost request has no row`);
+    return never("a request told lost never reached the server");
+  }
+  if (rows.includes(row)) {
+    assert.deepEqual(rows, [row], restarted);
+    return delivered();
+  }
+  assert.deepEqual(rows, [], `${restarted}: nothing journaled for a request neither told lost nor decided`);
+  return never("a request neither told lost nor decided never reached the server");
+}
+
 test("under allow, a POST the network service took with it is told to the call as lost and NOT sent, never journaled as sent or allowed", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const { server, target, call } = await rig(t, "ns-allow", "allow");
   const restarted = await killAtPreflight(server, target);
@@ -81,16 +125,16 @@ test("under allow, a POST the network service took with it is told to the call a
 });
 
 test("under deny, a POST the network service took with it is told lost, nothing reaches the server, and the observer still holds and denies after the restart", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
-  const { server, target, call } = await rig(t, "ns-deny", "deny");
+  const rigged = await rig(t, "ns-deny", "deny");
+  const { server, target, call } = rigged;
   const restarted = await killAtPreflight(server, target);
   const { rows, lost } = await call(G3);
   await restarted();
   assert.equal(lost.length, 1, `the call is told (its journal: ${JSON.stringify(rows)})`);
   assert.deepEqual(rows, []);
-  for (const c of [C, G3]) {
-    const after = await call(c);
-    assert.deepEqual(after, { rows: [`${c.expected[0]} denied`], lost: [] }, `${c.name} after the restart`);
-  }
+  // After the restart each POST is held and denied, or, should Chrome restart the service on its own again, told lost.
+  await checkedCall(rigged, C, "deny");
+  await checkedCall(rigged, G3, "deny", `http://localhost:${new URL(server.base).port}`);
   assert.deepEqual(server.nonGet(), [], "nothing reached the server");
 });
 
@@ -104,45 +148,7 @@ test("under allow, a POST redirected 307 to another origin is held hop by hop, a
   assert.deepEqual(server.nonGet(), ["POST /api/redirect", "POST /api/xorigin"]);
 });
 
-/** The network service's pid once Chrome names one again: after a crash the new service takes a moment to show. */
-async function serviceNow(target) {
-  for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
-    const pid = await networkService(target);
-    if (pid) return pid;
-  }
-  return null;
-}
-
 test("with no restart, a call is told nothing lost: the same POST under allow is held, allowed and sent; if the network service restarts on its own during the call, a POST told lost never reached the server", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
-  const { server, target, call } = await rig(t, "ns-none", "allow");
-  const before = await serviceNow(target);
-  assert.ok(before, "Chrome names its network service's process");
-  const { rows, lost } = await call(G3);
-  const after = await serviceNow(target);
-  if (after === before) {
-    assert.deepEqual(lost, []);
-    assert.deepEqual(rows, ["POST /api/xorigin allowed"]);
-    await server.nonGetReached(1, 10_000);
-    assert.deepEqual(server.nonGet(), ["POST /api/xorigin"]);
-    return;
-  }
-  // Chrome for Testing 155 sometimes restarts its network service on its own while Fetch holds a cross-origin POST (more
-  // often on a busy runner, as CI's is). A POST it took with it is told lost and was never sent; one that went out
-  // before the restart is told nothing and reached the server. Never both.
-  const xorigin = `http://localhost:${new URL(server.base).port}`;
-  if (lost.length) {
-    assert.deepEqual(lost, [`POST ${xorigin}/api/xorigin`], `the network service restarted (${before} -> ${after}): the lost POST is told`);
-    assert.ok(!rows.includes("POST /api/xorigin allowed"), `a lost POST is never journaled as allowed: ${JSON.stringify(rows)}`);
-    await server.nonGetReached(1, 2_000).catch(() => undefined);
-    assert.deepEqual(server.nonGet(), [], "a POST told lost never reached the server");
-  } else if (rows.includes("POST /api/xorigin allowed")) {
-    await server.nonGetReached(1, 10_000);
-    assert.deepEqual(server.nonGet(), ["POST /api/xorigin"], "a POST let go before the restart reached the server");
-  } else {
-    // Lost inside the observer's one round trip before it confirmed the old service: told nothing, by design (it tells only
-    // what it can prove). It must still never have been sent.
-    assert.deepEqual(rows, [], `nothing journaled for a POST neither told lost nor allowed: ${JSON.stringify(rows)}`);
-    await server.nonGetReached(1, 2_000).catch(() => undefined);
-    assert.deepEqual(server.nonGet(), [], "a POST neither told lost nor allowed never reached the server");
-  }
+  const rigged = await rig(t, "ns-none", "allow");
+  await checkedCall(rigged, G3, "allow", `http://localhost:${new URL(rigged.server.base).port}`);
 });
