@@ -50,6 +50,25 @@ test("a cut-off call's output says what the recovery note of the same turn says 
   assert.doesNotMatch(repairOutput(state, call('c2', 'pay')), /safe to repeat/);
 });
 
+test("a completed call that returned images, its answer not yet recorded by Codex, is repaired as its text and a line on its images: never their data as JSON", async () => {
+  // The kernel tool records a result with images as { text, images } (adapter.ts kernelTool); a crash before Codex wrote
+  // the call's output leaves it dangling, and the repair must not hand the model the images' base64 as text.
+  const DATA = 'iVBORw0KGgo'.repeat(2000);
+  const store = memorySessionStore();
+  const drive = await openDrive({ writer: await store.open('pic'), signal: new AbortController().signal });
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Look at the chart.' });
+  await placeSubmissions(drive, [drive.pending()[0]]);
+  const read = tool('read', 'safe', async () => ({ text: 'Read chart.png (image/png, 22000 bytes).', images: [{ mimeType: 'image/png', data: DATA }] }));
+  await toolBridge(drive, [read], { live: false }).call('read', {}, 'c4');
+  const next = await openDrive({ writer: await store.open('pic'), signal: new AbortController().signal });
+  const state = next.state();
+  assert.equal(state.effects.get('tool:c4')?.status, 'completed', 'the call completed and its outcome is in the log');
+  const output = repairOutput(state, call('c4', 'read'));
+  assert.equal(output.includes(DATA.slice(0, 32)), false, `no image data in the repaired output: ${output.slice(0, 160)}`);
+  assert.equal(output.startsWith('Read chart.png (image/png, 22000 bytes).'), true, `the call's own text first: ${output.slice(0, 160)}`);
+  assert.match(output, /1 image .*not shown again/, 'it says an image was returned and is not shown again');
+});
+
 test("a call still running in the drive that holds the session is never told it is safe to repeat, whatever its policy", async () => {
   // A call this drive started and has not finished: it may still be running, so even a safe one may have taken effect.
   const store = memorySessionStore();
