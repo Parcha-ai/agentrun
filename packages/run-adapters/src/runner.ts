@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
-import { HarnessRunError, SessionFenced } from "./errors.js";
+import { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 import { bookRequest, type Ended } from "./booking.js";
 import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
@@ -133,7 +133,8 @@ export interface ModelPortOptions {
   records?: readonly SessionRecord[];
   /** How a record is written (default: the writer's append, which a newer open fences). */
   append?: (records: SessionRecord[]) => Promise<void>;
-  /** The attempt has stopped: the error a new paid request is refused with. */
+  /** The attempt has stopped: the error a new paid request is refused with. A `TurnParked` refuses new requests but is no
+   *  stop of the booking: a paid request whose cost can't be recorded meanwhile still stops it. */
   stopped?: () => Error | undefined;
   /** A pause is draining the attempt: the error a new paid request is refused with, while the attempt itself goes on. A
    *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
@@ -337,8 +338,10 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         const covers = (r: SessionRecord) => usage.providerIds !== undefined && (r.data as { turn?: number }).turn === turn;
         await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}) } }], covers);
       } catch (error) {
-        // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
-        if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted. A turn
+        // parked on a call (TurnParked) is no stop of the booking, so it stops here too; a stop that ended it already wins.
+        const stop = options.stopped?.();
+        if (!stop || stop instanceof TurnParked) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
         throw error;
       }
       answered.add(turn);

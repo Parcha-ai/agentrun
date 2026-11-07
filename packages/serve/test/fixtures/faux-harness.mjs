@@ -104,8 +104,9 @@ export function script(spec) {
   // Its first request asks 1,024 tokens, so its hold ($0.03), in flight until its cost comes in, leaves request 2 room.
   if (bookedLate) return [centCall(0, { bookWhen: bookedLate, outputTokensAsked: 1_024 }), cc(5_200, 0.01, "Done.")];
   if (/Claude Code spends four cents first\./.test(text)) return [centCall(0, { usd: 0.04, outputTokensAsked: 512 }), cc(5_200, 0.01, "Done.")];
-  // Codex-shaped: each request needs at least 10,240 output tokens (1,024 for the answer and 9,216 of reasoning at
-  // "high", as the proxy reads Codex's body), and costs half a cent: sixty of them, then the answer.
+  // Codex-shaped: each request needs at least 10,240 output tokens, far more than it costs (half a cent): sixty of them,
+  // then the answer. A Codex body's least, as the proxy reads it, is 1,024 tokens for the answer plus its effort's
+  // reasoning: 9,216 in all at "medium" (8,192 of reasoning), 17,408 at "high" (16,384).
   if (/Make sixty half-cent calls that each need 10,240 output tokens at least\./.test(text)) {
     return [...Array.from({ length: 60 }, (_, k) => centCall(k % 10, { usd: 0.005, outputTokensAsked: 64_000, outputTokensLeast: 10_240 })), cc(7_000, 0.005, "Done.")];
   }
