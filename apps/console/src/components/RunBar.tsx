@@ -68,8 +68,8 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
         <div className="flex shrink-0 items-center gap-3">
           {efforts.length > 0 && (
             <div className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
-              <span className="flex flex-col leading-tight"><span className="caps text-[11px] text-muted-foreground">Effort</span><span className="text-[11px] text-muted-foreground">How hard the model thinks</span></span>
-              <Picker label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
+              <span className="flex flex-col leading-tight"><label htmlFor="runbar-effort" className="caps text-[11px] text-muted-foreground">Effort</label><span className="text-[11px] text-muted-foreground">How hard the model thinks</span></span>
+              <Picker id="runbar-effort" label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
             </div>
           )}
           <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
