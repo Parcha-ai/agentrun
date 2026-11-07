@@ -313,6 +313,10 @@ export function adapterRun(
   const PARKED = new Error("the turn ended: a tool call waits for a person's approval");
   // Each call's arguments, by its id, for a park named by tool and arguments (endsTurn).
   const argsOf = new Map<string, unknown>();
+  /** Results of calls whose answer is not on the root yet, by call id: written right after the entry that holds the call
+   *  (flush), so a result is never above its call. A crash before that leaves the session's record, which the next open
+   *  writes from (settleCutCalls). */
+  const deferred = new Map<string, (tx: Tx) => Promise<unknown>>();
   /** The calls the root holds from an earlier process (read at the open): one run again after a crash is not written twice. */
   const onRoot = new Set<string>();
   const results: ToolResults = new Map();
@@ -412,6 +416,12 @@ export function adapterRun(
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
         if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
+        // The results of its calls that ended before this entry was written, in order, right after it.
+        for (const call of content.calls) {
+          const result = deferred.get(call.id);
+          deferred.delete(call.id);
+          if (result) await result(tx);
+        }
       });
       if (marked !== undefined) written.add(marked);
       if (request) priced.add(request.request);
@@ -446,11 +456,13 @@ export function adapterRun(
       current = event.turn;
       open.add(event.turn);
       models.set(event.turn, event.model);
-      void flush();
       // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
       // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
-      // A store that refuses it has refused a write already, and the process ends on that.
+      // A store that refuses it has refused a write already, and the process ends on that. Queued before this start's
+      // flush: the writes run in order, so its mark is on the root before any entry of its answer, however far behind
+      // the writes are (the timeline counts a request's answer against a mark before it).
       later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound } })))).catch(() => undefined);
+      void flush();
     } else {
       open.delete(event.turn);
       inFlight.ended(event.turn);
@@ -522,15 +534,18 @@ export function adapterRun(
       }
     }
     else if (event.type === "tool_end") {
+      const said = results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.");
+      const result = (tx: Tx) => tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
+        model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: said }], isError: event.isError, timestamp: now() } as never],
+        data: { diagnostics: [] },
+      });
+      // A result is written only after its call's entry is on the root. A call still in the answer not yet written (one
+      // that ended before its request's cost came in) has its result written with that entry, right after it; any other
+      // call's entry is written, or queued, before this result.
+      const waiting = calls.some((call) => call.id === event.callId);
+      if (waiting) deferred.set(event.callId, result);
       void flush();
-      later(() =>
-        commit(async (tx) => {
-          await tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
-            model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.") }], isError: event.isError, timestamp: now() } as never],
-            data: { diagnostics: [] },
-          });
-        }).then(() => undefined),
-      );
+      if (!waiting) later(() => commit(async (tx) => void (await result(tx))).then(() => undefined));
       // The parked call's result is in: its turn ends here, settled once the interrupt is done (runTurns).
       if (endsTurn(parked, { callId: event.callId, tool: event.name, args: argsOf.get(event.callId) }) && !stopping) stopping = session?.interrupt();
     }
