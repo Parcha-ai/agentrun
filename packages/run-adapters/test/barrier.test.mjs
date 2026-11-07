@@ -85,3 +85,24 @@ test("a request whose start mark is refused is booked withdrawn and never taken 
   assert.equal(response?.data.turn, second.turn, 'a ticketless answer is the open request, not the refused one');
   assert.equal(second.turn, 2);
 });
+
+test("a stop that lands while the start mark is being made: the request does not leave, it is booked withdrawn at $0, and the host is told it ended at $0", async () => {
+  const store = memorySessionStore();
+  let stop;
+  const events = [];
+  let release;
+  const marking = new Promise((resolve) => { release = resolve; });
+  const port = await modelPortFor(await store.open('k'), {
+    key: 'k',
+    stopped: () => stop,
+    onEvent: (event) => { events.push(event.type === 'request_end' ? { type: event.type, turn: event.turn, usd: event.usage.usd } : { type: event.type, turn: event.turn }); return event.type === 'request_start' ? marking : undefined; },
+  });
+  const admitted = port.models.beforeRequest({ model: 'm' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stop = new Error('cancelled');
+  release();
+  await assert.rejects(admitted, /cancelled/);
+  const records = await (await store.open('k')).read();
+  assert.deepEqual(records.find((r) => r.kind === RUNNER_RECORDS.turn)?.data, { turn: 1, usd: 0, unsent: true });
+  assert.deepEqual(events, [{ type: 'request_start', turn: 1 }, { type: 'request_end', turn: 1, usd: 0 }]);
+});
