@@ -39,9 +39,9 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, proxyLiveHttp, proxyLiveUpgrade, readHandover, readHandovers, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveHttp, proxyLiveUpgrade, readHandover, readHandovers, viewerAnswers, viewerLink } from "./browser-live.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
 import { runLines } from "./usage-lines.js";
@@ -957,6 +957,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }));
   const host = options.host ?? "127.0.0.1";
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
+  // The owner's open live views (browser-live.ts): each closes once no session that let it in holds.
+  const viewers = new LiveViewers();
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
@@ -1739,6 +1741,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const made = await me.setFirst(password, body.code, byToken, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
+        // A new password ends every session from before (a reset in another process cleared the old one).
+        viewers.recheck();
         // The count is for the offer, now answered: it stops.
         stopCount();
         // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
@@ -1779,6 +1783,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
         me.signOutEverywhere();
+        viewers.recheck();
         return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
       }
       case "/auth/session":
@@ -2444,6 +2449,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const run = await runs.get(viewing[1]!);
       const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[2]!.slice(3, -3)) : undefined;
       if (!handover) return deny("404 Not Found");
+      // Gone during the lookup (its close is past, and nothing would drop it from the viewers), or the server is closing
+      // and has ended its viewers, or is about to.
+      if (socket.destroyed || closing) return void socket.destroy();
+      // Checked again after the lookup, then for as long as the socket is open: the sessions that let it in, and no other.
+      const held = heldSessions(req);
+      const admitted = () => held.some((value) => owner.valid(value));
+      if (!admitted()) return deny("401 Unauthorized");
+      viewers.watch(socket, admitted);
       proxyLiveUpgrade(req, socket, head, handover, viewing[2]!);
     })().catch(() => deny("500 Internal Server Error"));
   });
@@ -2521,6 +2534,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
     await egress?.close();
     await webhooks.close();
+    // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
+    viewers.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
     await mcpStopped;
