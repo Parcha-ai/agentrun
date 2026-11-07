@@ -41,7 +41,7 @@ test("the index exports the types too, as its declarations say", () => {
   assert.deepEqual(types.sort(), [...TYPES].sort());
 });
 
-test("what the branches above #1378 import from @parcha/agentrun-learn, the index has", () => {
+test("what the branches above #1378 import from the learning index, the index has", () => {
   const values = ["INDEX_FILE", "loadedIndex", "NOTE_FILE", "parseNoteFile", "redactSecrets", "secretShapes", "valueMatcher", "parseVerdict", "CAPS", "checkProposal", "printable", "buildIndex", "supersede", "mergeProblems", "NOTE_STATUSES", "NOTE_TYPES"];
   for (const name of values) assert.notEqual(learn[name], undefined, name);
   for (const name of ["LearnedNote", "Problem", "Verdict", "NoteText", "IndexEntry"]) assert.ok(TYPES.includes(name), name);
