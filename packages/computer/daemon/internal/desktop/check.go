@@ -22,6 +22,8 @@ const (
 	MaxTypeRunes = 64 << 10
 	// maxRepeat is the most times one key action presses its keys (MAX_KEY_REPEAT).
 	maxRepeat = 100
+	// maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER, 2^53 - 1: the largest repeat checkActions takes as whole.
+	maxSafeInteger = 1<<53 - 1
 	// maxClicks is the most wheel clicks one scroll turns, each way.
 	maxClicks = 10_000
 	// maxPath is the most points one drag holds.
@@ -76,7 +78,8 @@ var fieldsOf = map[string][]string{
 // Check is checkActions of src/actions.ts on X11: the first reason the whole batch must not run, or nil when it may.
 // Nothing runs on a failure. The batch's shape and length come first, then each action in order: its shape (invalid,
 // or limit past this daemon's bounds), its keys (invalid), its group against groups (unsupported), a pixel scroll,
-// which X11's wheel does not have (unsupported), and the summed wait and hold (limit). Beyond checkActions, X11 takes
+// which X11's wheel does not have (unsupported), a key's repeat over MAX_KEY_REPEAT (limit), and the summed wait and
+// hold (limit). Beyond checkActions, X11 takes
 // whole pixels and whole clicks, and type takes only characters that have a key: printable ones, newlines and tabs.
 // timed are the actions whose ms is a duration, summed toward MaxBatchWaitMs (TIMED in actions.ts).
 var timed = map[string]bool{"wait": true, "hold": true, "long_press": true, "swipe": true, "pinch": true}
@@ -115,6 +118,9 @@ func check(raw json.RawMessage, groups []string) ([]action, *Failure) {
 		}
 		if a.Type == "scroll" && a.Unit == "px" {
 			return nil, &Failure{i, rpc.KindUnsupported, fmt.Sprintf("action %d: this computer scrolls by clicks, not pixels: X11's wheel turns in clicks", i)}
+		}
+		if a.Type == "key" && a.Repeat > maxRepeat {
+			return nil, &Failure{i, rpc.KindLimit, fmt.Sprintf("action %d: repeat %d is over %d", i, a.Repeat, maxRepeat)}
 		}
 		// Every duration counts, as checkActions sums it: wait, hold, long_press, swipe and pinch. X11 refuses the touch
 		// three above as unsupported, so here only wait and hold reach the sum.
@@ -228,14 +234,13 @@ func parse(raw json.RawMessage) (a action, kind rpc.Kind, why string) {
 	if a.Type == "key" {
 		a.Repeat = 1
 		if has("repeat") {
-			n, ok := whole(fields["repeat"])
-			if !ok || n < 1 {
+			// Any safe integer above 0 is a repeat's shape, as checkActions reads it; one over maxRepeat is limit, checked
+			// after the action's group.
+			var n float64
+			if json.Unmarshal(fields["repeat"], &n) != nil || n != math.Trunc(n) || n < 1 || n > maxSafeInteger {
 				return invalid("repeat %s is not a whole number above 0", show(fields["repeat"]))
 			}
-			if n > maxRepeat {
-				return a, rpc.KindLimit, fmt.Sprintf("repeat %d: at most %d", n, maxRepeat)
-			}
-			a.Repeat = n
+			a.Repeat = int(n)
 		}
 	}
 	if has("ms") || a.Type == "hold" || a.Type == "wait" {

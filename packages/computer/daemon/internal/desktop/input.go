@@ -68,8 +68,10 @@ func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error)
 	if len(actions) == 0 {
 		return ActionsResult{}, nil
 	}
-	d.use.Lock()
-	defer d.use.Unlock()
+	if err := d.hold(ctx, "input.actions"); err != nil {
+		return nil, err
+	}
+	defer d.letGo()
 	c, err := d.connection()
 	if err != nil {
 		return nil, err

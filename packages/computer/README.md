@@ -268,7 +268,14 @@ computerd drives the X display named by `DISPLAY` when init started, in pure Go 
 the X protocol with no cgo and no dependency, so the daemon stays one static binary): pixels from `GetImage` on the
 root window, input from the XTEST extension's `FakeInput`, with no program started for any action. The image needs
 only an X server. Only a display in this computer is driven: the unix socket, or TCP to a loopback address; any other
-`DISPLAY` is refused before anything is sent to it, so this host's cookie never goes elsewhere.
+`DISPLAY` is refused before anything is sent to it, so this host's cookie never goes elsewhere. Neither the X server
+nor the Xauthority file is trusted (any program of the computer's user can replace either): the cookie is read from
+`$XAUTHORITY` or `~/.Xauthority` only when that is a regular file of at most 64 KiB, and a symbolic link, a FIFO or a
+device there is refused in words without being read; a setup with a scanline pad other than 8, 16 or 32, or keycodes
+that are not a range from 8 up, is refused; and each reply is bounded by what its request can get back (a `GetImage`
+by its rectangle), so a longer one ends the connection before anything is allocated for it. A `screen.shot` or
+`input.actions` waiting for another to finish with the display waits no longer than its own request, then answers
+`aborted`.
 
 - The display is reached when it is first asked for, and again after it goes: hello declares `screen`,
   `input.pointer` and `input.keys`, and kind `desktop`, only while the display answers with XTEST. So a provider may
@@ -282,8 +289,9 @@ only an X server. Only a display in this computer is driven: the unix socket, or
 - `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
   (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
   that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
-  than newline and tab, `invalid`). Its own bounds are `limit`: 64 Ki characters a `type`, `repeat` 1000, 10,000
-  clicks a scroll, 1000 points a drag, 16 keys at once. Then the batch runs; a point off the display stops it there
+  than newline and tab, `invalid`). Its own bounds are `limit`: 64 Ki characters a `type`, 10,000 clicks a scroll,
+  1000 points a drag, 16 keys at once; and `repeat` is at most 100 (`MAX_KEY_REPEAT`), checked after the action's
+  group as `checkActions` does. Then the batch runs; a point off the display stops it there
   (`invalid`, naming the display's size), and an X error from the server stops it at the action that sent it: the
   batch waits for the server (one round trip) after each action with a button, a key or a keyboard map change, so no
   later action runs, and `done` and `failed` say what did. A cancel stops it at the next key, click or point, releases
