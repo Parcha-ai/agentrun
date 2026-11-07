@@ -487,7 +487,8 @@ func (b *batch) codeFor(sym uint32, busy map[uint32]bool) (byte, bool, error) {
 	return code, false, err
 }
 
-// loadKeymap reads the keyboard map once a batch: another client may have changed it since the last.
+// loadKeymap reads the keyboard map once a batch: another client may have changed it since the last, and a keycode
+// the remap bound that it rebound is the remap's no longer.
 func (b *batch) loadKeymap() error {
 	if b.keymap != nil {
 		return nil
@@ -497,5 +498,6 @@ func (b *batch) loadKeymap() error {
 		return err
 	}
 	b.keymap = km
+	b.d.remap.forget(km)
 	return nil
 }

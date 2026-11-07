@@ -20,8 +20,12 @@ const settle = 250 * time.Millisecond
 // is not undone after the key, which would race every client still reading the map; it stays, so the character has a
 // key from then on. When no keycode is free, the binding used longest ago that the action does not need is moved, once
 // it has settled. A text needing more keycodes at once than the map can give is refused in words before any key.
+//
+// Another program may rebind a keycode the remap took: from then on it is that program's. Every read of the keyboard
+// map drops such keycodes (forget), and a keycode is read again just before it is moved, so the remap never writes
+// over another program's binding.
 type remap struct {
-	// bound is every keycode this connection took.
+	// bound is every keycode this connection took that still gives what the remap bound it to.
 	bound []binding
 }
 
@@ -29,6 +33,14 @@ type binding struct {
 	code byte
 	sym  uint32
 	used time.Time
+}
+
+// forget drops every keycode km shows another program has rebound: one whose first group no longer gives sym, with
+// shift or without, as the remap bound it. A keycode dropped is never moved by the remap again.
+func (r *remap) forget(km *x11.Keymap) {
+	r.bound = slices.DeleteFunc(r.bound, func(b binding) bool {
+		return km.Sym(b.code, false) != b.sym || km.Sym(b.code, true) != b.sym
+	})
 }
 
 // used notes that sym's keycode was just pressed, when the remap bound it.
@@ -60,12 +72,15 @@ func (r *remap) room(km *x11.Keymap, syms map[uint32]bool) error {
 	return nil
 }
 
-// bind gives sym a keycode, never one bound to a keysym in busy, and writes it into km too.
+// bind gives sym a keycode, never one bound to a keysym in busy, and writes it into km too. A keycode the remap bound
+// is moved only once the map, read again after it settled, shows it still the remap's.
 func (r *remap) bind(ctx context.Context, c *x11.Conn, km *x11.Keymap, sym uint32, busy map[uint32]bool) (byte, error) {
 	var code byte
-	if free := km.Unused(); len(free) > 0 {
-		code = free[0]
-	} else {
+	for checked := false; ; {
+		if free := km.Unused(); len(free) > 0 {
+			code = free[0]
+			break
+		}
 		oldest := -1
 		for i, b := range r.bound {
 			if !busy[b.sym] && (oldest < 0 || b.used.Before(r.bound[oldest].used)) {
@@ -86,9 +101,21 @@ func (r *remap) bind(ctx context.Context, c *x11.Conn, km *x11.Keymap, sym uint3
 				timer.Stop()
 				return 0, ctx.Err()
 			}
+			checked = false
 		}
-		code = r.bound[oldest].code
-		r.bound = slices.Delete(r.bound, oldest, oldest+1)
+		if checked {
+			code = r.bound[oldest].code
+			r.bound = slices.Delete(r.bound, oldest, oldest+1)
+			break
+		}
+		// Another program may have rebound it since the map was read.
+		fresh, err := c.KeyboardMapping()
+		if err != nil {
+			return 0, err
+		}
+		*km = *fresh
+		r.forget(km)
+		checked = true
 	}
 	if err := c.ChangeKeyboardMapping(code, 2, []uint32{sym, sym}); err != nil {
 		return 0, err
