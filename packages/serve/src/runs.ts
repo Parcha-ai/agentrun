@@ -1289,9 +1289,9 @@ export class Runs {
     // A turn's origin a server before this one set is not known to be the turn running now: it goes.
     await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
-    // follow-up (learning-run.ts onLoad). Only for a run an earlier server started: one this process starts is held
-    // by its start until its learning is saved (startingRuns), never taken for a stopped server's.
-    if (stored && row.startedAt < this.bootedAt) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
+    // follow-up (learning-run.ts onLoad). A run this process is starting is never read here (startingRuns), and every
+    // start that ended saved its learning, so a copy with none saved is a stopped server's.
+    if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
     if (damaged) run.damaged = true;
@@ -3349,8 +3349,16 @@ export class Runs {
       await this.setUp(started.runId, started.dir, meta);
       if (pin) {
         // Then its seed copied and pinned, and its learning saved once the copy is whole or gone. A server that goes down
-        // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad).
-        meta.learning = await pin(started, at);
+        // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad). A copy that
+        // throws is saved as failed in its own words, the copy taken back, before the start fails: every start that
+        // ends leaves its learning said, so only a stopped server's leaves a copy with none.
+        try {
+          meta.learning = await pin(started, at);
+        } catch (error) {
+          meta.learning = await this.learning.copyThrew(started, at, error as Error);
+          await this.setUp(started.runId, started.dir, meta).catch(() => undefined);
+          throw error;
+        }
         await this.setUp(started.runId, started.dir, meta);
       }
       const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);

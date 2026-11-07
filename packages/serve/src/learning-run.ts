@@ -362,6 +362,14 @@ export class LearningRuns {
     };
   }
 
+  /** A start whose seed copy threw out of its pin (runs.ts start): its learning, in its own words, as a copy that failed
+   *  says it; the copy taken back. */
+  async copyThrew(started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string, error: Error): Promise<Learning> {
+    warn(started.runId, `starts with nothing learned: ${error.message}`);
+    await dropSeed(started.dir, started.workspace).catch(() => undefined);
+    return { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied), at };
+  }
+
   /** The run's serve.json holds `learning` now: the learning ledger's line for the run (usage.ts), once, when that
    *  learning has ended; after it, a `notes` line each time the notes it was given or read are no longer what the
    *  ledger says (a follow-up read another note), which counts neither the run nor its costs again. Never rejects: a
