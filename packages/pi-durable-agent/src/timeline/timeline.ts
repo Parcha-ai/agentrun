@@ -773,9 +773,10 @@ function createProjector(options: TimelineOptions) {
       if (systems.has(conv)) add(make("phase", conv, base, { summary: "Tools changed" }));
       systems.add(conv);
     } else if (entry.kind === "pi.reset") {
-      add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
+      // The new context and a summary of the older one are words from the run: redacted by the host, before any cut.
+      add(make("phase", conv, base, { summary: "Context reset", text: redactText(textOf(message)) || null }));
     } else if (entry.kind === "pi.compaction") {
-      add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+      add(make("phase", conv, base, { summary: "Summarized older context", text: redactText(textOf(message)) || null }));
     } else if (entry.kind === HOST_PHASE) {
       const summary = str(obj(entry.data)?.summary);
       if (summary) add(make("phase", conv, base, { summary: firstLine(summary) }));
