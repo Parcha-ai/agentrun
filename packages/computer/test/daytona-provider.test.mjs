@@ -528,7 +528,7 @@ test("an abort during create deletes the sandbox, and create never returns ok on
 		const made = await pending;
 		assert.equal(made.ok, false, path.source);
 		assert.equal(made.error.code, "aborted", `${path.source}: ${made.error.message}`);
-		assert.match(made.error.message, /was deleted/);
+		assert.match(made.error.message, /was sent a delete, and the wait for it to go was aborted/);
 		assert.equal(fake.sandboxes.size, 0, `${path.source}: the sandbox is gone`);
 	}
 	const { provider, fake } = setup({ hang: [{ method: "POST", path: /^\/api\/sandbox$/ }] });
@@ -920,4 +920,18 @@ test("a toolbox URL that is not https is refused before the key is sent to it", 
 	assert.match(made.error.message, /toolbox URL Daytona gave is not https/);
 	assert.equal(fake.requests.filter((r) => r.host === "proxy.daytona.test").length, 0);
 	assert.equal(PROXY.startsWith("https://"), true);
+});
+
+test("an aborted create sends the delete and returns without waiting for the sandbox to go, as Modal's does", async () => {
+	const { provider, fake } = setup({ hang: [{ method: "POST", path: /\/files\/upload-v2$/ }], lingerReads: Number.POSITIVE_INFINITY }, { timeouts: { ...FAST, goneMs: 60_000, pollMs: 5 } });
+	const controller = new AbortController();
+	const pending = provider.create(SPEC, { signal: controller.signal });
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	controller.abort();
+	const started = Date.now();
+	const made = await pending;
+	assert.ok(Date.now() - started < 5_000, "the abort ends the wait for the delete");
+	assert.equal(made.error.code, "aborted");
+	assert.equal(deleted(fake).length, 1, "the delete was sent all the same");
+	assert.match(made.error.message, /was sent a delete, and the wait for it to go was aborted/);
 });
