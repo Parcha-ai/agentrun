@@ -18,6 +18,8 @@ export async function startServer() {
   const failPreflights = new Map();
   /** By path, how long to keep the next preflight's answer back, once: the request it precedes waits that long to be sent. */
   const slowPreflights = new Map();
+  /** By path, what to run when the next preflight arrives, once, before it is answered. */
+  const onPreflights = new Map();
   // A delayed reply's timer, cancelled at close so it never outlives the test or answers a closed connection.
   const delayed = new Set();
   let port = 0;
@@ -25,6 +27,7 @@ export async function startServer() {
     let url = null;
     try { url = new URL(req.url, "http://x"); } catch {}
     if (!url || !PATHS.has(url.pathname)) { req.resume(); res.writeHead(404); return res.end(); }
+    if (req.method === "OPTIONS" && onPreflights.has(url.pathname)) { const run = onPreflights.get(url.pathname); onPreflights.delete(url.pathname); run(); }
     if (req.method === "OPTIONS" && (failPreflights.get(url.pathname) ?? 0) > 0) { failPreflights.set(url.pathname, failPreflights.get(url.pathname) - 1); req.resume(); res.writeHead(403); return res.end(); }
     req.resume();
     req.on("end", () => {
@@ -53,6 +56,7 @@ export async function startServer() {
     hold: (path) => held.add(path),
     failPreflights: (path, n) => failPreflights.set(path, n),
     slowPreflight: (path, ms) => slowPreflights.set(path, ms),
+    onPreflight: (path, run) => onPreflights.set(path, run),
     release: () => { held.clear(); for (const answer of waiting.splice(0)) answer(); },
     close: () => new Promise((resolve) => { for (const timer of delayed) clearTimeout(timer); delayed.clear(); held.clear(); waiting.length = 0; server.closeAllConnections?.(); server.close(() => resolve()); }),
   };

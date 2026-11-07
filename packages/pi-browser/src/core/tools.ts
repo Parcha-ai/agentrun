@@ -105,6 +105,11 @@ const pause = (ms: number, signal: AbortSignal | undefined) => new Promise<void>
 const text = (value: unknown, isError = false): ToolOutput =>
   ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const withNews = (news: string, body: string) => (news ? `${news}\n\n${body}` : body);
+type Lost = { method: string; url: string };
+/** Told to a call whose page sent requests the browser lost before they left it (Chrome's network service restarted under
+ *  them): they were not sent, so the model may send them again. */
+export const lostRequests = (lost: readonly Lost[]): string =>
+  `The browser lost ${lost.length === 1 ? "a request" : `${lost.length} requests`} your page sent before ${lost.length === 1 ? "it" : "they"} left the browser: ${lost.map((r) => `${r.method} ${r.url}`).join(", ")}. Chrome's network service restarted while ${lost.length === 1 ? "it was" : "they were"} on ${lost.length === 1 ? "its" : "their"} way, so ${lost.length === 1 ? "it was" : "they were"} NOT sent and nothing reached the site. Do it again if you still need ${lost.length === 1 ? "it" : "them"}.`;
 
 /** A read of a browser that has loaded no page yet: it is fresh, and the next step is to navigate, to the replaced
  *  session's last page when there is one. */
@@ -372,7 +377,9 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       const codeSha = sha256Hex(JSON.stringify(args.code ?? args.actions));
       return perform("run", args, port, call, { effect: codeSha }, async (s, news) => {
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
-        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
+        const lost: Lost[] = [];
+        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); },
+          (request) => { lost.push({ method: request.method, url: call.redact(`${request.origin}${request.path}`) }); });
         let value: unknown;
         try {
           value = await s.driver.run(args.code !== undefined ? { code: runnableCode(args.code) } : { actions: args.actions });
@@ -385,7 +392,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         if (url && scrubPageUrl(url, call.redact) !== s.record.lastUrl) { guardOf(call.conversationId, call.redact).moved(); await port.navigated(url); }
         const reported = args.actions !== undefined && value && typeof value === "object" && typeof (value as { url?: unknown }).url === "string" ? { ...(value as object), url: pageUrl(call, (value as { url: string }).url) } : value;
         const shown = typeof reported === "string" ? reported : reported === undefined ? "(run completed; the code returned no value: end it with `return <value>` to get one back)" : JSON.stringify(reported, null, 2) ?? String(reported);
-        return { ...text(withNews(news, shown)), ...(sent.length ? { details: { sent } } : {}) };
+        const told = lost.length ? `${shown}\n\n${lostRequests(lost)}` : shown;
+        return { ...text(withNews(news, told)), ...(sent.length || lost.length ? { details: { ...(sent.length ? { sent } : {}), ...(lost.length ? { lost } : {}) } } : {}) };
       });
     },
 
@@ -445,14 +453,17 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       return perform("browser_upload", { path: asked, selector }, port, call, { effect: codeSha }, async (s, news) => {
         if (!s.driver.setInputFiles) throw refusedError("This browser driver cannot set a file input.");
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
-        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
+        const lost: Lost[] = [];
+        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); },
+          (request) => { lost.push({ method: request.method, url: call.redact(`${request.origin}${request.path}`) }); });
         try {
           await s.driver.setInputFiles(selector, { name: file.name, mimeType: file.mime, buffer: file.bytes });
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();
         }
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, uploaded, selector, ...(news ? { notice: news } : {}) }) }], details: { uploaded, ...(sent.length ? { sent } : {}) } };
+        const notice = [news, lost.length ? lostRequests(lost) : ""].filter(Boolean).join(" ");
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, uploaded, selector, ...(notice ? { notice } : {}) }) }], details: { uploaded, ...(sent.length ? { sent } : {}), ...(lost.length ? { lost } : {}) } };
       });
     },
 
