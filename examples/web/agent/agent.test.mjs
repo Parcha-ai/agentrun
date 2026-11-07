@@ -212,7 +212,10 @@ test('the model\'s API: OpenAI Responses by default; an Anthropic model over the
   assert.equal(answer.content.find((part) => part.type === 'text')?.text, 'ok');
   const [request] = asked;
   assert.deepEqual([new URL(request.path, 'http://gateway').pathname, request.key], ['/v1/messages', 'gw-key']);
-  assert.deepEqual([request.body.model, request.body.thinking?.type, request.body.thinking?.display, request.body.output_config?.effort], ['claude-sonnet-5-5', 'adaptive', 'summarized', 'high']);
+  // pi-ai 1.5 sends this model's effort as a marker after the messages (anthropic-messages.js insertThinkingLevelMessages);
+  // the top-level effort stays a fixed "low", part of the cached prompt.
+  const marker = request.body.messages.findLast((message) => message.role === 'system' && message.output_config)?.output_config?.effort;
+  assert.deepEqual([request.body.model, request.body.thinking?.type, request.body.thinking?.display, marker], ['claude-sonnet-5-5', 'adaptive', 'summarized', 'high']);
   const priced = await createAgent(where, { ...env, AGENT_MODEL_PRICE: '1,5,0.1,1.25' }, { makeContext: async () => 'ctx-1' });
   assert.equal(priced.options.models.getModel('agent-model', 'claude-sonnet-5-5').cost.output, 5, 'AGENT_MODEL_PRICE still names the price when set');
 });

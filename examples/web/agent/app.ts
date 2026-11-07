@@ -128,7 +128,7 @@ export const signInTool = (asked: Asked = async () => {}) => defineTool({
   execute: async (args, api, context) => {
     const { site, reason } = args as { site: string; reason: string };
     await asked(site, api, context);
-    return { content: [{ type: "text", text: signInAsked(site) }], details: { site, reason }, control: { terminate: true } };
+    return { output: [{ type: "text", text: signInAsked(site) }], details: { site, reason }, control: { terminate: true } };
   },
 });
 
