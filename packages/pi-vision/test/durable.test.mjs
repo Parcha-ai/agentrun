@@ -260,8 +260,8 @@ test("pdfText hands the core's reader the bytes, an environment over this proces
   assert.equal((await context.env.fileInfo(process.cwd(), { abortSignal: undefined, value: () => undefined })).value.kind, "directory");
 });
 
-test("piResult carries only what pi stores: the blocks under both names pi-durable has given them, the error flag, details and usage", () => {
+test("piResult carries only what pi stores: the blocks under output, the error flag, details and usage", () => {
   const blocks = [{ type: "text", text: "t" }];
-  assert.deepEqual(piResult({ content: blocks }), { output: blocks, content: blocks });
-  assert.deepEqual(piResult({ content: [], isError: true, details: { a: 1 }, usage: usage(1) }), { output: [], content: [], isError: true, details: { a: 1 }, usage: usage(1) });
+  assert.deepEqual(piResult({ content: blocks }), { output: blocks });
+  assert.deepEqual(piResult({ content: [], isError: true, details: { a: 1 }, usage: usage(1) }), { output: [], isError: true, details: { a: 1 }, usage: usage(1) });
 });

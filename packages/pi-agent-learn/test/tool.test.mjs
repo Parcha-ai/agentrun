@@ -16,7 +16,7 @@ function counted(options) {
   return { calls, extension: { ...extension, tools: [{ ...tool, execute: async (args, api, context) => { calls.push(api.callId); return execute.call(tool, args, api, context); } }] } };
 }
 
-test("learn stores one candidate per call id, makes no model call, and answers [noted n] under both result keys", async () => {
+test("learn stores one candidate per call id, makes no model call, and answers [noted n] under output", async () => {
   const root = await scratch();
   const { calls, extension } = counted();
   let seen = [];
@@ -31,7 +31,7 @@ test("learn stores one candidate per call id, makes no model call, and answers [
     assert.equal(run.faux.state.callCount, 2, "the model was asked twice: the turn that called learn and the answer; learn asked nothing");
     assert.deepEqual(calls, ["call-0", "call-1", "call-2"]);
     assert.deepEqual(seen, [{ isError: false, text: "[noted 1]" }, { isError: false, text: "[noted 2]" }, { isError: false, text: "[noted 3]" }]);
-    for (const r of returned) assert.deepEqual(r.output, r.content, "pi-durable 1.2 and later read output; 1.1 reads content");
+    for (const r of returned) assert.equal("content" in r, false, "output only: pi 1.5 reads output");
     assert.deepEqual(await collectCandidates(run.harness), [
       { callId: "call-0", ...LESSON },
       { callId: "call-1", ...FACT, evidence: [] },

@@ -71,7 +71,8 @@ async function sweep(cases, deriveDir, workDir) {
       result: (label, result, limits) => {
         scan.value(`${spec.id}:${label}`, withoutEchoes(result, echoes));
         hostPaths.value(`${spec.id}:${label}`, withoutEchoes(result, echoes));
-        violations.push(...limitViolations(result, limits).map((v) => `${spec.id} ${label}: ${v}`));
+        // A pi result (durable#piResult) holds its blocks under `output`; the package's own results under `content`.
+        violations.push(...limitViolations(Array.isArray(result?.output) ? { content: result.output } : result, limits).map((v) => `${spec.id} ${label}: ${v}`));
       },
     };
     try {

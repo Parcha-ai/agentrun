@@ -67,8 +67,8 @@ test("every durable tool result reaches the model with its text: browser, web, s
   for (const r of seen) assert.ok(r.text.trim().length > 0, `${r.tool} reached the model with no text`);
   assert.deepEqual(returned.map((r) => r.tool), calls.map(([name]) => name), "every call went through a wrapped tool");
   for (const r of returned) {
-    assert.ok(Array.isArray(r.output) && r.output.length > 0, `${r.tool} returned no output for pi-durable 1.2`);
-    assert.deepEqual(r.output, r.content, `${r.tool}: output is the text the model is shown`);
+    assert.ok(Array.isArray(r.output) && r.output.length > 0, `${r.tool} returned no output`);
+    assert.equal("content" in r, false, `${r.tool}: output only, the key pi 1.5 shows the model`);
   }
   assert.equal(seen[2].images, 1, "the screenshot keeps its image");
   assert.deepEqual(seen.map((r) => r.isError), [false, false, false, false, true, false, false, false, false], "only the run with neither code nor actions is a failure");

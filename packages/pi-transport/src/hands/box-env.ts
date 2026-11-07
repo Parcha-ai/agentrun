@@ -11,6 +11,7 @@ import {
 	type ExecutionEnv,
 	ExecutionError,
 	err,
+	type FileChange,
 	FileError,
 	type FileErrorCode,
 	type FileInfo,
@@ -25,7 +26,6 @@ import {
 	StreamDecoder,
 	type TextLineReader,
 	toError,
-	type FileChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 import { type Box, BoxError } from "../box/box.ts";
