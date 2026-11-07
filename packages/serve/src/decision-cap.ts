@@ -15,7 +15,9 @@
 //   - Jev: TypeSafe's published price (JEV_PUBLISHED_PRICING) for its input; its output is free.
 //   - OpenRouter's Decisions models: the catalog's price (openrouter.ts priceOf): per request, per image, per input token,
 //     and per output token for DECISION_OUTPUT_TOKENS a question (expected), or the catalog's most output (strict: none
-//     listed and its output priced is no bound, and is not sent). A model the catalog does not price is not sent.
+//     listed and its output priced is no bound, and is not sent). A model the catalog does not price is not sent. A
+//     catalog that cannot be read is read again (CATALOG_TRIES); one still down fails the request unsent, as a connection
+//     error the node's own attempts take, never as a refusal of the cap, which would end the run.
 import type { DecisionProvider, WorkflowDeps } from "@parcha/agentrun-dsl";
 import { chargedCost, DecisionProviderError } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
@@ -41,6 +43,31 @@ const unbilled = (error: unknown): boolean => error instanceof DecisionProviderE
 const providerName = (provider: DecisionProvider, model: string | undefined): string =>
   provider.id === "openrouter" ? (model ?? "OpenRouter") : provider.id === "jev" ? "Jev" : provider.id === "parallel" ? "Parallel" : provider.id;
 
+/** How many times a decision's price is read from OpenRouter's catalog before its request fails unsent, and the waits
+ *  between the reads, in ms. */
+export const CATALOG_TRIES = 3;
+const CATALOG_RETRY_MS = [500, 1_500];
+
+/** `model`'s price from `priced`'s catalog, read up to CATALOG_TRIES times: a catalog still down then fails the request
+ *  as a connection error, unsent (DecisionProviderError), which the node's attempts take as any provider's outage. */
+async function catalogPrice(priced: { priceOf(model: string): Promise<DecisionModelPrice | null> }, model: string, signal: AbortSignal | undefined): Promise<DecisionModelPrice | null> {
+  for (let tries = 1; ; tries += 1) {
+    try {
+      return await priced.priceOf(model);
+    } catch (cause) {
+      if (tries >= CATALOG_TRIES || signal?.aborted) {
+        throw new DecisionProviderError("connection", `OpenRouter's catalog could not be read, so the price of ${model} is not known and its decision was not sent. Try again once the catalog answers.`, { attempts: tries, unsent: true, cause });
+      }
+      const ms = CATALOG_RETRY_MS[tries - 1] ?? CATALOG_RETRY_MS.at(-1)!;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, ms);
+        function done() { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); }
+        signal?.addEventListener("abort", done, { once: true });
+      });
+    }
+  }
+}
+
 /** A request's hold, or why it has none (its words, no raise sends it). */
 export type DecisionHold = { usd: number; basis: string } | { unpriced: string };
 
@@ -59,10 +86,8 @@ export async function holdOf(provider: DecisionProvider, params: JudgeParams, mo
   const model = params.model;
   // A request that names no model is refused by its provider before it is sent: nothing to hold.
   if (typeof priced.priceOf === "function" && model === undefined) return { usd: 0, basis: "no request is sent without a model" };
-  // A catalog that cannot be read gives no price either: said as such, never taken for one.
-  const read = typeof priced.priceOf === "function" && model !== undefined ? await priced.priceOf(model).then((value) => ({ value }), () => undefined) : { value: null };
-  if (!read) return { unpriced: `the price of ${model} could not be read from OpenRouter's catalog` };
-  const price = read.value;
+  // A catalog that cannot be read gives no price: read again, then the request fails unsent (catalogPrice).
+  const price = typeof priced.priceOf === "function" && model !== undefined ? await catalogPrice(priced as { priceOf(model: string): Promise<DecisionModelPrice | null> }, model, params.signal) : null;
   if (!price) return { unpriced: `${model ?? provider.id} has no price here` };
   const questions = Object.keys(params.questions).length;
   const output = mode === "strict" ? price.maxCompletionTokens : questions * DECISION_OUTPUT_TOKENS;
