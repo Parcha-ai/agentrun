@@ -19,10 +19,18 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
 )
 
-// TestMain runs this test binary as computerd's guard, init or stdio when it is started as one.
+// TestMain runs this test binary as computerd's guard, init or stdio when it is started as one, or as a child of the
+// Become tests.
 func TestMain(m *testing.M) {
+	if len(os.Args) >= 2 && os.Args[1] == daemon.BecomeChildArg {
+		os.Exit(daemon.BecomeChild(os.Args[2:]))
+	}
+	if len(os.Args) == 2 && os.Args[1] == daemon.StatusChildArg {
+		os.Exit(daemon.StatusChild())
+	}
 	if len(os.Args) == 2 {
 		switch os.Args[1] {
 		case execrun.GuardCommand:
@@ -38,7 +46,9 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), deadline, log.New(os.Stderr, "computerd: ", 0)))
 	}
-	os.Exit(m.Run())
+	// The drop is tested in a test binary without cgo, as computerd is built: a plain go test, with cgo on, runs these
+	// tests in one built again with CGO_ENABLED=0.
+	os.Exit(nocgo.Run(m))
 }
 
 // patience bounds every wait in these tests. The host may be loaded: it is never a claim about speed.

@@ -16,7 +16,7 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps", "lifetime"];
 const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "extend", "stream"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "extend", "stream"];
 
 const pass = (id, extra = {}) => ({ id, level: "core", group: id.split(".")[0], needs: [], run: async () => {}, ...extra });
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
@@ -415,6 +415,37 @@ test("exec.user-uid fails a computer whose requested user has capabilities", asy
 	assert.equal(statuses(await runConformance(clean.provider, { image: IMAGE, cases: byId("exec.user-uid") }))["exec.user-uid"], "pass");
 });
 
+/** One thing a computer may leave its programs that the exec cases refuse: a set that is not empty, no_new_privs unset, or a set not reported. */
+const LEFT_OVER = [
+	["CapEff", "0000000000000400"],
+	["CapPrm", "0000000000000400"],
+	["CapInh", "0000000000000400"],
+	["CapBnd", "000001ffffffffff"],
+	["CapAmb", "0000000000000400"],
+	["NoNewPrivs", "0"],
+	["CapAmb", undefined],
+	["NoNewPrivs", undefined],
+];
+
+for (const [id, user, uses] of [
+	["exec.unprivileged", undefined, "status"],
+	["exec.root-on-request", "root", "statusForUser"],
+	["exec.user-uid", "uid", "statusForUser"],
+]) {
+	test(`${id} requires every capability set empty and no_new_privs set, and fails a computer that leaves any one`, async () => {
+		const options = user === undefined ? {} : { user: [user] };
+		for (const [field, value] of LEFT_OVER) {
+			const fake = fakeComputers({ ...options, [uses]: { [field]: value } });
+			const report = await runConformance(fake.provider, { image: IMAGE, cases: byId(id) });
+			assert.equal(statuses(report)[id], "fail", `${id} with ${field} ${value ?? "not reported"}`);
+			assert.match(reasons(report)[id], new RegExp(`^${field} in /proc/self/status`), `${id} with ${field} ${value ?? "not reported"}`);
+		}
+		const clean = fakeComputers(options);
+		const report = await runConformance(clean.provider, { image: IMAGE, cases: byId(id) });
+		assert.equal(statuses(report)[id], "pass", reasons(report)[id]);
+	});
+}
+
 test("a files case that makes a directory needs exec too: a linux computer with files and no exec fails it in words", async () => {
 	const fake = fakeComputers({ groups: ["files"] });
 	const report = await runConformance(fake.provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.group === "files") });
@@ -665,6 +696,45 @@ test("a create still pending when the cleanup bound runs out is named in cleanup
 	assert.ok(report.cleanup.errors.some((error) => /create \(provider\.leaves\) did not settle within 0\.3 s/.test(error)), JSON.stringify(report.cleanup.errors));
 	assert.equal(report.core, "fail", "a run whose cleanup is incomplete is not a Core pass");
 	assert.match(formatReport(report), /cleanup ✗ could not show nothing was left/);
+});
+
+test("provider.stop (Core) passes a provider that does not declare stop and refuses it in words, the computer still running and listed", async () => {
+	const fake = fakeComputers({ release: ["delete"] });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
+	assert.equal(report.core, "pass");
+	assert.ok(fake.calls.some(([call, , how]) => call === "release" && how === "stop"), "the case asked for stop");
+	assert.deepEqual(fake.alive(), [], "the computer was deleted after");
+});
+
+test("provider.stop (Core) fails a provider that does not declare stop yet stops the computer", async () => {
+	const fake = fakeComputers({ release: ["delete"], stopAnyway: true });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.equal(statuses(report)["provider.stop"], "fail");
+	assert.match(reasons(report)["provider.stop"], /stop/);
+	assert.equal(report.core, "fail");
+});
+
+test("provider.stop (Core) fails a provider that declares stop but deletes the computer", async () => {
+	const fake = fakeComputers({ stopDeletes: true });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.equal(statuses(report)["provider.stop"], "fail");
+	assert.match(reasons(report)["provider.stop"], /stopped/);
+	assert.equal(report.core, "fail");
+});
+
+test("provider.stop (Core) passes a provider that declares stop and lists the computer stopped", async () => {
+	const fake = fakeComputers();
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.stop") });
+	assert.deepEqual(statuses(report), { "provider.stop": "pass" }, JSON.stringify(report.results));
+});
+
+test("provider.janitor (Full) needs release:stop: a janitor provider that does not declare stop skips it in words", async () => {
+	const fake = fakeComputers({ release: ["delete"] });
+	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("provider.janitor") });
+	assert.deepEqual(statuses(report), { "provider.janitor": "skip" });
+	assert.equal(reasons(report)["provider.janitor"], "the provider does not declare release:stop");
+	assert.deepEqual(report.undeclared, ["release:stop"]);
 });
 
 test("files.list passes a daemon whose pages hold one entry each", async () => {

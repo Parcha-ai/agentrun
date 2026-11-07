@@ -123,12 +123,14 @@ export class DockerProvider implements ComputerProvider {
 			kind: "linux",
 			lifetime: "janitor",
 			network: ["none", "open"],
+			networkReadBack: true,
 			isolation: "container",
 			os: "linux",
 			daemon: "pid1",
 			groups: ["exec", "files", "processes"],
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			user: ["root", "uid"],
+			release: ["stop", "delete"],
 		};
 	}
 
