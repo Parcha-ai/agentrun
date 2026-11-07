@@ -7,7 +7,7 @@ export const webhook: TriggerAdapter = {
   label: "webhook trigger",
   delivery: "push",
   owner: false,
-  secret: true,
+  settings: { scope: "trigger", fields: { secret: { mint: true } } },
   describe: '{kind: "webhook"}',
   fires: "a signed request to /hooks/{trigger_id} (`webhook`)",
   firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.",

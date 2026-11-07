@@ -266,7 +266,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "ownSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "secrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -522,7 +522,7 @@ export class LearningRuns {
    *  once and kept until a person saves or deletes one (keysChanged). */
   shown(): Shown {
     const saved = (this.saved ??= new Map(SECRET_NAMES.map((name) => [name, this.options.storedKeys?.(name)])));
-    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
+    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken, ...(this.options.secrets?.values() ?? [])];
     const key = values.join("\0");
     if (this.cut?.key !== key) this.cut = { key, shown: secretsShown(values) };
     return this.cut.shown;
@@ -883,7 +883,7 @@ export class LearningRuns {
   private refused(run: Run): string[] {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? []), ...(own ? [own] : [])];
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), this.options.token, this.options.doorToken, ...(this.options.secrets?.values() ?? []), ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

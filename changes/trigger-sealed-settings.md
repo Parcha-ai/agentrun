@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+The server keeps one list of its own secrets (its tokens, its outbound webhook's secret, and every value a trigger source keeps sealed), and what a run shows (its answer, its Timeline, its errors), what learning keeps and what an import writes are all cut of it: a webhook trigger's signing secret, and the outbound webhook's, were missing from what a run shows. A webhook trigger's secret that does not open under the seal key the server starts with is now said in its log (`condition=trigger_setting_unopened`), where it was dropped in silence. The inbound and the outbound webhook share one Standard Webhooks module (signatures unchanged, byte for byte). A trigger source's sealed settings live in `DIR/trigger-settings-<source>.json`. Upgrading: webhook triggers made before this release lose their secret (it was kept in `trigger-secrets.json`, which is no longer read): rotate it with `POST /v2/triggers/{id}/secret`, or make the trigger again.
