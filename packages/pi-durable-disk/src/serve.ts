@@ -1,10 +1,8 @@
 // The serve mode, a Durable Object stub's fetch over pi's own API. The instance answers `POST /submit` (pi's
 // submit with the caller's `requestId`, which pi deduplicates in the run's store, so a retry that lands on the next
 // incarnation finds the same submission), `POST /abort`, `GET /events` (pi's agent events as server-sent events) and
-// `GET /status`. It listens before the run opens, so its address can go into run.json's holder, and answers 503 with a
-// code while the run opens, parks or is released. `requestRun` is the client: it finds the instance through run.json,
-// starts the run through `ensureRunning` (with demand) when it is released or gone, and retries while it starts.
-// Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
+// `GET /status`. It listens before the run opens, so its address can go into the run's holder, and answers 503 with a
+// code while the run opens, parks or is released. Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
 // address it is required, read from a private file, and checked in constant time on every route.
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
@@ -14,15 +12,12 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
 import type { Conversation, ConversationId, Cursor, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, Tx, UserInput } from "@earendil-works/pi-durable";
-import type { RunRef } from "./claim.ts";
 import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
 import { busyState } from "./park.ts";
 import type { DurableRun } from "./run.ts";
-import { isLeaseFresh, type RunRecord } from "./status.ts";
-import { CONTROL_TIMEOUT_MS, ensureRunning, LEASE_EXPIRY_MS, readRunStatus, withTimeouts, type EnsureOptions, type EnsureResult, type HostDriver } from "./supervise.ts";
 
-/** 503 codes the client answers by asking the supervisor again and retrying. */
+/** 503 codes a client answers by retrying: the run is opening, parking or released. */
 export const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"] as const;
 
 /** What a door answers a host's `challenge` with, given the nonce the host handed its process: HMAC-SHA256, hex. */
@@ -62,12 +57,12 @@ const textOfInput = (content: UserInput): string =>
   (typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")).trim();
 
 export interface ServeOptions {
-  /** Default 0: any free port (the address is in `url` and in run.json's holder). */
+  /** Default 0: any free port (the address is in `url` and in the run's holder). */
   readonly port?: number;
   /** Default 127.0.0.1. Any address that is not loopback needs `token`; a wildcard (0.0.0.0, ::) needs `url` too. */
   readonly host?: string;
   /**
-   * The address clients reach this server at (`http://` or `https://`), which goes into run.json's holder. Default: the
+   * The address clients reach this server at (`http://` or `https://`), which goes into the run's holder. Default: the
    * bound address, which only works for a specific host; a wildcard bind has no address a client can use.
    */
   readonly url?: string;
@@ -550,136 +545,4 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
       });
     },
   };
-}
-
-// ---- the client --------------------------------------------------------------------------------------------------------
-
-export type ServeErrorCode = "RUN_TERMINAL" | "NOT_SERVED";
-
-/** The run is done or failed (RUN_TERMINAL), or no instance answered before the deadline (NOT_SERVED). */
-export class ServeError extends PdaError {
-  readonly ensured: readonly EnsureResult[];
-  constructor(code: ServeErrorCode, message: string, ensured: readonly EnsureResult[]) {
-    super(code, message);
-    this.ensured = ensured;
-  }
-}
-
-export interface RequestOptions {
-  readonly host: HostDriver;
-  /** ensureRunning's options; every call here is a demand. */
-  readonly ensure: Omit<EnsureOptions, "demand">;
-  /** Give up after this long; default 120 s. A submit that waits for its answer needs room for the model. */
-  readonly timeoutMs?: number;
-  /**
-   * How long an instance this call started may take to open before the supervisor is asked again; default 60 s. Until
-   * then a second start would only be refused (76): the control API can list the new mount late.
-   */
-  readonly startTimeoutMs?: number;
-  /** The instance's serve token, sent as `authorization: Bearer <token>`. */
-  readonly token?: string;
-  readonly fetch?: typeof fetch;
-}
-
-export type RunResponse = {
-  readonly status: number;
-  readonly body: JsonValue;
-  /** The instance that answered. */
-  readonly url: string;
-  /** Every ensureRunning result on the way, in order (empty when the instance answered at once). */
-  readonly ensured: readonly EnsureResult[];
-};
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** The running holder's serve address while its lease is fresh; otherwise there is no instance to talk to. */
-function servedBy(record: RunRecord | null, now: number, leaseMs: number): string | undefined {
-  if (record?.status !== "running" || !isLeaseFresh(record, now, leaseMs)) return undefined;
-  return typeof record.holder?.serve === "string" ? record.holder.serve : undefined;
-}
-
-/**
- * Send one request to run `ref`'s instance, waking it if needed: read run.json (S3) and send the request to the running
- * holder's `serve` address while its lease is fresh. When there is none, it does not answer, it answers 503 with a
- * retry code, or its lease lapses while the request is open (a frozen instance accepts connections and never answers;
- * run.json is read again every third of a lease), ask `ensureRunning` with demand (start a released or lost run) and
- * try again until `timeoutMs`. After a start, its own or one the supervisor reports `starting`, it waits for that
- * instance to write its generation (or `startTimeoutMs`) before asking again, and an instance still opening (503
- * OPENING) is waited for. A submit carries a `requestId`, so
- * resending it to the next incarnation is safe: pi admits it once.
- */
-export async function requestRun(
-  ref: RunRef,
-  request: { readonly method: "GET" | "POST"; readonly path: string; readonly body?: JsonValue },
-  options: RequestOptions,
-): Promise<RunResponse> {
-  const fetchFn = options.fetch ?? fetch;
-  const now = options.ensure.now ?? Date.now;
-  const leaseMs = options.ensure.leaseExpiryMs ?? LEASE_EXPIRY_MS;
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const deadline = Date.now() + timeoutMs;
-  const ensured: EnsureResult[] = [];
-  // Every control call is bounded by the control timeout, and every step of this loop by what is left of `timeoutMs`.
-  const control = withTimeouts(options.ensure.control, options.ensure.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
-  const notServed = () => new ServeError("NOT_SERVED", `run ${ref.id} did not answer in ${timeoutMs} ms`, ensured);
-  const inTime = <T>(step: Promise<T>): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(notServed()), Math.max(0, deadline - Date.now()));
-      step.then(
-        (value) => (clearTimeout(timer), resolve(value)),
-        (error: unknown) => (clearTimeout(timer), reject(error)),
-      );
-    });
-  const attempt = async (url: string) => {
-    const stop = new AbortController();
-    let looking = false;
-    const watch = setInterval(() => {
-      if (looking) return;
-      looking = true;
-      readRunStatus(control, ref.id)
-        .then((r) => servedBy(r, now(), leaseMs) !== url && stop.abort(), () => {})
-        .finally(() => (looking = false));
-    }, Math.min(Math.max(1_000, leaseMs / 3), 10_000));
-    try {
-      return await fetchFn(new URL(request.path, url), {
-        method: request.method,
-        headers: {
-          ...(request.body === undefined ? {} : { "content-type": "application/json" }),
-          ...(options.token === undefined ? {} : { authorization: `Bearer ${options.token}` }),
-        },
-        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
-        signal: AbortSignal.any([stop.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]),
-      }).then(
-        async (res) => ({ status: res.status, body: (await res.json().catch(() => null)) as JsonValue }),
-        () => undefined,
-      );
-    } finally {
-      clearInterval(watch);
-    }
-  };
-  let pendingStart: { until: number; generation: number } | undefined;
-  for (let pause = 100; ; pause = Math.min(pause * 2, 1_000)) {
-    const record = await inTime(readRunStatus(control, ref.id));
-    const url = servedBy(record, now(), leaseMs);
-    let opening = false;
-    if (url) {
-      const r = await attempt(url);
-      const code = (r?.body as { error?: unknown } | null)?.error;
-      if (r && !(r.status === 503 && (RETRY_CODES as readonly unknown[]).includes(code))) return { ...r, url, ensured };
-      opening = code === "OPENING";
-    }
-    // An instance that is opening, or a start in flight whose instance has not written its generation yet, is left to open.
-    const generation = record?.generation ?? 0;
-    const awaitingStart = pendingStart !== undefined && Date.now() < pendingStart.until && generation < pendingStart.generation;
-    if (!opening && !awaitingStart) {
-      const result = await inTime(ensureRunning(ref, options.host, { ...options.ensure, demand: true }));
-      ensured.push(result);
-      if (result.action === "terminal") throw new ServeError("RUN_TERMINAL", `run ${ref.id} is ${result.status}`, ensured);
-      // A start by this call, or one the supervisor's start grace reports in flight: wait for that generation.
-      if (result.action === "started") pendingStart = { until: Date.now() + (options.startTimeoutMs ?? 60_000), generation: generation + 1 };
-      if (result.action === "starting") pendingStart = { until: Date.now() + (options.startTimeoutMs ?? 60_000), generation: result.generation };
-    }
-    if (Date.now() + pause > deadline) throw notServed();
-    await sleep(pause);
-  }
 }

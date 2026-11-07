@@ -1,5 +1,5 @@
 // Serve and park: an idle agent holds no process. An instance serves `POST /submit`; its model is overloaded and the
-// retry is a long wait, so the run parks: the wake time is written to run.json, the claim is released and the process
+// retry is a long wait, so the run parks: the wake time is recorded, the claim is released and the process
 // exits 0. Nothing runs until `wakeAt`, when a small restart loop opens the run again and the retry finishes. The same
 // `requestId` sent after the restart finds the first submission: it is answered, not run twice.
 //
@@ -44,7 +44,7 @@ async function instance(): Promise<void> {
   generation = run.generation;
   server.attach(run);
   console.log(`generation ${generation} serves ${server.url}`);
-  // Park when the work only waits longer than the threshold: the wake goes into run.json, then the claim is released.
+  // Park when the work only waits longer than the threshold: the wake goes into the record, then the claim is released.
   const parking = watchParking(run, { thresholdMs: PARK_THRESHOLD_MS, keepAwake: () => server.active > 0, quiesce: () => server.pause() });
   void parking.parked.then((parked) => {
     console.log(`generation ${generation} parked until ${new Date(parked.wakeAt!).toISOString()}, released, exiting`);
@@ -114,10 +114,10 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-/** The run's status from its directory: the record `readRunStatus` reads from a disk, read here from `run.json` under the run's root. */
+/** The run's record, read from its store once no process holds it. */
 async function runRecord() {
   const record = await readLocalRunStatus(root);
-  if (record === null) throw new Error(`the run has no run.json under ${root}`);
+  if (record === null) throw new Error(`the run has no record under ${root}`);
   return record;
 }
 const lines: string[] = [];
@@ -136,9 +136,8 @@ async function supervise(): Promise<void> {
     expect((await within(first.closed, 30_000, "generation 1 parking")) === 0, "generation 1 exits 0 by itself, parked");
     const parkedAt = Date.now();
     const sleeping = await runRecord();
-    expect(sleeping.status === "sleeping" && sleeping.wakeAt !== null && Date.parse(sleeping.wakeAt) > parkedAt - 1_000, `run.json says sleeping with a wakeAt: ${JSON.stringify([sleeping.status, sleeping.wakeAt])}`);
-    // The record keeps the last holder; the release sealed the store, and the process it names is gone.
-    expect(sleeping.sealedSeq !== null, "the release sealed the store at its last committed sequence");
+    expect(sleeping.status === "sleeping" && sleeping.wakeAt !== null && Date.parse(sleeping.wakeAt) > parkedAt - 1_000, `the record says sleeping with a wakeAt: ${JSON.stringify([sleeping.status, sleeping.wakeAt])}`);
+    // The record keeps the last holder, and the process it names is gone.
     expect(!alive(sleeping.holder?.pid), `the last holder's process is gone: ${JSON.stringify(sleeping.holder)}`);
 
     // The restart loop: nothing runs until wakeAt, then the run is opened again.
@@ -155,7 +154,7 @@ async function supervise(): Promise<void> {
     second.child.kill("SIGTERM");
     expect((await within(second.closed, 15_000, "generation 2 ending")) === 0, "generation 2 exits 0 on SIGTERM, done");
     const finished = await runRecord();
-    expect(finished.status === "done", `run.json says done: ${finished.status}`);
+    expect(finished.status === "done", `the record says done: ${finished.status}`);
     // The model was asked once by each generation (overloaded, then answered): the duplicate never reached it.
     const asked = lines.filter((line) => line.startsWith("model request"));
     expect(asked.join() === "model request (generation 1),model request (generation 2)", `model requests: ${asked}`);

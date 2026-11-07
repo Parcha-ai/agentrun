@@ -25,7 +25,7 @@ const NEEDS_HELD = { skip: !HELD && "needs held directory handles (/proc/self/fd
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-const WORK = "/run/agentrun/run/work";
+const WORK = "/workspace";
 const harness = (message) => `<harness>\n[error] ${message}\n</harness>`;
 const LINK = (path) => `${WORK}/${path}: refused: a link is on the way to it, or it is one, and read, write and edit follow no link in this run's work/ (bash, in the box, can)`;
 const HARD = (path) => `${WORK}/${path}: refused: it has another hard link, and read, write and edit take only a file with one (bash, in the box, can)`;

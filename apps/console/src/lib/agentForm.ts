@@ -72,6 +72,10 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
   return STARTER_PROVIDERS.find((id) => providers.some((p) => p.id === id && p.available));
 }
 
+/** A new agent's instructions until the person writes their own: the field is required, so the form opens with these
+ *  to edit, never empty. Harness-neutral, one sentence. */
+export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're given and report what you found.";
+
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
@@ -144,9 +148,9 @@ export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], plac
  *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
 export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
 
-/** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
+/** The tools that reach the web: a page read (web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */
-export const WEB_TOOLS: readonly string[] = ["fetch_page", "web_fetch", "web_search"];
+export const WEB_TOOLS: readonly string[] = ["web_fetch", "web_search"];
 /** Whether an agent with these tools can reach the web: through any of WEB_TOOLS. */
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 

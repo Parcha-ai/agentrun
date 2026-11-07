@@ -1,7 +1,7 @@
 // The host tools of a run on a harness other than pi: its coding tools, from the run's coding source (coding-tools.ts:
 // pi's own read, write and edit on the run's environment, or in a box those, bash and the background tools on the
-// box's), so their arguments, their confinement and their refusals are pi's, word for word, pi's web_fetch (also under
-// its legacy name, fetch_page), the public-host guard included, web_search, and monid's three (monid.ts), which stay on this machine.
+// box's), so their arguments, their confinement and their refusals are pi's, word for word, pi's web_fetch, the public-host
+// guard included, web_search, and monid's three (monid.ts), which stay on this machine.
 // pi's tools take only the environment, their output and their diagnostics from a call's API, and a paid one its call's
 // id and the run's store, so that is all a call here gives them: the output's tail or head as the tool keeps it (pi's
 // limits), then the diagnostics, also when the tool failed. read, the web tools, monid.discover, monid.inspect,
@@ -19,7 +19,6 @@ import type { HostTool } from "@parcha/agentrun-kernel";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { wireName } from "./catalog.js";
 import { BOXED_TOOLS, CodingTools } from "./coding-tools.js";
-import { FETCH_PAGE_TOOL } from "./fetch-page.js";
 import { monidTools } from "./monid.js";
 import { booking } from "./paid-calls.js";
 import { withSecrets } from "./secrets.js";
@@ -33,7 +32,7 @@ export { workspaceRelative } from "./workspace-paths.js";
 /** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again.
  *  `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL, named here as a string so the modules do not import
  *  each other) is never run again. */
-export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe", learned_workflow: "never" };
+export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe", learned_workflow: "never" };
 
 /** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
  *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
@@ -105,6 +104,11 @@ const SAYS_PATH = new Set(["write", "edit"]);
 const textOf = (content: unknown): string =>
   Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
 
+/** A result's image blocks (pi-ai's `ImageContent`: read's image in a box), as HostTool's `images`: the harness sends
+ *  them with the text, where `textOf` alone would drop them. */
+const imagesOf = (content: unknown): { mimeType: string; data: string }[] =>
+  Array.isArray(content) ? content.flatMap((block) => (block && typeof block === "object" && block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? [{ mimeType: block.mimeType, data: block.data }] : [])) : [];
+
 
 /** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
  *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
@@ -115,7 +119,7 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
   const stray = coding.map((tool) => tool.name).filter((name) => !BOXED_TOOLS.includes(name));
   if (stray.length) throw new Error(`the coding source holds ${stray.join(", ")}, which is no coding tool`);
   // Their paid requests (Parallel's) are booked under the call, in the run's store, as pi's are (paid-calls.ts).
-  const web = [webFetchTool(process.env), webFetchTool(process.env, FETCH_PAGE_TOOL), webSearchTool(process.env)].map(booking) as unknown as ToolRegistration[];
+  const web = [webFetchTool(process.env), webSearchTool(process.env)].map(booking) as unknown as ToolRegistration[];
   // monid's, only for a run that names one: its key is the one this process was handed over its pipe (secrets.ts),
   // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
   // the call. They are outside the coding source, which holds the coding tools only.
@@ -158,7 +162,8 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
         const works = typeof work === "string" ? [work, realOf(work)] : [];
         const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
         results.set(callId, answer);
-        return answer;
+        const images = imagesOf(given.content ?? given.output);
+        return images.length ? { ...answer, images } : answer;
       },
     };
     return [host];

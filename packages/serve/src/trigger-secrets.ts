@@ -71,10 +71,6 @@ export class TriggerSecrets {
     this.secrets = this.key ? opened(this.key, this.sealed) : {};
   }
 
-  get sealing(): "sealed" | "unavailable" {
-    return this.key ? "sealed" : "unavailable";
-  }
-
   /** A new secret for `triggerId`, written sealed before it is answered: its only showing. */
   mint(triggerId: string): string {
     if (this.unreadable) throw new ApiError("store_unreadable", `${TRIGGER_SECRETS_FILE} in the data directory does not read (${this.unreadable}); it is never written over, so no webhook trigger's secret is made or rotated. Fix it or move it away, then restart.`);
@@ -97,9 +93,10 @@ export class TriggerSecrets {
     delete this.secrets[triggerId];
   }
 
-  /** Every secret held, for the redaction of what is shown. */
+  /** Every secret held, for the redaction of what is shown: each whole, and its body, the base64 after `whsec_`, which is
+   *  the signing key itself (hookRefusal decodes it) and which the `whsec_` shape alone never matches. */
   values(): string[] {
-    return Object.values(this.secrets);
+    return Object.values(this.secrets).flatMap((secret) => [secret, secret.slice("whsec_".length)]);
   }
 
   private write(sealed: Record<string, string>): void {

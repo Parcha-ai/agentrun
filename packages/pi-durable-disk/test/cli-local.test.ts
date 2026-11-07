@@ -9,9 +9,9 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli.ts";
-import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
-import { processTableHooks, type ProcessTable } from "../src/process-table.ts";
-import { scratchRoot } from "./_run-support.ts";
+import { processTable, processTableHooks, thisBoot, type ProcessTable } from "../src/process-table.ts";
+import { readLocalRunStatus } from "../src/status.ts";
+import { scratchRoot, writeStoreRecord } from "./_run-support.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const APP = fileURLToPath(new URL("../examples/01-durable-chat/app.ts", import.meta.url));
@@ -23,8 +23,18 @@ type Event = Record<string, unknown> & { event?: string };
  * `node cli.ts <args>` as a group of its own, its stdout read as JSON lines (example 01's log); `until` may SIGKILL the group
  * at a line. Resolves on `close`, the group reaped (only a real pid: `kill(-0)` would be this process's own group).
  */
+/** Each run directory's next epoch: a test is the host of the runs it starts, and hands each start the next. */
+const epochs = new Map<string, number>();
+const withEpoch = (args: string[]): string[] => {
+  if (args[0] !== "run" || args.includes("--epoch")) return args;
+  const dir = args[args.indexOf("--dir") + 1]!;
+  const epoch = (epochs.get(dir) ?? 0) + 1;
+  epochs.set(dir, epoch);
+  return [...args, "--epoch", String(epoch)];
+};
+
 function cli(args: string[], options: { pace?: number; until?: (event: Event) => boolean; timeoutMs?: number; onEvent?: (event: Event) => void } = {}) {
-  const child = spawn(process.execPath, [CLI, ...args], {
+  const child = spawn(process.execPath, [CLI, ...withEpoch(args)], {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CHAT_PACE_MS: String(options.pace ?? 20) },
@@ -83,9 +93,8 @@ describe("the CLI on a local directory", () => {
       assert.deepEqual(answers(run.events), Array(MESSAGES).fill(1), "every message answered once");
       const status = await cli(["status", "--dir", root]);
       assert.equal(status.code, 0, status.stderr);
-      const report = status.events.at(-1) as { run: string; dir: string; runJson: { status: string; generation: number; sealedSeq: number | null }; holderStatus: string };
-      assert.deepEqual([report.run, report.dir, report.runJson.status, report.runJson.generation, report.holderStatus], ["chat", root, "done", 1, "stopped"]);
-      assert.equal(typeof report.runJson.sealedSeq, "number", "released and sealed");
+      const report = status.events.at(-1) as { run: string; dir: string; record: { status: string; generation: number }; holderStatus: string };
+      assert.deepEqual([report.run, report.dir, report.record.status, report.record.generation, report.holderStatus], ["chat", root, "done", 1, "stopped"]);
     } finally {
       dir.remove();
     }
@@ -99,9 +108,8 @@ describe("the CLI on a local directory", () => {
       const run = await cli(["run", "--dir", root, "--app", app], { timeoutMs: 20_000 });
       assert.equal(run.code, 0, `the instance ended by itself (signal ${run.signal}): ${run.stderr}`);
       const status = await cli(["status", "--dir", root]);
-      const report = status.events.at(-1) as { runJson: { status: string; sealedSeq: number | null } };
-      assert.equal(report.runJson.status, "done");
-      assert.equal(typeof report.runJson.sealedSeq, "number", "released and sealed");
+      const report = status.events.at(-1) as { record: { status: string } };
+      assert.equal(report.record.status, "done");
     } finally {
       dir.remove();
     }
@@ -147,47 +155,44 @@ describe("the CLI on a local directory", () => {
       second = await cli(["run", "--dir", root, "--app", APP]);
       await first;
       assert.equal(second.code, 76, second.stderr);
-      assert.match(second.stderr, /OWNER_LOCK_HELD/);
+      assert.match(second.stderr, /STORE_BUSY/);
     } finally {
       dir.remove();
     }
   });
 
-  it("status --dir knows a holder by its pid and start ticks, not its lease, and names the run as recorded", { timeout: 60_000 }, async () => {
+  it("status --dir knows a holder by its pid and start ticks, and names the run as recorded", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("cli-local-status");
     const live = spawn("sleep", ["60"], { stdio: "ignore" });
     try {
       const pid = live.pid ?? 0;
-      const ticks = procStartTicks(pid)!;
-      const runJson = (heartbeatAgoMs: number, startTicks: number) => ({
+      const ticks = processTable().snapshot().info(pid)!.start;
+      const recorded = (startTicks: number) => ({
         run: "orders",
         status: "running",
         generation: 3,
-        sealedSeq: null,
         wakeAt: null,
-        holder: { driver: "local", host: hostname(), bootId: currentBootId(), pid, since: new Date().toISOString(), startTicks },
-        heartbeatAt: new Date(Date.now() - heartbeatAgoMs).toISOString(),
+        holder: { driver: "local", host: hostname(), bootId: thisBoot(), pid, since: new Date().toISOString(), startTicks },
         updatedAt: new Date().toISOString(),
         detail: null,
       });
       const report = async (record: object) => {
         const root = join(dir.root, "chat");
-        mkdirSync(root, { recursive: true });
-        writeFileSync(join(root, "run.json"), JSON.stringify(record));
+        writeStoreRecord(root, record);
         const status = await cli(["status", "--dir", root]);
         return status.events.at(-1) as { run: string; holderStatus: string };
       };
-      // A run started with a lease longer than the default, between heartbeats: its holder is still the same process.
-      const between = await report(runJson(200_000, ticks));
-      assert.deepEqual([between.run, between.holderStatus], ["orders", "running"]);
-      // A fresh heartbeat, but the pid now belongs to another process (other start ticks): the holder is gone.
-      assert.equal((await report(runJson(0, ticks + 1))).holderStatus, "stopped");
-      assert.equal((await report(runJson(0, ticks))).run, "orders", "the run's own id, not the directory's name");
+      // The holder is still the same process: its pid with the start ticks it recorded.
+      const same = await report(recorded(ticks));
+      assert.deepEqual([same.run, same.holderStatus], ["orders", "running"]);
+      // The pid now belongs to another process (other start ticks): the holder is gone.
+      assert.equal((await report(recorded(ticks + 1))).holderStatus, "stopped");
+      assert.equal((await report(recorded(ticks))).run, "orders", "the run's own id, not the directory's name");
       // --id reaches the record: a run opened with it is reported by it.
       const named = join(dir.root, "named");
       const run = await cli(["run", "--dir", named, "--id", "orders", "--app", APP]);
       assert.equal(run.code, 0, run.stderr);
-      assert.equal(JSON.parse(readFileSync(join(named, "run.json"), "utf8")).run, "orders");
+      assert.equal((await readLocalRunStatus(named))?.run, "orders");
     } finally {
       live.kill("SIGKILL");
       dir.remove();
@@ -198,8 +203,7 @@ describe("the CLI on a local directory", () => {
     const dir = scratchRoot("cli-local-unreadable");
     const root = join(dir.root, "chat");
     const holder = { driver: "local", host: hostname(), bootId: "boot-1", pid: 4242, since: new Date().toISOString(), startTicks: 77 };
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, "run.json"), JSON.stringify({ run: "chat", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder, heartbeatAt: null, updatedAt: new Date().toISOString(), detail: null }));
+    writeStoreRecord(root, { run: "chat", status: "running", generation: 1, wakeAt: null, holder, updatedAt: new Date().toISOString(), detail: null });
     /** A table (as on macOS) whose boot read and listing fail or answer as asked. */
     const table = (boot: string | undefined, listing: "fails" | { start: number } | "gone"): ProcessTable => ({
       walkMs: 500,
@@ -240,21 +244,21 @@ describe("the CLI on a local directory", () => {
     }
   });
 
-  it("the app's factory runs once the claim is held, before this incarnation's run.json, and what it writes under ctx.root is in the run", async () => {
+  it("the app's factory runs once the claim is held, before the store opens, and what it writes under ctx.root is in the run", async () => {
     const dir = scratchRoot("cli-factory");
     try {
       const run = join(dir.root, "run");
       const saw = join(dir.root, "saw");
-      const r = spawnSync(process.execPath, [CLI, "run", "--dir", run, "--app", fileURLToPath(new URL("./fixtures/factory-on-claim.ts", import.meta.url))], { env: { ...process.env, FACTORY_SAW: saw }, encoding: "utf8", timeout: 60_000 });
+      const r = spawnSync(process.execPath, [CLI, "run", "--dir", run, "--epoch", "1", "--app", fileURLToPath(new URL("./fixtures/factory-on-claim.ts", import.meta.url))], { env: { ...process.env, FACTORY_SAW: saw }, encoding: "utf8", timeout: 60_000 });
       assert.equal(r.status, 0, r.stderr);
-      assert.deepEqual(JSON.parse(readFileSync(saw, "utf8")), { runJson: "absent", ownerLock: true, work: true }, "the claim was held (owner lock, layout) and nothing of the run published yet");
+      assert.deepEqual(JSON.parse(readFileSync(saw, "utf8")), { store: false, work: true }, "the claim was held (layout) and nothing of the run published yet");
       assert.equal(readFileSync(join(run, "factory.txt"), "utf8"), "written by the factory\n");
     } finally {
       dir.remove();
     }
   });
 
-  it("refuses --dir beside the Archil flags, with a usage error (exit 2) naming them", async () => {
+  it("refuses an unknown flag beside --dir, a missing --app and an unknown box mode with a usage error (exit 2)", async () => {
     const written: string[] = [];
     const write = process.stderr.write;
     process.stderr.write = ((chunk: string) => (written.push(String(chunk)), true)) as typeof process.stderr.write;
@@ -263,13 +267,13 @@ describe("the CLI on a local directory", () => {
       assert.equal(await main(["run", "--dir", "/tmp/x", "--region", "r", "--mount-root", "/mnt", "--app", "a.ts"]), 2);
       assert.equal(await main(["run", "--dir", "/tmp/x"]), 2, "run --dir needs --app");
       assert.equal(await main(["status", "--dir", "/tmp/x", "--disk", "dsk-1"]), 2);
-      assert.equal(await main(["run", "--dir", "/tmp/x", "--app", "a.ts", "--box-mode", "docker"]), 2, "an unknown box mode");
-      assert.equal(await main(["run", "--dir", join(tmpdir(), `pdd-unavailable-${process.pid}`), "--app", "a.ts", "--box-mode", "unavailable"]), 78, "no box to run in");
+      assert.equal(await main(["run", "--dir", "/tmp/x", "--epoch", "1", "--app", "a.ts", "--box-mode", "docker"]), 2, "an unknown box mode");
+      assert.equal(await main(["run", "--dir", join(tmpdir(), `pdd-unavailable-${process.pid}`), "--epoch", "1", "--app", "a.ts", "--box-mode", "unavailable"]), 78, "no box to run in");
     } finally {
       process.stderr.write = write;
     }
-    assert.match(written.join(""), /--dir is a run on a local directory: it takes no --disk\n/);
-    assert.match(written.join(""), /it takes no --region, --mount-root\n/);
+    assert.match(written.join(""), /Unknown option '--disk'/);
+    assert.match(written.join(""), /Unknown option '--region'/);
     assert.match(written.join(""), /--box-mode is one of bwrap, seatbelt, provider, unsandboxed, unavailable\n/);
     assert.match(written.join(""), /"error":"BOX_UNAVAILABLE".*held until a server with a box opens it/);
     assert.equal(existsSync(join(tmpdir(), `pdd-unavailable-${process.pid}`)), false, "the refused run's directory was made");

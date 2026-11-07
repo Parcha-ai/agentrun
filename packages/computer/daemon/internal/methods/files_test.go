@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
@@ -59,7 +60,7 @@ func dial(t *testing.T) *conn {
 	t.Helper()
 	cr, cw := io.Pipe()
 	sr, sw := io.Pipe()
-	server := rpc.NewServer(methods.Handlers("0.0.0-test"), log.New(io.Discard, "", 0))
+	server := rpc.NewServer(methods.Handlers("0.0.0-test", process.NewTable(process.Options{})), log.New(io.Discard, "", 0))
 	c := &conn{t: t, in: cw, out: sr, lines: make(chan []byte, 1024), served: make(chan struct{})}
 	go func() {
 		_ = server.Serve(context.Background(), cr, sw)
@@ -199,12 +200,12 @@ func must(t *testing.T, err error) {
 	}
 }
 
-func TestHelloOffersFiles(t *testing.T) {
+func TestHelloOffersFilesAndProcesses(t *testing.T) {
 	c := dial(t)
 	var hello methods.HelloResult
 	c.ok("hello", map[string]any{"client": "test"}, &hello)
-	if strings.Join(hello.Capabilities, ",") != "exec,files" {
-		t.Fatalf("capabilities %v", hello.Capabilities)
+	if strings.Join(hello.Groups, ",") != "exec,files,processes" {
+		t.Fatalf("groups %v", hello.Groups)
 	}
 }
 
