@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
-import { keyBytes, mintSecret } from "./standard-webhooks.js";
+import { keyBytes, MIN_KEY_BYTES, mintSecret } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { isObject } from "./validate.js";
 
@@ -84,6 +84,8 @@ export class SealedSettings {
   set(scope: string, field: string, value: string): void {
     const spec = this.spec.fields[field];
     if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
+    // A verification key is kept only as the spec writes one, or every request it checks would be refused.
+    if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith("whsec_")) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
     this.put(scope, field, value);
   }
