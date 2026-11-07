@@ -17,7 +17,6 @@ const TOOLS = [
   { name: "write", nodes: true, calls: false, available: true, harnesses: ["pi", "claude-agent", "codex"] },
   { name: "edit", nodes: true, calls: false, available: true, harnesses: ["pi", "claude-agent", "codex"] },
   { name: "ask_person", nodes: false, calls: false, available: true, harnesses: ["pi"] },
-  { name: "fetch_page", nodes: true, calls: true, available: true, harnesses: ["pi", "claude-agent", "codex"] },
   { name: "web_fetch", nodes: true, calls: true, available: true, harnesses: ["pi", "claude-agent", "codex"] },
   { name: "browser", nodes: true, calls: false, available: false, missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"] },
   { name: "pdf_pages", nodes: false, calls: true, call_only: true, available: true, harnesses: ["pi"] },
@@ -55,7 +54,7 @@ describe("demo: a new agent with its default tools", () => {
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create")!.click(); });
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(posts).toHaveLength(1);
-    expect(posts[0].definition.tools).toEqual(["read", "write", "edit", "ask_person", "fetch_page", "web_fetch"]);
+    expect(posts[0].definition.tools).toEqual(["read", "write", "edit", "ask_person", "web_fetch"]);
     expect(went).toContain("a1");
   });
 });

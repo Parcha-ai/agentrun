@@ -12,11 +12,12 @@ its skills, its saved sign-ins and the index of its runs in `agent.sqlite`, and 
 <home>/
   agent.sqlite        the agent store: definition, skills, sign-ins, the runs index
   runs/<id>/
-    run.json          status, generation, heartbeat, the address of the run's door (holder.serve)
-    store/run.sqlite  pi's store for the run, with the sign-in startRun gave it
+    store/run.sqlite  pi's store for the run, with the sign-in startRun gave it, and the run's record (its status,
+                      generation and wake), which the server reads once no process holds the run
     work/             the files the agent wrote (its skills under .agents/skills/, hidden here)
     live.json         host file: the agent's live browser view (never inside work/)
-    web.json          written by this server for a run it starts: the title and the start time
+    web.json          written by this server for a run it starts: the title and the start time; start-run.mjs adds the
+                      run's door (its address, its process and that process's start)
 ```
 
 ## Run it
@@ -210,7 +211,8 @@ text, and puts agent-written HTML in a frame sandboxed with nothing allowed (no 
 
 - It binds to loopback and refuses requests whose `Host` is not a loopback name (DNS rebinding), whose `Origin` is another
   site, or that are not JSON when they change something.
-- A run's door address from `run.json` is used only if it is `http://` on loopback.
+- A run's door address from `web.json` is used only if it is `http://` on loopback, and only while the process it names
+  still runs.
 - Files are served from `work/` only. A path with a dot segment, `..` or a symlink anywhere in it is refused.
   Responses carry `X-Content-Type-Options: nosniff`. HTML gets `Content-Security-Policy: default-src 'none'; style-src
   'unsafe-inline'; img-src data:; sandbox; form-action 'none'` and is only shown in an `<iframe sandbox>` with no

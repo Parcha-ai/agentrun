@@ -12,7 +12,7 @@ async function holdingWriter() {
   const raw = await memorySessionStore().open('s');
   let release;
   let held = false;
-  const writer = { key: raw.key, read: () => raw.read(), append: async (records) => {
+  const writer = { key: raw.key, sync: () => raw.sync(), read: () => raw.read(), append: async (records) => {
     if (!held && records.some((r) => r.kind === 'kernel.end')) { held = true; await new Promise((resolve) => { release = resolve; }); }
     return raw.append(records);
   } };
@@ -39,7 +39,7 @@ test('a serialized writer runs reads and appends in call order, and a failed one
   const order = [];
   let fail = true;
   const raw = await memorySessionStore().open('s');
-  const serial = serialWriter({ key: raw.key, read: async () => { order.push('read'); return raw.read(); }, append: async (records) => { order.push('append'); if (fail) { fail = false; throw new Error('the disk is full'); } return raw.append(records); } });
+  const serial = serialWriter({ key: raw.key, sync: () => raw.sync(), read: async () => { order.push('read'); return raw.read(); }, append: async (records) => { order.push('append'); if (fail) { fail = false; throw new Error('the disk is full'); } return raw.append(records); } });
   const results = await Promise.allSettled([serial.append([{ kind: 'x', data: 1 }]), serial.read(), serial.append([{ kind: 'x', data: 2 }]), serial.read()]);
   assert.deepEqual(order, ['append', 'read', 'append', 'read']);
   assert.deepEqual(results.map((r) => r.status), ['rejected', 'fulfilled', 'fulfilled', 'fulfilled']);

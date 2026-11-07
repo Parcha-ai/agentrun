@@ -1,4 +1,4 @@
-// Under --faux only: fetch_page's network in the run's process (AGENTRUN_SERVE_FAUX_WEB). The invented merchants in
+// Under --faux only: web_fetch's network in the run's process (AGENTRUN_SERVE_FAUX_WEB). The invented merchants in
 // fixtures.mjs resolve to public-looking addresses and serve their pages; any other name does not resolve.
 import { merchants } from "./fixtures.mjs";
 

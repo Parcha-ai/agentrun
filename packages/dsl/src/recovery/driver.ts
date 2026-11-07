@@ -148,6 +148,11 @@ export type RecoveryOptions = {
   /** Closes the session of an LLM step's attempt that ended without a submission. It runs on the driver's commit
    *  chain, before the commit that records the attempt as closed; its failure is the run's. */
   closeStepSession?: (sessionId: string) => Promise<unknown>;
+  /** The host's barrier for an effect's admission: called on the driver's commit chain right after the admission's commit
+   *  and before the effect is dispatched, so a host whose store syncs between commits (a run store at synchronous NORMAL)
+   *  makes the admission durable first. Its failure is the run's, and the effect, admitted, is never dispatched: it stays
+   *  unknown, for a reconcile. Absent, nothing runs between the admission and the dispatch. */
+  afterAdmit?: () => Promise<void>;
   /** Settles effects a killed process left unknown, through the driver's own open of the run (one generation per process).
    *  `openRecovery` calls it once, after the open and before anything resumes, when the journal holds an effect that was
    *  admitted and never completed; `unknown` is those effects, with their `intent` and the `args` the call was admitted with (what the host's door is sent; absent on a record written before args were kept). `complete(id, value, receipt)`
@@ -1139,6 +1144,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const admission = writeOf(id);
           const admitted = await persist(() => journal.admit(id, String(params.node.label), argsHash, admission.state, driver, external, params.input ?? null, admission.parts, admission.owner));
           if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
+          // The admission durable before the dispatch, where the host's store needs a barrier for it (afterAdmit).
+          if (options.afterAdmit) await persist(options.afterAdmit);
           // What landed while the admission was being committed still counts: after a cancel, the caller's own
           // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
           // A pause lets it dispatch and complete.

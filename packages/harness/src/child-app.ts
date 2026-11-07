@@ -1,14 +1,14 @@
-// The reference child as an app module for `pi-durable-disk run --app`: one open path for a run, with the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts the
+// The reference child as an app module for `pi-durable-disk run --app`: one open path for a run, with the claim, the fence, the run's record and restarts the
 // disk package already provides. The instance opens the store on its own claim and resumes it; `onOpen` drives the demo's job on it, as `run()` does on its local claim.
 //
 //   DEMO_ENTRY=<file URL of a demo's run.ts, which exports `options` (its DemoOptions)> \
-//   pi-durable-disk run --dir <dir> --app "$(node -p "require.resolve('@parcha/agentrun-harness/child-app')")" --id <the demo's name>
+//   pi-durable-disk run --dir <dir> --epoch <n> --app "$(node -p "require.resolve('@parcha/agentrun-harness/child-app')")" --id <the demo's name>
 //
 // `--app` takes a file: resolve the package's `./child-app` export to it (in code, `import.meta.resolve('@parcha/agentrun-harness/child-app')`).
 //
 // The process takes the same environment the supervisor gives its child (`PLAN`, `CROSS_LOG`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`, `BACKEND`, `LIVE`), so the supervisor's kills, recording and
 // input work unchanged. When the job has finished the child prints its outcome line, as the local place reads it, and writes the run's final status `done` with the record and the store's hash,
-// as a box place reads them (it has only run.json), releases the run and exits 0.
+// as a place with no outcome line reads them (it has only the run's record), releases the run and exits 0.
 import type { AppContext, AppOptions } from '@parcha/pi-durable-disk';
 import { appOf } from './assemble.ts';
 import { IMPORTING_DEMO, outcomeOf, prepareChild, type DemoOptions } from './demo.ts';
@@ -46,7 +46,7 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
       try { made = await prepared.made(result); } finally { await close(); }
       // Printed once the final status is written and the run released (the supervisor reads this line as how the run ended).
       // Written whole before the process exits: the outcome can be large, and a line still waiting to enter the pipe when the process ends is cut off.
-      // The demo's shaped result is also the final status's detail: a place that reads only run.json (a box or Archil place) keeps it, so its recording has the cited result and not the raw record.
+      // The demo's shaped result is also the final status's detail: a place that reads only the run's record keeps it, so its recording has the cited result and not the raw record.
       const line = JSON.stringify({ outcome: outcomeOf(result, storeSha256, made, prepared.models) });
       // Redacted with every token the process saw, as the outline above.
       return Object.assign(() => new Promise<void>((resolve) => { process.stdout.write(`${prepared.redact ? prepared.redact(line) : line}\n`, () => resolve()); }), { detail: made ? { result: made } : {} });

@@ -42,7 +42,9 @@ for (const harness of ["claude-agent", "codex"]) {
     const rows = errorRows(timeline.rows);
     assert.ok(rows.length > 0, JSON.stringify(timeline.rows.map((r) => r.kind)));
     for (const row of rows) assert.deepEqual([row.summary, row.text], [OPENROUTER, OPENROUTER], JSON.stringify(row));
-    assert.ok(!JSON.stringify(timeline).includes("127.0.0.1") && !JSON.stringify(run).includes("127.0.0.1"), "no loopback address anywhere");
+    // The run's own console page is at this server's address; the gateway's must be nowhere else.
+    const { console_url: _page, ...rest } = run;
+    assert.ok(!JSON.stringify(timeline).includes("127.0.0.1") && !JSON.stringify(rest).includes("127.0.0.1"), "no loopback address anywhere");
   });
 }
 

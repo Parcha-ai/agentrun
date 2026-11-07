@@ -1,6 +1,6 @@
 // Rehearses a use case with no server and no key: the DSL interpreter runs the workflow, its decision nodes go to the
 // real Jev and Parallel providers sending through the faux fetches (faux/), and its tools run here (pdf_pages with
-// pdftoppm/pdftotext, fetch_page on the faux network, llm on the faux model). It prints each decision, the outcome and,
+// pdftoppm/pdftotext, web_fetch on the faux network, llm on the faux model). It prints each decision, the outcome and,
 // for the document cases, the verdicts against documents/labels.json.
 // Usage: node examples/decision-demos/rehearse.mjs <use-case> [input-name] [--fast]
 //   --fast: DEMO_FAUX_SPEED=0, no simulated latency.
@@ -70,7 +70,7 @@ async function llm({ prompt, system }) {
   const inTok = Math.ceil(((system ?? "") + prompt).length / 4); const outTok = Math.ceil(reply.text.length / 4);
   return { text: reply.text, model: "faux/demo-writer", usage: { input_tokens: inTok, output_tokens: outTok }, cost_usd: (inTok * model.cost.input + outTok * model.cost.output) / 1e6 };
 }
-const TOOLS = { pdf_pages: pdfPages, fetch_page: fetchPage, llm };
+const TOOLS = { pdf_pages: pdfPages, web_fetch: fetchPage, llm };
 
 /** The fakes' key: a stand-in they never check, held in a name so no key literal sits beside a key field. */
 const STAND_IN = "faux-not-a-key";

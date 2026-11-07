@@ -8,7 +8,7 @@
 // `beforeRequest` first, and its usage comes back through `afterRequest`. The runner alone accounts model spend.
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,12 +16,13 @@ import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession,
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, mcpRoute, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
+import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
-import { type ConfineChild, localMachine } from "./host/machine.js";
+import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
 import { MCP_SERVER } from "./transcript.js";
 import type { ToolServerModules } from "./host/tool-server.js";
@@ -234,8 +235,9 @@ export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk"
   return { cliPath: cli.path };
 }
 
-/** A stand-in CLI is for a test runner only. */
-const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === "test") && process.env.NODE_ENV !== "production";
+/** A stand-in CLI is for a test runner only: node --test's own mark (NODE_TEST_CONTEXT), never NODE_ENV=test, which a
+ *  production server can carry. */
+const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT) && process.env.NODE_ENV !== "production";
 
 /** The kernel's tool for a host tool: the same name, schema and replay policy, reported to the host under that name. */
 /** The most a tool's image may be, as base64, by default: the strictest of the platforms Claude runs on (Anthropic's API
@@ -302,13 +304,15 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
     async execute(input, effect) {
       // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
       calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      const result = await tool.call(input, { callId, signal: effect.signal });
+      const result = await tool.call(input, { callId, signal: effect.signal, attempt });
       if (result.isError) throw new Error(result.text);
       if (!result.images?.length) return result.text;
       // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
@@ -359,7 +363,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   return {
     id: CLAUDE_AGENT_ID,
     version: CLAUDE_AGENT_SDK_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CLAUDE_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Claude Agent sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -415,7 +419,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
-          ...(spec.mcp ? { mcp: { handler: mcpRoute(spec.mcp), tools: [...mcpNames] } } : {}),
+          ...(spec.mcp ? { mcp: { session: spec.mcp, tools: [...mcpNames] } } : {}),
         },
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
@@ -524,6 +528,39 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
+      // The session's host port (AdapterSession.port): the host's own requests beside the CLI's (a learned workflow's node)
+      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price, headers
+      // and the session's booking, io.models), but on a listener the session holds: a drive's proxy closes with its drive
+      // (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side keys only:
+      // the CLI never holds its key. Its policy object is its own: anything a policy keeps per instance stays apart from the
+      // drive's, as a side call's should. Closed with the session, or when the host lets the session go (io.signal).
+      // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
+      const hostPort = await startModelProxy({
+        policy: anthropicPolicy({
+          model: modelFor(spec),
+          ...(options.smallModel ? { smallModel: options.smallModel } : {}),
+          tools: [],
+          ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
+          ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
+        }),
+        hooks: io.models,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: withWebSearches(options.price) } : {}),
+        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
+      if (io.signal.aborted) await closeHost();
       return {
         get state() { return state; },
         async send(text) {
@@ -580,7 +617,11 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           closed = true;
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
+          await closeHost();
         },
+        // The session's one model route, for the host's own request beside the CLI's: the session's host port, which
+        // never restarts once closed.
+        port: (label: string) => (closed || hostClosed ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "anthropic-messages" as const }),
       };
     },
   };

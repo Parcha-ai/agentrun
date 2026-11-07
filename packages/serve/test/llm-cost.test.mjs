@@ -63,7 +63,10 @@ test("a completion's cost mark carries its tokens as pi counts them, the cache a
   const model = { api: "faux", provider: "faux", id: "m" };
   await models.completeSimple(model, { messages: [] }, {});
   await models.completeSimple(model, { messages: [] }, {});
-  assert.deepEqual(marks, [
+  // Each request's start and cost name its own request id (request-start.ts), one per request.
+  const ids = marks.map((m) => m.data.requestId);
+  assert.ok(ids.every((id) => typeof id === "string") && ids[0] === ids[1] && ids[2] === ids[3] && ids[0] !== ids[2], `request ids: ${JSON.stringify(ids)}`);
+  assert.deepEqual(marks.map(({ kind, data: { requestId: _, ...data } }) => ({ kind, data })), [
     { kind: REQUEST_STARTED, data: { request: "compaction" } },
     { kind: REQUEST_COST, data: { request: "compaction", usd: 0.0042, usage: { input: 200, output: 50, cacheRead: 800, cacheWrite: 30 } } },
     { kind: REQUEST_STARTED, data: { request: "compaction" } },

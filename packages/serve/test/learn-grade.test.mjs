@@ -53,6 +53,26 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
   assert.equal(callsIn(calls).filter((call) => call.kind === "grade").length, cases.length + 1, "one grader call a run, two for the unread one");
 });
 
+test("what is read from a partial answer goes through the grader like any answer: a note beside an opening never closed is graded, alone, before it merges or drops", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  // A valid note, then a skill's opening that never closes: the opening is left out, and the note is all that is read.
+  const answer = [`\`\`\`note check-units.md\n${note("Check units", "Convert every amount to one unit before comparing")}\`\`\``, "````skill weekly-summary\n---\nname: weekly-summary\ndescription: The weekly summary\n---\nThree lines.", "Reflected."].join("\n\n");
+  const grades = () => callsIn(calls).filter((call) => call.kind === "grade").length;
+  for (const [id, rule, state] of [["partial-kept", "", "merged"], ["partial-dropped", "Grade: drop.", "dropped"]]) {
+    await made(api, learner(id, { instructions: ["Answer the question.", `Answer: ${JSON.stringify(answer)}`, rule].filter(Boolean).join("\n") }));
+    const before = grades();
+    const runId = await started(api, id);
+    const { view, rows } = await ended(api, runId);
+    settled(view, rows, state, state === "merged" ? null : "grader");
+    assert.equal(grades() - before, 1, `${id}: the grader is asked once`);
+    const { learning } = await savedOf(data, runId);
+    assert.deepEqual(learning.verdict.items.map(({ file }) => file), ["check-units.md"], `${id}: the note alone is graded, the unclosed skill never`);
+    assert.equal(git(repoOf(data, id), ["ls-tree", "-r", "--name-only", "main", "--", "check-units.md"]), state === "merged" ? "check-units.md" : "", `${id}: on main only once kept`);
+  }
+});
+
 test("an answer the host cannot read is asked once more with the same prompt: a readable second answer decides, and each ask's spend is booked once; two unreadable answers drop, with the last kept on the run cut of secrets and in size, and never served", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   // A value saved as a tool key before the runs: the grader's answer holds it, and the run's learning never does.
@@ -169,15 +189,66 @@ test("the grader reads what the user said in the run, in order and cut of the se
   assert.ok(!proposal.includes(token));
 });
 
-test("a server secret the user's message holds across the point it is shortened at shows no part of itself: each message is cut of the server's secrets whole first, then shortened, in the proposal and in the grader's prompt", { timeout: 150_000 }, async (t) => {
+/** A user message of `n` characters whose last words take back the rule it opened with, well past where a run's own
+ *  record of a message stops (2,000 characters). */
+const REVERSAL = " - actually no, never include those; use the ticket id only. Remember that.";
+const reversed = (n) => {
+  const start = "From now on, in every report, include the customer's full name and account number.";
+  let middle = " Context for the report: the API latency incident on Tuesday ran 40 minutes, root cause a bad deploy, rolled back by the on-call engineer.";
+  while (middle.length < n) middle += middle;
+  return `${start}${middle.slice(0, n - start.length - REVERSAL.length)}${REVERSAL}`;
+};
+
+test("a user message past 2,000 characters reaches the grader whole from the run's own record: its last words, which take back its rule, are in the prompt and the proposal, after the marker", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("long", { plan: PLAN }));
+  const message = reversed(2_500);
+  assert.ok(message.length === 2_500 && message.indexOf(REVERSAL) > 2_000);
+  const runId = await started(api, "long", message);
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  const [call] = callsIn(calls);
+  const [asked] = JSON.parse(readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8")).asked;
+  for (const shown of [asked, call.asked[0]]) {
+    assert.ok(shown.endsWith(REVERSAL.trim().slice(-40)) && shown.includes("actually no, never include those"), shown.slice(-120));
+    assert.match(shown, /\n\[\d+ characters left out in the middle\]\n/);
+  }
+});
+
+test("a follow-up sent while the run works, past 2,000 characters, reaches the grader whole too, after the run's first message", { timeout: 150_000 }, async (t) => {
+  const gate = join(await scratch(t), "answer");
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("followed", { plan: PLAN, instructions: `Answer once ${gate} exists.` }));
+  const runId = await started(api, "followed", "Write today's report.");
+  for (let i = 0; (await api("GET", `/runs/${runId}`)).body.status !== "working"; i++) {
+    assert.ok(i < 1200, "the run works");
+    await sleep(50);
+  }
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: reversed(2_500) });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  writeFileSync(gate, "");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  const [call] = callsIn(calls);
+  assert.equal(call.asked.length, 2, JSON.stringify(call.asked).slice(0, 200));
+  assert.ok(call.asked[0].startsWith("1. Write today's report."));
+  assert.ok(call.asked[1].includes("actually no, never include those") && /\n\[\d+ characters left out in the middle\]\n/.test(call.asked[1]), call.asked[1].slice(-160));
+});
+
+test("a server secret the user's message holds across either point it is shortened at shows no part of itself: each message is cut of the server's secrets whole first, then shortened to its head and its tail, in the proposal and in the grader's prompt", { timeout: 150_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, token, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("straddled", { plan: PLAN }));
-  // The token starts before the 1,000th character, where a message is shortened, and ends after it; the message runs on
-  // past what a checker's field may hold (4,096 bytes), and is read whole all the same.
-  const before = 1_000 - Math.floor(token.length / 2);
-  const runId = await started(api, "straddled", `${"Look at this. ".repeat(80).slice(0, before)}${token} and the rest of what the user said. ${"More. ".repeat(1_000)}`);
+  // The token sits across the head's end (about 650 characters in) and again across the tail's start (300 from the
+  // end). The message stays within what a run's own record of it holds (2,000 characters).
+  const message = `${"Look at this. ".repeat(60).slice(0, 640)}${token} and the rest of what the user said. ${"More. ".repeat(100)}${token} and the last words the user said.${" End.".repeat(50)}`;
+  assert.ok(message.length <= 2_000 && message.length - message.lastIndexOf(token) > 300 && message.length - message.lastIndexOf(token) - token.length < 300, "the second token across the tail's start");
+  const runId = await started(api, "straddled", message);
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
   const proposal = readFileSync(join(runDir(data, runId), "learning-proposal.json"), "utf8");
@@ -185,7 +256,9 @@ test("a server secret the user's message holds across the point it is shortened 
   assert.equal(callsIn(calls).length, 1, "the grader was asked");
   for (let i = 0; i + 12 <= token.length; i++) assert.ok(!shown.includes(token.slice(i, i + 12)), `no 12 characters of the token, from its ${i}th: ${token.slice(i, i + 12)}`);
   const [asked] = JSON.parse(proposal).asked;
-  assert.ok(asked.startsWith("Look at this.") && asked.includes("[redacted]") && asked.length <= 1_000, `what the user said is kept, cut of the token and shortened: ${asked.slice(0, 40)}`);
+  assert.ok(asked.startsWith("Look at this.") && asked.endsWith("End.") && asked.length <= 1_000, `what the user said is kept, cut of the token and shortened to its head and tail: ${asked.length}`);
+  assert.equal(asked.split("[redacted]").length - 1, 2, "the token cut whole in the head and in the tail");
+  assert.match(asked, /\n\[\d+ characters left out in the middle\]\n/);
 });
 
 test("a grade on the model the server names for grading carries the server's key, which the server holds unlisted as it holds every secret: the gateway is sent that key, never none", { timeout: 60_000 }, async (t) => {

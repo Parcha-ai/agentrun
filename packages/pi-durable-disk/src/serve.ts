@@ -1,12 +1,10 @@
 // The serve mode, a Durable Object stub's fetch over pi's own API. The instance answers `POST /submit` (pi's
 // submit with the caller's `requestId`, which pi deduplicates in the run's store, so a retry that lands on the next
 // incarnation finds the same submission), `POST /abort`, `GET /events` (pi's agent events as server-sent events) and
-// `GET /status`. It listens before the run opens, so its address can go into run.json's holder, and answers 503 with a
-// code while the run opens, parks or is released. `requestRun` is the client: it finds the instance through run.json,
-// starts the run through `ensureRunning` (with demand) when it is released or gone, and retries while it starts.
-// Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
+// `GET /status`. It listens before the run opens, so its address can go into the run's holder, and answers 503 with a
+// code while the run opens, parks or is released. Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
 // address it is required, read from a private file, and checked in constant time on every route.
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP, type AddressInfo } from "node:net";
@@ -14,15 +12,12 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
 import type { Conversation, ConversationId, Cursor, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, Tx, UserInput } from "@earendil-works/pi-durable";
-import type { RunRef } from "./claim.ts";
 import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
 import { busyState } from "./park.ts";
 import type { DurableRun } from "./run.ts";
-import { isLeaseFresh, type RunRecord } from "./status.ts";
-import { CONTROL_TIMEOUT_MS, ensureRunning, LEASE_EXPIRY_MS, readRunStatus, withTimeouts, type EnsureOptions, type EnsureResult, type HostDriver } from "./supervise.ts";
 
-/** 503 codes the client answers by asking the supervisor again and retrying. */
+/** 503 codes a client answers by retrying: the run is opening, parking or released. */
 export const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"] as const;
 
 /** What a door answers a host's `challenge` with, given the nonce the host handed its process: HMAC-SHA256, hex. */
@@ -42,10 +37,17 @@ export const MESSAGE_ORIGIN_KIND = "agentrun.message_origin";
 /** The reasons a server-written message has, the ones the Timeline reads (pi-durable-agent's MessageOrigin): any other
  *  is refused, never accepted and then shown as the person's. */
 const ORIGIN_REASONS: ReadonlySet<string> = new Set(["cap_raised", "approval", "approval_declined"]);
-/** A submit's `origin`: `{ kind: "server", reason }`, who wrote a message the person did not; with `said` (a non-empty
- *  string, the person's own words) only for `approval_declined`. */
+/** The sources a trigger's message has (pi-durable-agent's TRIGGER_SOURCES). */
+const TRIGGER_SOURCES: ReadonlySet<string> = new Set(["schedule", "webhook", "slack", "github"]);
+/** A submit's `origin`, who wrote a message the person did not: `{ kind: "server", reason }`, with `said` (a non-empty
+ *  string, the person's own words) only for `approval_declined`; or `{ kind: "trigger", trigger_id, source, owner }`, a
+ *  trigger's firing (a non-empty id, a known source, a boolean owner). Nothing else, and no other field. */
 const isOrigin = (value: unknown): boolean => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if ((value as Record<string, unknown>).kind === "trigger") {
+    const { trigger_id, source, owner, ...more } = value as Record<string, unknown>;
+    return typeof trigger_id === "string" && trigger_id !== "" && typeof source === "string" && TRIGGER_SOURCES.has(source) && typeof owner === "boolean" && Object.keys(more).every((key) => key === "kind");
+  }
   const { kind, reason, said, ...rest } = value as Record<string, unknown>;
   if (kind !== "server" || typeof reason !== "string" || !ORIGIN_REASONS.has(reason) || Object.keys(rest).length) return false;
   return reason === "approval_declined" ? typeof said === "string" && said.trim() !== "" : said === undefined;
@@ -55,12 +57,12 @@ const textOfInput = (content: UserInput): string =>
   (typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")).trim();
 
 export interface ServeOptions {
-  /** Default 0: any free port (the address is in `url` and in run.json's holder). */
+  /** Default 0: any free port (the address is in `url` and in the run's holder). */
   readonly port?: number;
   /** Default 127.0.0.1. Any address that is not loopback needs `token`; a wildcard (0.0.0.0, ::) needs `url` too. */
   readonly host?: string;
   /**
-   * The address clients reach this server at (`http://` or `https://`), which goes into run.json's holder. Default: the
+   * The address clients reach this server at (`http://` or `https://`), which goes into the run's holder. Default: the
    * bound address, which only works for a specific host; a wildcard bind has no address a client can use.
    */
   readonly url?: string;
@@ -317,12 +319,13 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (parks !== undefined && !(Array.isArray(parks) && parks.every((kind) => typeof kind === "string"))) throw new HttpError(400, "BAD_REQUEST", "parks is a list of entry kinds");
     const waiting = (tx: Tx, conversationId: ConversationId) => waitsOnPerson(tx, conversationId, (asks as string[] | undefined) ?? [], (parks as string[] | undefined) ?? []);
     const guarded = answers === false;
-    // A guarded input could be refused after its origin's entry is queued (a busy run): the server's messages carry none.
-    if (guarded && origin !== undefined) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin");
+    // A guarded input (one that may not answer a person) takes only a trigger's origin: the server's own messages are
+    // never guarded. Its marker is withdrawn if the input is refused busy (below).
+    if (guarded && origin !== undefined && !(isOrigin(origin) && (origin as { kind?: unknown }).kind === "trigger")) throw new HttpError(400, "BAD_REQUEST", "an input with answers false takes no origin but a trigger's");
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");
-    if (origin !== undefined && !isOrigin(origin)) throw new HttpError(400, "BAD_REQUEST", "origin is { kind: \"server\", reason }, a reason cap_raised, approval or approval_declined, with said (the person's words) for approval_declined");
+    if (origin !== undefined && !isOrigin(origin)) throw new HttpError(400, "BAD_REQUEST", "origin is { kind: \"server\", reason }, a reason cap_raised, approval or approval_declined, with said (the person's words) for approval_declined; or { kind: \"trigger\", trigger_id, source, owner }, a source schedule, webhook, slack or github and a boolean owner");
     if (pauses > 0) throw unavailable("PARKING", "the run is parking or draining");
     if (door) {
       if (body.conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook takes its input in the root conversation: no conversationId");
@@ -345,8 +348,18 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     // under another id) writes no second marker: pi takes the input again as the same submission, and a second marker
     // would be left open for a later message with the same text, a person's.
     const known = origin ? await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context) : undefined;
-    if (origin && known === undefined) await conversation.submit({ type: "write", requestId: originMarkId(requestId), entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin: origin as JsonObject, text: textOfInput(content as UserInput) } } }, context);
-    const submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(guarded ? { whenBusy: "reject" as const } : whenBusy === undefined ? {} : { whenBusy }) }, context);
+    const marker = origin && known === undefined ? { origin: origin as JsonObject, text: textOfInput(content as UserInput) } : undefined;
+    // A guarded input (a trigger's) can still be refused once its marker is in, the run busy: each try's marker is its
+    // own, and a refused try's is withdrawn, so no marker is left open for a later message with the same text.
+    const markId = guarded ? `${originMarkId(requestId)} ${randomUUID()}` : originMarkId(requestId);
+    if (marker) await conversation.submit({ type: "write", requestId: markId, entry: { kind: MESSAGE_ORIGIN_KIND, data: marker } }, context);
+    let submission;
+    try {
+      submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(guarded ? { whenBusy: "reject" as const } : whenBusy === undefined ? {} : { whenBusy }) }, context);
+    } catch (error) {
+      if (marker && guarded && error instanceof ConversationBusy) await conversation.submit({ type: "write", requestId: `${markId} withdrawn`, entry: { kind: MESSAGE_ORIGIN_KIND, data: { ...marker, withdrawn: true } } }, context);
+      throw error;
+    }
     let record: SubmissionRecord = await submission.status(context);
     if (wait === true) record = await submission.wait(context);
     const answer = record.type === "input" && record.status === "done" ? await answerOf(conversation, record.answer, context) : undefined;
@@ -532,136 +545,4 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
       });
     },
   };
-}
-
-// ---- the client --------------------------------------------------------------------------------------------------------
-
-export type ServeErrorCode = "RUN_TERMINAL" | "NOT_SERVED";
-
-/** The run is done or failed (RUN_TERMINAL), or no instance answered before the deadline (NOT_SERVED). */
-export class ServeError extends PdaError {
-  readonly ensured: readonly EnsureResult[];
-  constructor(code: ServeErrorCode, message: string, ensured: readonly EnsureResult[]) {
-    super(code, message);
-    this.ensured = ensured;
-  }
-}
-
-export interface RequestOptions {
-  readonly host: HostDriver;
-  /** ensureRunning's options; every call here is a demand. */
-  readonly ensure: Omit<EnsureOptions, "demand">;
-  /** Give up after this long; default 120 s. A submit that waits for its answer needs room for the model. */
-  readonly timeoutMs?: number;
-  /**
-   * How long an instance this call started may take to open before the supervisor is asked again; default 60 s. Until
-   * then a second start would only be refused (76): the control API can list the new mount late.
-   */
-  readonly startTimeoutMs?: number;
-  /** The instance's serve token, sent as `authorization: Bearer <token>`. */
-  readonly token?: string;
-  readonly fetch?: typeof fetch;
-}
-
-export type RunResponse = {
-  readonly status: number;
-  readonly body: JsonValue;
-  /** The instance that answered. */
-  readonly url: string;
-  /** Every ensureRunning result on the way, in order (empty when the instance answered at once). */
-  readonly ensured: readonly EnsureResult[];
-};
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** The running holder's serve address while its lease is fresh; otherwise there is no instance to talk to. */
-function servedBy(record: RunRecord | null, now: number, leaseMs: number): string | undefined {
-  if (record?.status !== "running" || !isLeaseFresh(record, now, leaseMs)) return undefined;
-  return typeof record.holder?.serve === "string" ? record.holder.serve : undefined;
-}
-
-/**
- * Send one request to run `ref`'s instance, waking it if needed: read run.json (S3) and send the request to the running
- * holder's `serve` address while its lease is fresh. When there is none, it does not answer, it answers 503 with a
- * retry code, or its lease lapses while the request is open (a frozen instance accepts connections and never answers;
- * run.json is read again every third of a lease), ask `ensureRunning` with demand (start a released or lost run) and
- * try again until `timeoutMs`. After a start, its own or one the supervisor reports `starting`, it waits for that
- * instance to write its generation (or `startTimeoutMs`) before asking again, and an instance still opening (503
- * OPENING) is waited for. A submit carries a `requestId`, so
- * resending it to the next incarnation is safe: pi admits it once.
- */
-export async function requestRun(
-  ref: RunRef,
-  request: { readonly method: "GET" | "POST"; readonly path: string; readonly body?: JsonValue },
-  options: RequestOptions,
-): Promise<RunResponse> {
-  const fetchFn = options.fetch ?? fetch;
-  const now = options.ensure.now ?? Date.now;
-  const leaseMs = options.ensure.leaseExpiryMs ?? LEASE_EXPIRY_MS;
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const deadline = Date.now() + timeoutMs;
-  const ensured: EnsureResult[] = [];
-  // Every control call is bounded by the control timeout, and every step of this loop by what is left of `timeoutMs`.
-  const control = withTimeouts(options.ensure.control, options.ensure.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
-  const notServed = () => new ServeError("NOT_SERVED", `run ${ref.id} did not answer in ${timeoutMs} ms`, ensured);
-  const inTime = <T>(step: Promise<T>): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(notServed()), Math.max(0, deadline - Date.now()));
-      step.then(
-        (value) => (clearTimeout(timer), resolve(value)),
-        (error: unknown) => (clearTimeout(timer), reject(error)),
-      );
-    });
-  const attempt = async (url: string) => {
-    const stop = new AbortController();
-    let looking = false;
-    const watch = setInterval(() => {
-      if (looking) return;
-      looking = true;
-      readRunStatus(control, ref.id)
-        .then((r) => servedBy(r, now(), leaseMs) !== url && stop.abort(), () => {})
-        .finally(() => (looking = false));
-    }, Math.min(Math.max(1_000, leaseMs / 3), 10_000));
-    try {
-      return await fetchFn(new URL(request.path, url), {
-        method: request.method,
-        headers: {
-          ...(request.body === undefined ? {} : { "content-type": "application/json" }),
-          ...(options.token === undefined ? {} : { authorization: `Bearer ${options.token}` }),
-        },
-        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
-        signal: AbortSignal.any([stop.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]),
-      }).then(
-        async (res) => ({ status: res.status, body: (await res.json().catch(() => null)) as JsonValue }),
-        () => undefined,
-      );
-    } finally {
-      clearInterval(watch);
-    }
-  };
-  let pendingStart: { until: number; generation: number } | undefined;
-  for (let pause = 100; ; pause = Math.min(pause * 2, 1_000)) {
-    const record = await inTime(readRunStatus(control, ref.id));
-    const url = servedBy(record, now(), leaseMs);
-    let opening = false;
-    if (url) {
-      const r = await attempt(url);
-      const code = (r?.body as { error?: unknown } | null)?.error;
-      if (r && !(r.status === 503 && (RETRY_CODES as readonly unknown[]).includes(code))) return { ...r, url, ensured };
-      opening = code === "OPENING";
-    }
-    // An instance that is opening, or a start in flight whose instance has not written its generation yet, is left to open.
-    const generation = record?.generation ?? 0;
-    const awaitingStart = pendingStart !== undefined && Date.now() < pendingStart.until && generation < pendingStart.generation;
-    if (!opening && !awaitingStart) {
-      const result = await inTime(ensureRunning(ref, options.host, { ...options.ensure, demand: true }));
-      ensured.push(result);
-      if (result.action === "terminal") throw new ServeError("RUN_TERMINAL", `run ${ref.id} is ${result.status}`, ensured);
-      // A start by this call, or one the supervisor's start grace reports in flight: wait for that generation.
-      if (result.action === "started") pendingStart = { until: Date.now() + (options.startTimeoutMs ?? 60_000), generation: generation + 1 };
-      if (result.action === "starting") pendingStart = { until: Date.now() + (options.startTimeoutMs ?? 60_000), generation: result.generation };
-    }
-    if (Date.now() + pause > deadline) throw notServed();
-    await sleep(pause);
-  }
 }

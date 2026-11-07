@@ -1,5 +1,5 @@
 // The runs app: a small web server over an agent home of @parcha/pi-durable-agent (`<home>/agent.sqlite`, and each run
-// at `<home>/runs/<id>/{run.json, store/run.sqlite, work/}`). It lists the home's runs, serves one run's page (timeline
+// at `<home>/runs/<id>/{store/run.sqlite, work/, web.json}`). It lists the home's runs, serves one run's page (timeline
 // proxied from the run's own door, chat, files, live browser), starts runs (`startRun`, then a command you give it),
 // releases a run once it has answered, and carries its sign-ins back to the home (`carryBack`). A live run is only ever
 // read through its door; a released run's transcript is read from its store, read-only. Binds to loopback unless you
@@ -20,6 +20,8 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { HeldError, readLocalRunStatus } from "@parcha/pi-durable-disk";
+import { processTable } from "@parcha/pi-durable-disk/internals";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ensureAgentHome } from "./agent/home.mjs";
@@ -34,7 +36,6 @@ const TIMELINE = dirname(fileURLToPath(import.meta.resolve("@parcha/pi-durable-a
 /** The name this server records as a run's host in the agent home. */
 const HOST = "examples-web";
 const ID = RUN_ID;
-const LEASE_MS = 90_000;
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 const TEXT_CAP = 512 * 1024;
@@ -113,15 +114,29 @@ async function* frames(body) {
   }
 }
 
-const fresh = (record) => Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS;
-/** No record, a released run, or a running one whose lease lapsed: nobody holds it, so starting it is safe. */
-const startable = (record) => !record || record.status !== "running" || !fresh(record);
+/** Whether the process `door` names still runs: its pid alive, with the start it had when the door was written (a later
+ *  process that reuses the pid has another). */
+const doorLives = (door) => {
+  if (!Number.isInteger(door.pid) || door.pid <= 1) return false;
+  try {
+    process.kill(door.pid, 0);
+  } catch (error) {
+    if (error.code !== "EPERM") return false;
+  }
+  if (typeof door.start !== "number") return true;
+  try {
+    return processTable().snapshot().info(door.pid)?.start === door.start;
+  } catch {
+    return true; // the table cannot be read: the pid's being alive is all there is to go on
+  }
+};
 
-/** The door a live run serves, from its run.json: running, a fresh heartbeat, and a loopback address. */
-function doorOf(record) {
-  if (record?.status !== "running" || typeof record.holder?.serve !== "string") return undefined;
-  if (!fresh(record)) return undefined;
-  const url = URL.parse(record.holder.serve);
+/** The door a live run serves, from its web.json (start-run.mjs writes it from the run's first line): its process
+ *  alive, and a loopback address. */
+function doorOf(run) {
+  const door = run.meta?.door;
+  if (typeof door?.serve !== "string" || !doorLives(door)) return undefined;
+  const url = URL.parse(door.serve);
   return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
 }
 
@@ -164,21 +179,36 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const reread = () => void (homeRead = null);
 
   // ---- runs --------------------------------------------------------------------------------------------------------
-  /** A run of the agent: its entry in the home's runs index, its directory and its run.json. */
+  /**
+   * A run of the agent: its entry in the home's runs index, its directory, its web.json and, once no process holds it, the
+   * record its process left in its store. A live run (a child of this server, or one whose door names a process that
+   * lives) is read only through its door: its record is never read beside it, so a run about to start is never refused
+   * by a read here.
+   */
   async function loadRun(id) {
     if (!ID.test(id)) return null;
     const index = Object.hasOwn((await homeState()).runs, id) ? (await homeState()).runs[id] : null;
     const dir = join(root, id);
     if (!index || !(await lstat(dir).catch(() => null))?.isDirectory()) return null;
-    const record = await readJson(join(dir, "run.json"));
-    return { id, dir, index, work: join(dir, "work"), record: typeof record?.status === "string" ? record : null, meta: (await readJson(join(dir, "web.json"))) ?? {} };
+    const meta = (await readJson(join(dir, "web.json"))) ?? {};
+    const run = { id, dir, index, work: join(dir, "work"), record: null, meta, live: false };
+    run.live = children.has(id) || doorOf(run) !== undefined;
+    if (!run.live) {
+      try {
+        run.record = await readLocalRunStatus(dir);
+      } catch (error) {
+        // Held: a process this server did not start holds it, so it is live. Unreadable: no record, as before.
+        if (error instanceof HeldError) run.live = true;
+      }
+    }
+    return run;
   }
 
-  // A run carried back is done, whatever run.json says of its last instance.
-  // A run with no run.json (a pack carries none, so every run of an imported home) and an endedAt was carried back at its
-  // source: its store is as released as one whose run.json says so.
-  const releasedRun = (run) => RELEASED.has(run.record?.status) || (run.record === null && run.index.endedAt !== undefined);
-  const statusOf = (run) => (run.index.endedAt ? "done" : run.record ? (run.record.status === "running" && !doorOf(run.record) ? "lost" : run.record.status) : children.has(run.id) ? "starting" : "unknown");
+  // A run carried back is done, whatever its record says of its last instance.
+  // A run with no record (a pack carries none, so every run of an imported home) and an endedAt was carried back at its
+  // source: its store is as released as one whose record says so.
+  const releasedRun = (run) => !run.live && (RELEASED.has(run.record?.status) || (run.record === null && run.index.endedAt !== undefined));
+  const statusOf = (run) => (run.index.endedAt ? "done" : run.live ? (doorOf(run) ? "running" : "starting") : run.record ? (run.record.status === "running" ? "lost" : run.record.status) : "unknown");
 
   /** The run's transcript from its store, opened read-only; only for a run whose claim is released. */
   async function readStore(run) {
@@ -290,7 +320,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const store = releasedRun(run) ? await readStore(run).catch(() => null) : null;
     const view = await liveView(run);
     const { browser, note } = await browserOf(run);
-    const door = doorOf(run.record);
+    const door = doorOf(run);
     const live = door ? await doorState(door) : null;
     return {
       id: run.id,
@@ -300,7 +330,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       state: live ? live.state : (store?.state ?? null),
       live: door !== undefined,
       busy: live?.busy ?? null,
-      generation: run.record?.generation ?? 0,
+      generation: run.record?.generation ?? run.meta.door?.epoch ?? 0,
       startedAt: run.meta.createdAt ?? run.index.startedAt,
       endedAt: run.index.endedAt ?? (RELEASED.has(run.record?.status) ? run.record.updatedAt : null),
       outcome: run.index.outcome ?? null,
@@ -403,7 +433,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       const run = await loadRun(id).catch(() => null);
       if (!run) return;
       if (run.index.endedAt) return void (children.get(id) === child && child.kill("SIGTERM"));
-      const door = doorOf(run.record);
+      const door = doorOf(run);
       const live = door ? await doorState(door).catch(() => null) : null;
       // A door that is busy (a message taken and its turn not begun, for one) is never released.
       if (live?.busy !== "idle" || live.state !== "idle" || !answerOf(live.rows)) continue;
@@ -440,11 +470,11 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     for (let launched = false; ; await sleep(250)) {
       const run = await loadRun(id);
       if (!run) throw new HttpError(404, "no such run");
-      const door = doorOf(run.record);
+      const door = doorOf(run);
       if (door) return door;
       if (run.index.endedAt || carried.has(id)) throw finishedRun();
       if (["done", "failed"].includes(run.record?.status)) throw new HttpError(409, `the run is ${run.record.status}`);
-      if (!children.has(id) && !settling.has(id) && startable(run.record)) {
+      if (!children.has(id) && !settling.has(id) && !run.live) {
         if (launched && exits.has(id)) throw new HttpError(502, `the start command exited (${exits.get(id)})`);
         if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot wake a run");
         launch(id);
@@ -507,7 +537,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
 
   // ---- the live timeline -------------------------------------------------------------------------------------------
   async function liveTimeline(res, run) {
-    const door = doorOf(run.record);
+    const door = doorOf(run);
     if (!door) throw new HttpError(409, "the run is not live");
     const reducer = timelineReducer();
     const abort = new AbortController();
@@ -690,7 +720,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
         return send(res, result.status, result.body ?? {});
       }
       if (part === "stop") {
-        if (!doorOf(run.record)) return send(res, 200, { result: "not running" });
+        if (!doorOf(run)) return send(res, 200, { result: "not running" });
         const result = await toDoor(run.id, "/abort", {});
         return send(res, result.status, result.body ?? {});
       }

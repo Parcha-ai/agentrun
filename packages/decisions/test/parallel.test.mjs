@@ -332,3 +332,69 @@ test('the live response (2026-10-30) reads as answered: parallel-fast, its citat
   assert.deepEqual(outcome.evidence[0], { url: response.citations[0].url, title: response.citations[0].title, excerpts: response.citations[0].excerpts, scope: 'call' });
   assert.deepEqual(outcome.usage, { input_tokens: response.usage.input_tokens, output_tokens: 0 });
 });
+
+// Parallel Decisions through OpenRouter (parallel/decisions-<mode> on POST /api/v1/systemone): the same provider, the same
+// answers and the same evidence shape, on an OpenRouter key; the cost is OpenRouter's usage.cost.
+const OR_KEY = 'openrouter-canary-key-0123456789';
+const orWire = (answers, cites = [], cost) => ({ id: 'gen-or-1', model: 'parallel/decisions-fast-20261106', answers,
+  annotations: cites.map(({ url, title, content }) => ({ type: 'url_citation', url_citation: { url, title, content } })),
+  usage: { input_tokens: 120, output_tokens: 0, ...(cost === undefined ? {} : { cost }) } });
+const noulQ = { yes: { type: 'noul', instructions: 'Was it completed in 1889?' } };
+
+test('through OpenRouter: the request goes to /v1/systemone with the OpenRouter key and the model parallel/decisions-fast', async () => {
+  const { fetch, seen } = fakeFetch([json(orWire({ yes: { type: 'noul', noul: 0.98 } }, [], 0.002))]);
+  const provider = parallelProvider({ fetch, openrouter: { apiKey: OR_KEY, baseURL: 'https://or.fake.invalid/api' } });
+  assert.equal(provider.id, 'parallel', 'the same provider, on another route');
+  assert.deepEqual(provider.needs, ['OPENROUTER_API_KEY']);
+  await provider.decide({ questions: noulQ, state: { topic: 'Eiffel' } }, ctx());
+  assert.equal(seen[0].url, 'https://or.fake.invalid/api/v1/systemone');
+  assert.equal(new Headers(seen[0].init.headers).get('authorization'), `Bearer ${OR_KEY}`);
+  assert.equal(new Headers(seen[0].init.headers).get('x-api-key'), null, 'no Parallel header on OpenRouter');
+  const body = JSON.parse(seen[0].init.body);
+  assert.deepEqual([body.model, body.state, Object.keys(body.questions)], ['parallel/decisions-fast', { topic: 'Eiffel' }, ['yes']]);
+});
+
+test('through OpenRouter: its annotations are the evidence, in the shape Parallel citations take, and its usage.cost is the reported cost', async () => {
+  const cites = [{ url: 'https://example.test/eiffel', title: 'Eiffel Tower', content: 'Completed in 1889.' }, { url: 'https://example.test/paris', title: null, content: '' }];
+  const { fetch } = fakeFetch([json(orWire({ yes: { type: 'noul', noul: 0.98 } }, cites, 0.002))]);
+  const out = await parallelProvider({ fetch, openrouter: { apiKey: OR_KEY } }).decide({ questions: noulQ, state: {} }, ctx());
+  assert.deepEqual(out.evidence, [
+    { url: 'https://example.test/eiffel', title: 'Eiffel Tower', excerpts: ['Completed in 1889.'], scope: 'call' },
+    { url: 'https://example.test/paris', title: null, excerpts: [], scope: 'call' },
+  ]);
+  // The direct route's evidence for the same citations has the same keys.
+  const { fetch: direct } = fakeFetch([json(wire({ yes: { type: 'noul', noul: 0.98 } }, [{ url: 'https://example.test/eiffel', title: 'Eiffel Tower', excerpts: ['Completed in 1889.'] }]))]);
+  const viaParallel = await parallelProvider({ ...settings, fetch: direct }).decide({ questions: noulQ, state: {} }, ctx());
+  assert.deepEqual(Object.keys(out.evidence[0]).sort(), Object.keys(viaParallel.evidence[0]).sort(), 'one evidence shape on either route');
+  assert.deepEqual([out.cost_usd, out.cost_basis, out.model, out.provider_request_id], [0.002, 'reported', 'parallel/decisions-fast-20261106', 'gen-or-1']);
+});
+
+test('through OpenRouter: no usage.cost is an unknown cost, never 0, and a 5xx after sending is outcome_unknown at an unknown cost', async () => {
+  const { fetch } = fakeFetch([json(orWire({ yes: { type: 'noul', noul: 0.5 } }))]);
+  const out = await parallelProvider({ fetch, openrouter: { apiKey: OR_KEY } }).decide({ questions: noulQ, state: {} }, ctx());
+  assert.deepEqual([out.cost_usd, out.cost_basis], [null, 'unknown']);
+  const { fetch: failing } = fakeFetch([json({ error: { message: 'upstream' } }, 502)]);
+  await assert.rejects(parallelProvider({ fetch: failing, openrouter: { apiKey: OR_KEY } }).decide({ questions: noulQ, state: {} }, ctx()), (error) => {
+    assert.equal(error.code, 'outcome_unknown');
+    assert.deepEqual([error.costUsd, error.costBasis], [null, 'unknown']);
+    return true;
+  });
+});
+
+test('includeExcerpts: false keeps no passage text on either route; true keeps them, capped', async () => {
+  const cites = [{ url: 'https://example.test/eiffel', title: 'Eiffel Tower', excerpts: ['Completed in 1889.', 'e'.repeat(10_000)] }];
+  const direct = async (includeExcerpts) => {
+    const { fetch } = fakeFetch([json(wire({ yes: { type: 'noul', noul: 0.98 } }, cites))]);
+    return (await parallelProvider({ ...settings, fetch, includeExcerpts }).decide({ questions: noulQ, state: {} }, ctx())).evidence;
+  };
+  const routed = async (includeExcerpts) => {
+    const { fetch } = fakeFetch([json(orWire({ yes: { type: 'noul', noul: 0.98 } }, [{ url: cites[0].url, title: cites[0].title, content: 'e'.repeat(10_000) }], 0.002))]);
+    return (await parallelProvider({ fetch, includeExcerpts, openrouter: { apiKey: OR_KEY } }).decide({ questions: noulQ, state: {} }, ctx())).evidence;
+  };
+  for (const [route, ask] of [['parallel', direct], ['openrouter', routed]]) {
+    const off = await ask(false);
+    assert.deepEqual(off.map((e) => [e.url, e.title, e.excerpts]), [['https://example.test/eiffel', 'Eiffel Tower', []]], `${route}: no passage text when excerpts are off`);
+    const on = await ask(true);
+    assert.ok(on[0].excerpts.length > 0 && on[0].excerpts.every((x) => x.length <= 4096), `${route}: passages kept, each capped`);
+  }
+});

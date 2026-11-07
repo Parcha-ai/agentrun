@@ -99,7 +99,7 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
     { tool: "bash", args: { command: "for p in /proc/[0-9]*; do tr '\\0' '\\n' < $p/environ 2>/dev/null; tr '\\0' ' ' < $p/cmdline 2>/dev/null; echo; done" } },
     { tool: "bash", args: { command: "tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' '" } },
     { tool: "bash", args: { command: `${reach}; getent hosts example.com >/dev/null && echo RESOLVED || echo NO_NAME` } },
-    { tool: "bash", args: { command: `ls -A /run/agentrun; ls -A /run/agentrun/run; ls ${canonical} 2>&1; cat ${join(canonical, ".token")} 2>&1; true` } },
+    { tool: "bash", args: { command: `ls -A /run/agentrun 2>&1; ls ${canonical} 2>&1; cat ${join(canonical, ".token")} 2>&1; true` } },
     { tool: "read", args: { path: join(canonical, ".token") } },
     { tool: "bash", args: { command: "grep -h '^ID=' /etc/os-release; id -u; id -g; pwd" } },
     { tool: "read", args: { path: "missing.md" } },
@@ -120,7 +120,7 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
   // network list; box-network.test.mjs).
   const listed = (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker")?.network === "allowlist";
   assert.deepEqual(record.Mounts.map((m) => [m.Type, m.Source, m.Destination, m.RW]), [
-    ["bind", join(runDir(canonical, runId), "work"), "/run/agentrun/run/work", true],
+    ["bind", join(runDir(canonical, runId), "work"), "/workspace", true],
     ...(listed ? [["bind", egressDirOf(runId), "/run/agentrun/egress", false]] : []),
   ]);
   assert.equal(record.Config.User, `${process.getuid()}:${process.getgid()}`);
@@ -140,13 +140,13 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
   assert.ok(at(5).includes("sleep"), "PID 1, the box's sleep, was read");
   assert.deepEqual(at(6).trim().split("\n"), ["lo"], "loopback only");
   assert.deepEqual(at(7).trim().split("\n"), [...targets.map(([host]) => `CLOSED ${host}`), "NO_NAME"]);
-  assert.match(at(8), listed ? /^egress\nrun\nwork\n/ : /^run\nwork\n/, "the box holds the run's work/ alone (and its proxy's directory)");
+  assert.match(at(8), listed ? /^egress\n/ : /^ls: .*\/run\/agentrun.*No such file/, "beside /workspace, the box holds its proxy's directory alone");
   assert.match(at(8), /No such file or directory/);
   assert.ok(!at(8).includes(server.token));
   assert.equal(said[9].error, true, "the data root is not in the box");
   const [id, uid, gid, cwd] = at(10).trim().split("\n");
-  assert.deepEqual([id, uid, gid, cwd], ["ID=debian", String(process.getuid()), String(process.getgid()), "/run/agentrun/run/work"]);
-  assert.match(at(11), /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
+  assert.deepEqual([id, uid, gid, cwd], ["ID=debian", String(process.getuid()), String(process.getgid()), "/workspace"]);
+  assert.match(at(11), /\/workspace\/missing\.md/, "an error names the box's path");
   assert.ok(!at(11).includes(canonical), "never the data root");
   assert.match(at(9), /: outside the workspace(\n<\/harness>)?$/, "a host path is refused as given, never mapped, and no other path is named");
   await until(() => docker("ps", "--all", "--quiet", "--filter", `label=agentrun.run=${runId}`).trim() === "", "the box's destroy at the run's end");
