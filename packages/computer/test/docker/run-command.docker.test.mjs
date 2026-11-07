@@ -88,13 +88,13 @@ describe("run a command in a Docker computer", { skip: LIVE ? false : "set AGENT
 		assert.ok(deadline > Date.now() + 9 * 60_000 && deadline <= Date.now() + 10 * 60_000, labels["agentrun.computer.deadline"]);
 	});
 
-	it("connects, and hello reports the arch and exec", async () => {
+	it("connects, and hello reports the arch, exec and files", async () => {
 		const connected = await provider.connect(ref);
 		assert.equal(connected.ok, true, JSON.stringify(connected));
 		connection = connected.value;
 		assert.equal(connection.hello.os, "linux");
 		assert.equal(connection.hello.arch, arch);
-		assert.deepEqual(connection.hello.capabilities, ["exec"]);
+		assert.deepEqual(connection.hello.capabilities, ["exec", "files"]);
 		assert.deepEqual(await connection.client.call("ping", {}), { ok: true, value: {} });
 	});
 

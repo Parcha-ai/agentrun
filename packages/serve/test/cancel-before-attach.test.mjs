@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { RUN_CANCELLED } from "../dist/files.js";
 import { cancelledIn } from "../dist/request-start.js";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const GATED = new URL("./fixtures/faux-gated.mjs", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -21,7 +21,7 @@ test("a cancel that lands before the run's process sends anything: no request le
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   // The guard the run's process reads before each request.
-  const guard = cancelledIn(join(data, "runs", run.run_id));
+  const guard = cancelledIn(join(runDir(data, run.run_id)));
   assert.equal(guard(), false, "a run not cancelled sends its requests");
   // The process is started and waiting on its model, its door not open yet: the cancel lands first, and while the
   // server waits to reach the door, the model loads and the run would send its first request.
@@ -52,7 +52,7 @@ test("the run's app reads that guard: built on a cancelled run's directory, its 
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   await follow(api, run.run_id, ["completed"]);
   // The run's directory now holds its store and revision; cancelling it writes the mark there.
-  const root = join(data, "runs", run.run_id);
+  const root = join(runDir(data, run.run_id));
   await writeFile(join(root, RUN_CANCELLED), "");
   withEnv(t, { AGENTRUN_SERVE_FAUX: GATED, FAUX_GATE: gate, FAUX_SENT: join(dir, "sent-in-test") });
   const { default: app } = await import("../dist/app.js");

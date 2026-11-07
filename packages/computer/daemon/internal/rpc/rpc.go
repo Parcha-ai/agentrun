@@ -43,6 +43,9 @@ const (
 	KindDenied      Kind = "denied"
 	KindLimit       Kind = "limit"
 	KindUnsupported Kind = "unsupported"
+	KindExists      Kind = "exists"
+	KindNotDir      Kind = "not_dir"
+	KindIsDir       Kind = "is_dir"
 )
 
 // Error is a protocol error.
@@ -115,6 +118,7 @@ type session struct {
 	writeMu  sync.Mutex
 	mu       sync.Mutex
 	inFlight map[string]context.CancelFunc
+	locals   map[any]io.Closer
 	wg       sync.WaitGroup
 }
 
@@ -172,6 +176,7 @@ loop:
 		}
 		<-handled
 	}
+	sess.closeLocals()
 	if errors.Is(err, io.EOF) {
 		return nil
 	}
@@ -272,7 +277,7 @@ func (sess *session) handleLine(line []byte, oversized bool) {
 		return
 	}
 	key := canonical(req.ID)
-	ctx, cancel := context.WithCancel(sess.ctx)
+	ctx, cancel := context.WithCancel(context.WithValue(sess.ctx, callKey{}, &call{sess: sess}))
 	sess.mu.Lock()
 	if _, busy := sess.inFlight[key]; busy {
 		sess.mu.Unlock()
@@ -355,9 +360,47 @@ func (sess *session) write(reply any, id json.RawMessage) {
 		sess.server.log.Printf("cannot encode a reply: %v", err)
 		return
 	}
+	if err := sess.writeLine(data); err != nil {
+		sess.server.log.Printf("cannot write a reply: %v", err)
+	}
+}
+
+func (sess *session) writeLine(data []byte) error {
 	sess.writeMu.Lock()
 	defer sess.writeMu.Unlock()
-	if _, err := sess.out.Write(append(data, '\n')); err != nil {
-		sess.server.log.Printf("cannot write a reply: %v", err)
+	_, err := sess.out.Write(append(data, '\n'))
+	return err
+}
+
+type callKey struct{}
+
+// call is what a handler's context knows of its request.
+type call struct {
+	sess *session
+}
+
+// Local returns the value the connection of ctx keeps under key, made by create on its first use. When the connection
+// ends, once every handler has returned, each value is closed.
+func Local(ctx context.Context, key any, create func() io.Closer) io.Closer {
+	c := ctx.Value(callKey{}).(*call)
+	c.sess.mu.Lock()
+	defer c.sess.mu.Unlock()
+	value, ok := c.sess.locals[key]
+	if !ok {
+		if c.sess.locals == nil {
+			c.sess.locals = map[any]io.Closer{}
+		}
+		value = create()
+		c.sess.locals[key] = value
+	}
+	return value
+}
+
+// closeLocals closes what the connection kept, once every handler has returned.
+func (sess *session) closeLocals() {
+	for _, value := range sess.locals {
+		if err := value.Close(); err != nil {
+			sess.server.log.Printf("cannot close what the connection kept: %v", err)
+		}
 	}
 }

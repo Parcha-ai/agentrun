@@ -17,7 +17,7 @@ import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD
 import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
@@ -106,10 +106,10 @@ test("/usage by meter for a run whose monid call a crash cut: its cost is unknow
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   // The run's process dies mid-call: the next one answers the call interrupted, never sends it again, and ends.
-  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
   assert.equal((await api("GET", `/runs/${body.run_id}`)).body.cost.usd, null, "what the cut call charged no one knows");
-  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
   assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
   const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
   assert.deepEqual(meters, [["tokens", tokens, 0], ["tools", 0, 1]]);
@@ -756,7 +756,8 @@ test("another harness under a cap: a model whose output is priced and that has n
     const guard = await capBefore(1_000, model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, ceiling));
     assert.match(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 })?.refuse ?? "", NO_CEILING, why);
     const free = await capBefore(0.000001, model({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, ceiling));
-    assert.equal(free.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 }), undefined, `${why}: output that costs nothing goes`);
+    const admitted = free.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 10 });
+    assert.deepEqual([admitted.refuse, admitted.outputTokensMax, admitted.holdUsd], [undefined, undefined, 0], `${why}: output that costs nothing goes, with no limit, held at $0`);
     assert.equal(await capBefore(undefined, model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, ceiling)), undefined, `${why}: no cap, no refusal`);
   }
 });
@@ -795,7 +796,7 @@ test("a capped pi run steered mid-answer: the answer in flight finishes, never a
 });
 
 /** The run's store, read once its process has let it go. */
-const storeFileOf = (data, runId) => join(data, "runs", runId, "store", "run.sqlite");
+const storeFileOf = (data, runId) => join(runDir(data, runId), "store", "run.sqlite");
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const finished = async (api, runId) => (await follow(api, runId, ["completed", "failed", "cancelled"]), view(api, runId));
 /** The same, or the run paused at its cap (input_required, pending budget). */
@@ -966,9 +967,9 @@ test("/usage's total counts every priced dollar of a run whose cost is unknown: 
   await monidRunsSent(api, body.run_id, log, 1);
   // The run's process dies mid-call: what the call charged no one knows, so the run's cost is unknown; its model
   // requests are priced.
-  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
-  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
   assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
   // As the API shows dollars: to a millionth.
   const known = Math.round(tokens * 1e6) / 1e6;
@@ -996,9 +997,9 @@ test("/usage puts a run's known tool dollars on tools when another tool charge i
   // The second monid run call, the slow one, is sent: faux monid files one line per call.
   await monidRunsSent(api, body.run_id, log, 2);
   // A crash cuts the slow call: its charge is unknown; the first call's ($0.003) and the model requests' are known.
-  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
-  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
   const check = async (api, where) => {
     const usage = (await api("GET", "/usage?group_by=meter")).body;
@@ -1042,16 +1043,16 @@ test("/usage counts an ended run of unknown cost at what it saved it spent so fa
   assert.equal((await api("POST", "/agents", agent("saved", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
   const { body } = await api("POST", "/agents/saved/runs", { input: { content: "Run monid's /person/enrich, then its slow endpoint." } });
   await monidRunsSent(api, body.run_id, log, 2);
-  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  process.kill(runRecordOf(data, body.run_id).holder.pid, "SIGKILL");
   await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
   await server.close();
   server = undefined;
   // What a workflow's run keeps at its end: its spend so far across every conversation and its decisions' receipts. Its
   // root conversation's store holds the model requests' and the paid calls' alone; the run's own figure is $0.004 more,
   // as a decision's priced receipt and a node's priced request in another conversation would make it.
-  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const { tokens } = metersIn(join(runDir(data, body.run_id), "store", "run.sqlite"));
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
-  const file = join(data, "runs", body.run_id, "serve.json");
+  const file = join(runDir(data, body.run_id), "serve.json");
   const meta = JSON.parse(readFileSync(file, "utf8"));
   assert.ok(meta.cost_so_far?.unpriced >= 1, `the run saved its spend so far: ${JSON.stringify(meta.cost_so_far)}`);
   const saved = round(tokens + 0.003 + 0.004);

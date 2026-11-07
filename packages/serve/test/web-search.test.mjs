@@ -22,7 +22,7 @@ import { runModels } from "../dist/model.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import fakeExa, { EXA_LIMIT_TEXT, resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { network } from "./fixtures/fake-network.mjs";
-import { FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
@@ -31,7 +31,7 @@ const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const capRefusal = (what, price, basis, spent, cap, raise) => `spend_cap_reached: Not sent: this run has spent ${spent} of its ${cap} cap, and the next step, ${what}, could cost up to ${price} (${basis}). Raise the cap to at least ${raise} to continue.`;
 /** A run's paid tool records, from its store: each mark and charge with its tool, call and figure. */
 function paidRecords(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
     return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_")).map((entry) => ({ kind: entry.kind, ...entry.data }));
   } finally {
@@ -228,7 +228,7 @@ test("a pi run's search and page read through Parallel are booked as its tool co
     { kind: "agentrun.tool_cost", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, usd: PARALLEL_EXTRACT_USD },
   ]);
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002, "the faux model is $0: the run's cost is Parallel's two fees");
-  assert.equal(spentIn(join(data, "runs", runId, "store", "run.sqlite")), 0.002, "and what a restarted process reads as spent, against its cap");
+  assert.equal(spentIn(join(runDir(data, runId), "store", "run.sqlite")), 0.002, "and what a restarted process reads as spent, against its cap");
   const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
   assert.deepEqual(meters.find(([meter]) => meter === "tools"), ["tools", 0.002, 0]);
 });
@@ -256,7 +256,7 @@ test("a workflow's call nodes are booked as an agent's calls are: its search and
   ]);
   assert.ok(paid[0].call && paid[0].call === paid[1].call && paid[2].call === paid[3].call && paid[0].call !== paid[2].call, `each call node's mark and charge name it: ${paid.map((entry) => entry.call)}`);
   assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, 0.002, "the run's cost is Parallel's two fees");
-  assert.equal(spentIn(join(data, "runs", run.body.run_id, "store", "run.sqlite")), 0.002);
+  assert.equal(spentIn(join(runDir(data, run.body.run_id), "store", "run.sqlite")), 0.002);
   const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
   assert.deepEqual(meters.find(([meter]) => meter === "tools"), ["tools", 0.002, 0]);
 });

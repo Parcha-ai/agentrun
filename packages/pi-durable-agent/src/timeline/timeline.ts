@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { BESIDE_SUFFIX, originMatcher } from "./origin.js";
+import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -39,11 +39,12 @@ export type TimelineEvent = {
   session?: string;
   /** The file a "Saved" phase row is about. */
   path?: string;
-  /** `server` on the row of a message the server wrote into the run (origin.ts): a `phase` row, which counts, as a
-   *  person's `user_message` does, as the message its turn took (`isMessageRow`). */
-  origin?: "server";
-  /** `true` on an `error` row that is a spend cap's refusal for room (serve): the request was not sent and the run paused
-   *  for a raise; a pause, never a failure, whether the run waits on its cap now or was raised since. */
+  /** `server` on the row of a message the server wrote into the run, `trigger` on a trigger's (origin.ts): a `phase` row,
+   *  which counts, as a person's `user_message` does, as the message its turn took (`isMessageRow`). */
+  origin?: "server" | "trigger";
+  /** `true` on the server's `phase` row of a spend cap's refusal for room (serve), "Paused at the run's cap", origin
+   *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
+   *  failure, whether the run waits on its cap now or was raised since. */
   paused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time
@@ -85,8 +86,10 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
 /** What a paid tool's call charged, written apart from any request as the tool reports it: `tool` and `charged_by` name
  *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
- *  which is then unknown on a null, and shows as a row of its own; it is no model request. A browser charge
- *  (BROWSER_CHARGE) shows on its call's row instead. */
+ *  which is then unknown on a null, and shows as a row of its own; it is no model request. The usage row counts paid
+ *  tool calls by `call`: a call that books several charges (a browser call, and its session's release under it) is one
+ *  paid tool call, and one charge not priced when any of them is unknown. A browser charge (BROWSER_CHARGE) shows on its
+ *  call's row instead. */
 export const TOOL_COST = "agentrun.tool_cost";
 /** The `tool` of a browser session's charge (serve's browser-cost.ts: `call`, the call it ran under, or for a release the
  *  session's last call; `tag`, the session; `conversation`, the browser's conversation). It makes no row: it folds into
@@ -95,10 +98,13 @@ export const TOOL_COST = "agentrun.tool_cost";
  *  A charge booked after the row was shown (a release after the answer) changes that row, by its id. */
 export const BROWSER_CHARGE = "browser";
 /** The tool whose charge a row carries, for a host that sums a run's paid tools from its rows: a charge row's tool (a
- *  `phase` with `usage`), `browser` for a browser call's row with its folded charges; undefined for any other row, the
- *  usage row included. */
+ *  `phase` with `usage`), `browser` for a browser step's call row (`tool_name` in BROWSER_STEPS) with its folded charges;
+ *  undefined for any other row: another tool's call row, whatever it carries, and the usage row. */
 export const chargedTool = (row: TimelineEvent): string | undefined =>
-  !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" ? BROWSER_CHARGE : undefined;
+  !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" && row.tool_name !== null && BROWSER_STEPS.has(row.tool_name) ? BROWSER_CHARGE : undefined;
+/** The spend cap's wrap-up (serve's cap.ts): the run's model was told once, near its cap, to finish (`words`, what it was
+ *  told). A row of its own, the server's ("AgentRun: …"); no request, no cost. */
+export const CAP_WRAPUP = "agentrun.cap_wrapup";
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
  *  (`not_metered`); it is no charge and never makes the cost unknown. */
@@ -224,9 +230,24 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
-  // Paid tool calls whose charge is in the cost (TOOL_COST), and calls with no price, run outside it (TOOL_UNMETERED).
-  let charges = 0;
+  // Paid tool calls whose charges are in the cost (TOOL_COST), each once however many it booked (paidCallOf), and calls
+  // with no price, run outside it (TOOL_UNMETERED).
+  const paidCalls = new Set<string>();
+  // Of those, the calls with a charge whose cost is unknown: each one charge not priced, however many it booked.
+  const unpricedCalls = new Set<string>();
+  // The call each browser session was last charged under (BROWSER_CHARGE's `tag`): a charge of it with no call of its
+  // own, a release after the run's last call, is that call's.
+  const sessionCall = new Map<string, string>();
   let notMetered = 0;
+  /** The paid call a TOOL_COST is for: its `call`; a browser charge with none (a release a reopened process made), the
+   *  call its session was last charged under; else a call of its own, as an older entry with no `call` is. */
+  const paidCallOf = (data: Obj | undefined): string => {
+    const [call, tag] = [str(data?.call), data?.tool === BROWSER_CHARGE ? str(data?.tag) : undefined];
+    if (call && tag) sessionCall.set(tag, call);
+    return call ?? (tag ? sessionCall.get(tag) : undefined) ?? `#${(unplaced += 1)}`;
+  };
+  // Charges that name no call the run can place: each a call of its own.
+  let unplaced = 0;
   // Paid tool calls marked and not yet settled, by call.
   const held = new Map<string, unknown>();
   const pending: boolean[] = [];
@@ -291,8 +312,12 @@ function createMeter() {
       held.set(str(data?.call) ?? `#${held.size}`, data?.heldUsd);
     } else if (entry.kind === TOOL_COST) {
       held.delete(str(data?.call) ?? "");
-      charges += 1;
-      addCost(data?.usd);
+      const call = paidCallOf(data);
+      paidCalls.add(call);
+      // Its cost joins the run's; an unknown one makes it unknown, counted once for its call.
+      const usd = data?.usd;
+      if (typeof usd === "number" && Number.isFinite(usd)) known += usd;
+      else if (!unpricedCalls.has(call)) (unpricedCalls.add(call), (unknown += 1));
       return "charge";
     } else if (entry.kind === TOOL_UNMETERED) {
       notMetered += 1;
@@ -355,11 +380,11 @@ function createMeter() {
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     const unmetered = notMetered ? { not_metered: notMetered } : {};
-    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
+    if (!requests && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
     const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
-    return { usd, requests: count, charges: charges + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
+    return { usd, requests: count, charges: paidCalls.size + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
@@ -464,7 +489,7 @@ function createProjector(options: TimelineOptions) {
   const browsers = new Set<number>();
   // Browser charges (BROWSER_CHARGE), folded into their call's row: what each row's charges sum to, the call each session
   // was last charged under, and each conversation's latest browser call.
-  const folded = new Map<TimelineEvent, { known: number; unpriced: number }>();
+  const folded = new Map<TimelineEvent, { known: number; unpriced: boolean }>();
   const sessionCalls = new Map<string, OpenCall>();
   const browserCalls = new Map<number, OpenCall>();
   const children = new Map<number, string>();
@@ -555,24 +580,28 @@ function createProjector(options: TimelineOptions) {
   };
 
   /** The call a browser charge belongs to (BROWSER_CHARGE): the one it names, else its session's last charged call, else
-   *  its conversation's latest browser call. Undefined when none is in these rows. */
+   *  its conversation's latest browser call. Only a browser step's call (BROWSER_STEPS), so every row a charge folds into
+   *  is one chargedTool names the browser's. Undefined when none is in these rows. */
   function browserCallOf(data: Obj | undefined): OpenCall | undefined {
     const [id, tag] = [str(data?.call), str(data?.tag)];
     const conv = typeof data?.conversation === "number" ? data.conversation : undefined;
-    const named = id ? ((conv === undefined ? undefined : calls.get(`${conv}:${id}`)) ?? [...calls.values()].find((call) => call.use.tool_use_id === id)) : undefined;
+    const found = id ? ((conv === undefined ? undefined : calls.get(`${conv}:${id}`)) ?? [...calls.values()].find((call) => call.use.tool_use_id === id)) : undefined;
+    const named = found && BROWSER_STEPS.has(found.name) ? found : undefined;
     const call = named ?? (tag ? sessionCalls.get(tag) : undefined) ?? (conv === undefined ? undefined : browserCalls.get(conv));
     if (call && tag) sessionCalls.set(tag, call);
     return call;
   }
 
-  /** Adds a browser charge (`usd`, null when unknown) to the `usage` of its call's row, which is returned. */
+  /** Adds a browser charge (`usd`, null when unknown) to the `usage` of its call's row, which is returned. The row is one
+   *  call, so a charge with no price makes it one not priced (`unpriced: 1`) however many it booked, as the usage row
+   *  counts a paid call once. */
   function foldCharge(row: TimelineEvent, usd: number | null): TimelineEvent {
-    const sum = folded.get(row) ?? { known: 0, unpriced: 0 };
-    if (usd === null) sum.unpriced += 1;
+    const sum = folded.get(row) ?? { known: 0, unpriced: false };
+    if (usd === null) sum.unpriced = true;
     else sum.known += usd;
     folded.set(row, sum);
     const known = Math.round(sum.known * 1e12) / 1e12;
-    row.usage = sum.unpriced > 0 ? { usd: null, requests: 0, so_far_usd: known, unpriced: sum.unpriced } : { usd: known, requests: 0 };
+    row.usage = sum.unpriced ? { usd: null, requests: 0, so_far_usd: known, unpriced: 1 } : { usd: known, requests: 0 };
     return row;
   }
 
@@ -606,6 +635,13 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
+    if (entry.kind === CAP_WRAPUP) {
+      // What the run's model was told near its cap: the server's row (`origin: "server"`, in the words of its other rows),
+      // no request, no cost, and no message any turn took (its id ends in NOTE_SUFFIX, which isMessageRow passes over).
+      const words = str(obj(entry.data)?.words);
+      if (words) add(make("phase", conv, `${base}${NOTE_SUFFIX}`, { summary: `AgentRun: ${words}`, text: words, origin: "server" }));
+      return out;
+    }
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
@@ -764,8 +800,10 @@ function createProjector(options: TimelineOptions) {
       // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
       // person's rules, with the entry's own id; the server's resume beside it is the server's (`origin: "server"`) but
       // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
-      // that message, with the entry's id and `origin: "server"`.
-      if (origin.reason === "approval_declined") {
+      // that message, with the entry's id and `origin: "server"`. A trigger's message: "Trigger <its id>: …", `origin:
+      // "trigger"`, never the person's.
+      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `Trigger ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger" }));
+      else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
         add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));

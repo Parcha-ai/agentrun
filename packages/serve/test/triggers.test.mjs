@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { openStore } from "@parcha/pi-durable-agent";
 import { schemaProblems } from "./schema-support.mjs";
-import { flowAgent, follow, scratch, serve } from "./support.mjs";
+import { flowAgent, follow, runDir, scratch, serve } from "./support.mjs";
 import { fakeClock, firings, keyOf, made, schedule } from "./trigger-support.mjs";
 
 async function documented(t, baseUrl) {
@@ -37,7 +37,7 @@ test("a cron line in America/Los_Angeles fires at its UTC instants across the fa
   const run = await api("GET", `/runs/${first.run_id}`);
   assert.deepEqual(run.body.trigger, { id, firing_key: first.key }, "the run names its trigger and firing");
   assert.equal(run.body.cost.cap_usd, 0.5, "capped at the trigger's max_cost_usd");
-  const meta = JSON.parse(await readFile(join(data, "runs", first.run_id, "serve.json"), "utf8"));
+  const meta = JSON.parse(await readFile(join(runDir(data, first.run_id), "serve.json"), "utf8"));
   assert.equal(meta.input.content, 'Say hello.\n\n(Started by the schedule "nightly" for Nov 1, 2026, 1:30 AM PDT.)', "its input says what started it, in the trigger's zone");
   await follow(api, first.run_id, ["completed"]);
 

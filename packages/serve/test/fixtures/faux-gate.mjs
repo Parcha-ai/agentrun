@@ -1,7 +1,7 @@
 // The tool gate's tests: pi's faux model (the default export) and the faux harness's script (`script`), with one
 // behaviour each. "Fetch <url> once." calls web_fetch on the url once. pi's model then answers "Saw: " and the whole of
 // the last thing it was told (the tool's result, or the message that resumed it), so a test reads what it saw; the faux
-// harness says "Fetched once.".
+// harness says "Fetched once.". A workflow's model node told "Fetch <url> once." fetches it, then submits what it read.
 import { access } from "node:fs/promises";
 
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
@@ -15,6 +15,15 @@ const slow = (faux, ms, text) =>
   });
 
 export default function reply(context, faux) {
+  // A workflow's model node (its `submit` tool added), told "Fetch <url> once.": web_fetch on the url, then it submits
+  // `{ answer }`, the whole of what the tool said.
+  if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+    const node = urlOf(JSON.stringify([context.systemPrompt, ...context.messages.filter((m) => m.role === "user" || m.role === "system")]));
+    const results = context.messages.filter((m) => m.role === "toolResult");
+    if (!node || results.some((m) => m.toolName === "submit")) return faux.message("Submitted.");
+    if (results.length === 0) return faux.message(faux.toolCall("web_fetch", { url: node }), { stopReason: "toolUse" });
+    return faux.message(faux.toolCall("submit", { answer: textOf(results.at(-1)) }), { stopReason: "toolUse" });
+  }
   // "Fetch <url> again once <file> exists.": web_fetch on the url, then once the file exists (the test changed a
   // setting meanwhile) on it again, in the same turn; then "Saw: " and the last thing it was told.
   const again = /Fetch (\S+) again once (\S+) exists\./.exec(textOf(context.messages.find((m) => m.role === "user")));
