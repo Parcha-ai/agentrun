@@ -97,7 +97,7 @@ export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agen
         : !stats || !a ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading analytics...</p>
         : !a.totals.runs ? <div className="border px-4 py-12 text-center"><p className="font-mono text-[13px] text-muted-foreground">No runs of this agent in this range.</p></div>
         // The store's cost basis, as Mission Control reads it; a refetch keeps the last view, dimmed, until the new one is in.
-        : <MissionAnalytics a={a} basis={stats.cost.basis === "charge" ? "reported" : stats.cost.basis} now={now()} refreshing={loading} />}
+        : <MissionAnalytics a={a} basis={stats.cost.basis} now={now()} refreshing={loading} />}
     </div>
   );
 }

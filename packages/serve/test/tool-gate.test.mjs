@@ -259,7 +259,7 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     // Its row is the server's (#1656's origin, as a raised cap's follow-up), and reads as the approval's outcome: what
     // ran, or what was refused.
     assert.equal(resume.origin, "server", `${at}: the server's row`);
-    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it" : "AgentRun: web_fetch was refused: you declined it", at);
+    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it" : `AgentRun: web_fetch was refused: you declined it: ${note}`, at);
     // The model's message keeps the call's id (pi echoes its first line below); what a person reads on the row is the
     // outcome and the result or refusal, with no call id and no "[tool approval]" head.
     const head = `[tool approval] This answers your web_fetch call ${run.callId} (arguments {"url":"http://public.example/"}), which waited for a person's approval; it is not a new message from them.`;
@@ -452,22 +452,22 @@ test("a deny lifted mid-run is lifted at the next call: a run launched with web_
   }
 });
 
-test("a workflow's call node calling fetch_page, web_fetch's legacy name, is held to web_fetch's permission: set to deny, its run is refused before it starts", { timeout: 60_000 }, async (t) => {
+test("a workflow's call node calling web_fetch set to deny: its run is refused before it starts", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, GATE);
   const flow = {
-    v: 2, name: "read-site-legacy",
+    v: 2, name: "read-site-denied",
     schemas: {
       In: { type: "object", required: ["website"], properties: { website: { type: "string" } } },
       Page: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
     },
     input: { schemaId: "In" },
     output: { schemaId: "Page", path: "home" },
-    root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "fetch_page", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
+    root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
-  const saved = await api("POST", "/agents", { definition: { id: "legacy", name: "legacy", workflow: flow, tools: ["fetch_page"] } });
-  assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls fetch_page (web_fetch), which is set to deny on this server."]]);
-  const refused = await api("POST", "/agents/legacy/runs", { input: { website: PAGE } });
+  const saved = await api("POST", "/agents", { definition: { id: "denied", name: "denied", workflow: flow, tools: ["web_fetch"] } });
+  assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
+  const refused = await api("POST", "/agents/denied/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
 });
 

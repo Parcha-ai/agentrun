@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { collisions, reverseOf, WIRE_NAME, wireName } from "../dist/catalog.js";
 import { TOOLS } from "../dist/tools.js";
-import { LEGACY_NAMES } from "../dist/tool-plane.js";
 
 // A test-only catalog that exercises the mapping past the identity: a dotted name, a path name, a name of each other
 // shape a kind of tool brings, and a name past 64 characters that must take the hash suffix.
@@ -67,8 +66,7 @@ test("two names with one wire name are a collision, reported against the second"
   assert.equal(wireName(pair[0]), wireName(pair[1]));
   const found = collisions(pair);
   assert.deepEqual(found, [{ name: "foo_bar", clashesWith: "foo.bar" }]);
-  assert.deepEqual(collisions([...Object.keys(TOOLS), ...Object.keys(LEGACY_NAMES)]), [], "the served tools and the legacy names a revision may still grant never collide");
-  for (const name of Object.keys(LEGACY_NAMES)) assert.equal(wireName(name), name, `${name} goes on the wire as itself`);
+  assert.deepEqual(collisions(Object.keys(TOOLS)), [], "the served tools never collide");
   assert.deepEqual(collisions(clashing), [], "foo.bar and foo/bar are foo_bar and foo__bar, not a collision");
 });
 

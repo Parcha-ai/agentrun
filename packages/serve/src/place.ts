@@ -121,8 +121,8 @@ export function storedPlace(value: unknown): Place {
   return { mode: "sandbox", box: value.box as BoxId };
 }
 
-/** Where a box binds the run's work/, and where its tools start. */
-export const BOX_WORK = "/run/agentrun/run/work";
+/** Where a box has the run's work/ (bound, or seeded), and where its tools start: the same in every box. */
+export const BOX_WORK = "/workspace";
 
 /** The boxes that cannot bind a run's work/, being on another machine: its work/ is seeded at the box's making and
  *  pulled back (run-box.ts). */

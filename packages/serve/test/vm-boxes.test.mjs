@@ -81,7 +81,7 @@ test("demo: a VM place runs bash, write, edit and read in the run's VM box: work
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
   const said = answers(data, run.run_id);
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
-  assert.match(said[0].text.trim(), /\/run\/agentrun\/run\/work$/, "bash starts in the box's work/");
+  assert.match(said[0].text.trim(), /\/workspace$/, "bash starts in the box's work/");
   assert.equal(said[4].text, "edited in the box");
   // The run's files: what the box wrote, pulled back.
   assert.deepEqual(await fileList(api, run.run_id), ["note.txt", "out.txt"]);
@@ -157,7 +157,7 @@ test("a run's end lets the relay's hold on its programs go even when its box is 
   assert.deepEqual(held.released, []);
   // Its last copy back cannot be read (a file changed in the box since the turn's pull, and its archive is no archive),
   // so the box is kept at the run's end.
-  writeFileSync(join(box.dir, "run", "agentrun", "run", "work", "late.txt"), "changed in the box");
+  writeFileSync(join(box.dir, "workspace", "late.txt"), "changed in the box");
   vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
@@ -178,7 +178,7 @@ test("a program that is still starting when its run ends is let go as it lands, 
   vm.execDelayMs = (command) => (command[0] === "sleep" ? 20_000 : 0);
   const starting = fetch(`${url}/runs/${run.run_id}/vm/sandbox/${box.sandboxId}/exec`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify({ command: ["sleep", "30"] }) });
   await until(() => box.execs.some((exec) => exec.command[0] === "sleep"), "the start under way");
-  writeFileSync(join(box.dir, "run", "agentrun", "run", "work", "late.txt"), "changed in the box");
+  writeFileSync(join(box.dir, "workspace", "late.txt"), "changed in the box");
   vm.hostileTar = Buffer.from("this is not an archive ".repeat(64));
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 120_000 });
@@ -250,7 +250,8 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   assert.deepEqual(await (await call(b.run_id, `exec/${big.exec}/wait`)).json(), { code: 0 });
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal((await slow.arrayBuffer()).byteLength, 4_000_000, "the whole output, read after the exit");
-  await until(async () => (await call(b.run_id, `exec/${big.exec}/stdin-close`)).status === 404, "the delivered program let go");
+  await until(async () => (await (await call(b.run_id, `exec/${big.exec}/stdin-close`)).json()).ended === true, "the delivered program let go");
+  assert.equal((await call(a.run_id, `exec/${big.exec}/stdin-close`)).status, 404, "another run's ended program is not there for it");
   // A program whose output stream broke has its reply broken, and is let go once its exit is read: it holds no slot.
   vm.failStdout = true;
   const broken = await (await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["sh", "-c", "echo one; sleep 0.2; echo two"] })).json();
@@ -258,7 +259,7 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   await assert.rejects(async () => (await call(b.run_id, `exec/${broken.exec}/stdout`)).arrayBuffer(), "a broken stream is a broken reply, never a short one");
   assert.equal(await (await call(b.run_id, `exec/${broken.exec}/stderr`)).text(), "");
   assert.equal(typeof (await (await call(b.run_id, `exec/${broken.exec}/wait`)).json()).code, "number", "its exit is read");
-  await until(async () => (await call(b.run_id, `exec/${broken.exec}/stdin-close`)).status === 404, "the broken program let go");
+  await until(async () => (await (await call(b.run_id, `exec/${broken.exec}/stdin-close`)).json()).ended === true, "the broken program let go");
   // What the provider says in an error reaches the run's process cut of every value the server holds: the VM token too.
   vm.failExec = new Error(`permission denied for token ${TOKENS[VM_PROVIDER.keys[1]]} (id ${TOKENS[VM_PROVIDER.keys[0]]})`);
   const refusedStart = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["true"] });
@@ -275,7 +276,10 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   assert.equal(await (await call(b.run_id, `exec/${lost.exec}/stdout`)).text(), "");
   assert.equal(await (await call(b.run_id, `exec/${lost.exec}/stderr`)).text(), "");
   assert.equal((await call(b.run_id, `exec/${lost.exec}/wait`)).status, 502, "the exit's failure is answered");
-  await until(async () => (await call(b.run_id, `exec/${lost.exec}/stdin-close`)).status === 404, "the lost program let go");
+  await until(async () => (await (await call(b.run_id, `exec/${lost.exec}/stdin-close`)).json()).ended === true, "the lost program let go");
+  const lateExit = await call(b.run_id, `exec/${lost.exec}/wait`);
+  assert.equal(lateExit.status, 502, "an exit that could not be read still fails once its program was let go, never a code");
+  assert.ok((await lateExit.json()).failure, "with the provider's failure");
   // A reader that goes away lets its program go: what it held is dropped, and the program is no longer the run's to ask.
   const started = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["yes"] });
   assert.equal(started.status, 200);
@@ -287,6 +291,64 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   await reader.cancel().catch(() => undefined);
   await until(async () => (await call(b.run_id, `exec/${exec}/stdin-close`)).status === 404, "the program let go");
   for (const run of [a, b]) assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+test("a program's input closed after the relay let the ended program go is answered as already ended, and the run's call does not fail; a program it never had is still not there", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await onVm(t);
+  assert.equal((await api("POST", "/agents", { definition: { id: "asker", name: "asker", instructions: "Probe.", place: PLACE, tools: ["bash", "ask_person"] } })).status, 201);
+  const run = await probe(api, "asker", [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }]);
+  await follow(api, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+  const [box] = vm.running();
+  // Through the run's own client (pi-transport's provider over the relay's client): the program's exit reaches the caller
+  // only after its input's close was answered, as on a loaded machine, so the close lands after the relay let it go.
+  const transport = await import(`@parcha/pi-transport/box/${VM}`);
+  const sdk = relayVm.relayedVmSdk(data, runDir(data, run.run_id), run.run_id);
+  let holding = false;
+  let answered;
+  const exitAnswered = new Promise((resolve) => (answered = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const holdingSdk = { ...sdk, sandboxes: { ...sdk.sandboxes, fromId: async (id) => {
+    const sandbox = await sdk.sandboxes.fromId(id);
+    return { ...sandbox, exec: async (command, params) => {
+      const program = await sandbox.exec(command, params);
+      return holding ? { ...program, wait: async () => {
+        const code = await program.wait();
+        answered();
+        await held;
+        return code;
+      } } : program;
+    } };
+  } } };
+  const attached = await transport.modalBoxes(holdingSdk, { appName: "relayed" }).attach(box.sandboxId, {});
+  assert.ok(attached.ok && attached.value, attached.error?.message);
+  holding = true;
+  const started = await attached.value.exec(["sh", "-c", "exit 0"], undefined, {});
+  assert.ok(started.ok, started.error?.message);
+  const program = started.value;
+  const drained = async (stream) => {
+    for await (const _ of stream);
+  };
+  const exit = program.wait();
+  // Its exit answered and both outputs read whole: the relay has let it go.
+  await Promise.all([drained(program.stdout), drained(program.stderr), exitAnswered]);
+  await program.stdin.close();
+  release();
+  const result = await exit;
+  assert.equal(result.ok ? result.value : result.error.message, 0, "the call does not fail");
+  // At the relay: a late call of a program let go after its exit is no error; one it never had is still not there.
+  const { url } = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8"));
+  const door = readFileSync(join(runDir(data, run.run_id), "door-token"), "utf8").trim();
+  const call = (path, body = {}) => fetch(`${url}/runs/${run.run_id}/vm/${path}`, { method: "POST", headers: { authorization: `Bearer ${door}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const { exec } = await (await call(`sandbox/${box.sandboxId}/exec`, { command: ["sh", "-c", "exit 3"] })).json();
+  assert.deepEqual([await (await call(`exec/${exec}/stdout`)).text(), await (await call(`exec/${exec}/stderr`)).text(), await (await call(`exec/${exec}/wait`)).json()], ["", "", { code: 3 }]);
+  const late = await call(`exec/${exec}/stdin-close`);
+  assert.deepEqual([late.status, await late.json()], [200, { ended: true }], "its input's close, after it was let go");
+  assert.deepEqual(await (await call(`exec/${exec}/wait`)).json(), { code: 3, ended: true }, "its exit is still its exit");
+  assert.equal((await call(`exec/${exec}/stdout`)).status, 410, "its output is no longer held: a read fails, never comes back short");
+  const unknown = await call("exec/no-such-program/stdin-close");
+  assert.deepEqual([unknown.status, await unknown.json()], [404, { message: "no such program" }], "a program it never had");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
 test("the run's relay client waits on a program as long as it runs: its exit and its output have no clock of their own, where a client with one fails the call", { timeout: 60_000 }, async (t) => {

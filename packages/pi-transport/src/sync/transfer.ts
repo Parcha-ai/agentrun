@@ -1,6 +1,5 @@
 // The transfer under `./sync`: a box directory listed, packed and moved as one tar between a box and this machine, as a
-// stream or as checked files, under a stall limit and a deadline. It was part of `home/workspace.ts`; the session moves
-// that stay there are deprecated and removed in the next release, and this part stays.
+// stream or as checked files, under a stall limit and a deadline.
 import { createHash, randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { withCancel, withoutAbortSignal } from "@earendil-works/chord/context";

@@ -82,29 +82,6 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 - **Recording format:** a change to what `./durable` exports for `agentrun.recording/1` validates
   with `apps/viewer`'s `validate` on a fresh recording.
 
-### `@parcha/pi-durable-disk`
-
-- **When:** the diff touches `packages/pi-durable-disk/src/**`, `bin/**`, `package.json` or
-  `test/live/**`. A diff of only examples, the README or `changes/` skips it.
-- **Pending:** `test/live/ci.ts` lands with pull request #472; until it is on `main`, this check is not run and the
-  batch line says so.
-- **Command,** from the repository root at the head, under your scratch-disk credential wrapper, which
-  exports `ARCHIL_API_KEY`, `PDA_LIVE_DISK` and `PDA_LIVE_REGION` (default `aws-us-east-1`):
-
-  ```bash
-  npm run build && node packages/pi-durable-disk/test/live/ci.ts all
-  ```
-
-  `all` runs a preflight (it refuses without the key, a `dsk-` disk id or a region), the host suites
-  (claim, env, run, store, supervise, lifecycle), then the Docker suites, so the two never share the
-  disk, then a sweep that always runs and must leave 0 run directories and 0 token users, then a summary.
-- **Pass:** exit code 0 and a last stdout line that starts with `ok: live disk check passed`. Anything
-  else blocks: a non-zero exit, a last line `not ok: <step>: <reason>`, or no last line (killed or timed
-  out). Put the summary it prints above that line in the pull request body.
-- **Needs:** Docker, FUSE and the Archil client on the machine (the suites need root through
-  `archil-scoped`), and a SCRATCH key and disk only. The suites delete runs and token users on the disk
-  they are given: never run them with a production key.
-
 ### `@parcha/pi-browser`
 
 - **When:**
@@ -155,8 +132,6 @@ end, and fails if a box is left. All three run from the repository root at the h
     `child.ts`), `src/hands/**`, or `test/box-*daytona*.live.test.ts`.
   - **Modal:** the diff touches `src/box/modal.ts`, the shared box code, `src/hands/**`, or
     `test/*modal*.live.test.ts`.
-  - A change under `src/home/**` runs the Docker check (the home suites are Docker files) and, when the change moves
-    a session between providers, Daytona and Modal too.
 - **Command:**
 
   ```bash

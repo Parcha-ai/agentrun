@@ -3,14 +3,16 @@
 // work/ back at each turn's end and once more before the run's end is recorded, then destroys it. The run's process holds no key: its Daytona calls
 // go through the server's box relay, which sends on only the calls a run's tools make of that run's own box.
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_RELAY_FILE, relayFetch, startBoxRelay } from "../dist/box-relay.js";
 import { BOX_ENV, BOX_SYNC_FILE, DEFAULT_BOX_ALLOW, runBox } from "../dist/run-box.js";
+import { BOX_WORK } from "../dist/place.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
@@ -83,11 +85,78 @@ async function relayFor(t, fake, ids, ensure = async () => ({ id: "", made: true
   }
   const relay = await startBoxRelay({ root, tokenOf: (id) => tokens[id], apiUrl: fake.url, apiKey: KEY, serves: (id) => ids.includes(id), ensure: (id) => ensure(id) });
   t.after(() => relay.close());
-  const make = async (run) => (await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": run, "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/run/agentrun/run/work" } }) })).json()).id;
+  const make = async (run) => (await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": run, "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/workspace" } }) })).json()).id;
   return { root, relay, make, tokens, as: (id) => relayFetch(root, dirOf(id), id), dirOf };
 }
 
 const fileList = async (api, runId) => (await api("GET", `/runs/${runId}/files`)).body.files.map((file) => file.path).sort();
+
+// The fake runs each box command in a real shell of this machine: a sudo one asks for must meet the fixtures' stand-in
+// (sudo-stand-in.mjs), first on its PATH, never this machine's sudo. Every other test here fails if one was asked for.
+test("a box command's sudo meets the stand-in, never this machine's: a workspace its user may not make is refused, and the sudo it asked for is noted, not run", { skip: process.getuid?.() === 0 && "root makes any directory with no sudo" }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY, sudoProbe: true });
+  const parent = join(fake.root, "read-only");
+  mkdirSync(parent);
+  chmodSync(parent, 0o555);
+  t.after(() => existsSync(parent) && chmodSync(parent, 0o755));
+  const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
+  const workspace = join(parent, "work");
+  const made = await daytonaBoxes({ apiKey: KEY, apiUrl: fake.url }).create({ maxLifetimeMs: 60_000, workspace }, BACKGROUND_CONTEXT);
+  assert.equal(made.ok, false, "a workspace that cannot be made fails the create");
+  assert.deepEqual(fake.sudoCalls(), [`-n mkdir -p -- ${workspace}`], "the sudo it asked for went to the stand-in");
+  assert.ok(!existsSync(workspace), "and nothing made it");
+});
+
+test("a box command that names a sudo by its absolute path, quoted or not, is refused whole, never run, and fails the test that sent it (a sudo that does not exist, so nothing real could run)", async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY, sudoProbe: true });
+  const made = await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "pi-transport": "1" } }) })).json();
+  const ran = await fetch(`${fake.toolboxUrl}/${made.id}/process/execute`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ command: 'touch ran.txt; "/nonexistent/bin/sudo" -n true', timeout: 10 }) });
+  assert.deepEqual(await ran.json(), { exitCode: 97, result: "the fake refuses a command that names an absolute sudo" });
+  assert.ok(!existsSync(join(fake.root, made.id, "ran.txt")), "no part of it ran");
+  assert.deepEqual(fake.sudoCalls(), ['refused, by its absolute path: touch ran.txt; "/nonexistent/bin/sudo" -n true']);
+});
+
+test("a box made when boxes had the run's work/ at /run/agentrun/run/work is copied back from there, its own place, never from /workspace", async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const { pullRemoteBox } = await import("../dist/run-box.js");
+  const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
+  const runId = "old-place";
+  const made = await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": runId, "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/run/agentrun/run/work" } }) })).json();
+  mkdirSync(fake.pathOf(made.id, "run/agentrun/run/work"), { recursive: true });
+  await writeFile(fake.pathOf(made.id, "run/agentrun/run/work/kept.txt"), "from the old place");
+  const dir = await scratch(t);
+  mkdirSync(join(dir, "work"));
+  await pullRemoteBox(daytonaBoxes({ apiKey: KEY, apiUrl: fake.url }), { id: runId, dir }, BACKGROUND_CONTEXT);
+  assert.equal(readFileSync(join(dir, "work", "kept.txt"), "utf8"), "from the old place");
+});
+
+test("the absolute-sudo guard reads a command as a shell would: a quoted, chained or bare absolute sudo is refused; the stand-in's own files and a word that merely contains sudo are not", async (t) => {
+  const { sudoStandIn } = await import("./fixtures/sudo-stand-in.mjs");
+  const { refuses } = sudoStandIn(await scratch(t));
+  for (const command of ['"/usr/bin/sudo" -n true', "'/usr/bin/sudo' -n true", "true;/usr/bin/sudo -n true", "x && /usr/bin/sudo", "/usr/bin/sudo", "env /usr/local/bin/sudo -n id", "(/usr/bin/sudo -n id)"]) assert.equal(refuses(command), true, command);
+  for (const command of ["sudo -n mkdir -p -- /x", "command -v sudo", "cat /tmp/a/sudo.calls", "ls /tmp/a/sudo-bin", "/opt/pseudo/bin/x", "printf %s /tmp/sudoers.d"]) assert.equal(refuses(command), false, command);
+});
+
+test("a run whose Daytona box the server replaces (one made when boxes had work/ at /run/agentrun/run/work) is told once that its box was replaced, on its next box tool's answer", { timeout: 120_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const server = await onDaytona(t, fake);
+  const { api, data } = server;
+  assert.equal((await api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
+  const go = join(await scratch(t), "go");
+  const started = await api("POST", "/agents/remote/runs", { input: { content: JSON.stringify({ probe: [{ wait: go }, { tool: "bash", args: { command: "printf one > one.txt" } }, { tool: "bash", args: { command: "printf two > two.txt" } }] }) } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  // The run's box as an older server made it: no network, its work/ at the old place.
+  const old = await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": runId, "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/run/agentrun/run/work" }, networkBlockAll: true }) })).json();
+  mkdirSync(fake.pathOf(old.id, "run/agentrun/run/work"), { recursive: true });
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  const said = answers(data, runId);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["bash", false]], JSON.stringify(said));
+  assert.ok(said[0].text.startsWith("this run's box was replaced after a restart: /workspace is kept; packages installed outside it and /tmp are gone; reinstall what you need"), said[0].text);
+  assert.ok(!said[1].text.includes("box was replaced"), "told once");
+  assert.ok(!fake.sandboxes.has(old.id) || fake.sandboxes.get(old.id).state !== "started", "the old box is gone");
+});
 
 test("demo: a Daytona place runs read, write, edit and bash in the run's box: work/ seeded in, bash's out.txt in the run's files, its network the package registries' domain list, no key in the box, the box destroyed at the end", { timeout: 180_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
@@ -121,7 +190,7 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
   const [seeded, cwd] = said[0].text.trim().split("\n");
   assert.equal(seeded, "seeded from the run's work/", "the box was seeded with work/");
-  assert.match(cwd, /\/run\/agentrun\/run\/work$/, "bash starts in the box's work/");
+  assert.match(cwd, /\/workspace$/, "bash starts in the box's work/");
   assert.equal(said[4].text, "edited in the box");
   assert.equal(said[7].text.trim(), "1", "the file monid's answer was filed in is in the box");
   // The box's environment: the fixed one, and no key, token or door token.
@@ -242,7 +311,7 @@ test("a pull a box's archive stops (unreadable) is not a whole copy: the run end
   assert.deepEqual(await fileList(api, run.run_id), [], "nothing came back");
   assert.equal(fake.sandboxes.size, 1, "the box that holds out.txt is kept");
   const [kept] = fake.sandboxes.keys();
-  assert.equal(readFileSync(fake.pathOf(kept, "run/agentrun/run/work/out.txt"), "utf8"), "kept");
+  assert.equal(readFileSync(fake.pathOf(kept, "workspace/out.txt"), "utf8"), "kept");
   assert.ok(existsSync(join(runDir(data, run.run_id), BOX_SYNC_FILE)), "the mark of what did come back is kept");
   assert.equal(fake.sandboxes.get(kept).autoStopInterval, 15, "a kept box stops after 15 idle minutes: its disk stays, its compute stops");
   assert.equal(fake.sandboxes.get(kept).autoDeleteInterval, -1, "and is never deleted as it stops (a box is made with auto-delete 0, which would)");
@@ -302,7 +371,7 @@ test("a run's box that Daytona paused while the run waited is started again, nev
   await first.close();
   const [box] = fake.sandboxes.values();
   // An hour on, Daytona paused it (a class that pauses when idle); what only the box holds is still there.
-  await writeFile(fake.pathOf(box.id, "run/agentrun/run/work/box-only.txt"), "written after the last pull");
+  await writeFile(fake.pathOf(box.id, "workspace/box-only.txt"), "written after the last pull");
   fake.pause(box.id);
   const second = await serve(t, { data, faux: PROBE });
   assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
@@ -324,7 +393,7 @@ test("a run's box caught pausing is waited for and started again, never replaced
   await fileList(firstApi, run.run_id);
   await first.close();
   const [box] = fake.sandboxes.values();
-  await writeFile(fake.pathOf(box.id, "run/agentrun/run/work/box-only.txt"), "written after the last pull");
+  await writeFile(fake.pathOf(box.id, "workspace/box-only.txt"), "written after the last pull");
   // Caught mid-pause: it settles a few reads on.
   fake.pause(box.id, 3);
   const second = await serve(t, { data, faux: PROBE });
@@ -347,7 +416,7 @@ test("a run's box that Daytona archived (or is archiving) while the run waited i
     await fileList(firstApi, run.run_id);
     await first.close();
     const [box] = fake.sandboxes.values();
-    await writeFile(fake.pathOf(box.id, "run/agentrun/run/work/box-only.txt"), "written after the last pull");
+    await writeFile(fake.pathOf(box.id, "workspace/box-only.txt"), "written after the last pull");
     fake.archive(box.id, reads);
     const second = await serve(t, { data, faux: PROBE });
     assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
@@ -472,7 +541,7 @@ test("a run's box under another list whose files cannot all be copied back is ke
   await first.close();
   const [made] = fake.sandboxes.keys();
   // Written in the box after its last pull; from now on every copy back fails.
-  await writeFile(fake.pathOf(made, "run/agentrun/run/work/box-only.txt"), "only in the box");
+  await writeFile(fake.pathOf(made, "workspace/box-only.txt"), "only in the box");
   for (let n = fake.state.listings + 1; n <= fake.state.listings + 40; n++) failListings.push(n);
   process.env.AGENTRUN_BOX_ALLOW = "pypi.org";
   const second = await serve(t, { data, faux: PROBE });
@@ -530,7 +599,7 @@ test("a start pulls and destroys the box of a run that ended while its box was l
   await first.close();
   const [left] = fake.sandboxes.keys();
   // Written in the box after the run's last pull: the sweep's pull keeps it.
-  await writeFile(fake.pathOf(left, "run/agentrun/run/work/late.txt"), "late");
+  await writeFile(fake.pathOf(left, "workspace/late.txt"), "late");
   fake.state.failDeletes = 0;
   const second = await serve(t, { data, faux: PROBE });
   await until(() => fake.sandboxes.size === 0, "the start's sweep");
@@ -544,13 +613,13 @@ test("a file the server files before a run's process opens a box a process befor
   const made = { id: "" };
   const relay = await relayFor(t, fake, ["run-again"], async () => ({ id: made.id, made: false }));
   made.id = await relay.make("run-again");
-  mkdirSync(fake.pathOf(made.id, "run/agentrun/run/work"), { recursive: true });
+  mkdirSync(fake.pathOf(made.id, "workspace"), { recursive: true });
   const box = runBox({ relay: relay.root }, { id: "run-again", root: relay.root, dir: relay.dirOf("run-again"), place: DAYTONA });
   // The new process's first act: a host tool files a long answer, before any coding call opened the box.
   await box.mirror("evidence/monid/answer.json", '{"whole":"answer"}');
   await box.env(BACKGROUND_CONTEXT);
-  await until(() => existsSync(fake.pathOf(made.id, "run/agentrun/run/work/evidence/monid/answer.json")), "the filed answer in the box");
-  assert.equal(readFileSync(fake.pathOf(made.id, "run/agentrun/run/work/evidence/monid/answer.json"), "utf8"), '{"whole":"answer"}');
+  await until(() => existsSync(fake.pathOf(made.id, "workspace/evidence/monid/answer.json")), "the filed answer in the box");
+  assert.equal(readFileSync(fake.pathOf(made.id, "workspace/evidence/monid/answer.json"), "utf8"), '{"whole":"answer"}');
 });
 
 test("a toolbox answer that redirects is refused and never followed with the key: a box holding its toolbox's port cannot send the relay to another run's sandbox", async (t) => {
@@ -558,12 +627,12 @@ test("a toolbox answer that redirects is refused and never followed with the key
   const relay = await relayFor(t, fake, ["run-mine", "run-other"]);
   const mine = await relay.make("run-mine");
   const other = await relay.make("run-other");
-  mkdirSync(fake.pathOf(other, "run/agentrun/run/work"), { recursive: true });
-  await writeFile(fake.pathOf(other, "run/agentrun/run/work/secret.txt"), "the other run's secret");
+  mkdirSync(fake.pathOf(other, "workspace"), { recursive: true });
+  await writeFile(fake.pathOf(other, "workspace/secret.txt"), "the other run's secret");
   for (const status of [302, 303]) {
-    fake.state.redirect = { from: `/toolbox/${mine}/files/download`, status, location: `/toolbox/${other}/files/download?path=/run/agentrun/run/work/secret.txt` };
+    fake.state.redirect = { from: `/toolbox/${mine}/files/download`, status, location: `/toolbox/${other}/files/download?path=/workspace/secret.txt` };
     const before = fake.requests.length;
-    const sent = await relay.as("run-mine")(`${fake.toolboxUrl}/${mine}/files/download?path=/run/agentrun/run/work/out.txt`, { headers: { authorization: "Bearer relayed-by-the-server" } });
+    const sent = await relay.as("run-mine")(`${fake.toolboxUrl}/${mine}/files/download?path=/workspace/out.txt`, { headers: { authorization: "Bearer relayed-by-the-server" } });
     const text = await sent.text();
     assert.notEqual(sent.status, 200, `${status}: ${text}`);
     assert.ok(!text.includes("the other run's secret"), `${status}: the other run's file came back`);
@@ -582,20 +651,44 @@ test("a run's relay call takes only that run's own token: run A's process, with 
   await follow(api, a.run_id, ["input_required"], { deadlineMs: 120_000 });
   await follow(api, b.run_id, ["input_required"], { deadlineMs: 120_000 });
   const boxOf = (id) => [...fake.sandboxes.values()].find((s) => s.labels["agentrun.run"] === id).id;
-  // The token run A's process was handed: its own file when it has one, else the server-wide one.
-  const own = join(runDir(data, a.run_id), "door-token");
-  const tokenA = readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
+  const [boxA, boxB] = [boxOf(a.run_id), boxOf(b.run_id)];
+  // The token each run's process was handed: its own file when it has one, else the server-wide one.
+  const tokenOf = (id) => {
+    const own = join(runDir(data, id), "door-token");
+    return readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
+  };
+  const [tokenA, tokenB] = [tokenOf(a.run_id), tokenOf(b.run_id)];
   const relayUrl = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8")).url;
-  const asA = (run) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${tokenA}`, "x-agentrun-target": `${fake.url}/sandbox/${boxOf(run)}` } });
-  // Each turn's end pulls its box, and a read of the files waits for that pull: once both are done, nothing else asks
-  // run B's box.
+  const relayed = (token, run, target) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${token}`, "x-agentrun-target": target } });
+  // A read of a sandbox, and a toolbox read of a file only run A's calls name: what reaches Daytona from run A carries
+  // that name, and no call of run B's does.
+  // In the box's work/ (BOX_WORK), a path the fake maps into each sandbox's own directory, never one of this machine's.
+  const mark = `${BOX_WORK}/run-a-only-${randomUUID()}.txt`;
+  const read = (box) => `${fake.url}/sandbox/${box}`;
+  const marked = (box) => `${fake.toolboxUrl}/${box}/files/download?path=${encodeURIComponent(mark)}`;
+  const carriesMark = (box) => (r) => r.path.includes(box) && new URLSearchParams(r.query).get("path") === mark;
+  // The file is in both boxes, so a call that reached either would be answered.
+  for (const box of [boxA, boxB]) {
+    mkdirSync(dirname(fake.pathOf(box, mark.slice(1))), { recursive: true });
+    await writeFile(fake.pathOf(box, mark.slice(1)), "only run A names this file");
+  }
   await fileList(api, a.run_id);
   await fileList(api, b.run_id);
   const before = fake.requests.length;
-  const theirs = await asA(b.run_id);
-  assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box: ${theirs.status}`);
-  assert.deepEqual(fake.requests.slice(before).filter((r) => r.path.includes(boxOf(b.run_id))).map((r) => `${r.method} ${r.path}`), [], "run B's box was never asked");
-  assert.equal((await asA(a.run_id)).status, 200, "run A's own box answers its own token");
+  // Run B goes on using its own box meanwhile, as a late call of its own at its turn's end does.
+  const bItself = relayed(tokenB, b.run_id, read(boxB));
+  // Run A, with its token: on run B's relay path, and on its own path naming run B's box.
+  for (const [run, target] of [[b.run_id, read(boxB)], [b.run_id, marked(boxB)], [a.run_id, read(boxB)], [a.run_id, marked(boxB)]]) {
+    const theirs = await relayed(tokenA, run, target);
+    // A read that reached run B's box would answer 200: the box is there.
+    assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box (${run === a.run_id ? "its own path" : "run B's path"}, ${target}): ${theirs.status}`);
+  }
+  assert.equal((await bItself).status, 200, "run B's own call reaches its own box");
+  assert.deepEqual(fake.requests.slice(before).filter(carriesMark(boxB)).map((r) => `${r.method} ${r.path}${r.query}`), [], "run B's box was never asked by run A");
+  // The name is seen when a call is sent on: run A's own box, asked the same way, gets it.
+  assert.equal((await relayed(tokenA, a.run_id, read(boxA))).status, 200, "run A's own box answers its own token");
+  await relayed(tokenA, a.run_id, marked(boxA));
+  assert.equal(fake.requests.slice(before).filter(carriesMark(boxA)).length, 1, "run A's marked call reaches its own box");
 });
 
 test("the relay: the door token only; a run it holds only; only that run's own sandbox, for a read and its toolbox's programs and files; the key goes nowhere else", async (t) => {

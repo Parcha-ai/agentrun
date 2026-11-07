@@ -106,7 +106,7 @@ test("the host hears a call ended only after its outcome is in the session's rec
   const slow = Object.create(store);
   slow.open = async (key) => {
     const writer = await store.open(key);
-    return { key: writer.key, read: () => writer.read(), append: async (records) => {
+    return { key: writer.key, sync: () => writer.sync(), read: () => writer.read(), append: async (records) => {
       for (const r of records) if (r.kind === 'kernel.start' && r.data.name === 'tool.search') searchSteps.add(r.data.stepId);
       const isOutcome = records.some((r) => r.kind === 'kernel.end' && searchSteps.has(r.data.stepId));
       if (isOutcome) await new Promise((resolve) => setTimeout(resolve, 300));

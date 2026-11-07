@@ -10,7 +10,7 @@
  * @property {string} id
  * @property {string} title
  * @property {string | null} [agent]
- * @property {string} status run.json's status (`running`, `sleeping`, `done`, ...), or `starting`, `lost`, `unknown`
+ * @property {string} status the run's status (`running`, `sleeping`, `done`, ...), or `starting`, `lost`, `unknown`
  * @property {"working" | "waiting" | "idle" | null} [state] what the run is doing, as its page shows it
  * @property {boolean} live whether the run is up, so its timeline is followed
  * @property {"busy" | "idle" | null} [busy]

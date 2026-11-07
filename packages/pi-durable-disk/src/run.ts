@@ -1,9 +1,9 @@
-// The run lifecycle in two layers. `openRunLease` is the claim's lifecycle without a store or a Harness: the
-// claim, the owner lock, `run.json` with its heartbeat, the self-fence (a timer and a watchdog thread), the seal, the
-// fence and the release; an app that owns its own Harness and store connections uses it directly. `openDurableRun`
-// builds the whole run on it: the store, the seal check, pi's Harness, resume. A fence reported by the store, the claim,
-// a write of the run's own files or the lapsed lease kills the run's commands and ends the instance (exit 75). Nothing
-// is retried. The lease writes its own files through the claim directory (`ClaimDir`), never by path.
+// The run's lifecycle. `openDurableRun` opens a run on a local directory (`localRun`): the claim directory held open, the
+// store's own lock tried before anything is reaped, the layout, the reap of what a killed incarnation's commands left
+// running, a new run's seed, then the store, pi's Harness and resume. The run's record (its status, `detail`, `wakeAt`
+// and generation) lives in its own store, in RUN_STATUS_TABLE, written by its process alone; the store's exclusive lock
+// keeps a second writer out. A fence reported by the store, the claim or a write of the run's own files kills the run's
+// commands and ends the instance (exit 75). Nothing is retried.
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
@@ -13,45 +13,25 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
 import type { HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
-import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
+import type { AcquireOptions, Claim, RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
 import { BoxUnavailableError, EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
-import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
-import { LeaseWatchdog } from "./watchdog.ts";
-import {
-  currentHolder,
-  DEFAULT_HEARTBEAT_MS,
-  DEFAULT_LEASE_EXPIRY_MS,
-  DEFAULT_LEASE_MARGIN_MS,
-  keepStartMark,
-  openClaimDir,
-  persistRecord,
-  readRunRecord,
-  RUN_JSON,
-  RunRecordError,
-  writeRunRecord,
-  type BoxMode,
-  type ClaimDir,
-  type PersistRecord,
-  type RunHolder,
-  type RunRecord,
-  type RunStatus,
-} from "./status.ts";
+import { BARRIER, syncNow, type SyncTarget } from "./barriers.ts";
+import { openArchilStore, type ArchilStore, type Profile, type Synchronous } from "./store.ts";
+import { currentHolder, openClaimDir, parseRunRecord, readStoreRecord, RUN_STATUS_TABLE, RunRecordError, type BoxMode, type ClaimDir, type RunHolder, type RunRecord, type RunStatus } from "./status.ts";
 
-/** The same-host owner lock under the run's root. */
-export const OWNER_LOCK = "owner.lock";
 /** pi's store under the claim's `store/` directory. */
 export const STORE_FILE = "run.sqlite";
-/** Under a host's epoch (`epoch`), the table of the run's store that holds what run.json would: one row, its record as JSON. */
-export const RUN_STATUS_TABLE = "pda_run_status";
+export { RUN_STATUS_TABLE };
 export { EXIT_DATAERR, EXIT_SOFTWARE };
 
-export type RunErrorCode = "INVALID_ARGUMENT" | "STORE_HEAD_UNREADABLE" | "RUN_RELEASED";
+export type RunErrorCode = "INVALID_ARGUMENT" | "STORE_HEAD_UNREADABLE" | "RUN_RELEASED" | "RELEASE_ORDER";
 
 /**
- * Bad options, a call on a released run, or a store whose head cannot be read (STORE_HEAD_UNREADABLE: the run is marked
- * `failed` and released, exit 70).
+ * Bad options, a call on a released run, `setStatus()` or `release()` after the Harness was closed outside `release()`
+ * (RELEASE_ORDER), or a store whose head cannot be read (STORE_HEAD_UNREADABLE: the run is marked `failed` and released,
+ * exit 70).
  */
 export class RunError extends PdaError {
   constructor(code: RunErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -59,50 +39,10 @@ export class RunError extends PdaError {
   }
 }
 
-/**
- * The store's last committed sequence is below the `sealedSeq` the last clean release wrote: an acknowledged commit is
- * missing. The run is refused before pi commits anything, and marked `failed` in `run.json`. Exit 65.
- */
-export class StoreBehindSealError extends PdaError {
-  readonly sealedSeq: number;
-  /** The store's last committed sequence. */
-  readonly head: number;
-  constructor(file: string, sealedSeq: number, head: number) {
-    super("STORE_BEHIND_SEAL", `store ${file} is at sequence ${head}, behind its seal at ${sealedSeq}`, { exitCode: EXIT_DATAERR });
-    this.sealedSeq = sealedSeq;
-    this.head = head;
-  }
-}
-
-/**
- * The self-fence rule: the last heartbeat that succeeded started longer ago than the lease expiry minus its margin. `by`
- * names who saw it: the main thread's timer, or the watchdog thread (which had already killed the commands).
- */
-export class LeaseLapsedError extends FencedError {
-  readonly sinceMs: number;
-  readonly by: "timer" | "watchdog";
-  constructor(sinceMs: number, limitMs: number, by: "timer" | "watchdog" = "timer") {
-    super(`the last successful heartbeat started ${Math.round(sinceMs)} ms ago, past the ${limitMs} ms self-fence (seen by the ${by})`, { code: "LEASE_LAPSED" });
-    this.sinceMs = sinceMs;
-    this.by = by;
-  }
-}
-
 /** What the run needs of its environment: pi's `env` option plus a way to kill every command it started. */
 export type RunEnv = NonNullable<HarnessOptions["env"]> & { cleanup(context: Context): Promise<void> };
 
-export interface LeaseOptions {
-  /** Heartbeat period; default 20 s. */
-  readonly heartbeatMs?: number;
-  /** The lease the supervisor grants; default 90 s. */
-  readonly expiryMs?: number;
-  /** The instance fences itself at `expiryMs - marginMs` after the last successful heartbeat started; default 15 s. */
-  readonly marginMs?: number;
-  /** How often the self-fence timer looks; default 1 s. */
-  readonly checkMs?: number;
-}
-
-export type OpenStep = "acquire" | "owner-lock" | "claim-dir" | "layout" | "commands" | "after-claim" | "seed" | "run.json" | "heartbeat" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
+export type OpenStep = "acquire" | "claim-dir" | "layout" | "commands" | "after-claim" | "seed" | "store" | "harness" | "record" | "before-resume" | "resume";
 
 /** Where a new run's seed writes: the claim's root, the store file the Harness will open, and the workspace. */
 export interface RunSeedDir {
@@ -113,46 +53,28 @@ export interface RunSeedDir {
 
 /**
  * What a new run starts with, written before anything can see the run: its store file (`storePath`, a SQLite database
- * the Harness then opens) and files in its workspace. It runs inside the run's first claim, holding the owner lock, after
- * `store/`, `work/` and `tmp/` exist and `afterClaim` has run, and before `run.json` publishes the run. It never runs on a
- * later open. If it throws (or its process dies) the open fails and nothing is published, so the next open seeds again: it
+ * the Harness then opens) and files in its workspace. It runs inside the run's first claim, after `store/`, `work/` and
+ * `tmp/` exist and `afterClaim` has run, and before the store opens. It never runs on a later open (one that finds the
+ * run's record in the store). If it throws (or its process dies) the open fails and nothing is published, so the next open seeds again: it
  * must overwrite what an earlier attempt wrote. A connection it opens on `storePath` must be closed before it returns.
  */
 export type RunSeed = (dir: RunSeedDir) => void | Promise<void>;
-export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
+export type ReleaseStep = "record" | "close" | "cleanup" | "barrier" | "unmount";
 
-export interface OpenRunLeaseOptions {
+export interface OpenRunOptions {
   /**
-   * The mount token from the host driver (reusable, 24 h); travels only on the archil wrapper's stdin, never in an
-   * environment. Required to mount an Archil disk (the default `acquire`); a run whose `acquire` is replaced (a local
-   * directory: `localRun`) needs none, and its `acquire` is handed an empty token.
-   */
-  readonly mountToken?: string;
-  /** Default /mnt/archil. */
-  readonly mountRoot?: string;
-  /** Mount with `--force`: the takeover fallback when the supervisor could not revoke. */
-  readonly force?: boolean;
-  readonly host?: ArchilHost;
-  /**
-   * The host driver's handle, written as run.json's `holder` with this process's pid and `since` added; `driver`
-   * defaults to `local`, `host` and `bootId` to this machine's. The supervisor hands it back to the driver to stop it.
+   * The host's handle, written as the record's `holder` with this process's pid and `since` added; `driver` defaults to
+   * `local`, `host` and `bootId` to this machine's.
    */
   readonly holder?: Readonly<Record<string, JsonValue>>;
   /**
    * The box this open's run actually runs in, as the host resolved it for this launch (serve's capabilities.box.mode):
-   * recorded as run.json's `box.mode` exactly as given, never probed, so the next open can tell a switch from the record.
+   * recorded as the record's `box.mode` exactly as given, never probed, so the next open can tell a switch from the record.
    * Whatever the switch, the commands reap runs on this host, outside any box, before anything of this incarnation runs,
    * and holds the open while a process the last incarnation's commands left is alive. Whether a switch may proceed at all
    * (a run leaving its box) is the host's to refuse before it opens. Absent: nothing is recorded.
    */
   readonly boxMode?: BoxMode;
-  readonly lease?: LeaseOptions;
-  /**
-   * The instance runs in a cgroup of its own (a systemd unit, a container). When the lease lapses, the watchdog then
-   * kills every other process in that cgroup too, beyond the instance's direct children and their process groups.
-   * Leave it off in a shared cgroup (a login session): its other processes are not the run's.
-   */
-  readonly ownCgroup?: boolean;
   /**
    * Kills every command the app started (pi starts each as its own process group, so the instance's own group does not
    * reach them). Runs first on any fence, before `onFenced`, and as the first step of `release()`. Default: nothing.
@@ -163,34 +85,25 @@ export interface OpenRunLeaseOptions {
   readonly context?: Context;
   /** Each lifecycle step as it completes, with its duration. */
   readonly onStep?: (step: OpenStep | ReleaseStep, ms: number) => void;
-  /** Replaceable for tests: how the claim is taken (default `acquire`). */
-  readonly acquire?: (options: AcquireOptions) => Promise<Claim>;
-  /** Replaceable for fault injection: how `run.json` is written (default `persistRecord`). */
-  readonly persist?: PersistRecord;
-  /**
-   * Replaceable for tests: how the claim's root is held open (default `openClaimDir(root)`, which requires the root to be
-   * the mount point of an Archil mount). A run root on a local directory passes `(root) => openClaimDir(root, { fstype: null })`.
-   */
+  /** How the claim is taken: `localRun(root)`'s, a directory on this machine. */
+  readonly acquire: (options: AcquireOptions) => Promise<Claim>;
+  /** Replaceable for tests: how the claim's root is held open (default `openClaimDir(root)`). */
   readonly claimDir?: (root: string) => Promise<ClaimDir>;
-  /** Replaceable for tests: the monotonic clock the self-fence measures with, in ms (default `performance.now`). */
-  readonly clock?: () => number;
   /**
-   * A new run's starting state (`RunSeed`): run once, on the open that finds no `run.json`, before `run.json` is written
-   * and the store opened; what it wrote is made durable (the claim's barrier) before the run is published.
+   * A new run's starting state (`RunSeed`): run on the open that finds no record in the store, before the store opens;
+   * what it wrote is made durable (the claim's barrier) before the store opens.
    */
   readonly seed?: RunSeed;
   /**
    * The run's claim epoch, held by its host on a record of its own (agentrun-serve's run row, whose epoch is the whole
-   * lock): this open takes no owner lock and writes no `run.json`, keeps no heartbeat and no self-fence, and checks no
-   * seal. What `run.json` would say of the run (its status, `detail`, `wakeAt`, this epoch as its generation) is kept in
-   * the run's own store instead, in RUN_STATUS_TABLE, written by this process alone; the record a previous incarnation
-   * left there is `previous`. A new run is one with no store file yet. Its host keeps any other holder off the run (it
-   * kills a live one before it claims), and the store's own exclusive lock keeps a second writer out.
+   * lock): the record's generation. Its host keeps any other holder off the run (it kills a live one before it claims).
+   * Without it, the generation is the previous record's plus 1, read from the store once this open holds its lock: for a
+   * caller on one machine with no host epoch. Either way the store's own exclusive lock keeps a second writer out.
    */
   readonly epoch?: number;
 }
 
-export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegistration> extends Omit<OpenRunLeaseOptions, "cleanup"> {
+export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegistration> extends Omit<OpenRunOptions, "cleanup"> {
   /** Default `exclusive`. */
   readonly profile?: Profile;
   /**
@@ -204,19 +117,19 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
    */
   readonly harness?: Omit<HarnessOptions<Tool>, "env">;
   /**
-   * Awaited once the claim is held (the run's directory mounted, its owner lock taken, `store/`, `work/` and `tmp/` made,
-   * what a killed incarnation's commands left running reaped) and before this incarnation's `run.json`, with the claim's
-   * paths: what it returns (`harness`, `beforeResume`, a new run's `seed`) goes into the open, over what these options
-   * give; the seed runs right after it, on a new run only. For code that
-   * must run on the live directory, as an app module's factory does under the CLI. It runs before the heartbeat, inside a
-   * supervisor's start grace. A rejection fails the open with `run.json` as the open found it (none on a new run), so a
-   * supervisor counts a failed start and backs off; the claim is released.
+   * Awaited once the claim is held (the run's directory held open, its store free, `store/`, `work/` and `tmp/` made,
+   * what a killed incarnation's commands left running reaped) and before the store opens, with the claim's paths: what
+   * it returns (`harness`, `beforeResume`, a new run's `seed`) goes into the open, over what these options give; the seed
+   * runs right after it, on a new run only. For code that must run on the live directory, as an app module's factory
+   * does under the CLI. A rejection fails the open with the store as the open found it; the claim is released.
    */
   readonly afterClaim?: (claim: Pick<Claim, "ref" | "root" | "work" | "store">) => Promise<AfterClaim<Tool>>;
-  /** The run's environment, built on the claim; default `archilEnv(claim)`. Its `cleanup` is the lease's. */
+  /** The run's environment, built on the claim; default `archilEnv(claim)`. Its `cleanup` is the run's. */
   readonly env?: (claim: Claim) => RunEnv;
   /** Wraps the raw database inside the store's fence (instrumentation, fault injection). */
   readonly decorateStore?: (database: SqliteDatabase) => SqliteDatabase;
+  /** The store's `synchronous` level; default the journal's (JOURNAL_SYNCHRONOUS in store.ts). */
+  readonly synchronous?: Synchronous;
   /**
    * Awaited once the Harness is open (its registry installed) and the run is live, before the Harness resumes: no
    * resumed task takes a step until it settles, and what it admits (a submission, a write) is committed before anything
@@ -230,11 +143,11 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
 export interface AfterClaim<Tool extends ToolRegistration = ToolRegistration> {
   readonly harness?: Omit<HarnessOptions<Tool>, "env">;
   readonly beforeResume?: (run: BeforeResume) => void | Promise<void>;
-  /** A new run's seed, over the options' `seed`; ignored on an open that finds `run.json` (a resume). */
+  /** A new run's seed, over the options' `seed`; ignored on an open that finds the run's record (a resume). */
   readonly seed?: RunSeed;
 }
 
-/** openDurableRun's afterClaim, as the lease's open runs it: what it returns for the lease is the seed. */
+/** openDurableRun's afterClaim, as the claim's open runs it: what it returns for the claim is the seed. */
 type AfterClaimHook = (claim: Claim) => Promise<{ readonly seed?: RunSeed }>;
 
 /**
@@ -245,16 +158,20 @@ export interface BeforeResume {
   readonly harness: Harness;
   readonly context: Context;
   readonly generation: number;
-  /** This incarnation's `run.json`, which the open has already written (`running`, this holder, `detail` null). */
+  /** This incarnation's record, which the open has already written in the store (`running`, this holder, `detail` null). */
   readonly record: RunRecord;
   /**
-   * `run.json` as it was before this open wrote over it: how the run was left. After a park it is `sleeping` with its
-   * `wakeAt` and `detail` and the seal its release wrote; after a planned stop, `paused` or `done` with the `detail` it
-   * set; after a crash, `running` with the dead holder and no new seal. On a fork's first open it is the record `fork`
-   * wrote: `paused`, generation 0, `detail.forkedFrom`. Null only when there was no `run.json` (a new run's first open).
+   * The record as the previous incarnation left it in the store: how the run was left. After a park it is `sleeping` with
+   * its `wakeAt` and `detail`; after a planned stop, `paused` or `done` with the `detail` it set; after a crash, `running`
+   * with the dead holder. Null on a new run's first open.
    */
   readonly previous: RunRecord | null;
   readonly claim: RunClaim;
+  /**
+   * The run's store as a barrier takes it (`syncNow`, barriers.ts): for a host that guards the effects a resumed task
+   * sends, before its own onOpen. For the barrier only; the store's writes are the Harness's.
+   */
+  readonly syncTarget: SyncTarget;
   /** The store the Harness was opened over, read-only: four reads on an object of their own, and no way to a write. */
   readonly storage: StoreReads;
   /**
@@ -289,72 +206,8 @@ export interface RunClaim {
   readonly work: string;
   readonly store: string;
   readonly fenced: boolean;
-  /** `archil sync` of the mount: the workspace is durable before a result commits and before a terminal status; a failure fences the run. */
+  /** The claim's barrier, before a result commits and before a terminal status: it refuses once the claim is fenced (a failure fences the run). On a local directory it syncs nothing beyond the store's own commits. */
   barrier(): Promise<void>;
-}
-
-/**
- * The claim's lifecycle for an app that owns its store and Harness (`openDurableRun` without the store and the Harness). Open
- * order, all done by `openRunLease`: acquire and verify the claim, take the owner lock, create `store/`, `work/` and
- * `tmp/`, reap what a killed incarnation's commands left running, seed a new run (`seed`), write `run.json` (`running`, generation + 1, this
- * holder, a heartbeat, the previous seal kept), start the heartbeat and the self-fence (a timer and a watchdog thread).
- * The app then opens its store, calls `checkSeal` before
- * anything commits, opens its Harness over `observe(storage)`, and calls `live()`. Once fenced, every member that
- * writes rejects with the first fence; nothing is retried.
- */
-export interface RunLease {
-  readonly ref: RunRef;
-  readonly claim: RunClaim;
-  /** This incarnation's generation in `run.json` (the previous one + 1). */
-  readonly generation: number;
-  /** `run.json` as last written. */
-  readonly record: RunRecord;
-  /** The seal the previous incarnation's clean release wrote; null on a first run and after a crash. */
-  readonly sealedSeq: number | null;
-  /** `run.json` as the open found it, before it wrote this incarnation's: null when there was none (a new run's first open). */
-  readonly previous: RunRecord | null;
-  readonly fenced: boolean;
-  /**
-   * The seal check on the app's store, before anything commits: the store's head (`storeHead`) below
-   * `sealedSeq` is refused with StoreBehindSealError (65), and a head that cannot be read with RunError
-   * STORE_HEAD_UNREADABLE (70). Either way `run.json` is marked `failed` first, keeping the seal, and the app then calls
-   * `abandon` (never `release`, which would seal the lower head).
-   */
-  checkSeal(store: StoreHeadSource): Promise<void>;
-  /**
-   * `storage` reporting to the lease: every resolved commit's sequence counts toward the seal `release()` writes; a
-   * commit is refused once the lease is fenced or the watchdog found it lapsed, and one stuck meanwhile ends in the
-   * fence; a FencedError from a commit fences the lease. Wrap every Storage a Harness of the run opens over.
-   */
-  observe(storage: Storage): Storage;
-  /** The store is open and checked: clear the seal in `run.json` (a heartbeat write). */
-  live(): Promise<void>;
-  /**
-   * Fence the run, once: refuse every later `run.json` write (one in flight never renames), stop the timers and the
-   * watchdog, mark the claim fenced, all synchronously; then `cleanup`, then `onFenced`. Returns the first fence. The
-   * app's store facade calls it from its `onFenced`.
-   */
-  fence(error: FencedError): FencedError;
-  /** Resolves once a fence's cleanup and `onFenced` ran (when `onFenced` returns). */
-  fenceSettled(): Promise<void>;
-  /** Write a status transition. `done` and `failed` run the barrier first, so a terminal status never names workspace files that are not durable. */
-  setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
-  /** `archil sync` of the mount: the workspace is durable before a result commits and before a terminal status; a failure fences. */
-  barrier(): Promise<void>;
-  /**
-   * After the app closed every Harness and store connection: `cleanup`, barrier, seal `run.json` with the store's last
-   * sequence and the final status (`running` seals as `paused`), release the owner lock, unmount. Heartbeats continue
-   * until the seal and the self-fence past it, so a release that hangs still ends in exit 75. A failed barrier is a
-   * fence: nothing is sealed.
-   */
-  release(): Promise<void>;
-  /**
-   * Undo an open that failed after `openRunLease` (the app's store, the seal, its Harness): nothing is sealed. A fence
-   * goes to the fence path. Otherwise the timers stop, pending writes settle, `close` (the app closing what it opened)
-   * runs, the owner lock is released and the claim unmounted, except after a HeldError, whose mount another process on
-   * this host holds.
-   */
-  abandon(error: unknown, close?: () => Promise<void>): Promise<void>;
 }
 
 export interface DurableRun {
@@ -365,7 +218,7 @@ export interface DurableRun {
   readonly env: RunEnv;
   readonly store: ArchilStore;
   readonly generation: number;
-  /** `run.json` as last written. */
+  /** The run's record as last written in its store. */
   readonly record: RunRecord;
   readonly fenced: boolean;
   /** True once `release()` began: the Harness is closed, the status is final, and the instance has nothing left to serve. */
@@ -374,77 +227,13 @@ export interface DurableRun {
   setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
   /**
    * Close the Harness (running work is aborted with no outcome recorded, so the next open reports it interrupted),
-   * kill the run's commands, barrier, seal `run.json` with the store's last sequence and the final status (`running`
-   * seals as `paused`), release the owner lock, unmount. A rejecting close or barrier is a fence: nothing is sealed.
+   * kill the run's commands, barrier, let go of the claim directory. The release's record (a run still `running` is
+   * `paused`) is written in the store before the close. A rejecting close or barrier is a fence.
    */
   release(): Promise<void>;
 }
 
-// ---- the owner lock ---------------------------------------------------------------------------------------------------
-
-export interface OwnerLock {
-  readonly file: string;
-  /** Drop the lock. An error is a fence (`ownWriteFenced`). */
-  release(): void;
-}
-
-/** Locks this process holds. A collected DatabaseSync closes its file, which would drop the lock without a word. */
-const heldLocks = new Set<DatabaseSync>();
-
-const SQLITE_BUSY = 5;
-const SQLITE_LOCKED = 6;
-const isBusy = (error: unknown): boolean => {
-  const errcode = (error as { errcode?: unknown }).errcode;
-  return typeof errcode === "number" && [SQLITE_BUSY, SQLITE_LOCKED].includes(errcode & 0xff);
-};
-
-/**
- * Take the run's same-host owner lock for the life of this process. Node has no flock(2), so the lock is
- * SQLite's exclusive POSIX lock on `<root>/owner.lock` (`locking_mode = EXCLUSIVE`, then `BEGIN EXCLUSIVE`), which the
- * kernel drops when the process dies, however it dies. The journal stays in memory, so `owner.lock` is the only file
- * the lock makes. Another process holding it is HeldError("owner-lock") (76); any other error is a fence, since the
- * file is the claim's.
- *
- * Only this function may open `owner.lock` in the process: a POSIX lock is dropped when any descriptor the process holds
- * on the file is closed, so a stray open and close elsewhere would silently release it.
- */
-export function takeOwnerLock(root: string): OwnerLock {
-  const file = join(root, OWNER_LOCK);
-  let db: DatabaseSync;
-  try {
-    db = new DatabaseSync(file, { timeout: 0 });
-  } catch (error) {
-    throw ownWriteFenced(file, error);
-  }
-  try {
-    db.exec("PRAGMA locking_mode = EXCLUSIVE");
-    db.exec("PRAGMA journal_mode = MEMORY");
-    db.exec("BEGIN EXCLUSIVE");
-    db.exec("COMMIT");
-  } catch (error) {
-    try {
-      db.close();
-    } catch {
-      // The lock was never ours; the refusal is the error to report.
-    }
-    if (isBusy(error)) throw new HeldError("owner-lock", `${file} is held by another process on this host`, { cause: error });
-    throw ownWriteFenced(file, error);
-  }
-  heldLocks.add(db);
-  return {
-    file,
-    release() {
-      if (!heldLocks.delete(db)) return;
-      try {
-        db.close();
-      } catch (error) {
-        throw ownWriteFenced(file, error);
-      }
-    },
-  };
-}
-
-// ---- the seal ---------------------------------------------------------------------------------------------------------
+// ---- the store's head and its lock ----------------------------------------------------------------------------------
 
 /** What `storeHead` reads: an ArchilStore, or any connection to a pi store with the file it opened. */
 export interface StoreHeadSource {
@@ -454,11 +243,10 @@ export interface StoreHeadSource {
 
 /**
  * The last sequence the store committed: the one read of pi's internal schema in this package. pi-durable's public
- * `Storage` has no head query (1.0.4 and 1.1.0), and the seal check must run before `Harness.open` can commit (its
- * recovery commit would reuse a lost sequence number). pi's SqliteStorage gives each commit `durable_metadata.next_seq`
+ * `Storage` has no head query (1.0.4 and 1.1.0). pi's SqliteStorage gives each commit `durable_metadata.next_seq`
  * and stores the successor in the same transaction, so the head is `next_seq - 1`. The query only reads. A store
- * without that table, row or column fails closed (STORE_HEAD_UNREADABLE), so a pi whose schema moved never skips the
- * check silently; a unit test pins the read to the sequence pi's commits return.
+ * without that table, row or column fails closed (STORE_HEAD_UNREADABLE); a unit test pins the read to the sequence
+ * pi's commits return.
  *
  * `database` is the store's fence-aware facade (`FencedDatabase`), which turns an I/O-class error into a fence; through
  * a raw connection such an error would read as STORE_HEAD_UNREADABLE.
@@ -468,8 +256,7 @@ export interface StoreHeadSource {
  * exclusive locking mode): its read meets the holder's lock. A store that is free is taken for that read and let go;
  * its close checkpoints what a previous incarnation left in its WAL, as the open that follows may. Read-write: in an
  * exclusive locking mode a read takes a write lock, which a read-only descriptor cannot. No file: nothing holds it.
- * Local directories only (a run under its host's epoch is one): an Archil run's store must never be opened read-write
- * from anywhere but its holder, since a read-write open from another client flips that mount read-only.
+ * A local directory's store only.
  */
 export function assertStoreFree(file: string): void {
   if (!existsSync(file)) return;
@@ -505,11 +292,18 @@ export async function storeHead(store: StoreHeadSource): Promise<number> {
 
 /**
  * `storage` with `before` run ahead of every commit (it may throw to refuse it), every resolved commit's sequence
- * reported to `after` and every rejected commit's error to `failed`; everything else delegates unchanged.
+ * reported to `after`, every rejected commit's error to `failed`, and its close to `closing`; everything else delegates
+ * unchanged.
  */
-function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Seq): void; failed(error: unknown): void }): Storage {
+function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Seq): void; failed(error: unknown): void; closing?(): void }): Storage {
   return new Proxy(storage, {
     get(target, key) {
+      if (key === "close" && hooks.closing) {
+        return (context: Context) => {
+          hooks.closing!();
+          return target.close(context);
+        };
+      }
       if (key === "commit") {
         return async (writes: readonly StorageWrite[], context: Context) => {
           hooks.before();
@@ -530,7 +324,7 @@ function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Se
   });
 }
 
-// ---- the lease --------------------------------------------------------------------------------------------------------
+// ---- the claim's open -------------------------------------------------------------------------------------------------
 
 const asFenced = (error: unknown, what: string): FencedError =>
   error instanceof FencedError ? error : new FencedError(`${what} failed, so the claim cannot be trusted`, { cause: error });
@@ -543,7 +337,7 @@ export function exitFenced(error: FencedError): void {
 
 type Step = <T>(name: OpenStep | ReleaseStep, run: () => T | Promise<T>) => Promise<T>;
 
-function stepper(onStep: OpenRunLeaseOptions["onStep"]): Step {
+function stepper(onStep: OpenRunOptions["onStep"]): Step {
   return async (name, run) => {
     const t0 = performance.now();
     const value = await run();
@@ -552,66 +346,40 @@ function stepper(onStep: OpenRunLeaseOptions["onStep"]): Step {
   };
 }
 
-function leaseOf(options: LeaseOptions = {}): Required<LeaseOptions> {
-  const lease = {
-    heartbeatMs: options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
-    expiryMs: options.expiryMs ?? DEFAULT_LEASE_EXPIRY_MS,
-    marginMs: options.marginMs ?? DEFAULT_LEASE_MARGIN_MS,
-    checkMs: options.checkMs ?? 1000,
-  };
-  const limit = lease.expiryMs - lease.marginMs;
-  if (!(lease.heartbeatMs > 0 && lease.checkMs > 0 && lease.marginMs >= 0 && limit > lease.heartbeatMs)) {
-    throw new RunError("INVALID_ARGUMENT", `lease ${JSON.stringify(lease)}: the self-fence (expiry minus margin) must exceed the heartbeat period`);
-  }
-  return lease;
-}
-
 const noCleanup = async (): Promise<void> => undefined;
 
-class Lease implements RunLease {
+/**
+ * The claim's lifecycle under the run: the claim directory held open, the store's lock tried, the layout, the commands
+ * reap and a new run's seed; then the record (kept in memory here, written in the store by `Run`), the fence, the
+ * barrier and the release.
+ */
+class Lease {
   readonly ref: RunRef;
   readonly claim: RunClaim;
-  /** The claim itself, for a layer that builds on the lease (`openDurableRun` builds the env on it). */
+  /** The claim itself, for a layer that builds on it (`openDurableRun` builds the env on it). */
   readonly rawClaim: Claim;
-  #options: OpenRunLeaseOptions;
+  #options: OpenRunOptions;
   #context: Context;
-  #lease: Required<LeaseOptions>;
-  #clock: () => number;
-  #persist: PersistRecord;
   #cleanup: (context: Context) => Promise<void>;
   #onFenced: (error: FencedError) => void;
   #openDir: (root: string) => Promise<ClaimDir>;
-  /** The claim's root held open: every write of the lease's own files goes through it. */
+  /** The claim's root held open: the layout is made through it. */
   #dir: ClaimDir | undefined;
   #dirClosed: Promise<void> | undefined;
-  #lock: OwnerLock | undefined;
   #previous: RunRecord | undefined;
   #record: RunRecord | undefined;
-  #lastSeq = 0;
   #fence: { error: FencedError; done: Promise<void> } | undefined;
-  /** Aborted by the fence, synchronously: a `run.json` write still in flight then refuses to rename. */
-  #fencing = new AbortController();
   #releasing: Promise<void> | undefined;
   #released = false;
-  #writes: Promise<unknown> = Promise.resolve();
-  #beating = false;
-  #lastBeatStart = 0;
-  #lastBeatNs = 0n;
-  #heartbeat: NodeJS.Timeout | undefined;
-  #leaseCheck: NodeJS.Timeout | undefined;
-  #watchdog: LeaseWatchdog | undefined;
-  /** The host's claim epoch (`epoch`): no owner lock, no run.json, no heartbeat; the record is kept in memory and in the store. */
+  /** The host's claim epoch (`epoch`), or undefined: the generation is then the previous record's plus 1. */
   readonly epoch: number | undefined;
 
-  constructor(ref: RunRef, claim: Claim, options: OpenRunLeaseOptions, context: Context) {
+  constructor(ref: RunRef, claim: Claim, options: OpenRunOptions, context: Context) {
     this.epoch = options.epoch;
     this.ref = ref;
     this.rawClaim = claim;
     this.#options = options;
     this.#context = context;
-    this.#lease = leaseOf(options.lease);
-    this.#clock = options.clock ?? (() => performance.now());
-    this.#persist = options.persist ?? persistRecord;
     this.#cleanup = options.cleanup ?? noCleanup;
     this.#onFenced = options.onFenced ?? exitFenced;
     this.#openDir = options.claimDir ?? ((root) => openClaimDir(root));
@@ -637,10 +405,6 @@ class Lease implements RunLease {
     return this.#record!.generation;
   }
 
-  get sealedSeq(): number | null {
-    return this.#previous?.sealedSeq ?? null;
-  }
-
   get previous(): RunRecord | null {
     return this.#previous ?? null;
   }
@@ -663,8 +427,6 @@ class Lease implements RunLease {
     if (this.#fence) return this.#fence.error;
     const fence = { error, done: Promise.resolve() };
     this.#fence = fence;
-    this.#fencing.abort(error);
-    this.#stopTimers();
     this.rawClaim.markFenced(error);
     fence.done = this.#cleanup(this.#context)
       .catch(() => undefined)
@@ -679,47 +441,18 @@ class Lease implements RunLease {
   }
 
   /**
-   * The order after the claim: the owner lock, the layout, the reap of a killed incarnation's commands, `afterClaim`
-   * (openDurableRun's), a new run's seed (afterClaim's over the options'), then `run.json` (`running`, generation + 1,
-   * this holder, a heartbeat) and the heartbeat, before
-   * the store and the Harness open. Nothing is published before that write: an open that fails earlier leaves `run.json`
-   * as it found it, so a supervisor counts a failed start and backs off; its start grace covers the steps before it.
-   * Once written, a supervisor never sees the previous incarnation's stale heartbeat on the live claim. That first write
-   * keeps the previous `sealedSeq`, which the seal check still needs; `live()` clears it once the store is open.
+   * The claim directory held open and the store's lock tried, before a previous incarnation's commands are reaped, so an
+   * open refused by it kills nothing of the run that holds the store; then `store/`, `work/` and `tmp/`, the commands
+   * reap, `afterClaim` and a new run's seed. This incarnation's record (`running`, this holder) is written in the store
+   * once it is open (`Run`).
    */
   async open(step: Step, holder: RunHolder, afterClaim?: AfterClaimHook): Promise<void> {
     const claim = this.rawClaim;
-    // SQLite resolves symbolic links in a file name, `/proc/self/fd/<n>` included, so `owner.lock` is the one file opened
-    // by path: right after the mount check, and the file it names must then be the one in the claim directory.
-    const epoch = this.epoch;
-    if (epoch !== undefined) {
-      await step("claim-dir", async () => {
-        const dir = (this.#dir = await this.#openDir(claim.root));
-        await dir.assertMounted();
-        // The store's own exclusive lock is what a second writer meets here: tried now, before a previous incarnation's
-        // commands are reaped, so an open refused by it kills nothing of the run that holds the store.
-        assertStoreFree(join(claim.store, STORE_FILE));
-      });
-    } else this.#lock = await step("owner-lock", async () => {
+    await step("claim-dir", async () => {
       const dir = (this.#dir = await this.#openDir(claim.root));
       await dir.assertMounted();
-      const lock = takeOwnerLock(claim.root);
-      try {
-        await dir.assertSame(OWNER_LOCK);
-      } catch (error) {
-        try {
-          lock.release();
-        } catch {
-          // The lock is not the claim's; the failed check is the fence to report.
-        }
-        throw error;
-      }
-      return lock;
+      assertStoreFree(join(claim.store, STORE_FILE));
     });
-    // Under a host's epoch the previous record is in the store, read once it is open (`fromStore`).
-    const previous = epoch === undefined ? await this.#readPrevious() : undefined;
-    this.#previous = previous;
-    this.#lastSeq = previous?.sealedSeq ?? 0;
     await step("layout", () => this.#layout());
     // A claim that records its commands (a local run's): end what a killed incarnation left running, before any code of
     // this incarnation runs, so no command of it still writes in work/ once the run resumes. A process of it that outlives
@@ -727,57 +460,19 @@ class Lease implements RunLease {
     const commands = claim.commands;
     if (commands !== undefined) await step("commands", () => reapOrRefuse(commands));
     const given = afterClaim ? await step("after-claim", () => afterClaim(claim)) : undefined;
-    // A new run (no run.json): its seed writes what it starts with, and only then is it published. afterClaim's seed
-    // goes over the options'.
+    // A new run (no record in its store yet): its seed writes what it starts with before the store opens. afterClaim's
+    // seed goes over the options'. A seed that failed, or whose process died, left no record, so the next open seeds again.
     const seed = given?.seed ?? this.#options.seed;
-    const fresh = epoch === undefined ? previous === undefined : !existsSync(join(claim.store, STORE_FILE));
-    if (seed !== undefined && fresh) {
+    if (seed !== undefined && (await readStoreRecord(join(claim.store, STORE_FILE))) === null) {
       await step("seed", async () => {
         await this.#dir!.assertMounted();
-        // While a new run seeds it has no `run.json` heartbeat, and a supervisor keeps a start in its grace only while its
-        // start mark is younger than the grace: the mark is kept fresh until the seed ends, through the held claim directory.
-        // A seeder that dies stops, and the grace runs out as for any start.
-        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs, claim.root);
-        try {
-          await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
-        } finally {
-          await stop();
-        }
+        await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
         await this.#dir!.assertMounted();
         await claim.barrier();
       });
     }
-    if (epoch !== undefined) {
-      const now = new Date().toISOString();
-      this.#record = { run: this.ref.id, status: "running", generation: epoch, sealedSeq: null, wakeAt: null, holder, heartbeatAt: now, updatedAt: now, detail: null, ...(this.#options.boxMode === undefined ? {} : { box: { mode: this.#options.boxMode } }) };
-      return;
-    }
-    await step("run.json", async () => {
-      const now = new Date().toISOString();
-      this.#noteBeat(await this.#write(() => ({
-        run: this.ref.id,
-        status: "running",
-        generation: (previous?.generation ?? 0) + 1,
-        sealedSeq: previous?.sealedSeq ?? null,
-        wakeAt: null,
-        holder,
-        heartbeatAt: now,
-        updatedAt: now,
-        detail: null,
-        ...(this.#options.boxMode === undefined ? {} : { box: { mode: this.#options.boxMode } }),
-      })));
-    });
-    // Two self-fences: a timer on this thread, and a watchdog thread for when this thread is stuck in a FUSE request.
-    await step("heartbeat", () => {
-      this.#heartbeat = setInterval(() => this.#beat(), this.#lease.heartbeatMs).unref();
-      this.#leaseCheck = setInterval(() => this.#checkLease(), this.#lease.checkMs).unref();
-      this.#watchdog = new LeaseWatchdog({
-        limitMs: this.#lease.expiryMs - this.#lease.marginMs,
-        checkMs: this.#lease.checkMs,
-        beatNs: this.#lastBeatNs,
-        ownCgroup: this.#options.ownCgroup === true,
-      });
-    });
+    const now = new Date().toISOString();
+    this.#record = { run: this.ref.id, status: "running", generation: this.epoch ?? 0, wakeAt: null, holder, updatedAt: now, detail: null, ...(this.#options.boxMode === undefined ? {} : { box: { mode: this.#options.boxMode } }) };
   }
 
   /** `store/`, `work/` and `tmp/`, made through the held claim directory. */
@@ -794,62 +489,30 @@ class Lease implements RunLease {
     }
   }
 
-  async checkSeal(store: StoreHeadSource): Promise<void> {
-    // Under a host's epoch there is no seal: the host checkpoints the store when it takes the run back.
-    if (this.epoch !== undefined) return;
-    const sealed = this.sealedSeq;
-    let head: number;
-    try {
-      head = await storeHead(store);
-    } catch (error) {
-      if (error instanceof RunError) await this.#markFailed({ code: error.code, sealedSeq: sealed, reason: error.message });
-      throw error;
-    }
-    this.#lastSeq = Math.max(this.#lastSeq, head);
-    if (sealed === null || head >= sealed) return;
-    const refusal = new StoreBehindSealError(store.file, sealed, head);
-    await this.#markFailed({ code: refusal.code, sealedSeq: sealed, head });
-    throw refusal;
-  }
-
-  observe(storage: Storage): Storage {
+  /** `storage` reporting to the claim: a commit is refused once the run is fenced, and a FencedError from one fences it. */
+  observe(storage: Storage, closing?: () => void): Storage {
     return observeCommits(storage, {
+      ...(closing ? { closing } : {}),
       before: () => {
         if (this.#fence) throw this.#fence.error;
-        const lapse = this.#watchdogLapse();
-        if (lapse) throw this.fence(lapse);
       },
-      after: (seq) => {
-        this.#lastSeq = Math.max(this.#lastSeq, seq);
-        const lapse = this.#watchdogLapse();
-        if (lapse) this.fence(lapse);
-      },
+      after: () => undefined,
       failed: (error) => {
         if (error instanceof FencedError) this.fence(error);
       },
     });
   }
 
-  async live(): Promise<void> {
-    this.#assertUsable();
-    if (this.epoch !== undefined) return;
-    const now = new Date().toISOString();
-    this.#noteBeat(await this.#write((current) => ({ ...current!, sealedSeq: null, heartbeatAt: now })));
-  }
-
   async abandon(error: unknown, close?: () => Promise<void>): Promise<void> {
-    this.#stopTimers();
     if (this.#fence || error instanceof FencedError) {
       this.fence(this.#fence?.error ?? (error as FencedError));
       await this.fenceSettled();
       return;
     }
     try {
-      await this.#writes;
       await close?.();
-      this.#lock?.release();
       await this.#closeDir();
-      if (!(error instanceof HeldError)) await this.rawClaim.release();
+      await this.rawClaim.release();
     } catch (cleanupError) {
       if (cleanupError instanceof FencedError) {
         this.fence(cleanupError);
@@ -861,20 +524,23 @@ class Lease implements RunLease {
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
     this.#assertUsable();
     if (status === "done" || status === "failed") await this.barrier();
-    const now = new Date().toISOString();
-    if (this.epoch !== undefined) {
-      this.#record = { ...this.#record!, status, detail, wakeAt: options.wakeAt ?? null, updatedAt: now };
-      return;
-    }
-    await this.#write((current) => ({ ...current!, status, detail, wakeAt: options.wakeAt ?? null, updatedAt: now }));
+    this.#record = { ...this.#record!, status, detail, wakeAt: options.wakeAt ?? null, updatedAt: new Date().toISOString() };
   }
 
-  /** Under a host's epoch: the record the previous incarnation left in the store, once it is open. */
+  /**
+   * The record the previous incarnation left in the store, read once it is open under its lock. Without a host epoch,
+   * this incarnation's generation is that record's plus 1. A record naming another run is refused (RunRecordError), so
+   * an open with the wrong id never resumes that run's work or writes its own id over it.
+   */
   fromStore(previous: RunRecord | undefined): void {
+    if (previous !== undefined && previous.run !== this.ref.id) {
+      throw new RunRecordError(`the record in ${join(this.rawClaim.store, STORE_FILE)} names run ${JSON.stringify(previous.run)}, not ${JSON.stringify(this.ref.id)}`);
+    }
     this.#previous = previous;
+    if (this.epoch === undefined) this.#record = { ...this.#record!, generation: (previous?.generation ?? 0) + 1 };
   }
 
-  /** Under a host's epoch: the record a release leaves (a run still `running` is `paused`), before the store closes. */
+  /** The record a release leaves (a run still `running` is `paused`), before the store closes. */
   releasedRecord(): RunRecord {
     const current = this.#record!;
     this.#record = { ...current, status: current.status === "running" ? "paused" : current.status, updatedAt: new Date().toISOString() };
@@ -902,24 +568,6 @@ class Lease implements RunLease {
     const step = stepper(this.#options.onStep);
     await step("cleanup", () => this.#cleanup(this.#context));
     await step("barrier", () => this.barrier());
-    clearInterval(this.#heartbeat);
-    if (this.epoch === undefined) await step("seal", () => {
-      const now = new Date().toISOString();
-      return this.#write((current) => ({
-        ...current!,
-        status: current!.status === "running" ? "paused" : current!.status,
-        sealedSeq: this.#lastSeq,
-        updatedAt: now,
-      }));
-    });
-    this.#stopTimers();
-    if (this.epoch === undefined) await step("unlock", () => {
-      try {
-        this.#lock!.release();
-      } catch (error) {
-        throw this.fence(asFenced(error, `releasing ${OWNER_LOCK}`));
-      }
-    });
     await step("unmount", async () => {
       await this.#closeDir();
       try {
@@ -932,102 +580,14 @@ class Lease implements RunLease {
     this.#released = true;
   }
 
-  async #readPrevious(): Promise<RunRecord | undefined> {
-    let previous: RunRecord | undefined;
-    try {
-      previous = await readRunRecord(this.#dir!);
-    } catch (error) {
-      if (error instanceof RunRecordError) throw error;
-      throw asFenced(error, `reading ${join(this.rawClaim.root, RUN_JSON)}`);
-    }
-    if (previous !== undefined && previous.run !== this.ref.id) {
-      throw new RunRecordError(`${join(this.rawClaim.root, RUN_JSON)} names run ${JSON.stringify(previous.run)}, not ${JSON.stringify(this.ref.id)}`);
-    }
-    return previous;
-  }
-
-  /** `run.json` becomes `failed` with `detail`; the seal the record carries is kept as evidence. */
-  async #markFailed(detail: JsonValue): Promise<void> {
-    if (this.epoch !== undefined) return;
-    const now = new Date().toISOString();
-    await this.#write((current) => ({ ...current!, status: "failed", updatedAt: now, detail }));
-  }
-
-  /** Serialize writes of `run.json`. Resolves with the clock readings when this write started; a failure fences. */
-  #write(change: (current: RunRecord | undefined) => RunRecord): Promise<{ started: number; startedNs: bigint }> {
-    const next = this.#writes.then(async () => {
-      if (this.#fence) throw this.#fence.error;
-      const record = change(this.#record);
-      const started = this.#clock();
-      const startedNs = process.hrtime.bigint();
-      try {
-        const dir = this.#dir;
-        if (dir === undefined) throw new FencedError(`the claim directory of ${this.rawClaim.root} is closed`);
-        await writeRunRecord(dir, record, this.#persist, this.#fencing.signal);
-      } catch (error) {
-        throw this.fence(asFenced(error, `writing ${RUN_JSON}`));
-      }
-      this.#record = record;
-      return { started, startedNs };
-    });
-    this.#writes = next.catch(() => undefined);
-    return next;
-  }
-
-  /**
-   * Close the claim directory once no write can still address it: a closed descriptor's number may be reused, and
-   * `/proc/self/fd/<n>` would then name another file. An open directory also keeps the mount busy, so this runs before
-   * the unmount.
-   */
+  /** Close the claim directory once (a closed descriptor's number may be reused, and `/proc/self/fd/<n>` would then name another file). */
   #closeDir(): Promise<void> {
     this.#dirClosed ??= (async () => {
-      await this.#writes;
       const dir = this.#dir;
       this.#dir = undefined;
       await dir?.close().catch(() => undefined);
     })();
     return this.#dirClosed;
-  }
-
-  #beat(): void {
-    if (this.#beating || this.#fence || this.#released) return;
-    this.#beating = true;
-    this.#write((current) => ({ ...current!, heartbeatAt: new Date().toISOString() }))
-      .then((started) => this.#noteBeat(started))
-      .catch(() => undefined)
-      .finally(() => (this.#beating = false));
-  }
-
-  /** A heartbeat-class write (the first, the one in `live()`, each heartbeat) succeeded. */
-  #noteBeat(write: { started: number; startedNs: bigint }): void {
-    this.#lastBeatStart = Math.max(this.#lastBeatStart, write.started);
-    if (write.startedNs > this.#lastBeatNs) this.#lastBeatNs = write.startedNs;
-    this.#watchdog?.beat(write.startedNs);
-  }
-
-  #watchdogLapse(): LeaseLapsedError | undefined {
-    const since = this.#watchdog?.lapsedAfterMs;
-    return since === undefined ? undefined : new LeaseLapsedError(since, this.#lease.expiryMs - this.#lease.marginMs, "watchdog");
-  }
-
-  #checkLease(): void {
-    if (this.#fence) return;
-    const lapse = this.#watchdogLapse();
-    if (lapse) {
-      this.fence(lapse);
-      return;
-    }
-    const since = this.#clock() - this.#lastBeatStart;
-    const limit = this.#lease.expiryMs - this.#lease.marginMs;
-    if (since > limit) this.fence(new LeaseLapsedError(since, limit));
-  }
-
-  #stopTimers(): void {
-    clearInterval(this.#heartbeat);
-    clearInterval(this.#leaseCheck);
-    this.#heartbeat = this.#leaseCheck = undefined;
-    this.#watchdog?.stop();
-    this.#watchdog = undefined;
   }
 
   #assertUsable(): void {
@@ -1036,34 +596,19 @@ class Lease implements RunLease {
   }
 }
 
-async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, afterClaim?: AfterClaimHook): Promise<Lease> {
+async function openLease(ref: RunRef, options: OpenRunOptions, step: Step, afterClaim?: AfterClaimHook): Promise<Lease> {
   // No box to run in: nothing of the run is claimed, run or written (a host that launched it so has a bug; serve holds it).
   if (options.boxMode === "unavailable") throw new BoxUnavailableError();
   const context = options.context ?? BACKGROUND_CONTEXT;
-  leaseOf(options.lease);
   let holder: RunHolder;
   try {
     holder = currentHolder(options.holder);
   } catch (error) {
     throw new RunError("INVALID_ARGUMENT", `holder ${JSON.stringify(options.holder)}: ${(error as Error).message}`, { cause: error });
   }
-  // A run under its host's epoch is a local directory's (localRun): its open probes its store read-write
-  // (assertStoreFree), which an Archil mount must never see from anywhere but its holder.
-  if (options.epoch !== undefined && options.acquire === undefined) {
-    throw new RunError("INVALID_ARGUMENT", "a run under its host's epoch is a local directory's: pass localRun(root)");
-  }
-  if (options.acquire === undefined && !options.mountToken) {
-    throw new RunError("INVALID_ARGUMENT", "mountToken is required to mount an Archil disk; a run on a local directory passes localRun(root) instead");
-  }
-  const claim = await step("acquire", () =>
-    (options.acquire ?? acquire)({
-      ref,
-      token: options.mountToken ?? "",
-      ...(options.mountRoot === undefined ? {} : { mountRoot: options.mountRoot }),
-      ...(options.force === undefined ? {} : { force: options.force }),
-      ...(options.host === undefined ? {} : { host: options.host }),
-    }),
-  );
+  // A run is a local directory's: its claim comes from localRun(root).
+  if (typeof options.acquire !== "function") throw new RunError("INVALID_ARGUMENT", "a run is a local directory: pass localRun(root)");
+  const claim = await step("acquire", () => options.acquire({ ref }));
   const lease = new Lease(ref, claim, options, context);
   try {
     await lease.open(step, holder, afterClaim);
@@ -1072,17 +617,6 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, 
     throw error;
   }
   return lease;
-}
-
-/**
- * Open the claim's lifecycle for run `ref` (see `RunLease`): acquire and verify the claim, take the owner lock, create
- * `store/`, `work/` and `tmp/`, reap a killed incarnation's commands, seed a new run, write `run.json` and start the
- * heartbeat and the self-fence. Errors are typed as for
- * `openDurableRun`: HeldError (76), FencedError (75, also passed to `onFenced`), RunRecordError (65), RunError
- * INVALID_ARGUMENT before any claim.
- */
-export async function openRunLease(ref: RunRef, options: OpenRunLeaseOptions): Promise<RunLease> {
-  return openLease(ref, options, stepper(options.onStep));
 }
 
 // ---- the run ----------------------------------------------------------------------------------------------------------
@@ -1097,6 +631,8 @@ class Run implements DurableRun {
   #harness: Harness | undefined;
   #releasing: Promise<void> | undefined;
   #released = false;
+  /** The Harness closed the store outside release(): its record has nowhere to go. */
+  #closedFirst = false;
 
   constructor(lease: Lease, env: RunEnv, options: OpenDurableRunOptions<ToolRegistration>, context: Context) {
     this.ref = lease.ref;
@@ -1130,46 +666,45 @@ class Run implements DurableRun {
     return this.#lease.fenced;
   }
 
-  /** The store, the seal check, pi's Harness over the observed storage, the seal cleared, resume. */
+  /** The store, pi's Harness over the observed storage, the record, resume. */
   async open(step: Step): Promise<void> {
     const lease = this.#lease;
     const file = join(lease.rawClaim.store, STORE_FILE);
-    this.#store = await step("store", () =>
-      openArchilStore(file, this.#options.profile ?? "exclusive", {
+    // The run's record lives in its store. The previous incarnation's is read under the store's lock before pi's
+    // Harness opens over it, so a malformed record, or one naming another run, is refused before anything of pi runs there.
+    await step("store", async () => {
+      this.#store = await openArchilStore(file, this.#options.profile ?? "exclusive", {
         onFenced: (error) => void lease.fence(error),
         ...(this.#options.keepWal ? { keepWal: true } : {}),
         ...(this.#options.decorateStore === undefined ? {} : { decorate: this.#options.decorateStore }),
-      }),
-    );
-    // Both refusals here are terminal: the run is marked `failed`, keeping its seal, so the supervisor stops on it.
-    await step("seal", () => lease.checkSeal(this.#store!));
-    const storage = lease.observe(this.#store.storage);
+        ...(this.#options.synchronous === undefined ? {} : { synchronous: this.#options.synchronous }),
+      });
+      const database = this.#store.database;
+      await database.exec(`CREATE TABLE IF NOT EXISTS ${RUN_STATUS_TABLE} (id INTEGER PRIMARY KEY CHECK (id = 1), record TEXT NOT NULL)`);
+      const row = await database.get<{ record: string }>(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`);
+      lease.fromStore(row ? parseRunRecord(row.record) : undefined);
+    });
+    const storage = lease.observe(this.#store!.storage, () => {
+      // A fence's own close (pi closes its storage when a commit fences) is never the app's misuse.
+      if (this.#releasing === undefined && !lease.fenced) this.#closedFirst = true;
+    });
     // openDurableRun refused an open without Harness options (here or from afterClaim) before this runs.
     this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness!, env: this.env }, this.#context));
-    await step("live", async () => {
-      await lease.live();
-      // Under a host's epoch the run's record lives in its store: the previous incarnation's read, this one's written.
-      if (lease.epoch !== undefined) {
-        const database = this.#store!.database;
-        await database.exec(`CREATE TABLE IF NOT EXISTS ${RUN_STATUS_TABLE} (id INTEGER PRIMARY KEY CHECK (id = 1), record TEXT NOT NULL)`);
-        const row = await database.get<{ record: string }>(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`);
-        lease.fromStore(row ? (JSON.parse(row.record) as RunRecord) : undefined);
-        await this.#keepStatus(lease.record);
-      }
-    });
+    // This incarnation's record, written under the store's lock.
+    await step("record", () => this.#keepStatus(lease.record));
     const before = this.#options.beforeResume;
     if (before) {
-      // The storage the Harness was opened over (the lease observes its commits), and its head now: nothing commits
+      // The storage the Harness was opened over (the claim observes its commits), and its head now: nothing commits
       // between the open and the hook, since the Harness has not resumed.
       await step("before-resume", async () => {
         const head = (await storeHead(this.#store!)) as Seq;
-        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, previous: lease.previous, claim: lease.claim, storage: storeReads(storage), head });
+        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, previous: lease.previous, claim: lease.claim, syncTarget: this.#store!, storage: storeReads(storage), head });
       });
     }
     await step("resume", () => this.#harness!.resume());
   }
 
-  /** Undo a failed open: close what this layer opened, then the lease's own undo. */
+  /** Undo a failed open: close what this layer opened, then the claim's own undo. */
   abandon(error: unknown): Promise<void> {
     return this.#lease.abandon(error, async () => {
       if (this.#harness) await this.#harness.close(this.#context);
@@ -1183,11 +718,29 @@ class Run implements DurableRun {
 
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
     if (!this.#lease.fenced && (this.#released || this.#releasing)) throw new RunError("RUN_RELEASED", `run ${this.ref.id} is released`);
+    this.#assertOrder("setStatus()");
+    // What the run committed is durable before a status says where it stands: the status is a commit of the store,
+    // synced after it. A fenced run's store takes no write: a fenced run syncs nothing.
     await this.#lease.setStatus(status, detail, options);
-    if (this.#lease.epoch !== undefined) await this.#keepStatus(this.#lease.record);
+    await this.#keepStatus(this.#lease.record);
+    if (!this.#lease.fenced) await syncNow(this.#store!, BARRIER.runStatus);
   }
 
-  /** Under a host's epoch: the run's record, written in its store (its one row of RUN_STATUS_TABLE); a failed write fences. */
+  /**
+   * The record is written in the store, and closing the Harness closes the store: a Harness closed outside release()
+   * leaves the record nowhere to go. Refused in words (RELEASE_ORDER), with nothing fenced and the record as the open
+   * wrote it, as after a crash.
+   */
+  #assertOrder(what: string): void {
+    // A fenced run answers with its fence's error, never this one.
+    if (!this.#closedFirst || this.#lease.fenced) return;
+    throw new RunError(
+      "RELEASE_ORDER",
+      `${what} before closing the Harness: run ${this.ref.id}'s Harness was closed first, and its store with it, so its record cannot be written. close the Harness only through release(), which writes the record and then closes it`,
+    );
+  }
+
+  /** The run's record, written in its store (its one row of RUN_STATUS_TABLE); a failed write fences. */
   async #keepStatus(record: RunRecord): Promise<void> {
     try {
       await this.#store!.database.run(`INSERT INTO ${RUN_STATUS_TABLE} (id, record) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET record = excluded.record`, JSON.stringify(record));
@@ -1199,19 +752,27 @@ class Run implements DurableRun {
   release(): Promise<void> {
     if (this.#released) return Promise.resolve();
     if (this.#lease.fenced) return Promise.reject(this.#lease.fencedBy);
+    try {
+      this.#assertOrder("release()");
+    } catch (error) {
+      return Promise.reject(error);
+    }
     this.#releasing ??= this.#release();
     return this.#releasing;
   }
 
   async #release(): Promise<void> {
     const step = stepper(this.#options.onStep);
-    // Under a host's epoch the release's record goes into the store while it is still open: a run still running is paused.
-    if (this.#lease.epoch !== undefined) await step("seal", () => this.#keepStatus(this.#lease.releasedRecord()));
+    // The release's record goes into the store while it is still open: a run still running is paused.
+    await step("record", () => this.#keepStatus(this.#lease.releasedRecord()));
     // Closing first aborts running work without recording an outcome, so the next open reports it interrupted; the
-    // lease then kills the commands, barriers, seals and unmounts.
+    // claim then kills the commands, barriers and lets go of its directory.
     await step("close", async () => {
       try {
         await this.#harness!.close(this.#context);
+        // A close that checkpoints synced the WAL; one that keeps it (keepWal) left it as it was: what the run committed,
+        // its release record among it, is durable before the claim is let go.
+        if (this.#options.keepWal) await syncNow(this.#store!, BARRIER.runRelease);
       } catch (error) {
         throw this.#lease.fence(asFenced(error, "closing the Harness"));
       }
@@ -1222,13 +783,14 @@ class Run implements DurableRun {
 }
 
 /**
- * Open run `ref` on this host: the lease (`openRunLease`: claim, owner lock, layout, the commands reap, then
- * `afterClaim`, a new run's seed, then `run.json`, heartbeat and self-fence), then the store, the seal check before anything commits, pi's Harness with the app's registry,
- * the seal cleared in `run.json`, resume.
+ * Open run `ref` on this host: the claim (`localRun`'s: the claim directory, the store's lock tried, the layout, the
+ * commands reap, then `afterClaim` and a new run's seed), then the store, pi's Harness with the app's registry, the
+ * run's record in the store, resume.
  *
- * Errors are typed: HeldError (76) when another client, another process on this host or another connection holds the
- * run; FencedError (75) when the claim cannot be trusted (also passed to `onFenced`); StoreBehindSealError (65) and
- * RunError STORE_HEAD_UNREADABLE (70), each after marking the run `failed` and releasing the claim.
+ * Errors are typed: HeldError (76) when another process holds the run's store, or a process a killed incarnation's
+ * commands left will not die; FencedError (75) when the claim cannot be trusted (also passed to `onFenced`); RunError
+ * STORE_HEAD_UNREADABLE (70) when the store's head cannot be read; RunRecordError (65) when the store's record is
+ * malformed or names another run.
  */
 export async function openDurableRun<Tool extends ToolRegistration = ToolRegistration>(
   ref: RunRef,
@@ -1240,7 +802,7 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
   let env: RunEnv | undefined;
   let opening: OpenDurableRunOptions<Tool> = options;
   const given = options.afterClaim;
-  // Inside the lease's open, before run.json: a factory that fails publishes nothing of this incarnation.
+  // Inside the claim's open, before the store opens: a factory that fails leaves nothing of this incarnation.
   const afterClaim =
     given &&
     (async ({ ref: claimRef, root, work, store }: Claim) => {
@@ -1249,7 +811,7 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
       if (!opening.harness) throw new RunError("INVALID_ARGUMENT", "openDurableRun needs pi's Harness options: afterClaim returned none, and its options give none");
       return got.seed ? { seed: got.seed } : {};
     });
-  // The lease's cleanup is the environment's: abandoning the lease cleans both.
+  // The claim's cleanup is the environment's: abandoning the claim cleans both.
   const lease = await openLease(ref, { ...options, context, cleanup: (c) => env?.cleanup(c) ?? Promise.resolve() }, step, afterClaim);
   try {
     env = (options.env ?? ((c: Claim) => archilEnv(c)))(lease.rawClaim);
