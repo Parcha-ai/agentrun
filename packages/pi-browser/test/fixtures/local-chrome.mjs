@@ -11,9 +11,6 @@ export function skipIncapable(t, error) {
   t.skip(`${chromeVersion()} refuses Extensions.loadUnpacked, so Stagehand's extension cannot load`);
   return true;
 }
-/** Stagehand's extension posts traces to example.com unless told otherwise: every test Stagehand takes the package's
- *  closed loopback port. */
-export { STAGEHAND_TELEMETRY as LOCAL_TELEMETRY } from "../../dist/driver/stagehand.js";
 
 /** Through `ps`, which Linux and macOS share. */
 const ps = (pid, field) => { try { return execFileSync("ps", ["-p", String(pid), "-o", `${field}=`], { encoding: "utf8" }).trim(); } catch { return ""; } };

@@ -1,21 +1,31 @@
 #!/usr/bin/env node
-// The CLI's command table, from the OpenAPI document the server serves: one entry per operation it offers.
-//   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs
-//   node scripts/generate-clients.mjs --check   fail when the committed table is not the document's
-// It reads the built server (packages/serve/dist), so it runs after the build. --out, --resources and --document (a
-// document as JSON, in place of the built server's) name other files.
+// The CLI's command table, from the OpenAPI document the server serves: one entry per operation it offers, and the
+// agentrun-cli skill from the same table (scripts/clients/skill.mjs): its SKILL.md and references/commands.md.
+//   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs and the skill
+//   node scripts/generate-clients.mjs --check   fail when a committed file is not the document's, or the skill names a
+//                                               command or flag the CLI does not have
+// It reads the built server (packages/serve/dist), so it runs after the build. --out, --skill (the skill's folder),
+// --resources and --document (a document as JSON, in place of the built server's) name other files.
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
+import { SECRETS } from '../packages/agentrun/lib/login.mjs';
+import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
+import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { isMain } from './is-main.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const OUTPUT = 'packages/agentrun/lib/commands.generated.mjs';
 const RESOURCES = 'scripts/clients/resources.json';
-// Words the launcher keeps for itself or for the server it starts: no command may begin with one.
-const RESERVED = ['api', 'help', 'import', 'reset-password'];
+const SKILL = 'packages/agentrun/skills/agentrun-cli';
+// Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
+// may begin with one.
+const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill'];
+// The CLI's hand-written commands: none may be a generated one too.
+const HAND = { flags: FLAGS, wait: WAIT, local: [...SECRETS, SKILL_INSTALL] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.
@@ -76,19 +86,54 @@ export function operationsOf(doc) {
         params.set(`${p.in} ${p.name}`, { name: p.name, in: p.in, required: p.required === true, ...shapeOf(doc, p.schema), description: firstLine(p.description) });
       }
       const body = deref(doc, op.requestBody);
-      const schema = deref(doc, body?.content?.['application/json']?.schema);
+      const media = body?.content?.['application/json'];
+      const schema = deref(doc, media?.schema);
+      // The JSON body's first documented example (an OpenAPI 3.1 media type's examples, else its example).
+      const example = Object.values(media?.examples ?? {}).map((e) => deref(doc, e)?.value).find((value) => value !== undefined) ?? media?.example;
       found.push({
         operationId: op.operationId, method: method.toUpperCase(), path, tags: op.tags ?? [], summary: op.summary ?? firstLine(op.description),
         unsupported: op['x-agentrun-serve-unsupported'] !== undefined, parameters: [...params.values()],
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
           properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
+          ...(example !== undefined ? { example } : {}),
         },
         answers: Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {})),
       });
     }
   }
   return found;
+}
+
+/** The string fields of a body schema, each as its path of property names; `*` stands for any key of a map
+ *  (additionalProperties), whose every value a body may name as it likes. */
+function stringPaths(doc, schema, path = [], seen = new Set()) {
+  const s = deref(doc, schema);
+  if (!s || typeof s !== 'object' || seen.has(s)) return [];
+  seen = new Set([...seen, s]);
+  const found = [...['oneOf', 'anyOf', 'allOf'].flatMap((key) => (s[key] ?? []).flatMap((part) => stringPaths(doc, part, path, seen)))];
+  const types = Array.isArray(s.type) ? s.type : [s.type];
+  if (types.includes('string') || s.enum?.some((v) => typeof v === 'string')) found.push(path);
+  for (const [name, property] of Object.entries(s.properties ?? {})) found.push(...stringPaths(doc, property, [...path, name], seen));
+  if (s.additionalProperties && typeof s.additionalProperties === 'object') found.push(...stringPaths(doc, s.additionalProperties, [...path, '*'], seen));
+  // A list's items: `[]`, each of them, which a public field may name (`scopes.[]`), unlike a map's values.
+  if (s.items && typeof s.items === 'object' && !Array.isArray(s.items)) found.push(...stringPaths(doc, s.items, [...path, '[]'], seen));
+  return found;
+}
+
+/** What is wrong with the map's public fields (the string fields of a secret body that are no secret, which the CLI
+ *  leaves in what it prints): one that is not a secret body's, or not one of its body's string fields by its full path,
+ *  or one under a map, whose values are always secrets. */
+export function publicFieldProblems(doc, map) {
+  const problems = [];
+  for (const [id, fields] of Object.entries(map.publicFields ?? {})) {
+    if (!map.secretBody.includes(id)) problems.push(`${RESOURCES} names public fields of ${id}, whose body is no secret body`);
+    let schema;
+    for (const item of Object.values(doc.paths ?? {})) for (const method of METHODS) if (item[method]?.operationId === id) schema = deref(doc, item[method].requestBody)?.content?.['application/json']?.schema;
+    const paths = new Set(stringPaths(doc, schema).filter((path) => !path.includes('*')).map((path) => path.join('.')));
+    for (const field of fields) if (!paths.has(field)) problems.push(`${RESOURCES} names ${id}'s public field ${field}, which is not a string field of its body (by its full path, under no map)`);
+  }
+  return problems;
 }
 
 /** An operation's command: the map's name, else its tag and its operationId. */
@@ -118,6 +163,9 @@ export function problemsOf(ops, map) {
   for (const name of byName.keys()) {
     if (byName.has(name.split(' ')[0]) && name.includes(' ')) problems.push(`"${name.split(' ')[0]}" is a command and a group of commands (${name})`);
   }
+  for (const { command } of [HAND.wait, ...HAND.local]) {
+    if (byName.has(command.join(' '))) problems.push(`${byName.get(command.join(' '))} is "${command.join(' ')}", a command the CLI writes by hand`);
+  }
   return problems;
 }
 
@@ -141,7 +189,11 @@ export function commandsOf(ops, map) {
       pathParams: [...op.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
       // The path parameters that are file paths, slashes kept: the rest are encoded whole.
       multiSegment: map.multiSegment[op.operationId] ? [map.multiSegment[op.operationId]] : [],
+      // A secret body's string fields that are no secret, by their full path: every other one is cut from what is printed.
+      ...(secretBody ? { publicFields: map.publicFields[op.operationId] ?? [] } : {}),
       query, headers, bodyFlags, hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
+      // A working body, as the document gives it: the command's help prints it as a --body to paste. Never a secret body's.
+      ...(op.body?.example !== undefined && !secretBody ? { example: op.body.example } : {}),
       // A download: its answer is the file's bytes, written as received.
       raw: op.answers.length > 0 && !op.answers.includes('application/json'),
       summary: op.summary,
@@ -150,8 +202,18 @@ export function commandsOf(ops, map) {
   return entries.sort((a, b) => a.command.join(' ').localeCompare(b.command.join(' ')));
 }
 
+const hashOf = (ops) => createHash('sha256').update(canonical(ops)).digest('hex');
+
+/** The skill's files, by their path under its folder, and what its text names that the CLI does not have. Its header
+ *  holds the table's hash: both are made of the same projection. */
+export function skillFiles(ops, map) {
+  const commands = allCommands(commandsOf(ops, map), HAND);
+  const skill = skillText(commands, hashOf(ops));
+  return { files: { 'SKILL.md': skill, 'references/commands.md': referenceText(commands, hashOf(ops)) }, problems: recipeProblems(commands, skill) };
+}
+
 export function tableText(ops, map) {
-  const hash = createHash('sha256').update(canonical(ops)).digest('hex');
+  const hash = hashOf(ops);
   return [
     '// Generated by scripts/generate-clients.mjs from the server\'s OpenAPI document. Do not edit: run node scripts/generate-clients.mjs.',
     `// SHA-256 of what the table is made of (operationsOf in scripts/generate-clients.mjs): ${hash}`,
@@ -161,28 +223,38 @@ export function tableText(ops, map) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' } } });
-  const output = resolve(root, values.out ?? OUTPUT);
-  const map = { secretBody: [], omit: {}, multiSegment: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' } } });
+  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
-  const problems = problemsOf(ops, map);
+  const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map)];
   if (problems.length) {
     console.error(`The command map does not fit the document:\n${problems.map((p) => `  ${p}`).join('\n')}`);
     process.exitCode = 1;
     return;
   }
-  const text = tableText(ops, map);
+  const skill = skillFiles(ops, map);
+  if (skill.problems.length) {
+    console.error(`The skill's template does not fit the CLI:\n${skill.problems.map((p) => `  ${p}`).join('\n')}\nFix the template in scripts/clients/skill.mjs.`);
+    process.exitCode = 1;
+    return;
+  }
+  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text])];
   if (values.check) {
-    if (await readFile(output, 'utf8').catch(() => '') !== text) {
-      console.error(`${values.out ?? OUTPUT} is not the server's document's; run node scripts/generate-clients.mjs`);
+    const stale = [];
+    for (const [file, text] of outputs) if (await readFile(resolve(root, file), 'utf8').catch(() => '') !== text) stale.push(file);
+    if (stale.length) {
+      console.error(`${stale.join(', ')} ${stale.length === 1 ? 'is' : 'are'} not the server's document's; run node scripts/generate-clients.mjs`);
       process.exitCode = 1;
       return;
     }
-    console.log('The CLI command table matches the server\'s OpenAPI document');
+    console.log('The CLI command table and its skill match the server\'s OpenAPI document');
   } else {
-    await writeFile(output, text);
-    console.log(`Generated ${values.out ?? OUTPUT}`);
+    for (const [file, text] of outputs) {
+      await mkdir(dirname(resolve(root, file)), { recursive: true });
+      await writeFile(resolve(root, file), text);
+      console.log(`Generated ${file}`);
+    }
   }
 }
 

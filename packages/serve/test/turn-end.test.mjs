@@ -133,7 +133,7 @@ test("an older bridge's records: #1424's turn end with no message closes the mes
 
 // #1424's bridge writes a failed turn's error entry in one commit and its turn end, `{ key, status }`, in the next; a
 // relaunch after a crash between the two writes the end without the error. Either way the error is on the root.
-const REFUSAL = "spend_cap_reached (out of budget): Not sent: this run's cap of $0.0005 can't cover one claude-agent request (at least $0.01). Raise the cap to at least $0.01 to run it.";
+const REFUSAL = "spend_cap_reached (out of budget): Not sent: the next step needs at least $0.01, and this run's cap is $0.0005. Raise the cap to at least $0.01 to continue.";
 const errored = (id, text) => {
   const entry = assistant(id, [], "error", 0);
   entry.model[0].errorMessage = text;

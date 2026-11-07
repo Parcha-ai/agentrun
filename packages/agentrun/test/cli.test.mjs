@@ -2,13 +2,15 @@
 // loopback. The CLI finds the server and its token through DIR/.server.json, prints the response's JSON, exits by what
 // happened, and never prints the token.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
@@ -16,11 +18,13 @@ const ROOT = new URL("../../../", import.meta.url).pathname;
 const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const TABLE = join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs");
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+/** No box: unset, AGENTRUN_BOXES turns Docker on where it answers, which a CI runner's does (boxes.ts). */
+const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-cli-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  removeAtEnd(dir);
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
   return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
 }
 
@@ -51,10 +55,15 @@ async function serve(t, dir, env) {
   return { child, exited, data, token: readFileSync(join(data, ".token"), "utf8").trim() };
 }
 
-/** A loopback HTTP server that records every request and answers with `answer(request)`: [status, type, bytes]. */
+/** A loopback HTTP server that records every request under its own random path prefix (part of `base`; a request's `url`
+ *  is recorded without it) and answers with `answer(request)`: [status, type, bytes]. Anything else, such as another
+ *  test's late retry to a port this one now holds, is a 404, neither answered nor recorded. */
 async function listener(t, answer = () => [200, "application/json", "{}"]) {
   const requests = [];
+  const prefix = `/${randomBytes(8).toString("hex")}`;
   const server = createHttpServer((req, res) => {
+    if (!req.url.startsWith(`${prefix}/`)) return void res.writeHead(404).end();
+    req.url = req.url.slice(prefix.length);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
@@ -66,13 +75,14 @@ async function listener(t, answer = () => [200, "application/json", "{}"]) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
-  return { base: `http://127.0.0.1:${server.address().port}/v2`, requests };
+  return { base: `http://127.0.0.1:${server.address().port}${prefix}/v2`, requests };
 }
 
-/** The CLI in a child process, without blocking this one (a listener here answers it). */
-function run(env, args, { input, extra = {} } = {}) {
+/** The CLI in a child process, without blocking this one (a listener here answers it); killed after `timeout` ms, its
+ *  code then null. */
+function run(env, args, { input, extra = {}, timeout } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"], timeout, killSignal: "SIGKILL" });
     const out = [];
     let err = "";
     child.stdout.on("data", (chunk) => out.push(chunk));
@@ -167,6 +177,15 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   const rawInline = cli(["api", "PUT", "/settings/tool-keys/exa", "--body", '{"values":{"EXA_API_KEY":"not-a-secret"}}', ...data]);
   assert.equal(rawInline.code, 2);
   for (const run of [inline, rawInline]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
+  // An MCP OAuth start may carry a pre-registered client's secret: no flag for it, and its body never from the command line.
+  const oauthFlag = cli(["mcp-servers", "oauth-start", "docs", "--url", "https://mcp.example.com/mcp", "--client-id", "app", "--client-secret", "not-a-secret", ...data]);
+  assert.equal(oauthFlag.code, 2, oauthFlag.err);
+  const oauthInline = cli(["mcp-servers", "oauth-start", "docs", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  assert.equal(oauthInline.code, 2, oauthInline.err);
+  assert.match(oauthInline.err, /--body -/);
+  const oauthRaw = cli(["api", "POST", "/settings/mcp-servers/docs/oauth/start", "--body", '{"url":"https://mcp.example.com/mcp","client_id":"app","client_secret":"not-a-secret"}', ...data]);
+  assert.equal(oauthRaw.code, 2, oauthRaw.err);
+  for (const run of [oauthFlag, oauthInline, oauthRaw]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // 3: nothing answers.
   const port = await closedPort();
   const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
@@ -420,6 +439,68 @@ test("api refuses a PATH with a dot segment, raw or encoded, or an empty one, wh
   assert.equal(server.requests.length, 0, "nothing was sent");
 });
 
+test("a FIFO at .server.json, .token or config.json is refused at once, exit 4, never waited on", { timeout: 60_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t);
+  const data = join(dir, "data");
+  mkdirSync(data, { mode: 0o700 });
+  const config = join(dir, ".config", "agentrun", "config.json");
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  for (const fifo of [join(data, ".server.json"), join(data, ".token"), config]) {
+    execFileSync("mkfifo", ["-m", "600", fifo]);
+    const sent = await run(env, ["agents", "list", "--data", data], { timeout: 10_000 });
+    assert.equal(sent.code, 4, `${fifo}: ${sent.err}`);
+    assert.match(sent.err, /not a private file of yours/);
+    rmSync(fifo);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+});
+
+test("an inline secret body is refused whatever part of its route the base URL holds", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t);
+  const extra = { AGENTRUN_API_KEY: "fake-test-key" };
+  const body = '{"values":{"EXA_API_KEY":"not-a-secret"}}';
+  for (const [base, method, path] of [[`${server.base}/settings`, "PUT", "/tool-keys/exa"], [`${server.base}/settings/tool-keys`, "PUT", "/exa"], [`${server.base}/settings`, "PUT", "/mcp-servers/docs"], [`${server.base}/settings/mcp-servers`, "POST", "/preview"]]) {
+    const sent = await run(env, ["api", method, path, "--body", body, "--base-url", base], { extra });
+    assert.equal(sent.code, 2, `${base} ${path}: ${sent.err}`);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+  // A route that only ends like a secret one's name is not one.
+  assert.equal((await run(env, ["api", "PUT", "/agents/tool-keys/exa", "--body", body, "--base-url", server.base], { extra })).code, 0);
+});
+
+test("a .server.json whose base_url is not a string or whose pid is not a positive whole number is refused, exit 4, its contents never printed", async (t) => {
+  const { dir, env } = scratch(t);
+  const data = join(dir, "data");
+  mkdirSync(data, { mode: 0o700 });
+  writeFileSync(join(data, ".token"), "fake-test-key\n", { mode: 0o600 });
+  const record = join(data, ".server.json");
+  const base = "http://127.0.0.1:9/v2";
+  for (const fields of [{ base_url: 42, pid: process.pid }, { base_url: { fake: "fake-record-contents" }, pid: process.pid }, { base_url: null, pid: process.pid }, { pid: process.pid }, { base_url: base, pid: "fake-record-contents" }, { base_url: base, pid: -1 }, { base_url: base, pid: 1.5 }, { base_url: base }]) {
+    writeFileSync(record, JSON.stringify({ ...fields, token_file: join(data, ".token") }), { mode: 0o600 });
+    const read = await run(env, ["agents", "list", "--data", data]);
+    assert.equal(read.code, 4, `${JSON.stringify(fields)}: ${read.err}`);
+    assert.match(read.err, new RegExp(`^${record.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+    assert.ok(!read.err.includes("fake-record-contents") && !read.err.includes("TypeError"), read.err);
+  }
+});
+
+test("a config.json whose base_url or api_key is not a string is refused, exit 4, its contents never printed", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t);
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  const config = join(dir, ".config", "agentrun", "config.json");
+  for (const fields of [{ base_url: 42, api_key: "fake-test-key" }, { base_url: { fake: "fake-config-contents" }, api_key: "fake-test-key" }, { base_url: null, api_key: "fake-test-key" }, { base_url: server.base, api_key: 42 }, { base_url: server.base, api_key: ["fake-config-contents"] }, { base_url: server.base, api_key: null }]) {
+    writeFileSync(config, JSON.stringify(fields), { mode: 0o600 });
+    const read = await run(env, ["agents", "list"]);
+    assert.equal(read.code, 4, `${JSON.stringify(fields)}: ${read.err}`);
+    assert.match(read.err, new RegExp(`^${config.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+    assert.ok(!read.err.includes("fake-config-contents") && !read.err.includes("fake-test-key") && !read.err.includes("TypeError"), read.err);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+});
+
 test("generate-clients --check reads only what the table is made of: a response schema's description changes nothing; a route, a parameter, a body, a response type or a summary fails it", { timeout: 120_000 }, async (t) => {
   const { dir } = scratch(t);
   const { servedDocument } = await import(GENERATOR);
@@ -501,4 +582,30 @@ test("a file path argument keeps its slashes and refuses a dot segment (plain or
   assert.equal((await run(env, ["home", "read", "a", "notes/a b.md", ...at], { extra })).code, 0);
   const homeFile = ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/");
   assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", homeFile]);
+});
+
+test("agents create --help and runs start --help end with the document's working body as a --body to paste, and pasted it works", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await serve(t, dir, env);
+  const cli = cliOf(env, []);
+  const doc = JSON.parse(cli(["--data", server.data, "server", "openapi"]).out);
+  const exampleOf = (path, method) => Object.values(doc.paths[path][method].requestBody.content["application/json"].examples)[0].value;
+  /** The help's example line, as a shell would split it: the words, then the single-quoted body. */
+  const pasted = (args) => {
+    const help = cli([...args, "--help"]);
+    assert.equal(help.code, 0, help.err);
+    const [, words, quoted] = /\nExample:\n {2}agentrun ([^']+) --body '((?:[^']|'\\'')*)'\n?$/.exec(help.out) ?? assert.fail(help.out);
+    return { words: words.split(" "), body: quoted.replace(/'\\''/g, "'") };
+  };
+  const create = pasted(["agents", "create"]);
+  assert.deepEqual(create.words, ["agents", "create"]);
+  assert.deepEqual(JSON.parse(create.body), exampleOf("/agents", "post"), "the document's example, whole");
+  const created = cli(["--data", server.data, ...create.words, "--body", create.body]);
+  assert.equal(created.code, 0, created.err);
+  const start = pasted(["runs", "start"]);
+  assert.deepEqual(start.words, ["runs", "start", "AGENT_ID"]);
+  assert.deepEqual(JSON.parse(start.body), exampleOf("/agents/{agent_id}/runs", "post"));
+  const started = cli(["--data", server.data, "runs", "start", created.json().agent_id, "--body", start.body]);
+  assert.equal(started.code, 0, started.err);
+  assert.equal(started.json().status, "queued");
 });

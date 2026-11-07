@@ -110,7 +110,7 @@ say(`start run: ${started.status} ${started.body.run_id} title "${started.body.t
 assert.equal(started.status, 202, JSON.stringify(started.body));
 const id = started.body.run_id;
 
-let polls = 0, refused = 0, stale = 0, slowest = 0;
+let polls = 0, refused = 0, slowest = 0;
 const graph = async () => {
   const g = await request("GET", `/runs/${id}/graph`);
   polls++;
@@ -120,7 +120,6 @@ const graph = async () => {
     say(`graph: ${g.status} ${JSON.stringify(g.body).slice(0, 200)}`);
     return undefined;
   }
-  if (g.body.stale) stale++;
   return g.body;
 };
 const line = (g) => {
@@ -146,7 +145,7 @@ for (const end = Date.now() + 180_000; ; ) {
 const paused = await request("POST", `/runs/${id}/pause`);
 say(`pause: ${paused.status} ${JSON.stringify(paused.body)}`);
 const right = await graph();
-say(`graph right after pause: ${right ? `200 in ${slowest} ms max so far, stale ${right.stale}` : "refused"}`);
+say(`graph right after pause: ${right ? `200 in ${slowest} ms max so far` : "refused"}`);
 await sleep(8000);
 const settled = await graph();
 show("paused, settled: ", settled);
@@ -180,7 +179,7 @@ if (image) {
   const res = await fetch(`${base.replace(/\/v2$/, "")}${image.url}`, { headers: { authorization: `Bearer ${token}` } });
   say(`GET ${image.url}: ${res.status} ${res.headers.get("content-type")} ${(await res.arrayBuffer()).byteLength} bytes`);
 }
-say(`graph polls: ${polls}, refused ${refused}, stale ${stale}, slowest ${slowest} ms`);
+say(`graph polls: ${polls}, refused ${refused}, slowest ${slowest} ms`);
 assert.equal(refused, 0, "no graph poll was refused");
 assert.equal(run.status, "completed");
 say("PASS");

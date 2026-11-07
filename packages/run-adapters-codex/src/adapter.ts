@@ -17,7 +17,9 @@ import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as Ke
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
+import { CODEX_MCP_CLIENT } from "./mcp.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
+import { markParked } from "./scripts.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
@@ -74,6 +76,9 @@ export interface CodexAdapterOptions {
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** For tests: a command that speaks app-server's protocol instead of Codex (needs AGENTRUN_CODEX_STANDIN=1 under a test runner). */
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
+  /** The Codex binary to run, as the host installed it (its path, and its platform package's version): checked against
+   *  the pins as one found here is. Default: found beside this package (findCodex). */
+  binary?: { path: string; packageVersion?: string };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
 }
@@ -82,7 +87,7 @@ export interface CodexAdapterOptions {
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-function kernelTool(tool: HostTool): KernelTool {
+export function kernelTool(tool: HostTool): KernelTool {
   return {
     name: tool.name,
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
@@ -93,7 +98,11 @@ function kernelTool(tool: HostTool): KernelTool {
     async execute(input, io) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      const result = await tool.call(input, { callId, signal: io.signal });
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(io.stepId ?? "")?.[1] ?? 0);
+      const result = await tool.call(input, { callId, signal: io.signal, attempt });
+      // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
+      if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
       return result.text;
     },
@@ -141,7 +150,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   const seed = skills.length ? skillsSeed(skills) : undefined;
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
-  const checked = options.standIn ? undefined : verifyCodex().path;
+  const checked = options.standIn ? undefined : verifyCodex(options.binary).path;
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
@@ -150,7 +159,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   return {
     id: "codex",
     version: CODEX_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({ fork: false, mcpClient: CODEX_MCP_CLIENT }),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");
@@ -214,6 +223,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
+            // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
+            ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
             proxy: {
               hooks: io.models,
               tools: tools.map((t) => t.name),
