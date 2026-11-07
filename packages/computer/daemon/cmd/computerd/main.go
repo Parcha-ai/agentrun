@@ -64,7 +64,7 @@ func main() {
 		if !ok {
 			os.Exit(2)
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(probe.Run(targets, probe.DialTimeout)); err != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(probe.Run(targets, probe.ConnectBounds)); err != nil {
 			logger.Printf("probe: %v", err)
 			os.Exit(1)
 		}

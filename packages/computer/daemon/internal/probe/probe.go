@@ -15,17 +15,48 @@ import (
 // DialTimeout bounds each connection the probe tries.
 const DialTimeout = 3 * time.Second
 
+// Bounds bounds each target. Red: the shape only.
+type Bounds struct {
+	Connect time.Duration
+	Read    time.Duration
+	MaxRead int
+}
+
+// ConnectBounds are `computerd probe --connect`'s. Red: not set yet.
+var ConnectBounds = Bounds{}
+
+// Target is one target's result. Red: the shape only.
+type Target struct {
+	Target   string `json:"target"`
+	Protocol string `json:"protocol"`
+	Outcome  string `json:"outcome"`
+	Bytes    int    `json:"bytes"`
+	Detail   string `json:"detail"`
+}
+
+// ProtocolOf is not written yet.
+func ProtocolOf(string) string { return "" }
+
+// Try is not written yet.
+func Try(string, string, Bounds) Target { return Target{} }
+
 // Result is the probe's report, one JSON line.
 type Result struct {
-	UID     int      `json:"uid"`
-	GID     int      `json:"gid"`
-	Kernel  string   `json:"kernel"`
-	Reached []string `json:"reached"`
+	UID      int      `json:"uid"`
+	GID      int      `json:"gid"`
+	Kernel   string   `json:"kernel"`
+	Reached  []string `json:"reached"`
+	Accepted []string `json:"accepted"`
+	Results  []Target `json:"results"`
 }
 
 // Run tries each host:port target at once, each for at most timeout, and reports the ones a connection reached, in
 // the order given.
-func Run(targets []string, timeout time.Duration) Result {
+func Run(targets []string, bounds Bounds) Result {
+	timeout := bounds.Connect
+	if timeout == 0 {
+		timeout = DialTimeout
+	}
 	reached := make([]bool, len(targets))
 	var wg sync.WaitGroup
 	for i, target := range targets {
