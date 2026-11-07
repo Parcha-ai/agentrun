@@ -89,7 +89,7 @@ export interface ModalTimeouts {
 	createMs: number;
 	/** Every other SDK call: apps.fromName, fromId, getTags, poll, terminate, exec's start. */
 	callMs: number;
-	/** The daemon's hello over a new connection. */
+	/** A new connection, from the start of the bridge's exec (at most callMs of it) to the daemon's hello. */
 	helloMs: number;
 	/** The probe, run through the daemon. */
 	probeMs: number;
@@ -836,16 +836,40 @@ export class ModalProvider implements ComputerProvider {
 	async #openWhenListening(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
 		const until = Date.now() + this.#timeouts.helloMs;
 		for (;;) {
-			const opened = await this.#open(sandbox, name, signal, Math.max(1, until - Date.now()));
+			const opened = await this.#open(sandbox, name, signal, until);
 			if (opened.ok || !opened.notListening || signal?.aborted || Date.now() + LISTEN_RETRY_MS >= until) return opened;
 			await pause(LISTEN_RETRY_MS, signal);
 		}
 	}
 
-	/** One connection to the computer's daemon over `computerd stdio` through exec, after hello, unchecked. */
-	async #open(sandbox: ModalSandbox, name: string, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Result<ComputerConnection> & { notListening?: true }> {
-		const started = await call(`exec of the daemon's stdio bridge in ${name}`, () => sandbox.exec([DAEMON_IN_COMPUTER, "stdio"], { mode: "binary" }), this.#timeouts.callMs, signal);
-		if (!started.ok) return started;
+	/**
+	 * One connection to the computer's daemon over `computerd stdio` through exec, after hello, unchecked. One deadline,
+	 * until (helloMs from now by default), bounds the exec's start and hello together: the start takes at most callMs of
+	 * it and hello what is left. Modal's exec goes on when the start is given up on (a timeout or the caller's abort), so
+	 * a bridge that lands after that has its stdin closed as it lands, and ends, as a late sandbox create is terminated.
+	 */
+	async #open(sandbox: ModalSandbox, name: string, signal?: AbortSignal, until = Date.now() + this.#timeouts.helloMs): Promise<Result<ComputerConnection> & { notListening?: true }> {
+		const what = `exec of the daemon's stdio bridge in ${name}`;
+		const { helloMs: totalMs, callMs } = this.#timeouts;
+		if (signal?.aborted) return fail("aborted", `${what} was aborted before it was called`);
+		let starting: Promise<ModalProcess>;
+		try {
+			starting = Promise.resolve(sandbox.exec([DAEMON_IN_COMPUTER, "stdio"], { mode: "binary" }));
+		} catch (error) {
+			return fail(codeOf(error), `${what} failed: ${words(error)}`);
+		}
+		const startMs = Math.max(1, Math.min(callMs, until - Date.now()));
+		const started = await race(starting, what, startMs, signal);
+		if (!started.ok) {
+			if (started.error.code === "timeout" || started.error.code === "aborted") {
+				starting.then((late) => late.stdin.close()).catch(() => {});
+				if (started.error.code === "timeout" && startMs < callMs) {
+					return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(totalMs)}: the exec of its stdio bridge had not started; a bridge that starts after this is closed`);
+				}
+				return fail(started.error.code, `${started.error.message}; a bridge that starts after this is closed`);
+			}
+			return started;
+		}
 		const program = started.value;
 		let stderr = "";
 		const stderrRead = (async () => {
@@ -868,14 +892,14 @@ export class ModalProvider implements ComputerProvider {
 				client.close();
 				await race(program.wait(), "the stdio bridge's exit", CLOSE_WAIT_MS);
 			})());
-		const bound = within(helloMs, signal);
+		const bound = within(Math.max(1, until - Date.now()), signal);
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bound.signal });
 		bound.clear();
 		if (!hello.ok) {
 			if (hello.error.code === "gone") await race(stderrRead, "the stdio bridge's stderr", 1000);
 			await close();
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
-			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(helloMs)}`);
+			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(totalMs)}`);
 			if (hello.error.code !== "gone") return hello;
 			return { ...fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
