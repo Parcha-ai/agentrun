@@ -130,3 +130,34 @@ test("pi on a model whose output is free and names no ceiling: a request whose l
   assert.deepEqual(recorded.map((note) => note.words), [words], "due by its least alone, told in the words the CLI's take tells");
   assert.equal(sent[0].messages.at(-1).content, `<system-reminder>${words}</system-reminder>`, "and sent in this request");
 });
+
+test("pi: a request carrying the note that ends on an error is not told: the next request carries it, and it is told once, when answered", async () => {
+  const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
+  const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
+  const sent = [];
+  // The provider's first answer is an error; the second answers at $0.001.
+  const send = (_model, context) => {
+    sent.push(context);
+    const events = createAssistantMessageEventStream();
+    const failed = sent.length === 1;
+    const message = { role: "assistant", content: failed ? [] : [{ type: "text", text: "42" }], api: "fake", provider: "fake", model: "m", usage: usage(failed ? 0 : 0.001), stopReason: failed ? "error" : "stop", ...(failed ? { errorMessage: "the provider failed" } : {}), timestamp: 0 };
+    queueMicrotask(() => (events.push(failed ? { type: "error", reason: "error", error: message } : { type: "done", reason: "stop", message }), events.end(message)));
+    return events;
+  };
+  const models = { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() };
+  // Input at $100 a million, a ceiling of 1,000 output tokens at $1 a million; one priced request ($0.05): 3 x the typical,
+  // $0.15, is over the $0.10 cap, so each request is due.
+  const model = { id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 100, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 1_000 };
+  const context = { messages: [{ role: "user", content: "What is six times seven?", timestamp: 0 }] };
+  const recorded = [];
+  const wrapUp = { model: "m", costs: [0.05], sent: false, record: (note) => recorded.push(note) };
+  const capped = await cap.capModels(models, 0.1, 0, { wrapUp, overhead: () => 0 });
+  await capped.streamSimple(model, context).result();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(recorded, [], "not told by a request whose answer was an error");
+  await capped.streamSimple(model, context).result();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const carries = (request) => String(request.messages.at(-1)?.content ?? "").startsWith("<system-reminder>");
+  assert.deepEqual(sent.map(carries), [true, true], "the next request carries the note again");
+  assert.equal(recorded.length, 1, "told once, when answered");
+});
