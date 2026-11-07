@@ -73,6 +73,14 @@ export const BARRIERS = {
     proof: "packages/serve/test/barrier-box-loss.test.mjs",
     why: "a paid tool call's hold (paid calls, monid, the MCP gateway), before the call is sent",
   },
+  browserSessionOpen: {
+    store: "run-journal",
+    site: "serve/src/browser-cost.ts",
+    via: { file: "pi-browser/src/durable.ts", text: "await c.options.beforeCreate({ conversationId: scope.cid, tag, commit: scope.commit });" },
+    status: "active",
+    proof: "packages/serve/test/browser-session-barrier.test.mjs",
+    why: "a browser session's creating record (its tag, the call's hold), before the vendor's session is created",
+  },
   workflowAdmit: {
     store: "run-journal",
     site: "serve/src/app.ts",
@@ -224,7 +232,7 @@ export const NORMAL_PRECONDITIONS = {
     what: "a paid call refused after its hold was written (serve/src/paid-calls.ts:81-84, a sync that fails) and a model request ended unsent after its start mark (modelRequestStarted) leave their refusal or unsent end unsynced",
   },
   browserSessionBarrier: {
-    done: false,
+    done: true,
     what: "a browser call's hold (serve/src/browser-cost.ts:167, paidCall over keepHold) is kept in memory, not written and synced before the call goes, so it has no barrier",
   },
   barrierProofs: {

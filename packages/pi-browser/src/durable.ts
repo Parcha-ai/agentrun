@@ -30,6 +30,10 @@ import { resolvePrices, sessionCharge, withEstimate } from "./core/usage.js";
 export type { BrowserToolArgs, BrowserToolImpls, PageDriver, ToolCall, ToolImpl } from "./core/tools.js";
 export type { DriverFactory, DriverOptions } from "./core/custody.js";
 
+/** A host's step before a session is created at its provider (`BrowserExtensionOptions.beforeCreate`): the session's
+ *  conversation, its tag, and the session's own commit, for a record of the host's beside it in the same store. */
+export type BeforeCreate = (open: { conversationId: ConversationId; tag: string; commit<T>(change: (tx: Tx) => Promise<T>): Promise<T> }) => Promise<void>;
+
 export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOptions & {
   /** Default "browser"; a second plane installs a second extension under another name. */
   name?: string;
@@ -72,6 +76,11 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
   decisions?: Decisions;
   /** How long a create may still land at the provider after its caller stopped waiting; default 60 s. */
   createDeadlineMs?: number;
+  /** The host's step between the session's record (state `creating`, its tag, in the inventory) reaching the store and
+   *  the provider's create: a barrier that makes that record durable, a record of the host's own beside it in the same
+   *  store (`commit`). Nothing is sent to the provider before it resolves; one that throws sends nothing, and the record
+   *  ends there, nothing made. */
+  beforeCreate?: BeforeCreate;
   /** How the request observer attaches (default `EffectObserver.open`); a seam for tests that have no Chrome. */
   openObserver?: typeof EffectObserver.open;
   /** Called synchronously at two moments of a page action, for a host that kills the process there to test a resume:
@@ -368,6 +377,16 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
     state.current[scope.plane] = state.sessions.length - 1;
     await c.store.begin(tx, row);
   });
+  // The host's barrier, with the record in the store: nothing is created at the provider until it is through.
+  if (c.options.beforeCreate) {
+    try {
+      await c.options.beforeCreate({ conversationId: scope.cid, tag, commit: scope.commit });
+    } catch (error) {
+      await scope.commit((tx) => c.store.move(tx, row, { state: "released", reason: "create_failed", at: now() })).catch(() => undefined);
+      await c.store.emitReleased(scope.cid, tag, scope.read, scope.context).catch(() => undefined);
+      throw failure(error, scope, c.redact);
+    }
+  }
   // An answer lost on the way back is not a session that never started: it is settled by its tag.
   const ref = await provider.create(plan.spec, scope.signal).then(
     async (made) => {
