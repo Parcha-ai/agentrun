@@ -80,7 +80,9 @@ export function vendorOf(resolution: string): Vendor | undefined {
 const aad = (agentId: string, entry: Pick<Entry, "key" | "provider">) => `${FORMAT}|${agentId}|${entry.key}|${entry.provider}`;
 
 export class SignIns {
-  /** One read-modify-write at a time per agent; an agent's queue goes once it is empty. */
+  /** One read-modify-write at a time per agent; an agent's queue goes once it is empty. In this process alone: it, and
+   *  forget's ordering against a launch handing a pointer (forRun's keep), assume one server per data directory, which
+   *  the data directory's lock holds (server-lock.ts). */
   private readonly chains = new Map<string, Promise<unknown>>();
 
   private readonly now: () => number;
