@@ -551,13 +551,20 @@ export class DockerProvider implements ComputerProvider {
 }
 
 /** The desktop options with their defaults, or a throw in words. */
+/** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
 function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: DockerDesktopOptions): Required<DockerDesktopOptions> {
 	if (typeof display !== "string" || !DISPLAY.test(display)) throw new Error(`the desktop's display ${JSON.stringify(display)} must be a local X display, such as :0`);
 	const argv = server ?? ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
 	if (!Array.isArray(argv) || argv.length === 0 || !argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) || argv[0] === "") {
 		throw new Error("the desktop's server must be a program and its arguments, such as [\"Xvfb\", \":0\"]");
 	}
-	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error(`the desktop's timeoutMs must be a whole number of milliseconds above 0, not ${timeoutMs}`);
+	// AbortSignal.timeout and Node's timers hold at most 2^31 - 1 ms (a longer one throws or fires at once), so a longer
+	// bound is refused here, before any computer exists, not in create after the container is made.
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
+		throw new Error(`the desktop's timeoutMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${timeoutMs}`);
+	}
 	return { display, server: [...argv], timeoutMs };
 }
 
