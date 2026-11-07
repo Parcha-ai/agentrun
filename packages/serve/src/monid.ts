@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { writeInWork } from "./workspace.js";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { registerLabel, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";

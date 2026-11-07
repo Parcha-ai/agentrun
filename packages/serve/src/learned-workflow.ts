@@ -17,7 +17,7 @@
 // `learned_workflow`); on another harness the session's model proxy, under a side key (port-models.ts): the harness's
 // own policy, provider, key and price, booked on the session's records labelled `learned_workflow`. A call a crash cut
 // off is never run again (`replay: "never"`): it is answered interrupted.
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
 import { sideRequests } from "./cap.js";

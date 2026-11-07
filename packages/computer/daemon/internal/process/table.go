@@ -54,7 +54,8 @@ var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.
 
 // Table is every process the daemon holds, shared by all its connections. It holds at most MaxEntries, running or
 // ended; a start into a full table drops the process that ended first once the new one runs, and is refused as limit
-// when all of them run.
+// when all of them run. Its rings hold at most RetainedBytes together: past that, the rings of the processes that ended
+// first are let go, while their entries stay.
 type Table struct {
 	opts Options
 	// startSlot holds one token while a start runs; a start waits for it in a select, so its cancellation ends the wait.
@@ -63,6 +64,8 @@ type Table struct {
 	// procs is in start order, which is seq order.
 	procs   []*proc
 	lastSeq int64
+	// held is what every ring's buffer holds, in bytes.
+	held int64
 }
 
 func NewTable(opts Options) *Table {
@@ -72,11 +75,15 @@ func NewTable(opts Options) *Table {
 	if opts.MaxEntries <= 0 {
 		opts.MaxEntries = MaxEntries
 	}
+	if opts.RetainedBytes <= 0 {
+		opts.RetainedBytes = RetainedBytes
+	}
 	return &Table{opts: opts, startSlot: make(chan struct{}, 1)}
 }
 
 type proc struct {
-	id string
+	table *Table
+	id    string
 	// seq is the number in id: 1 for the table's first start, and up by one for each start since.
 	seq     int64
 	pid     int
@@ -140,7 +147,7 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 	if err := t.checkRoom(); err != nil {
 		return StartResult{}, err
 	}
-	p := &proc{argv: params.Argv, pty: params.Pty != nil, writing: make(chan struct{}, 1), streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
+	p := &proc{table: t, argv: params.Argv, pty: params.Pty != nil, writing: make(chan struct{}, 1), streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
 	var stdin, stdout, stderr *os.File
 	var theirs []*os.File
 	if params.Pty != nil {
@@ -232,7 +239,48 @@ func (t *Table) dropOldestEnded() *proc {
 	oldest := t.oldestEnded()
 	p := t.procs[oldest]
 	t.procs = append(t.procs[:oldest], t.procs[oldest+1:]...)
+	t.held -= p.releaseRings()
 	return p
+}
+
+// hold counts grew more bytes in a ring, then keeps the table within its budget. Hold no proc's mu.
+func (t *Table) hold(grew int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.held += int64(grew)
+	t.trim()
+}
+
+// trim lets go of the rings of the processes that ended first until the table is within RetainedBytes, or no ended
+// process holds a ring. A running process keeps its ring. Hold t.mu.
+func (t *Table) trim() {
+	if t.held <= t.opts.RetainedBytes {
+		return
+	}
+	var ended []*proc
+	for _, p := range t.procs {
+		if p.hasEnded() {
+			ended = append(ended, p)
+		}
+	}
+	sort.SliceStable(ended, func(i, j int) bool { return ended[i].endedAt.Before(ended[j].endedAt) })
+	for _, p := range ended {
+		if t.held <= t.opts.RetainedBytes {
+			return
+		}
+		t.held -= p.releaseRings()
+	}
+}
+
+// releaseRings lets go of every ring of p, so none of them grows again, and returns how many bytes they held.
+func (p *proc) releaseRings() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var freed int64
+	for _, s := range p.streams {
+		freed += int64(s.release())
+	}
+	return freed
 }
 
 // collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO.
@@ -242,9 +290,12 @@ func (p *proc) collect(s *stream) {
 		n, err := s.reader.Read(buf)
 		if n > 0 {
 			p.mu.Lock()
-			s.write(buf[:n])
+			grew := s.write(buf[:n])
 			p.notify()
 			p.mu.Unlock()
+			if grew > 0 {
+				p.table.hold(grew)
+			}
 		}
 		if err != nil {
 			break
@@ -278,6 +329,7 @@ func (p *proc) watch() {
 	close(p.ended)
 	p.notify()
 	p.mu.Unlock()
+	p.table.hold(0)
 }
 
 // release closes what the daemon holds of a process that is dropped from the table, or never started.

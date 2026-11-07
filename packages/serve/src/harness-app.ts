@@ -39,7 +39,7 @@ import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, typ
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionPort, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import { foldSession, INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { failureText } from "@parcha/agentrun-kernel/process";
-import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
+import { BARRIER, syncNow, type DoorContext, type DoorEvent, type DoorHook, type DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
@@ -437,7 +437,7 @@ export function adapterRun(
       await commitAll();
     });
 
-  const onModel = (event: ModelPortEvent) => {
+  const onModel = (event: ModelPortEvent): Promise<void> | undefined => {
     if (event.type === "request_start") {
       inFlight.started(event.turn);
       // Its bound, on its start mark: the run's cost serves it while it is in flight (runs.ts).
@@ -455,10 +455,12 @@ export function adapterRun(
         current = event.turn;
         void flush();
       }
-      // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
-      // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
-      // A store that refuses it has refused a write already, and the process ends on that.
-      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }) } })))).catch(() => undefined);
+      // Marked on the root before it leaves, as a pi run's request is (request-start.ts): one never answered, a run that
+      // ends without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
+      // The runner awaits this before the request is sent, and the mark is synced first, so a lost box never loses the
+      // mark of a request that went. A mark that fails refuses the request.
+      return later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }) } }))))
+        .then(() => syncNow(run?.store, BARRIER.sideRequestStarted));
     } else {
       open.delete(event.turn);
       inFlight.ended(event.turn);
@@ -767,7 +769,7 @@ export function adapterRun(
     port: (label) => session?.port?.(label),
     async onOpen(durable) {
       run = durable;
-      const sessions = durableSessions(durable.harness, context);
+      const sessions = durableSessions(durable.harness, context, durable.store);
       // The requests already written on the root, and the messages accepted and never sent, from any earlier process.
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
       const accepted = new Map<string, Message>();

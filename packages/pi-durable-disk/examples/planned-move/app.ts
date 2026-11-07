@@ -7,7 +7,7 @@ import { writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import type { Message } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Conversation, EntryRecord } from "@earendil-works/pi-durable";
@@ -41,7 +41,7 @@ export default function app(where: AppContext): AppOptions {
   const step = defineTool({
     name: "step",
     description: "Do one step of the job. It changes the workspace: call it once per step.",
-    parameters: Type.Object({ n: Type.Number() }),
+    parameters: { type: "object", required: ["n"], properties: { n: { type: "number" } } },
     async execute(args, api) {
       writeFileSync(join(where.work, `step-${args.n}.txt`), `${JSON.stringify({ step: args.n, generation, host })}\n`);
       api.output(`step ${args.n} done by generation ${generation} on ${host}`);

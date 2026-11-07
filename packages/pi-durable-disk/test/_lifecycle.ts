@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, s
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTask, defineTool } from "@earendil-works/pi-durable";
 import type { HarnessSettings } from "@earendil-works/pi-durable";
