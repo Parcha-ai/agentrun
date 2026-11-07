@@ -71,7 +71,9 @@ type SignalParams struct {
 	Signal string `json:"signal"`
 }
 
-// SignalResult is empty but for INT on a terminal with no foreground group, which went to the program's own group.
+// SignalResult is empty but for INT on a terminal with no foreground group, which went to the program's own group, and
+// INT on a terminal whose foreground group had no process left in the program's session when the guard came to signal
+// it, which was not sent.
 type SignalResult struct {
 	Note string `json:"note,omitempty"`
 }
