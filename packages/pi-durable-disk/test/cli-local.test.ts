@@ -9,8 +9,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli.ts";
-import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
-import { processTableHooks, type ProcessTable } from "../src/process-table.ts";
+import { processTable, processTableHooks, thisBoot, type ProcessTable } from "../src/process-table.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -158,14 +157,14 @@ describe("the CLI on a local directory", () => {
     const live = spawn("sleep", ["60"], { stdio: "ignore" });
     try {
       const pid = live.pid ?? 0;
-      const ticks = procStartTicks(pid)!;
+      const ticks = processTable().snapshot().info(pid)!.start;
       const runJson = (heartbeatAgoMs: number, startTicks: number) => ({
         run: "orders",
         status: "running",
         generation: 3,
         sealedSeq: null,
         wakeAt: null,
-        holder: { driver: "local", host: hostname(), bootId: currentBootId(), pid, since: new Date().toISOString(), startTicks },
+        holder: { driver: "local", host: hostname(), bootId: thisBoot(), pid, since: new Date().toISOString(), startTicks },
         heartbeatAt: new Date(Date.now() - heartbeatAgoMs).toISOString(),
         updatedAt: new Date().toISOString(),
         detail: null,
@@ -254,7 +253,7 @@ describe("the CLI on a local directory", () => {
     }
   });
 
-  it("refuses --dir beside the Archil flags, with a usage error (exit 2) naming them", async () => {
+  it("refuses an unknown flag beside --dir, a missing --app and an unknown box mode with a usage error (exit 2)", async () => {
     const written: string[] = [];
     const write = process.stderr.write;
     process.stderr.write = ((chunk: string) => (written.push(String(chunk)), true)) as typeof process.stderr.write;
@@ -268,8 +267,8 @@ describe("the CLI on a local directory", () => {
     } finally {
       process.stderr.write = write;
     }
-    assert.match(written.join(""), /--dir is a run on a local directory: it takes no --disk\n/);
-    assert.match(written.join(""), /it takes no --region, --mount-root\n/);
+    assert.match(written.join(""), /Unknown option '--disk'/);
+    assert.match(written.join(""), /Unknown option '--region'/);
     assert.match(written.join(""), /--box-mode is one of bwrap, seatbelt, provider, unsandboxed, unavailable\n/);
     assert.match(written.join(""), /"error":"BOX_UNAVAILABLE".*held until a server with a box opens it/);
     assert.equal(existsSync(join(tmpdir(), `pdd-unavailable-${process.pid}`)), false, "the refused run's directory was made");

@@ -27,6 +27,8 @@ export interface ComputerCapabilities {
 	os: "linux" | "windows" | "macos" | "android" | "ios";
 	/** What the daemon in each computer must offer. */
 	daemon: DaemonCapability[];
+	/** What spec.user may ask for instead of the non-root default: root ("0"), another uid. Absent: neither. */
+	user?: Array<"root" | "uid">;
 }
 
 /** Why a spec is refused, in words, before any vendor call. */
@@ -42,6 +44,25 @@ export interface ComputerRef {
 
 /** A computer's network as read back from the computer itself. `other` is a network the provider never makes, in words. */
 export type NetworkPolicy = NetworkSpec | { other: string };
+
+/** The spec a computer runs with, read back from the computer itself, not from what was asked. */
+export interface ReadBackSpec {
+	image: string;
+	/** uid:gid in numbers: "0:0" is root. */
+	user: string;
+	network: NetworkPolicy;
+	cpus?: number;
+	memoryMb?: number;
+	pids?: number;
+	workdir?: string;
+	/** When the computer ends; absent when the provider cannot read it. */
+	deadline?: Date;
+}
+
+/** A computer attach found: its ref, and the spec read back from it, so a caller sees what it attached to (root, open). */
+export interface AttachedComputer extends ComputerRef {
+	spec: ReadBackSpec;
+}
 
 /** One computer as list() reads it back. */
 export interface ComputerInfo {
@@ -70,8 +91,11 @@ export interface ComputerProvider {
 	capabilities(): ComputerCapabilities;
 	check(spec: ComputerSpec): Refusal[];
 	create(spec: ComputerSpec, context?: { signal?: AbortSignal }): Promise<Result<ComputerRef>>;
-	/** Finds one computer this provider made, by its id or by labels; none or several is an error in words. */
-	attach(ref: { id: string } | { labels: Record<string, string> }, context?: CallContext): Promise<Result<ComputerRef>>;
+	/**
+	 * Finds one computer this provider made, by its id or by labels, with the spec read back from it; none or several is
+	 * an error in words.
+	 */
+	attach(ref: { id: string } | { labels: Record<string, string> }, context?: CallContext): Promise<Result<AttachedComputer>>;
 	/** Every computer this provider made that carries all of these labels: the janitor's view. */
 	list(labels: Record<string, string>, context?: CallContext): Promise<Result<ComputerInfo[]>>;
 	/** Reads the network back; with a policy, sets it, or refuses in words when it cannot. Never wider than asked. */
