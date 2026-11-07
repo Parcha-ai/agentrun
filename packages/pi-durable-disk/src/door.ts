@@ -48,6 +48,10 @@ export interface DoorHook {
   /** Resolves when the input is TAKEN, not when the turn ends; the turn runs after, reported through `ctx.emit` and the conversation's entries. */
   submit(input: DoorInput, ctx: DoorContext): Promise<{ accepted: true } | { accepted: false; reason: "busy" }>;
   abort(ctx: DoorContext): Promise<"aborted" | "idle">;
+  /** Called once as the instance stops (a drain, a park, a release, a fence), busy or idle: on a drain after the abort,
+   *  on a fence alongside the kill, bounded by the abort's bound. What the hook runs outside any turn (a harness's own
+   *  processes) stops here, so none outlives the instance. A hook with nothing of its own resolves at once. */
+  close(): Promise<void>;
   busy(): boolean;
   /** Called once as the door opens, with its emit: a turn the hook starts itself, with no submit (a recovery after a
    *  restart), reports its start and end through it as a submit's turn does. */
@@ -214,6 +218,9 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
       abortMs,
     ).finally(() => stop.abort());
   };
+  /** The hook's close, once, however the instance stops: its failure or overrun is the hook's, never the stop's. */
+  let closing: Promise<void> | undefined;
+  const closeHook = () => (closing ??= within(Promise.resolve().then(() => hook.close()), abortMs).then(() => undefined, () => undefined));
   /** The hook's abort, then the open turn ended when it left the hook idle: POST /abort and a submit's timeout alike. */
   const abortTurn = async () => {
     const result = await abortHook("request");
@@ -345,11 +352,12 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
       // A fence kills at once, also while a drain's stop still waits on the hook's abort.
       if (now) {
         closeTurn();
-        return killAdopted();
+        return Promise.all([killAdopted(), closeHook()]).then(() => undefined);
       }
       stopped ??= (async () => {
         if (pending > 0 || hook.busy()) await abortHook("stop").catch(() => undefined);
         closeTurn();
+        await closeHook();
         await killAdopted();
       })();
       return stopped;

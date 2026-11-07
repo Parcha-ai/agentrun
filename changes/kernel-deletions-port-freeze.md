@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex, @parcha/agentrun-serve
+packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex, @parcha/agentrun-serve, @parcha/pi-durable-disk
 kind: breaking
 ---
 The code taken from vercel-labs/durable-harness is now AgentRun's own: the port froze, and the pristine upstream copies, the named patches, the import tables, `scripts/port-durable-harness.mjs` and `npm run verify:port` are gone. `vendor/durable-harness/UPSTREAM.json` still records where each copy came from, and each copy keeps its header and NOTICE its attribution. With it go the kernel's paths that never run:
@@ -10,4 +10,4 @@ The code taken from vercel-labs/durable-harness is now AgentRun's own: the port 
 - The model proxy's parts only tests used (`inputTokensMaxOf`, `matchRoute`, `parseStrict`, `reportedCostOf`) move to `@parcha/agentrun-kernel/testing`; `providerIdsOf` and `MCP_ROUTE_VERSIONS` leave the host API.
 - The box egress proxy (`startEgressProxy`, `parseAllow`, the address table) moves into agentrun-serve, its one user.
 
-Fixed: a run on Claude Code or Codex now closes its harness session when its process lets the run go, so the harness's own processes stop with it; before, a harness child ended only when its parent process died.
+Fixed: a run on Claude Code or Codex now closes its harness session when its process lets the run go, so the harness's own processes stop with it; before, a harness child ended only when its parent process died. For it, pi-durable-disk's `DoorHook` has a required `close()`: the door's stop calls it once, busy or idle (on a drain after the abort, on a fence alongside the kill, within the abort's bound). A hook with nothing of its own to stop resolves at once.

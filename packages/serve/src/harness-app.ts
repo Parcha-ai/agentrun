@@ -728,6 +728,11 @@ export function adapterRun(
       await stopping;
       return "aborted";
     },
+    // The process is letting the run go (the door's stop, busy or idle, after its abort): the session closes, which stops
+    // the harness's own processes (its CLI, its app-server), so none outlives this one.
+    async close() {
+      await session?.close();
+    },
     busy: () => turn !== undefined,
   };
 
