@@ -1,8 +1,7 @@
 // process.*: a process outlives the connection that started it, is read by offset, takes stdin, runs in a terminal,
 // is signalled and waited on, is listed, and leaves nothing behind when it ends.
-import type { DaemonClient } from "../../client.js";
 import { listProcesses, readAll } from "../../processes.js";
-import type { ProcessStream } from "../../protocol.js";
+import type { ComputerClient, ProcessStream } from "../../protocol.js";
 import type { Capability, Case, CaseContext } from "../types.js";
 import { alive, b64, decode } from "./util.js";
 
@@ -16,7 +15,7 @@ const processCase = (name: string, run: Case["run"], needs: Capability[] = ["pro
 const TICKER = ["sh", "-c", "i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done"];
 
 /** Reads a stream from offset until what was read holds want; returns it and where the stream now ends. */
-async function readUntil(t: CaseContext, client: DaemonClient, id: string, stream: ProcessStream, offset: number, want: string) {
+async function readUntil(t: CaseContext, client: ComputerClient, id: string, stream: ProcessStream, offset: number, want: string) {
 	let text = "";
 	let at = offset;
 	await t.until(async () => {

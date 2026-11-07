@@ -70,12 +70,12 @@ agentrun-learn check --base origin/main --head "$GITHUB_SHA" --branch "$GITHUB_H
 import { checkBranch, checkRun } from "@parcha/agentrun-learn";
 
 // A git repository: the changes from where the branch starts on base to head.
-const { ok, problems } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["fetch_page", "browser"] });
+const { ok, problems } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["web_fetch", "browser"] });
 
 // Or changes you already hold: path, status, git mode and the file's bytes at the branch's head.
 const found = checkRun({
   branch: "runs/2026-10-27-0412-a1b2",
-  tools: ["fetch_page", "browser"],
+  tools: ["web_fetch", "browser"],
   changes: [{ path: "learnings/L-7c21e0a4b9d3.md", status: "added", bytes: Buffer.from(noteText) }],
 });
 ```

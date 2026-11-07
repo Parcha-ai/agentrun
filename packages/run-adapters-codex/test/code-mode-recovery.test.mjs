@@ -21,8 +21,8 @@ async function cutOffExec() {
   await first.submit({ id: 's1', kind: 'prompt', text: 'Look it up, then pay.' });
   await placeSubmissions(first, [first.pending()[0]]);
   const since = openTurn(first.state()).since;
-  const bridge = toolBridge(first, [tool('fetch_page', 'safe'), tool('pay', 'never')], { live: false, serial: false });
-  void bridge.call('fetch_page', {}, 'exec-1').catch(() => {});
+  const bridge = toolBridge(first, [tool('read_page', 'safe'), tool('pay', 'never')], { live: false, serial: false });
+  void bridge.call('read_page', {}, 'exec-1').catch(() => {});
   await pause(30);
   void bridge.call('pay', {}, 'exec-2').catch(() => {});
   await pause(30);
@@ -40,7 +40,7 @@ test("a cut-off exec tells a safe host tool's call it is safe to repeat, and a n
   const { state, output } = await cutOffExec();
   assert.deepEqual([state.effects.get('tool:exec-1')?.replay, state.effects.get('tool:exec-2')?.replay], ['safe', 'never'], "the log recorded each tool's policy when its call started");
   assert.match(output, /^The exec was cut short after these calls/);
-  assert.match(output, /\n1\. fetch_page was started and did not report a result\. It is safe to repeat\. It was not run again\./);
+  assert.match(output, /\n1\. read_page was started and did not report a result\. It is safe to repeat\. It was not run again\./);
   assert.match(output, /\n2\. pay was started and did not report a result, so it may have taken effect: check before calling it again\. It was not run again\./);
 });
 

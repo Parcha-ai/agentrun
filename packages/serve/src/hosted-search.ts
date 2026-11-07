@@ -11,7 +11,7 @@
 // price plus each search at $10 per 1,000 (Anthropic's per search, OpenAI's per call). Under the run's cap its input is
 // held at its context plus HOSTED_SEARCH_ALLOWANCE_TOKENS.
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
-import { clip, TITLE_CAP } from "./fetch-page.js";
+import { clip, TITLE_CAP } from "./web-fetch-direct.js";
 import { sideRequests } from "./cap.js";
 import { ANSWER_MAX, type Hit, type Search, snippetOf } from "./web-search.js";
 

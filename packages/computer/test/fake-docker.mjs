@@ -9,7 +9,7 @@ import { after } from "node:test";
 import { DockerProvider } from "../dist/index.js";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-export const HELLO = { version: VERSION, os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] };
+export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 
 const dirs = [];
 after(() => {

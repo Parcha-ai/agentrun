@@ -1,6 +1,5 @@
 // Processes past one call: a stream read whole, page by page, until the process ends.
-import type { DaemonClient } from "./client.js";
-import { MAX_CHUNK_BYTES, type ProcessInfo, type ProcessStream } from "./protocol.js";
+import { type ComputerClient, MAX_CHUNK_BYTES, type ProcessInfo, type ProcessStream } from "./protocol.js";
 import { ok, type Result } from "./result.js";
 
 export interface ReadAllResult {
@@ -21,7 +20,7 @@ const DEFAULT_WAIT_MS = 10_000;
  * when the process ends, the daemon refuses a read, or signal aborts.
  */
 export async function readAll(
-	client: DaemonClient,
+	client: ComputerClient,
 	id: string,
 	stream: ProcessStream,
 	options: { offset?: number; waitMs?: number; signal?: AbortSignal } = {},
@@ -41,7 +40,7 @@ export async function readAll(
 }
 
 /** Lists every process the daemon holds, in start order, page by page. */
-export async function listProcesses(client: DaemonClient, options: { signal?: AbortSignal } = {}): Promise<Result<ProcessInfo[]>> {
+export async function listProcesses(client: ComputerClient, options: { signal?: AbortSignal } = {}): Promise<Result<ProcessInfo[]>> {
 	const processes: ProcessInfo[] = [];
 	let params: { from?: number } = {};
 	for (;;) {

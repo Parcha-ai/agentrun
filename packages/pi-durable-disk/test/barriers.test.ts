@@ -166,7 +166,11 @@ const MATCHED = new RegExp([CALL.source, OPENS.source, EFFECTFUL.source].join("|
 /** Every way the table and the source disagree, read with comments left out: a barrier's call, a hook's await line
  *  (`via`) or a store's open that is only in a comment counts as missing. `sources`: file (relative to packages/) to its
  *  text. */
-function violations(table: Table, journal: Synchronous, given: ReadonlyMap<string, string>): string[] {
+/** Whether a file (relative to the repository) exists: a barrier's proof. */
+const REPO = fileURLToPath(new URL("../../..", import.meta.url));
+const inRepo = (file: string): boolean => existsSync(join(REPO, file));
+
+function violations(table: Table, journal: Synchronous, given: ReadonlyMap<string, string>, exists: (file: string) => boolean = inRepo): string[] {
   const vias = Object.values(table.barriers).flatMap((row) => (row.via ? [row.via.text] : []));
   const sources = new Map([...given].map(([file, text]) => [file, MATCHED.test(text) || vias.some((via) => text.includes(via)) ? withoutComments(text, file) : text]));
   const out: string[] = [];
@@ -191,6 +195,13 @@ function violations(table: Table, journal: Synchronous, given: ReadonlyMap<strin
     if (row.status === "active" && !called.has(name)) out.push(`${name}: active, but ${row.site} has no syncNow(…, BARRIER.${name})`);
     if (row.status === "active" && row.via && !(sources.get(row.via.file) ?? "").includes(row.via.text)) out.push(`${name}: ${row.via.file} no longer has ${JSON.stringify(row.via.text)}`);
     if (row.status === "planned" && row.store === "run-journal" && journal === "NORMAL") out.push(`${name}: still planned, and the run journal is NORMAL: it may not go NORMAL before every barrier on it is active`);
+    if (row.status === "active") {
+      const proof = (row as { proof?: string | null }).proof;
+      if (proof === undefined) out.push(`${name}: active, and names no box-loss proof (proof: its end-to-end test file, or null while it has none)`);
+      else if (proof === null) {
+        if (journal === "NORMAL") out.push(`${name}: has no box-loss proof, and the run journal is NORMAL`);
+      } else if (!exists(proof)) out.push(`${name}: its proof ${proof} does not exist`);
+    }
   }
   for (const [name, pre] of Object.entries(table.preconditions ?? {})) if (!pre.done && journal === "NORMAL") out.push(`${name}: not done, and the run journal is NORMAL: ${pre.what}`);
   const listed = new Set(Object.values(table.stores).flatMap((store) => store.opens));
@@ -246,8 +257,8 @@ describe("the barriers table, held to the source", () => {
   it("fails a call that names no barrier, one in another file than its row's, an active row with no call, an unlisted store, and a no-effects store that runs tools", () => {
     const t: Table = {
       barriers: {
-        here: { store: "s", site: "x/src/a.ts", status: "active", why: "" },
-        missing: { store: "s", site: "x/src/a.ts", status: "active", why: "" },
+        here: { store: "s", site: "x/src/a.ts", status: "active", proof: null, why: "" },
+        missing: { store: "s", site: "x/src/a.ts", status: "active", proof: null, why: "" },
       },
       stores: { s: { opens: ["x/src/a.ts"], synchronous: "NORMAL", effects: "barriers", what: "" }, quiet: { opens: ["x/src/q.ts"], synchronous: "NORMAL", effects: "none", what: "" } },
     };
@@ -268,7 +279,7 @@ describe("the barriers table, held to the source", () => {
 
   it("a comment meets no check: a via line or a barrier's call that is only in a comment is missing; the same lines as code, beside text that only looks like a comment, pass", () => {
     const t: Table = {
-      barriers: { hooked: { store: "s", site: "x/src/a.ts", status: "active", why: "", via: { file: "x/src/d.ts", text: "if (hook) await persist(hook);" } } },
+      barriers: { hooked: { store: "s", site: "x/src/a.ts", status: "active", proof: null, why: "", via: { file: "x/src/d.ts", text: "if (hook) await persist(hook);" } } },
       stores: { s: { opens: ["x/src/a.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
     };
     const commented = new Map([
@@ -289,8 +300,8 @@ describe("the barriers table, held to the source", () => {
   it("a regular expression is code: a `//` or a quote inside one starts no comment and no string, so a real call beside it counts and a commented one after it does not", () => {
     const t: Table = {
       barriers: {
-        here: { store: "s", site: "x/src/a.ts", status: "active", why: "", via: { file: "x/src/a.ts", text: "if (hook) await persist(hook);" } },
-        ghost: { store: "s", site: "x/src/a.ts", status: "active", why: "" },
+        here: { store: "s", site: "x/src/a.ts", status: "active", proof: null, why: "", via: { file: "x/src/a.ts", text: "if (hook) await persist(hook);" } },
+        ghost: { store: "s", site: "x/src/a.ts", status: "active", proof: null, why: "" },
       },
       stores: { s: { opens: ["x/src/a.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
     };
@@ -308,7 +319,7 @@ describe("the barriers table, held to the source", () => {
   });
 
   it("reads code only: a barrier call or an opener inside a comment neither counts nor trips it, and a string keeps its slashes", () => {
-    const t: Table = { barriers: { here: { store: "s", site: "x/src/a.ts", status: "active", why: "" } }, stores: { s: { opens: ["x/src/a.ts"], synchronous: "FULL", effects: "barriers", what: "" } } };
+    const t: Table = { barriers: { here: { store: "s", site: "x/src/a.ts", status: "active", proof: null, why: "" } }, stores: { s: { opens: ["x/src/a.ts"], synchronous: "FULL", effects: "barriers", what: "" } } };
     const files = new Map([
       ["x/src/a.ts", withoutComments('const url = "https://x//y"; openArchilStore(f);\n// await syncNow(store, BARRIER.here);\n')],
       ["x/src/b.ts", withoutComments("/* new DatabaseSync(path) */ const db = new DatabaseSync(path, { readOnly: true });")],
@@ -325,5 +336,19 @@ describe("the barriers table, held to the source", () => {
     const t: Table = { barriers: {}, stores: {}, preconditions: { later: { done: false, what: "x" }, now: { done: true, what: "y" } } };
     assert.deepEqual(violations(t, "FULL", new Map()), []);
     assert.deepEqual(violations(t, "NORMAL", new Map()), ["later: not done, and the run journal is NORMAL: x"]);
+  });
+
+  it("an active barrier names its box-loss proof: a missing proof or a proof file that does not exist fails; a proof stated as none passes at FULL and fails at NORMAL", () => {
+    const t = (proof?: string | null): Table => ({
+      barriers: { here: { store: "s", site: "x/src/a.ts", status: "active", why: "", ...(proof === undefined ? {} : { proof }) } },
+      stores: { s: { opens: ["x/src/a.ts"], synchronous: "FULL", effects: "barriers", what: "" } },
+    });
+    const files = new Map([["x/src/a.ts", "openArchilStore(f); await syncNow(store, BARRIER.here);"]]);
+    const exists = (file: string) => file === "packages/x/test/proof.test.ts";
+    assert.deepEqual(violations(t(), "FULL", files, exists), ["here: active, and names no box-loss proof (proof: its end-to-end test file, or null while it has none)"]);
+    assert.deepEqual(violations(t("packages/x/test/gone.test.ts"), "FULL", files, exists), ["here: its proof packages/x/test/gone.test.ts does not exist"]);
+    assert.deepEqual(violations(t("packages/x/test/proof.test.ts"), "NORMAL", files, exists), []);
+    assert.deepEqual(violations(t(null), "FULL", files, exists), []);
+    assert.deepEqual(violations(t(null), "NORMAL", files, exists), ["here: has no box-loss proof, and the run journal is NORMAL"]);
   });
 });

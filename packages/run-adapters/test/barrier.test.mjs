@@ -106,3 +106,12 @@ test("a stop that lands while the start mark is being made: the request does not
   assert.deepEqual(records.find((r) => r.kind === RUNNER_RECORDS.turn)?.data, { turn: 1, usd: 0, unsent: true });
   assert.deepEqual(events, [{ type: 'request_start', turn: 1 }, { type: 'request_end', turn: 1, usd: 0 }]);
 });
+
+test('a writer with no sync: an effect that may not run twice is refused, with words, before it runs', async () => {
+  const log = [];
+  const { sync: _sync, ...writer } = await logged(log);
+  const drive = await openDrive({ writer, signal: new AbortController().signal });
+  await assert.rejects(drive.effect('tool:c1', { name: 'tool.pay', replay: 'never', input: {} }, async () => { log.push('run'); }), /has no sync to make its start durable/);
+  assert.equal(log.includes('run'), false, 'the effect never ran');
+  assert.deepEqual(log.filter((entry) => entry.includes(KERNEL_RECORDS.start)), [], 'no start was written, so no intent is left without an outcome');
+});

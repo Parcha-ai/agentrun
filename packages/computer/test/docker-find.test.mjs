@@ -56,7 +56,7 @@ test("attach() reports the spec it read back from the computer: its user as uid:
 	assert.deepEqual(root.value, {
 		id: idOf(R),
 		name: R,
-		spec: { image: "alpine:3.20", user: "0:0", network: "none", cpus: 0.5, memoryMb: 512, pids: 64, workdir: "/opt/x", deadline: new Date(deadline) },
+		spec: { image: "alpine:3.20", user: "0:0", network: "none", cpus: 0.5, memoryMb: 512, pids: 64, workdir: "/opt/x", deadline: new Date(deadline), kind: "linux" },
 	});
 	const byLabels = await provider.attach({ labels: { team: "root" } });
 	assert.equal(byLabels.ok && byLabels.value.spec.user, "0:0", "attach by labels reports the same spec");
@@ -65,6 +65,7 @@ test("attach() reports the spec it read back from the computer: its user as uid:
 	assert.deepEqual([a.value.spec.user, a.value.spec.network, a.value.spec.image, a.value.spec.cpus, a.value.spec.memoryMb, a.value.spec.pids], ["1000:1000", "none", "debian:bookworm-slim", 2, 4096, 1024]);
 	const b = await provider.attach({ id: B });
 	assert.equal(b.ok && b.value.spec.network, "open", "a stopped computer on the bridge reports open");
+	assert.equal(b.value.spec.kind, undefined, "a stopped computer cannot be asked its kind: attach reports none");
 });
 
 const D = "computer-0000000000dd";
@@ -297,7 +298,7 @@ test("network() refuses a name this provider does not make, and is not_found for
 
 test("sweep() on Docker deletes the stopped computer past its deadline, since list() lists stopped computers too", async () => {
 	const { provider, calls, names } = seeded();
-	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date("2026-06-01T00:00:00.000Z") });
+	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date() });
 	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1 } });
 	assert.ok(calls().some((args) => args[0] === "rm" && args.at(-1) === B));
 	assert.deepEqual(names().sort(), [A, "computer-0000000000cc", "postgres"].sort(), "only the expired computer is gone");
@@ -326,7 +327,7 @@ test("list() inspects at most 50 computers a call, and only the fields it report
 	const inspects = calls().filter((args) => args[0] === "inspect");
 	assert.ok(inspects.every((args) => args.length - 5 <= 50), `batch sizes ${inspects.map((args) => args.length - 5)}`);
 	assert.equal(inspects.reduce((sum, args) => sum + args.length - 5, 0), 500);
-	const swept = await sweep(provider, { labels: { fleet: "1" }, now: new Date("2026-06-01T00:00:00.000Z") });
+	const swept = await sweep(provider, { labels: { fleet: "1" }, now: new Date() });
 	assert.equal(swept.ok, true, swept.ok ? "" : swept.error.message.slice(0, 300));
 	const expired = fleet.slice(0, 5).map((made) => made.Name.slice(1));
 	assert.deepEqual(swept.value.deleted.sort(), expired);

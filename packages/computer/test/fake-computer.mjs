@@ -102,11 +102,16 @@ function fakeDaemon(hello, computer) {
  * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
  *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
  * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
+ * - `kind`, `mode` (capabilities().daemon), `groups`, `maxLifetimeMs`: what capabilities() declares; check() refuses a
+ *   lifetime past maxLifetimeMs. `hello` is merged over the hello the daemon gives.
  */
 export function fakeComputers({
 	id = "fake",
 	version = "1.0.0",
-	daemon = ["exec", "files", "processes"],
+	kind = "linux",
+	mode = "pid1",
+	groups = ["exec", "files", "processes"],
+	maxLifetimeMs = 24 * 60 * 60_000,
 	hello = {},
 	network = ["none"],
 	lifetime = "janitor",
@@ -135,10 +140,11 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, ...(user ? { user } : {}) }),
+		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, ...(user ? { user } : {}) }),
 		check(spec) {
 			const refusals = [];
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
+			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
 			const kind = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(kind)) refusals.push({ field: "network", message: `network ${kind} is not offered` });
 			return refusals;
@@ -202,7 +208,7 @@ export function fakeComputers({
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
 			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
-			const value = { version, os: "linux", arch: "amd64", capabilities: daemon, ...hello };
+			const value = { version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
 			const client = new DaemonClient(fakeDaemon(value, computers.get(ref.name).daemon));

@@ -1,4 +1,4 @@
-// A computer is what was declared: the daemon is the provider's version with its capabilities, hello's arch is the
+// A computer is what was declared: the daemon is the provider's version with its kind and groups, hello's arch is the
 // computer's own, the network reads back as asked, and a daemon of another version is never handed out.
 import type { Case, CaseContext } from "../types.js";
 import { CASE_LABEL } from "./util.js";
@@ -10,8 +10,10 @@ const drift = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case 
 
 function sameDaemon(t: CaseContext, hello: CaseContext["hello"], where: string) {
 	t.equal(hello.version, t.provider.version, `${where}: the daemon's version is the provider's`);
-	for (const capability of t.provider.capabilities().daemon) {
-		t.assert(hello.capabilities.includes(capability), `${where}: hello declares ${capability}, which the provider declares`);
+	const { kind, groups } = t.provider.capabilities();
+	t.equal(hello.kind, kind, `${where}: hello's kind is the provider's`);
+	for (const group of groups) {
+		t.assert(Array.isArray(hello.groups) && hello.groups.includes(group), `${where}: hello declares ${group}, which the provider declares`);
 	}
 }
 
