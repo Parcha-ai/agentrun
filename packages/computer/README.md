@@ -12,12 +12,12 @@ full VM, a machine. The protocol has two layers:
 
 ## What it does today
 
-The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*` and the `process.*` methods; hello's
-capabilities are `["exec", "files", "processes"]`.
+The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*` and the `process.*` methods; hello
+reports kind `linux` and groups `["exec", "files", "processes"]` (see [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)).
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","arch":"arm64","capabilities":["exec","files","processes"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
@@ -180,6 +180,74 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
 
+## The protocol extension: kind, daemon modes, screen, input, apps, lifetime
+
+The types and the conformance cases for computers past a Linux shell: desktops, Android and iOS phones. This package
+has the types and the cases; the daemon's screen and input (an X11 shim), the desktop fixture, a desktop provider and a
+phone provider come in later changes. Docker declares `linux` with computerd as PID 1, so every new case skips on it
+in words.
+
+**Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios"`, and hello repeats it. `os` stays: it names
+the platform the key table and exec need; kind names the shape the tools need. Only these pairs are valid
+(`kindRefusals(capabilities)` names any other in words, and the case `health.kind-consistent` fails it):
+
+| kind | os | daemon | Core groups, besides health, provider and drift |
+| --- | --- | --- | --- |
+| `linux` | linux | `pid1` or `child` | `exec`, `files`, `processes`; network `none` |
+| `desktop` | linux (windows, macos later) | `pid1`, `child` or `none` | linux's, when daemon is not `none`; and `screen`, `input.pointer`, `input.keys` |
+| `android` | android | `none` | `screen`, `input.touch`; exec and files only when declared |
+| `ios` | ios | `none` | `screen`, `input.touch` |
+
+**Daemon mode.** `capabilities().daemon` says who answers the methods. `pid1`: computerd init is the computer's main
+process, so its exit ends the computer (Docker). `child`: the vendor's own agent is the main process and starts init at
+boot; init's exit does not end the computer, and it must not run under a supervisor that restarts it. `none`: no
+computerd runs, and the provider answers the same methods itself, from our server (adb, a vendor API). Either way a
+connection's `client` is a `ComputerClient` (`call(method, params, { signal })` and `close()`): `DaemonClient` over a
+stream, or a provider's in-process client.
+
+**Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
+`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`. Each is optional unless
+kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
+provider declares, either way.
+
+| group | methods |
+| --- | --- |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
+| `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
+| `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
+| `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
+| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
+| `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
+
+Points are `[x, y]` in the full screenshot's pixels, origin top left; a region shot never changes that space. A key is a
+name in `KEYS` (enter, tab, space, backspace, delete, escape, insert, the arrows, home, end, pageup, pagedown, f1-f12,
+shift, ctrl, alt, super, capslock) or one printable ASCII character (0x21-0x7e); the daemon's Go table will mirror it.
+Model vocabularies (Anthropic's `Return` or `ctrl+s`, OpenAI's keypress) are mapped to these by a tool adapter on the
+server, once per model family, never per vendor.
+
+`input.actions` rules: the whole batch is checked first (its shape, at most `MAX_ACTIONS` = 100 actions, every key
+against `KEYS`, each action's group against what is declared, a px scroll where only clicks exist, and wait plus hold at
+most `MAX_BATCH_WAIT_MS` = 300 s); a failure returns `{ done: 0, failed: { index, kind, message } }` and nothing runs.
+`checkActions(actions, groups, { pixelScroll? })` is that check, for an implementer, an early caller, or an in-process
+client. Then the actions run in order and stop at the first failure (a point off the display, a display gone) with
+`done` = its index, and every button and key the batch pressed and did not release is released. A success keeps state:
+a `down` with no `up` stays down into the next batch. A cancel stops before the next action and releases as a failure
+does.
+
+**Lifetime.** `capabilities().maxLifetimeMs` is the vendor's hard cap for the provider instance (Docker: 30 days).
+`checkLifetime(lifetimeMs, capabilities)` is the one rule every `check()` shares: a whole number of milliseconds above
+0, at most the cap, refused in words with no vendor call. A provider may offer `extend(ref, ttlMs)`, which sets the
+deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs: either is refused
+in words with the deadline unchanged, so an extend never shortens a computer's life) by moving the
+vendor's timer, the deadline label and init's own deadline (`deadline.extend`, typed in `protocol.ts`; init answers it
+from the X11 shim's change on, and is `unsupported` until then), and `stream(ref)`, the vendor's live screen URL. Docker
+has neither: its deadline is a container label, which cannot change after create, so ask for the whole lifetime at
+create. The janitor counts a deadline more than maxLifetimeMs (and a minute of clock skew) past now as unreadable, and
+deletes it.
+
+Brains never run inside the computer: a computer only takes tool calls. There is no duplex group and no "brain and
+hands" placement.
+
 ## Docker
 
 ```ts
@@ -196,7 +264,10 @@ if (connected.ok) {
 await docker.release(made.value, "delete");
 ```
 
-- `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (at most 30 days), a network
+- `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs`
+  of 30 days; there is no `extend()` or `stream()`.
+- `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
+  30 days), a network
   allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
   does not support. Once the host has been read (below), it also refuses with `field: "host"` for each enforcement
   the host lacks. `create` never throws on a spec `check` passes.
@@ -310,8 +381,10 @@ cgroup limit); `Config.Hostname`, `Domainname`, `AttachStdin`, `AttachStdout`, `
 `StopTimeout`, `Shell`, `MacAddress`, `NetworkDisabled`: the image's settings, which act only inside the computer.
 The rest of the report (`State`, `NetworkSettings` past its networks, paths, `Driver`) is Docker's own bookkeeping.
 
-From the daemon's `hello`, over one short connection: the provider's version, `os` linux, every capability in
-`capabilities().daemon`, and `arch` the Docker host's architecture (`docker info`, x86_64 as amd64, aarch64 as arm64).
+From the daemon's `hello`, over one short connection: the provider's version, `os` linux, `kind` linux, exactly the
+groups in `capabilities().groups` (in any order; one more or one fewer is drift), and `arch` the Docker host's
+architecture (`docker info`, x86_64 as amd64, aarch64 as arm64). `attach` also reports the hello's `kind` in the spec
+it reads back, when the computer is running.
 
 Any mismatch, or a computer that cannot be inspected or whose daemon does not answer, and the computer is deleted
 before `create` returns `refused` with every mismatch. A computer is never left running wider than it was declared.
@@ -344,7 +417,9 @@ A Docker computer stops itself at its deadline (init exits), but Docker deletes 
 `lifetime: "janitor"` and `sweep(provider, { labels?, now?, signal? })` (in `src/janitor.ts`) deletes computers instead. It works for any provider that declares `lifetime: "janitor"`
 and refuses one that declares `"vendor"`. It lists the provider's computers with `labels` (all of them by default) and
 deletes each whose deadline is at or before `now`, or whose deadline is missing or unreadable, stopped or running (a
-computer past its deadline has usually stopped itself already); it keeps the rest and
+computer past its deadline has usually stopped itself already). A deadline more than the provider's `maxLifetimeMs`
+past `now` (and a minute of clock skew) counts as unreadable: no computer the provider made carries one. It keeps the
+rest and
 returns `{ deleted, kept }`. It never touches a container the provider does not list: on Docker, one without
 `agentrun.computer=1` and a computer's name. A computer it cannot delete does not stop it; the result is then an error
 naming it and what was deleted.
@@ -363,37 +438,38 @@ if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; 
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
-`src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`) and
-the capabilities it needs, and uses only `ComputerProvider`, `DaemonClient` and the suite's assertion helpers.
+`src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
+`screen`, `input`, `touch`, `apps`, `lifetime`) and the capabilities it needs, and uses only `ComputerProvider`,
+`ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider docker
-npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--json]
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--json]
 ```
 
 ```text
-computer conformance · docker · computerd 0.1.0-beta.30 linux/amd64
-core health    hello ping unknown-method                    ✓ 3
+computer conformance · docker · linux, daemon pid1 · computerd 0.1.0-beta.30 linux/amd64
+core health    hello ping unknown-method kind-consistent    ✓ 4
 core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
-full exec      root-on-request user-uid                     ✓ 2
-full provider  network-switch network-switch-allow          ✓ 3 - 2
-               network-open network-allow janitor
-  - provider.network-switch-allow: the provider does not declare network:allow
-  - provider.network-allow: the provider does not declare network:allow
-core PASS 52/52 · full 5/7 · network:allow not declared
+full lifetime  extend                                       - 1
+  - lifetime.extend: the provider has no extend()
+optional screen screenshot-size                              - 1
+  - screen.screenshot-size: the provider does not declare screen
+...
+core PASS 53/53 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
-usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, image, daemon: {
-version, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason? }], core, undeclared, cleanup }`). A
-failure is listed under its line with what the case found.
+usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
+daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
+undeclared? }], core, undeclared, cleanup }`). A failure is listed under its line with what the case found.
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
-not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 10/10 · 42 Core cases
-not run`, never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 51 Core cases
+not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 
 What a provider module implements:
@@ -407,7 +483,7 @@ What a provider module implements:
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 
-- **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no effective or
+- **Core** is what every computer of its kind does; for a linux computer: hello and ping, `exec.run` as a user other than root with no effective or
   permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
   that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
@@ -416,18 +492,55 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
   (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.
+- **Core by kind.** `coreGroups(kind, daemon)` is what a computer of its kind must declare (the table in
+  [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
+  processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
+  on a phone. `health.kind-consistent` checks the kind, os and daemon pair, that hello's kind and groups are the
+  provider's, and that kind's Core groups are declared; `provider.check-refuses` also asks `check` for
+  `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (every pixel of the PNG decodes, its
+  IHDR size is `width` x `height`, `scale` is above 0, a region shot decodes and has the region's size, and on a
+  desktop the fixture's four colors are where it paints them; the suite reads 8-bit, non-interlaced PNGs of at most
+  16384 pixels a side and 2^25 pixels, and inflates no more than their IHDR gives), `input.click-lands` (a single and a double click show in the fixture's log at their
+  point, with their count), `input.type-text` (`Hello, agentrun! 123` arrives exactly),
+  `input.key-table-refuses-unknown` (a batch whose second action names `Hyper_Q` gives `done` 0, `failed.index` 1,
+  kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
+  click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
+  fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
+  front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
+  the screenshot, with the fixture's button found by its id and text).
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
   truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
-  capabilities.
+  capabilities; and from the extension `touch.pinch` (two fingers logged moving apart), `lifetime.extend` (`extend`:
+  made with 45 s and extended to 120 s, at 60 s it answers ping with a process started earlier still running and
+  `list()` shows the new deadline; three extends are refused with the deadline unchanged: to an earlier
+  deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s, within the cap on its own but past
+  create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
+  (`stream`: an https URL that answers 200; only its origin is ever reported).
 
-A case whose needs the provider does not declare (in `capabilities()`), or the daemon does not declare (in hello), is
-skipped with the reason and never fails. A skipped Full case is reported as not declared; a skipped Core case means
-the provider lacks something every computer must have, so Core does not pass.
+A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, or an optional
+provider method (`extend`, `stream`, declared by being there). When a Core case needs what its kind requires and the
+provider or the computer lacks it, the case fails in words: `a desktop computer with daemon pid1 must declare screen:
+the provider does not declare screen`. Any other need that is not declared skips the case with the reason, never
+fails it, and names it in `undeclared`; a Core case skipped so is not Core for this kind of computer: the report lists
+it under `optional`, never under `core`, it is out of Core's count, and the verdict says how many (`9 optional cases
+skipped, not declared`). Any other skip of a Core case (no fixture given, no way to observe a touch)
+is not a pass, so Core does not pass.
+
+The cases that check what input did read a fixture's own log, with no model. `--fixture <path>` (`fixture` from code)
+names it: `computerd-fixture` for a desktop, a test-only static binary the case writes with `files.write` and starts
+with `process.start` (`--log <path>`), a 200x200 override-redirect window at (0, 0) in four colors (red, green, blue,
+yellow, clockwise from top left) that grabs focus; or the fixture APK for an Android phone (`ai.agentrun.fixture`,
+installed with `apps.install` and launched, logging to its files directory, with a button
+`ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
+button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
+contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
+`no way to observe the effect: declare files or apps.ui_tree`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
-and network `none`. It deletes each computer a case made when the case ends, and the shared one at the end; for a
+and network `none` (`open` for a phone that declares no `none`, since its kind does not require it). It deletes each computer a case made when the case ends, and the shared one at the end; for a
 provider with lifetime `"janitor"` it then sweeps that label, and it lists the label to show nothing is left. A case
 that runs past 3 minutes fails and its computers are deleted. Every provider call is bounded: a create or connect for
 the shared computer that does not answer within 3 minutes fails the cases that need it, a release, sweep or list
@@ -443,8 +556,8 @@ is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under
 `$HOME/agentrun-conformance-<run id>`.
 
-From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs? })` returns
-the report, and `formatReport(report)` the text above.
+From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs?, fixture?,
+fetch? })` returns the report, and `formatReport(report)` the text above.
 
 ## Build
 

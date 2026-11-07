@@ -46,7 +46,7 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 	});
 
 	it("has cases in every group", () => {
-		for (const group of ["health", "exec", "files", "process", "provider", "drift"]) {
+		for (const group of ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps", "lifetime"]) {
 			assert.ok(conformanceCases.some((c) => c.group === group), `no ${group} case`);
 		}
 	});
@@ -63,6 +63,19 @@ describe("the conformance suite on Docker", { skip: LIVE ? false : "set AGENTRUN
 	it("passes Core, with daemon and provider of one version", () => {
 		assert.equal(report.core, "pass", formatReport(report));
 		assert.equal(report.daemon?.version, report.providerVersion);
+	});
+
+	it("is a linux computer with computerd as PID 1, and skips each screen, input, touch, apps and lifetime case in words", () => {
+		assert.deepEqual([report.kind, report.daemonMode], ["linux", "pid1"]);
+		const extension = report.results.filter((r) => ["screen", "input", "touch", "apps", "lifetime"].includes(r.group));
+		assert.ok(extension.length > 0, "the extension's cases ran");
+		for (const r of extension) {
+			assert.equal(r.status, "skip", `${r.id}: ${r.reason}`);
+			assert.match(r.reason, /^the provider (does not declare|has no) /, r.id);
+			assert.ok(r.undeclared?.length > 0, `${r.id} names what was not declared`);
+		}
+		const kind = report.results.find((r) => r.id === "health.kind-consistent");
+		assert.equal(kind?.status, "pass", kind?.reason);
 	});
 
 	it("leaves no computer behind", () => {

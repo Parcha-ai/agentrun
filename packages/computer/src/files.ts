@@ -1,6 +1,5 @@
 // Files in and out of a computer past one call's limit: whole files in chunks, and tar archives both ways.
-import type { DaemonClient } from "./client.js";
-import { MAX_CHUNK_BYTES, type TarPushEndResult } from "./protocol.js";
+import { type ComputerClient, MAX_CHUNK_BYTES, type TarPushEndResult } from "./protocol.js";
 import { type ComputerError, fail, ok, type Result } from "./result.js";
 
 export interface PulledTar {
@@ -18,7 +17,7 @@ const STOPPED = Symbol("stopped");
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 
 /** Reads a whole file, MAX_CHUNK_BYTES per call. */
-export async function readFile(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
+export async function readFile(client: ComputerClient, path: string, options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
 	const parts: Buffer[] = [];
 	let offset = 0;
 	for (;;) {
@@ -37,7 +36,7 @@ export async function readFile(client: DaemonClient, path: string, options: { si
  * first.
  */
 export async function writeFile(
-	client: DaemonClient,
+	client: ComputerClient,
 	path: string,
 	bytes: Uint8Array,
 	options: { mode?: number; parents?: boolean; signal?: AbortSignal } = {},
@@ -66,7 +65,7 @@ export async function writeFile(
  * piped in is ended too.
  */
 export async function pushTar(
-	client: DaemonClient,
+	client: ComputerClient,
 	dir: string,
 	tar: Uint8Array | AsyncIterable<Uint8Array>,
 	options: { signal?: AbortSignal } = {},
@@ -153,7 +152,7 @@ function letGo(iterator: AsyncIterator<unknown>): void {
 }
 
 /** Ends a push this side gave up on, then returns why. */
-async function abandon<T>(client: DaemonClient, id: string, why: Result<T>): Promise<Result<T>> {
+async function abandon<T>(client: ComputerClient, id: string, why: Result<T>): Promise<Result<T>> {
 	await client.call("tar.push.end", { id });
 	return why;
 }
@@ -162,7 +161,7 @@ async function abandon<T>(client: DaemonClient, id: string, why: Result<T>): Pro
  * Pulls the tar of a file or directory in the computer, a chunk each time the loop asks. The pull is ended, which frees
  * it in the daemon, when the archive ends, the loop is left, a read fails, or the signal aborts.
  */
-export function pullTarStream(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): PulledTar {
+export function pullTarStream(client: ComputerClient, path: string, options: { signal?: AbortSignal } = {}): PulledTar {
 	const { signal } = options;
 	let settle!: (result: Result<{ bytes: number }>) => void;
 	const done = new Promise<Result<{ bytes: number }>>((resolve) => (settle = resolve));
@@ -210,7 +209,7 @@ export function pullTarStream(client: DaemonClient, path: string, options: { sig
 }
 
 /** Pulls the tar of a file or directory in the computer, whole. */
-export async function pullTar(client: DaemonClient, path: string, options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
+export async function pullTar(client: ComputerClient, path: string, options: { signal?: AbortSignal } = {}): Promise<Result<Uint8Array>> {
 	const { chunks, done } = pullTarStream(client, path, options);
 	const parts: Uint8Array[] = [];
 	try {
