@@ -103,6 +103,8 @@ export function script(spec) {
   if (/Write unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
   // The same, the second ending the turn, then a follow-up's request, under a cap.
   if (/Pay unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
+  // Two requests, a side call (a title) admitted and answered while the first still streams: two in flight at once.
+  if (/Write beside a side call on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true, sideDuring: { usd: 0.0005 } }, { say: "Wrote it.", usd: 0.002 }];
   // The same two requests (the second ends the turn), then a follow-up's request, under a cap.
   if (/Pay on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];

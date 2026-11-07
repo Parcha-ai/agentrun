@@ -39,8 +39,9 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  shown at once and its cost booked only once that file exists, as a provider's usage can come after its answer. */
 /** `sideAfterNote`: a client's side call on another model (a title, a summary: ModelRequest.side) admitted and answered
  *  at `usd` after this request took its host's note and before this request is admitted, as a Claude Code side call can
- *  be while the model proxy reads the credential between the two. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number } };
+ *  be while the model proxy reads the credential between the two. `sideDuring`: one admitted and answered at `usd` while
+ *  this request still streams (after its first call's text, before that call), so two of its requests are in flight. */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -193,6 +194,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 : [{ name: "call" in action ? action.call : "submit", args: "call" in action ? action.args ?? {} : { value: action.submit } }];
               for (const [n, { name, args, say }] of asked.entries()) {
                 if (say) io.onEvent({ type: "text", delta: say });
+                // A side call (a title, a summary) admitted and answered while this request still streams: two in flight.
+                if (n === 0 && "sideDuring" in action && action.sideDuring) {
+                  const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
+                  await io.models.afterRequest({ input: 10, output: 5, usd: action.sideDuring.usd }, side || undefined);
+                }
                 const callId = "calls" in action ? `${spec.key}:${index}.${n}` : `${spec.key}:${index}`;
                 const tool = tools.get(name);
                 await append(FAUX_RECORDS.call, { callId, name });

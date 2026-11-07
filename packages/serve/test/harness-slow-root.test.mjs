@@ -129,3 +129,20 @@ test("claude-agent: on a store slow to write, the cap counts what each request c
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([last.status, view.pending?.kind, view.pending?.spent_usd], ["input_required", "budget", 0.003], JSON.stringify(view.pending ?? view));
 });
+
+for (const on of ["claude-agent", "codex"]) {
+  test(`${on}: on a store slow to write, a side call admitted and answered while a request still streams leaves each its own text and cost`, async (t) => {
+    withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    assert.equal((await api("POST", "/agents", agent("overlap", { harness: on, instructions: "Write beside a side call on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
+    const runId = (await api("POST", "/agents/overlap/runs", { input: { content: "Write alpha to a.md." } })).body.run_id;
+    const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 30_000 });
+    assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+    const root = rootOf(data, runId);
+    const answers = root.filter((e) => e.kind === "pi.assistant" && contentOf(e)).map((e) => [contentOf(e), e.model[0].usage?.cost?.total ?? null]);
+    console.log(JSON.stringify({ answers, usage: rows.findLast((r) => r.kind === "usage")?.usage, kinds: root.map((e) => `${e.kind}${e.data?.request ? `#${e.data.request}` : ""}${e.kind === "pi.assistant" ? `:${e.model[0].usage?.cost?.total}` : ""}`) }));
+    assert.deepEqual(answers, [["Writing a.md.|call:write", 0.001], ["Wrote it.", 0.002]], `each request's own text and cost: ${JSON.stringify(answers)}`);
+    const usage = rows.findLast((r) => r.kind === "usage")?.usage;
+    assert.equal(usage?.usd, 0.0035, `every request's cost, the side call's too, known: ${JSON.stringify(usage)}`);
+  });
+}
