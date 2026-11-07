@@ -44,8 +44,10 @@ export const ownerCookieName = (req: IncomingMessage) => (overHttps(req) ? "__Ho
 /** A Set-Cookie line for the owner's session: `value`, or an empty one that ends it (`maxAgeS` 0). */
 export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number) =>
   `${ownerCookieName(req)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeS}${overHttps(req) ? "; Secure" : ""}`;
+/** The owner's session cookies the request holds, valid or not. */
+export const heldSessions = (req: IncomingMessage) => cookiesOf(req, ownerCookieName(req));
 /** Whether the request holds a session the owner signed in. */
-export const signedIn = (req: IncomingMessage, owner: Owner) => cookiesOf(req, ownerCookieName(req)).some((value) => owner.valid(value));
+export const signedIn = (req: IncomingMessage, owner: Owner) => heldSessions(req).some((value) => owner.valid(value));
 
 function send(req: IncomingMessage, res: ServerResponse, status: number, type: string, body: Buffer | string, headers: Record<string, string> = {}): void {
   const bytes = typeof body === "string" ? Buffer.from(body) : body;

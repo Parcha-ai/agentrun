@@ -39,7 +39,7 @@ import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, typ
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import { foldSession, INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { failureText } from "@parcha/agentrun-kernel/process";
-import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
+import { BARRIER, syncNow, type DoorContext, type DoorEvent, type DoorHook, type DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
@@ -208,9 +208,10 @@ export function adapterRun(
   // left then, and the row is written, and the note counted sent, only once that request is admitted carrying it
   // (`noted`), as pi's judge does: nothing is recorded for a note no request carried.
   // `costs`: the session's own model's priced requests, side calls left out. `due`: an admission found the wrap-up due
-  // with that request's expected cost standing in for a typical one (none priced yet), which the proxy measures only
-  // after it has placed a note: the next request takes it. In memory only, as nothing was told: a process opened again
-  // reads the costs. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
+  // with nothing priced yet (step 0: that request at its input and a typical answer standing in for a typical one), which
+  // the proxy measures only after it has placed a note: the next request takes it, in step 0's words as pi says them,
+  // however its first request is priced by then. In memory only, as nothing was told: a process opened again reads the
+  // costs, and words the note by them. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
   // once admitted, held while the turn it is told in has its person's (or the server's) message still to be written
   // (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
   type WrapRow = { key: string; capUsd: number; leftUsd: number; words: string };
@@ -225,7 +226,7 @@ export function adapterRun(
     const due = wrap.costs.length > 0 ? wrapUpDue(budgetUsd, spentUsd, held, typicalCost(wrap.costs, 0)) : undefined;
     if (!due && !wrap.due) return undefined;
     const leftUsd = due?.leftUsd ?? budgetUsd - spentUsd - held;
-    wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd, wrap.costs.length === 0) };
+    wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd, wrap.due) };
     return wrap.taken.words;
   };
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
@@ -272,13 +273,14 @@ export function adapterRun(
     // credential between the two) leaves it for that request.
     const data = noted && !withoutNote && !side ? wrap.taken : undefined;
     if (noted) wrap.taken = undefined;
-    // None priced yet: this request's expected cost is the typical one, and what is left as its admission counts it
+    // None priced yet: this request at its input and a typical answer is the typical one, and what is left as its admission counts it
     // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
     // next request. Never a side call's: the note is for the session's own model.
     if (!data && !side && budgetUsd !== undefined && !wrap.sent && wrap.costs.length === 0) {
       const spentNow = plus(plus(request.spentUsd, charged), sideSpend());
       const held = request.inFlight.reduce((sum, r) => sum + (r.holdUsd ?? 0), paidHolds());
-      if (spentNow !== null && wrapUpDue(budgetUsd, spentNow, held, answer.holdUsd)) wrap.due = true;
+      // Its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its whole output allowance.
+      if (spentNow !== null && wrapUpDue(budgetUsd, spentNow, held, answer.typicalUsd ?? answer.holdUsd)) wrap.due = true;
     }
     if (data && !wrap.sent) {
       wrap.sent = true;
@@ -425,7 +427,7 @@ export function adapterRun(
       await commitAll();
     });
 
-  const onModel = (event: ModelPortEvent) => {
+  const onModel = (event: ModelPortEvent): Promise<void> | undefined => {
     if (event.type === "request_start") {
       inFlight.started(event.turn);
       // Its bound, on its start mark: the run's cost serves it while it is in flight (runs.ts).
@@ -437,10 +439,12 @@ export function adapterRun(
       open.add(event.turn);
       models.set(event.turn, event.model);
       void flush();
-      // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
-      // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
-      // A store that refuses it has refused a write already, and the process ends on that.
-      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound } })))).catch(() => undefined);
+      // Marked on the root before it leaves, as a pi run's request is (request-start.ts): one never answered, a run that
+      // ends without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
+      // The runner awaits this before the request is sent, and the mark is synced first, so a lost box never loses the
+      // mark of a request that went. A mark that fails refuses the request.
+      return later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound } }))))
+        .then(() => syncNow(run?.store, BARRIER.sideRequestStarted));
     } else {
       open.delete(event.turn);
       inFlight.ended(event.turn);
@@ -731,7 +735,7 @@ export function adapterRun(
     door,
     async onOpen(durable) {
       run = durable;
-      const sessions = durableSessions(durable.harness, context);
+      const sessions = durableSessions(durable.harness, context, durable.store);
       // The requests already written on the root, and the messages accepted and never sent, from any earlier process.
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
       const accepted = new Map<string, Message>();

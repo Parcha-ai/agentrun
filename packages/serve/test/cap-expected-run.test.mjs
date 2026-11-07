@@ -110,10 +110,10 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
   // less than request 2's input uncached (a new process has no previous request in hand), so the run pauses there.
   const plain = expectedInput(1) + CEILING * 10 / 1e6;
   const cap = grown(0).usd + plain + 0.1;
-  // A cap this small is under 3 times request 0's hold, so the wrap-up's note is due for request 1 (none priced yet: the
-  // expected cost stands in), and its bytes are in the body request 1 is measured and held on: they grew the body since
+  // A cap this small is under 3 times request 0 at its input and a 4,096-token answer (none priced yet: step 0), so the
+  // wrap-up's note is due for request 1, in step 0's words, and its bytes are in the body request 1 is measured and held on: they grew the body since
   // request 0, at the cache write's $2.50 a million, on its expected figure and its worst alike (its bound unchanged).
-  const note = wrapUpWords(cap - grown(0).usd);
+  const note = wrapUpWords(cap - grown(0).usd, true);
   const held = plain + Buffer.byteLength(note, "utf8") * 2.5 / 1e6;
   const runId = await started("restart", `Grow a cached context, cut at request 1 until ${go}.`, cap);
   for (let i = 0; usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows)?.requests !== 2; i++) {

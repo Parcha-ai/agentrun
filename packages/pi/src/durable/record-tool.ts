@@ -13,7 +13,7 @@ import {
   defineDoc, defineTool, GenerationTask, hook, type ConversationId, type DocumentReader, type HookApi, type HookRegistration,
   type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import {
   DELIVERY_ATTEMPTS, deliver, deliveryTerminates, deliveryText, fileSubmission, mixedFileSubmission, nudgeText, repairRecord,
   VIOLATIONS_SHOWN, type Delivery, type Disagreement, type RecordContract, type RecordStore,
@@ -24,12 +24,14 @@ import { toolResult } from "./pi-versions.js";
 /** The record a conversation delivered, or null while it has not, and the delivery attempts it has spent. */
 export const RecordDoc = defineDoc<{ record: JsonValue | null; attempts: number }>({
   kind: "agentrun.record", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ record: null, attempts: 0 }),
+  checkpointWhen: () => false,
 });
 
 /** The gate's own state beside the record: whether the second reading's round was spent, and what it still
  *  disagreed with in the delivered record. */
 export const GateDoc = defineDoc<{ bounced: boolean; disagreements: Disagreement[] }>({
   kind: "agentrun.gate", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ bounced: false, disagreements: [] }),
+  checkpointWhen: () => false,
 });
 
 /** Where `prepareArguments` carries a call's arguments to `execute`. A record's own fields are never read as it. */
