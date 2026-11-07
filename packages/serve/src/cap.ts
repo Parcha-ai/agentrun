@@ -45,6 +45,7 @@
 // (RunSpend.wait, budget.ts): a model node's request before it is sent, a call node's call and a decision before they are
 // admitted again. A refusal inside a call node's effect is told to the call (capRefusals), never only to the model.
 import { readRunDbSync } from "./run-db.js";
+import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
@@ -530,13 +531,35 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
  *  reading, kept so a later process counts each decision as this one did. costOf counts none, so nothing counts twice. */
 export const DECISION_COST = "agentrun.decision_cost";
 
-/** What a workflow run's decisions cost, as the cap counted each (DECISION_COST entries) in its store: what the next
- *  process adds to spentIn's reading. */
+/** What a workflow run's decisions cost, in its store: what the next process adds to spentIn's reading. Per decision
+ *  (its id), the larger of what the cap booked for it (DECISION_COST entries, at its charge or its hold) and what its
+ *  receipts say it cost (the costs the timeline's decision rows sum): a process that died after its answer's receipt and
+ *  before its booking, or whose booking was lost, still counts what it was charged. A booking with no decision id is
+ *  counted as it is. */
 export function decisionSpentIn(storeFile: string): number {
-  return entriesIn(storeFile).reduce((sum, entry) => {
-    const usd = entry.kind === DECISION_COST ? figureOf((entry.data as { usd?: unknown } | undefined)?.usd) : undefined;
-    return usd !== undefined && usd > 0 ? sum + usd : sum;
-  }, 0);
+  const booked = new Map<string, number>();
+  let loose = 0;
+  for (const entry of entriesIn(storeFile)) {
+    if (entry.kind !== DECISION_COST) continue;
+    const data = entry.data as { usd?: unknown; decision?: unknown } | undefined;
+    const usd = figureOf(data?.usd);
+    if (usd === undefined || !(usd > 0)) continue;
+    if (typeof data?.decision === "string") booked.set(data.decision, (booked.get(data.decision) ?? 0) + usd);
+    else loose += usd;
+  }
+  const receipted = new Map<string, number>();
+  let receipts: Array<Record<string, unknown>> = [];
+  // Receipts that cannot be read leave the bookings alone to say it.
+  if (existsSync(storeFile)) try { receipts = durableDecisions(storeFile, { unlocked: true }); } catch { receipts = []; }
+  for (const receipt of receipts) {
+    const usd = figureOf(receipt.cost_usd);
+    // A stored receipt row names its decision `decision_id` (agentrun-pi decision-recovery.ts rowOf).
+    const id = typeof receipt.decision_id === "string" ? receipt.decision_id : typeof receipt.id === "string" ? receipt.id : undefined;
+    if (id !== undefined && usd !== undefined && usd > 0) receipted.set(id, (receipted.get(id) ?? 0) + usd);
+  }
+  let sum = loose;
+  for (const id of new Set([...booked.keys(), ...receipted.keys()])) sum += Math.max(booked.get(id) ?? 0, receipted.get(id) ?? 0);
+  return sum;
 }
 
 /** The entries of the run's store, in order (none when it has no store yet). */

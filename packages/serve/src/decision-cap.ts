@@ -111,10 +111,10 @@ export function cappedDecisions({ providers, waits, mode, book }: {
   providers: { providers: Readonly<Record<string, DecisionProvider>>; default: string };
   waits: BudgetWaits;
   mode: CapMode;
-  book: (data: { call: string; usd: number }) => Promise<void>;
+  book: (data: { call: string; decision: string | null; usd: number }) => Promise<void>;
 }) {
   /** Each request's hold, taken by `before` and settled by `settling`, by the params object both are handed. */
-  const tickets = new WeakMap<object, { ticket: PaidTicket; usd: number; call: string }>();
+  const tickets = new WeakMap<object, { ticket: PaidTicket; usd: number; call: string; decision: string | null }>();
   const stepOf = (params: JudgeParams): StepAt => ({ label: params.label, path: params.executionPath ?? null });
   return {
     /** Before the admission: the hold taken, or a wait for a raise, or the run stopped. `replayed` says whether the
@@ -139,7 +139,7 @@ export function cappedDecisions({ providers, waits, mode, book }: {
           return waits.stop(held.refused, stepOf(params));
         }
         const call = `${params.label}@${params.executionPath ?? ""}${params.item ? `#${params.item.index}` : ""}`;
-        tickets.set(params, { ticket: held.ticket, usd: hold.usd, call });
+        tickets.set(params, { ticket: held.ticket, usd: hold.usd, call, decision: params.decisionId ?? null });
         try {
           return await next(params);
         } finally {
@@ -155,7 +155,7 @@ export function cappedDecisions({ providers, waits, mode, book }: {
         if (!held) return judge(params);
         const settle = async (usd: number | null) => {
           held.ticket.settle(usd);
-          await book({ call: held.call, usd: usd ?? held.usd }).catch(() => undefined);
+          await book({ call: held.call, decision: held.decision, usd: usd ?? held.usd }).catch(() => undefined);
         };
         try {
           const result = await judge(params);
