@@ -86,7 +86,26 @@ export function script(spec) {
   // no request open until `<file>` exists, then one more request.
   const cc = (inputTokensMax, usd, say) => ({ say, inputTokensMax, outputTokensAsked: 32_000, usd });
   if (/Claude Code at its start\./.test(text)) return [cc(25_000, 0.03, "Working."), cc(26_000, 0.03, "Done.")];
-  if (/Claude Code on a small cap\./.test(text)) return [cc(5_000, 0.01, "Working."), cc(5_200, 0.01, "Done.")];
+  // "makes five cent calls": five $0.01 tool calls on a 5,000-token prompt, then a $0.01 answer. "... across a restart at
+  // <file>": a hold after the first call (writing `<file>.held`) until `<file>` exists. "its first cost booked when <file>
+  // exists": a $0.01 call asking 1,024 tokens whose cost comes in only then, and the answer. "spends four cents first": a $0.04 call, then
+  // the answer.
+  const centCall = (k, extra = {}) => ({ call: "read", args: { path: "a.txt" }, inputTokensMax: 5_000 + 200 * k, outputTokensAsked: 32_000, usd: 0.01, ...extra });
+  const centRestart = /Claude Code makes five cent calls(?: across a restart at (\S+))?\./.exec(text);
+  if (centRestart) {
+    const [, restart] = centRestart;
+    const held = restart && !existsSync(restart) ? [hangSignalled(`${restart}.held`)] : [];
+    return [centCall(0), ...held, ...[1, 2, 3, 4].map((k) => centCall(k)), cc(6_000, 0.01, "Done.")];
+  }
+  const bookedLate = /Claude Code on a small cap, its first cost booked when (\S+) exists\./.exec(text)?.[1];
+  // Its first request asks 1,024 tokens, so its hold ($0.03), in flight until its cost comes in, leaves request 2 room.
+  if (bookedLate) return [centCall(0, { bookWhen: bookedLate, outputTokensAsked: 1_024 }), cc(5_200, 0.01, "Done.")];
+  if (/Claude Code spends four cents first\./.test(text)) return [centCall(0, { usd: 0.04 }), cc(5_200, 0.01, "Done.")];
+  // Codex-shaped: each request needs at least 10,240 output tokens (1,024 for the answer and 9,216 of reasoning at
+  // "high", as the proxy reads Codex's body), and costs half a cent: sixty of them, then the answer.
+  if (/Make sixty half-cent calls that each need 10,240 output tokens at least\./.test(text)) {
+    return [...Array.from({ length: 60 }, (_, k) => centCall(k % 10, { usd: 0.005, outputTokensAsked: 64_000, outputTokensLeast: 10_240 })), cc(7_000, 0.005, "Done.")];
+  }
   const restartAt = /Claude Code restarts before the note at (\S+)\./.exec(text)?.[1];
   if (restartAt) return [cc(5_000, 0.04, "Working."), ...(existsSync(restartAt) ? [] : [hangSignalled(`${restartAt}.held`)]), cc(5_200, 0.01, "Done.")];
   // The wrap-up due after a $0.40 request, then an answer whose input (5,990 tokens, $0.599 on input-priced faux) fits
