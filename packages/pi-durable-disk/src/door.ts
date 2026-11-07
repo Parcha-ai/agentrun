@@ -53,12 +53,17 @@ export interface DoorHook {
    *  processes) stops here, so none outlives the instance. A hook with nothing of its own resolves at once. */
   close(): Promise<void>;
   busy(): boolean;
+  /** Its harness's id, named in the door's log lines (a close that fails or overruns its bound). */
+  readonly harness: string;
   /** Called once as the door opens, with its emit: a turn the hook starts itself, with no submit (a recovery after a
    *  restart), reports its start and end through it as a submit's turn does. */
   attach?(emit: (event: DoorEvent) => void): void;
 }
 
 export type DoorRecord = { readonly status: DoorStatus; readonly message?: string };
+
+/** Where the door says what went wrong outside any call: an event's name and its detail (cli.ts log). */
+export type DoorLog = (event: string, detail: Record<string, unknown>) => void;
 
 export interface DoorTimeouts {
   /** How long `hook.submit` may take to take an input before its outcome is UNKNOWN; default 30 s. */
@@ -166,7 +171,7 @@ export { TIMEOUT as DOOR_TIMEOUT };
 /** What an ADMITTED record answers when no call in this process carries it: no later outcome can come for it. */
 const ORPHANED: DoorRecord = { status: "UNKNOWN", message: "admitted by an earlier instance, or before the lease was lost: whether the hook took it is unknown" };
 
-export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeouts: DoorTimeouts = {}): Door {
+export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeouts: DoorTimeouts & { readonly log?: DoorLog } = {}): Door {
   const submitMs = timeouts.submitMs ?? 30_000;
   const abortMs = timeouts.abortMs ?? 5_000;
   const listeners = new Set<(event: DoorRunEvent) => void>();
@@ -220,7 +225,17 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
   };
   /** The hook's close, once, however the instance stops: its failure or overrun is the hook's, never the stop's. */
   let closing: Promise<void> | undefined;
-  const closeHook = () => (closing ??= within(Promise.resolve().then(() => hook.close()), abortMs).then(() => undefined, () => undefined));
+  const say = (event: string, detail: Record<string, unknown>) => {
+    try {
+      timeouts.log?.(event, detail);
+    } catch {
+      // A log line that cannot be written stops nothing.
+    }
+  };
+  const closeHook = () => (closing ??= within(Promise.resolve().then(() => hook.close()), abortMs).then(
+    (result) => void (result === TIMEOUT && say("door close timed out", { harness: hook.harness, error: `close() did not settle within ${abortMs} ms` })),
+    (error: unknown) => say("door close failed", { harness: hook.harness, error: String((error as Error)?.message ?? error) }),
+  ));
   /** The hook's abort, then the open turn ended when it left the hook idle: POST /abort and a submit's timeout alike. */
   const abortTurn = async () => {
     const result = await abortHook("request");

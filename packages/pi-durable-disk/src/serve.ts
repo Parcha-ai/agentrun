@@ -12,7 +12,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
 import type { Conversation, ConversationId, Cursor, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, Tx, UserInput } from "@earendil-works/pi-durable";
-import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorTimeouts } from "./door.ts";
+import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorLog, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
 import { busyState } from "./park.ts";
 import type { DurableRun } from "./run.ts";
@@ -78,6 +78,8 @@ export interface ServeOptions {
   readonly onIdle?: () => void;
   /** The bounds of a door hook's calls (`attach`'s `door`). */
   readonly doorTimeouts?: DoorTimeouts;
+  /** Where the door says what went wrong outside any call (a hook's close that fails or overruns): cli.ts log. */
+  readonly log?: DoorLog;
   readonly context?: Context;
 }
 
@@ -517,7 +519,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     attach(open, hook) {
       run = open;
       if (hook) {
-        door = openDoor(hook, open, base, options.doorTimeouts);
+        door = openDoor(hook, open, base, { ...options.doorTimeouts, ...(options.log ? { log: options.log } : {}) });
         // A turn can end with no request and no commit: the instance looks at parking again then.
         door.watch((event) => event.type === "run_end" && active === 0 && options.onIdle?.());
       }

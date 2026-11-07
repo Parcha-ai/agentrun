@@ -805,6 +805,7 @@ export function adapterRun(
     async close() {
       await session?.close();
     },
+    harness,
     busy: () => turn !== undefined,
   };
 
