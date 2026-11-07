@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { metersIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
@@ -98,6 +99,64 @@ test("pi: a stop's cost reads unknown plus what is known so far as soon as the r
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   const after = await view(api, runId);
   assert.deepEqual([after.cost.usd, after.cost.so_far_usd, after.cost.unpriced], [null, first, 1], JSON.stringify(after.cost));
+});
+
+test("pi: after a stop read early, the turn's end and the stop's booking arriving later leave the live cost equal to a full re-read from the store", { timeout: 120_000 }, async (t) => {
+  const events = heldEvents(t);
+  const dir = await scratch(t);
+  const options = { data: join(dir, "agents"), port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" };
+  const one = await startServe(options);
+  let closed = false;
+  t.after(() => (closed ? undefined : one.close()));
+  const api = client(one.baseUrl, one.token);
+  const { runId, first } = await piFollowUpInFlight(api, "stop-late");
+  events.hold();
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  const early = (await view(api, runId)).cost;
+  // What the door held arrives: the turn's end, and the stopped request's end mark, booked at no price.
+  events.release();
+  await until("the stopped request's end mark is in the store", async () => {
+    const store = join(runDir(options.data, runId), "store", "run.sqlite");
+    if (!existsSync(store)) return false;
+    const db = new DatabaseSync(store, { readOnly: true });
+    try {
+      return db.prepare("SELECT count(*) AS n FROM entries WHERE record LIKE '%agentrun.request_ended%'").get().n > 0;
+    } finally {
+      db.close();
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const live = (await view(api, runId)).cost;
+  closed = true;
+  await one.close();
+  // A server that never held the run reads it whole from its store.
+  const two = await startServe(options);
+  t.after(() => two.close());
+  const reread = (await client(two.baseUrl, two.token)("GET", `/runs/${runId}`)).body.cost;
+  const figures = (cost) => [cost.usd, cost.so_far_usd, cost.unpriced];
+  // The store decides: what pi's booking of the stopped request says (at its hold, unpriced, for this faux; at its cost
+  // were it priced), and the live reads, at the stop and after, agree with it.
+  if (reread.usd === null) assert.equal(reread.so_far_usd, first, JSON.stringify(reread));
+  assert.deepEqual(figures(live), figures(reread), `live ${JSON.stringify(live)}, re-read ${JSON.stringify(reread)}`);
+  assert.deepEqual(figures(early), figures(reread), `at the stop ${JSON.stringify(early)}`);
+});
+
+test("pi: a follow-up sent right after a stop keeps its own request in flight, never read as cut; a second stop then reads both cut requests", { timeout: 120_000 }, async (t) => {
+  const events = heldEvents(t);
+  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const { runId, first } = await piFollowUpInFlight(api, "stop-again");
+  events.hold();
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Take your time." })).status, 202);
+  events.release();
+  await until("the next follow-up's request is marked", async () => (await usageRow(api, runId))?.requests === 3);
+  const working = await view(api, runId);
+  assert.equal(working.status, "working");
+  // The stopped request is a charge with no price; the follow-up's own, in flight, is none yet.
+  assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 3, so_far_usd: first, unpriced: 1 });
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  const run = await view(api, runId);
+  assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, first, 2], JSON.stringify(run.cost));
 });
 
 test("pi: a run cancelled mid-request reads what it cost so far and 1 charge with no price, on the run, and on its list row from a server started anew", { timeout: 120_000 }, async (t) => {
