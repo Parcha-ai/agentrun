@@ -3,10 +3,11 @@
 // description names each; a call checks the workflow again against the agent's own tools, runs it with the workflow DSL
 // on this server's models, and its model requests are the run's, as side requests labelled learned_workflow.
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agentFolderOf } from "../dist/files.js";
@@ -18,6 +19,7 @@ import { git } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url).pathname;
 /** The owner's sign-in phrase on a test server with accounts (no real secret). */
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const ASK = "Use the learned workflow answer on What is six times seven.";
@@ -362,7 +364,13 @@ test("a claude-agent run's learned workflow searches natively through the sessio
 test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
-  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
+  // The session's proxy forwards to claude-agent's own provider: ANTHROPIC_BASE_URL, set here for the server, at the
+  // served faux upstream on loopback, checked before the run; the net guard in the run's process refuses anything else.
+  const base = await upstreamAt(t);
+  assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/, "the provider is the loopback faux upstream");
+  const guardLog = join(dir, "guard.jsonl");
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: base, AGENT_MODEL: "anthropic/claude-sonnet-4.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream, NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${pathToFileURL(GUARD).href}` }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM", "OPENROUTER_API_KEY", "NODE_OPTIONS", "NET_GUARD_LOG"]);
+  assert.equal(process.env.ANTHROPIC_BASE_URL, base, "the server's env names it");
   const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   const { rows } = await ran(api, data, "dotted-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
@@ -371,6 +379,8 @@ test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) w
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   const sent = readFileSync(upstream, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
+  const refused = existsSync(guardLog) ? readFileSync(guardLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.kind === "refused") : [];
+  assert.deepEqual(refused.map((line) => line.host), [], "nothing past loopback")
 });
 
 // The faux model priced on output alone, $100 a million tokens: a request's least (1,024 tokens) is $0.1024. The faux
@@ -394,31 +404,41 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
   assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
 
-test("on codex, learned_workflow set to ask parks the run; the owner's allow runs it once and the run resumes with its output", { timeout: 180_000 }, async (t) => {
-  const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true, ...(await routed(t, "codex")) });
-  const { api, data } = server;
-  const origin = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
-  assert.equal(setup.status, 201, setup.text);
-  const cookie = cookieOf(setup);
-  const { runId } = await ran(api, data, "asked-flow", "codex", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }, ends: ["input_required", "completed", "failed"] });
-  const view = (await api("GET", `/runs/${runId}`)).body;
-  assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(view));
-  // The parked run's process holds its store: what ran is read once it ends (one request, after the allow).
-  const answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${view.pending.id}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } });
-  assert.equal(answered.status, 204, answered.text);
-  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
-  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-  // The gate's resume is AgentRun's row (origin "server"), never the person's message, and it carries the call's result.
-  const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
-  assert.deepEqual([resumed?.kind, resumed?.origin], ["phase", "server"], JSON.stringify(resumed));
-  assert.match(resumed.summary, /^AgentRun: learned_workflow ran once you allowed it$/, resumed.summary);
-  // What a person reads: the outcome and the result, with no call id (the model's message keeps it).
-  assert.match(resumed.text, /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, resumed.text);
-  assert.ok(!resumed.text.includes(view.pending.call_id), "no call id in the row's text");
-  assert.equal(rows.some((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]")), false, "never shown as the person's message");
-  assert.equal(entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once, through the session's proxy");
-});
+for (const harness of ["codex", "claude-agent"]) {
+  test(`on ${harness}, learned_workflow set to ask parks the run; the owner's allow runs it once (its node's request goes out once the allow un-parks the run) and the run resumes with its output`, { timeout: 180_000 }, async (t) => {
+    const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true, ...(await routed(t, harness)) });
+    const { api, data } = server;
+    const origin = `http://127.0.0.1:${server.port}`;
+    const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
+    assert.equal(setup.status, 201, setup.text);
+    const cookie = cookieOf(setup);
+    const { runId } = await ran(api, data, `asked-${harness}`, harness, flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }, ends: ["input_required", "completed", "failed"] });
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(view));
+    // The parked run's process holds its store: what ran is read once it ends (one request, after the allow).
+    const answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${view.pending.id}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } });
+    assert.equal(answered.status, 204, answered.text);
+    const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+    // The gate's resume is AgentRun's row (origin "server"), never the person's message, and it carries the call's result.
+    const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
+    assert.deepEqual([resumed?.kind, resumed?.origin], ["phase", "server"], JSON.stringify(resumed));
+    assert.match(resumed.summary, /^AgentRun: learned_workflow ran once you allowed it$/, resumed.summary);
+    // What a person reads: the outcome and the result, with no call id (the model's message keeps it).
+    assert.match(resumed.text, /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, resumed.text);
+    assert.ok(!resumed.text.includes(view.pending.call_id), "no call id in the row's text");
+    assert.equal(rows.some((row) => row.kind === "user_message" && String(row.text).startsWith("[tool approval]")), false, "never shown as the person's message");
+    assert.equal(entries(data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL).length, 1, "its one node ran once, through the session's proxy");
+    // No early window: from the park to the resume's message, the only request that leaves is the approved call's node; the
+    // harness's own wait for the turn that message starts.
+    const seq = entries(data, runId, ["agentrun.tool_approval", "agentrun.request_started", "adapter.message"]);
+    const parkedAt = seq.findIndex((entry) => entry.kind === "agentrun.tool_approval" && entry.phase === "requested");
+    const resumedAt = seq.findIndex((entry) => entry.kind === "adapter.message" && String(entry.id).startsWith("approval-"));
+    assert.ok(parkedAt >= 0 && resumedAt > parkedAt, JSON.stringify(seq.map((entry) => [entry.kind, entry.phase ?? entry.request ?? entry.id])));
+    const between = seq.slice(parkedAt + 1, resumedAt).filter((entry) => entry.kind === "agentrun.request_started");
+    assert.deepEqual(between.map((entry) => entry.host ?? "the harness's own"), [LEARNED_WORKFLOW_TOOL], "between the park and the resume, only the node's request");
+  });
+}
 
 /** A learned workflow of one call node on `tool`, or that node inside a composed workflow node (`nested`). */
 const callFlow = (tool, nested = false) => {

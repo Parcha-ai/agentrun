@@ -177,7 +177,11 @@ test("R4 a capped codex run's harness counts its learned node on the one total: 
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
-  const cap = 0.25;
+  // The node's request goes through the session's proxy, whose policy says its least output: codex's
+  // responsesOutputLeast (run-adapters-codex policy.ts), 1,024 answer tokens + the reasoning allowance of the effort it
+  // names = 9,216 tokens, at $100 a million = $0.9216, as for the harness's own reasoning requests. The harness's first
+  // request ($0.001) and that least fit under $2.
+  const cap = 2;
   const { runId, rows } = await ran(api, data, "counted-port", "codex", { fields: { max_cost_usd: cap } });
   const requests = entries(data, runId, ["runner.request"]);
   const node = requests.filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
@@ -221,7 +225,10 @@ globalThis.fetch = (input, init) => {
 });
 
 test("R7 (guard) a call the harness's answer asks for beside learned_workflow stays on that answer: the node's request writes nothing into the turn", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS });
+  const gw = await startFauxGateway({ call: submitsAnswer });
+  t.after(() => gw.close());
+  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "1,2,0.5" }, MODEL_VARS);
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
   const { runId, rows, view } = await ran(api, data, "beside", "codex", { ask: "Use the learned workflow answer on What is six times seven, and write note.md in the same answer." });
   assert.equal(view.status, "completed", JSON.stringify(view));
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
@@ -306,9 +313,11 @@ test("R11 a learned node's request is a side call of the session (#1831): its ru
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "0,100,0,0" }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
-  // A $1 cap: the harness's $0.40 request leaves $0.60, under three times its typical $0.40, so the note is due for the
-  // session's next request on its model, which the node's request would be if a side call could take it.
-  const { runId, rows, view } = await ran(api, data, "wrap-node", "codex", { fields: { max_cost_usd: 1 }, ask: "Wrap up around the learned workflow answer on What is six times seven." });
+  // A $1.50 cap: the harness's $0.40 request leaves $1.10. The note is due when what is left is under three times the
+  // typical $0.40 = $1.20, and the node's least ($0.9216: codex's responsesOutputLeast, 9,216 tokens at $100 a million)
+  // still fits, so a cap in $1.32-$1.60. The node's request is then the session's next on its model, which would take
+  // the note if a side call could.
+  const { runId, rows, view } = await ran(api, data, "wrap-node", "codex", { fields: { max_cost_usd: 1.5 }, ask: "Wrap up around the learned workflow answer on What is six times seven." });
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
   const node = labelled(data, runId);
   assert.deepEqual(node.map((entry) => entry.side), [true], `a side call on its record: ${JSON.stringify(node)}`);
