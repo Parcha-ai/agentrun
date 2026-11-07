@@ -168,3 +168,60 @@ test("claude-agent on the faux harness: a side call admitted between the note's 
   await letGo(data, runId);
   assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.60")], "the note went once: request 2 did not take it again");
 });
+
+/** A run of `agentId` on Sonnet 4.5 pricing (faux-sonnet45.mjs) under `cap`, its harness `harness` ("pi" or a faux CLI),
+ *  ended; with the rows the wrap-up wrote and, after its process lets it go, the notes the faux harness took. */
+async function sonnetRun(t, { harness, instructions, cap, id }) {
+  const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
+  const { api, data } = await serve(t, { faux: sonnet, ...(harness === "pi" ? {} : { fauxHarness: FAUX_HARNESS }) });
+  assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness }), instructions }))).status, 201);
+  const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Say hi." }, max_cost_usd: cap });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  return { api, data, runId, run, rows: await rowsOf(api, runId) };
+}
+
+test("pi on Sonnet 4.5 under $1: no wrap-up at step 0. Nothing priced yet, the typical request is its input and a 4,096-token answer ($0.06), never its whole 64,000-token allowance ($0.96)", { timeout: 120_000 }, async (t) => {
+  const { run, rows } = await sonnetRun(t, { harness: "pi", instructions: "Answer.", cap: 1, id: "s45-pi" });
+  assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
+  assert.deepEqual(rows.map((row) => row.text), [], "no note: $1 is over 3 times the step-0 typical request");
+});
+
+test("claude-agent on Sonnet 4.5 under $1, asking the CLI's 32,000 max_tokens: no wrap-up at step 0 either", { timeout: 120_000 }, async (t) => {
+  const { data, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code at its start.", cap: 1, id: "s45-cc" });
+  assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
+  assert.deepEqual(rows.map((row) => row.text), [], "no row");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [], "and no note in any request");
+});
+
+test("pi on Sonnet 4.5 under $0.10: due at step 0, told in the budget's words, never \"finish now\"", { timeout: 120_000 }, async (t) => {
+  const { rows } = await sonnetRun(t, { harness: "pi", instructions: "Answer.", cap: 0.1, id: "s45-pi-small" });
+  assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")]);
+});
+
+test("claude-agent on Sonnet 4.5 under $0.10: due at step 0 (its first request's admission), told in its next request in the budget's words, as pi is, never \"finish now\"", { timeout: 120_000 }, async (t) => {
+  const { data, runId, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Claude Code on a small cap.", cap: 0.1, id: "s45-cc-small" });
+  // Its first request ($0.01) is priced by the time the next one takes the note: the words keep how it came due.
+  assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.09")]);
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$0.09")]);
+});
+
+test("claude-agent on Sonnet 4.5 under $0.10, its process killed after the wrap-up came due at step 0 and before a request took it: the process opened again decides the words from the run's priced requests", { timeout: 180_000 }, async (t) => {
+  const go = join(await scratch(t), "go");
+  const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
+  const { api, data } = await serve(t, { faux: sonnet, fauxHarness: FAUX_HARNESS });
+  assert.equal((await api("POST", "/agents", agent("s45-restart", { harness: "claude-agent", instructions: `Claude Code restarts before the note at ${go}.` }))).status, 201);
+  const runId = (await api("POST", "/agents/s45-restart/runs", { input: { content: "Say hi." }, max_cost_usd: 0.1 })).body.run_id;
+  for (const end = Date.now() + 60_000; !existsSync(`${go}.held`); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the turn reached its hold");
+  await writeFile(go, "");
+  process.kill(runRecordOf(data, runId).holder.pid, "SIGKILL");
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
+  // $0.04 priced, $0.06 left: under 3 times it, due by the run's own requests, in the words of a run that has spent.
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP("$0.06")]);
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.06")]);
+});
