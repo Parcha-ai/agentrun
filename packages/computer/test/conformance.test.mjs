@@ -811,3 +811,35 @@ test("the provider cases compare a computer by its id and name, so a create that
 	const report = await runConformance(fakeComputers({ notes }).provider, { image: IMAGE, cases: byId("provider.attach", "provider.list", "provider.janitor") });
 	assert.deepEqual(statuses(report), { "provider.attach": "pass", "provider.list": "pass", "provider.janitor": "pass" }, JSON.stringify(reasons(report)));
 });
+
+test("the notes create returns are in the report, each naming its computer, and the text report prints every one", async () => {
+	const note = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443";
+	const { provider, made } = fakeComputers({ notes: [note] });
+	const report = await runConformance(provider, {
+		image: IMAGE,
+		cases: [pass("health.ping"), pass("provider.fresh", { computer: "none", run: async (t) => void (await t.create()) })],
+	});
+	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
+	assert.equal(made.length, 2, "the run's computer and the case's");
+	const names = made.map(({ name }) => name);
+	assert.deepEqual(report.computerNotes, names.map((computer) => ({ computer, note })), "one entry per note, naming the computer that recorded it");
+	assert.deepEqual(JSON.parse(JSON.stringify(report)).computerNotes, report.computerNotes, "the same in --json's report object");
+	const lines = formatReport(report).trimEnd().split("\n");
+	for (const computer of names) assert.ok(lines.includes(`note ${computer}: ${note}`), `${computer}'s note in:\n${lines.join("\n")}`);
+	assert.match(lines.at(-1), /^core PASS 2\/2/, "the verdict stays last");
+	const quiet = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
+	assert.equal(Object.hasOwn(quiet, "computerNotes"), false, "no notes, no field");
+	assert.doesNotMatch(formatReport(quiet), /^note /m);
+});
+
+test("the CLI's --json carries the notes create returned", async () => {
+	const out = sink();
+	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const report = JSON.parse(out.text());
+	assert.equal(report.computerNotes?.length, 1, out.text());
+	assert.match(report.computerNotes[0].computer, /./);
+	assert.equal(report.computerNotes[0].note, "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443");
+	const text = sink();
+	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.match(text.text(), /^note \S+: network: none; accepted with no answer \(no bytes came back\): 1\.1\.1\.1:443$/m);
+});
