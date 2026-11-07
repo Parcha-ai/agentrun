@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.32 (2026-11-07)
+
+- The harness takes the MCP library a host loaded (`mcp`, passed to its tool server) and exports `claudeAgentPlatform()`, the suffix of the Claude Agent SDK's CLI package for this machine. A host can now install the Claude Agent SDK on first use and load it from its own directory; this package still ships none.
+- A run near its spend cap is told once to finish: when what is left is under three times its typical request (the median of the run's own model's priced requests after the first), the model's next request carries "About $X left of this run's budget: finish now with your answer.", and the Timeline shows it as the server's row. On pi it goes into that request's context; on claude-agent, codex and opencode the model proxy adds it to the request's body after everything the CLI sent, so the cached prefix is unchanged. No message is queued, so nothing runs after the model's answer. Once per cap, across restarts; a raise re-arms it.
+
 ## 0.1.0-beta.31 (2026-11-06)
 
 - Agents call a saved MCP server's tools on pi and claude-agent: grant `mcp:<server>/<tool>` in `definition.tools`. A save checks the name against the server's saved tools (`422` naming them). A run's first launch pins the granted tools as saved and the server's URL; its credential reaches only runs that grant one of its tools, over the run's secrets pipe. pi binds each tool in the run's process; claude-agent's own MCP client calls it at the session's model proxy (`/mcp/<server>`, behind the session key), so the CLI never holds the credential. A call follows no redirect, a crash-cut call is answered interrupted and never sent again, a moved server is sent nothing, and the timeline reads `<server> · <tool>`. `features.mcp_client.harnesses` lists the harnesses that run them. Every call passes the run's tool gate and its spend cap.
