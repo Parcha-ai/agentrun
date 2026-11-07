@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "./commands.generated.mjs";
-import { FLAGS, WAIT, followTimeline, waitRun } from "./follow.mjs";
+import { FLAGS, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { SECRETS, guarded } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
 
@@ -18,6 +18,7 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule 
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
 const GLOBAL = { "base-url": { type: "string" }, data: { type: "string" }, help: { type: "boolean", short: "h" } };
 const BODY = "--body JSON|@FILE|-";
+const ACCEPT = "application/json, */*";
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/;
 // A header value fetch takes: no line break or other control character, nothing outside Latin-1.
 const BAD_HEADER = /[\0-\x08\x0a-\x1f\x7f]|[^\0-\xff]/;
@@ -58,11 +59,11 @@ const HELP = () => {
     "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
     "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun logout removes it.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
-    "server refused, 2 bad usage, 3 the server cannot be reached, 4 no token or the token was refused. runs wait and runs",
-    "start --wait print the run once it ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed",
-    "(it goes on), 8 it waits on a person (a question, its spend cap, a stopped turn, a paused workflow). runs timeline",
-    "--follow prints the timeline's pages as they come, one JSON object per line, until the run ends: 0 completed, 1",
-    "failed or cancelled.",
+    "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",
+    "refused, or the config file, the server's record or its token file was refused. runs wait and runs start --wait",
+    "print the run once it ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed (it goes on),",
+    "8 it waits on a person (a question, its spend cap, a stopped turn, a paused workflow). runs timeline --follow prints",
+    "the timeline's pages as they come, one JSON object per line, until the run ends: 0 completed, 1 failed or cancelled.",
   ].join("\n");
 };
 
@@ -142,6 +143,14 @@ function baseOf(given, where) {
   return trim(given);
 }
 
+const isBase = (url) => {
+  try {
+    return baseOf(url, ""), true;
+  } catch {
+    return false;
+  }
+};
+
 /** Where the request goes and the token it carries. A token goes only with the address it came with: the local
  *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
 function targetOf(values, env) {
@@ -153,8 +162,9 @@ function targetOf(values, env) {
   }
   const recordFile = join(data, ".server.json");
   const record = readJson(recordFile, privateFile(recordFile));
-  if (record !== undefined && (typeof record?.base_url !== "string" || !Number.isInteger(record.pid) || record.pid <= 0)) {
-    throw new Exit(4, `${recordFile} is not a server record (base_url a string, pid a positive whole number); refusing it.`);
+  // A record whose base_url baseOf refuses is refused as a malformed one is, exit 4: the file is wrong, not the usage.
+  if (record !== undefined && (typeof record?.base_url !== "string" || !isBase(record.base_url) || !Number.isInteger(record.pid) || record.pid <= 0)) {
+    throw new Exit(4, `${recordFile} is not a server record (base_url an http or https URL with no query, fragment, user or password, pid a positive whole number); refusing it.`);
   }
   const stale = record && `The server recorded in ${recordFile} (pid ${record.pid}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.`;
   const local = baseOf(record?.base_url ?? DEFAULT_BASE_URL, `base_url in ${recordFile}`);
@@ -218,6 +228,12 @@ const refuseInline = (what, value) => {
   if (value !== undefined && value !== "-" && !value.startsWith("@")) throw usageError(`${what} carries a secret: pass the body on stdin (--body -) or in a file (--body @FILE), never on the command line.`);
 };
 
+/** A body refused inline for a request whose path ends like a secret route once resolved (`landed`, secretAt's): it may
+ *  be any command's (a home file at settings/tool-keys/x), but the guard fails closed, and says so. */
+const refuseLanded = (landed, value) => {
+  if (value !== undefined && value !== "-" && !value.startsWith("@")) throw usageError(`This request's path, with the base URL's, ends like the secret route ${landed.method} ${landed.path}, so its body is held as a secret: pass it on stdin (--body -) or from a file (--body @FILE), not on the command line.`);
+};
+
 /** The operation whose body carries a secret that `method` on `url` reaches, once its path is normalized as fetch
  *  normalizes it (`..`, `.`, their encoded forms, repeated slashes): the operation's route at the end of the path,
  *  whatever part of it the base URL holds. */
@@ -232,7 +248,13 @@ function secretAt(method, url) {
 function clientOf(target, io) {
   return {
     io,
-    fetch: (path, { method = "GET", headers = {}, body, signal } = {}) => fetch(`${target.base}${path}`, { method, signal, headers: { accept: "application/json, */*", ...headers, authorization: `Bearer ${target.token}` }, ...(body !== undefined ? { body } : {}) }),
+    // The caller's headers, by name in any case; the default Accept only when they set none; the token last, always.
+    fetch: (path, { method = "GET", headers = {}, body, signal } = {}) => {
+      const sent = new Headers(headers);
+      if (!sent.has("accept")) sent.set("accept", ACCEPT);
+      sent.set("authorization", `Bearer ${target.token}`);
+      return fetch(`${target.base}${path}`, { method, signal, headers: sent, ...(body !== undefined ? { body } : {}) });
+    },
     // Only the cause's code: a fetch error's message can quote a header, the token's among them.
     unreachable: (error) => new Exit(3, target.unreachable ?? `Cannot reach the server at ${target.base} (${error?.cause?.code ?? error?.name}); ${START}.`),
     refused(response, bytes) {
@@ -244,13 +266,17 @@ function clientOf(target, io) {
   };
 }
 
-/** One request: `{ response, bytes }`, or `{ code }` once it was refused (its error on stderr). */
-async function request(client, { method, path, headers, body, type }) {
+/** One request: `{ response, bytes }`, `{ code }` once it was refused (its error on stderr), or `{ late: true }` once
+ *  `signal`, when given, ended it first. */
+async function request(client, { method, path, headers, body, type, signal }) {
   try {
-    const response = await client.fetch(path, { method, headers: { ...headers, accept: "application/json, */*", ...(body !== undefined ? { "content-type": type } : {}) }, body });
+    const sent = new Headers(headers);
+    if (body !== undefined) sent.set("content-type", type);
+    const response = await client.fetch(path, { method, signal, headers: sent, body });
     const bytes = Buffer.from(await response.arrayBuffer());
     return response.ok ? { response, bytes } : { code: client.refused(response, bytes) };
   } catch (error) {
+    if (signal?.aborted) return { late: true };
     throw client.unreachable(error);
   }
 }
@@ -315,12 +341,15 @@ async function api(argv, env, io) {
   const verb = method.toUpperCase();
   const secret = secretAt(verb, `http://host/v2${path}`);
   if (secret) refuseInline(`${verb} ${secret.path}`, values.body);
-  const headers = {};
+  // No prototype, so a header named __proto__ is a key of its own, not the object's prototype set.
+  const headers = Object.create(null);
   for (const line of values.header ?? []) {
     const at = line.indexOf(":");
     const name = line.slice(0, at).trim();
     if (at <= 0 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) throw usageError("--header takes 'NAME: VALUE'.");
     if (["authorization", "cookie"].includes(name.toLowerCase())) throw usageError(`--header cannot set ${name}: the token is never a flag.`);
+    // Node's fetch keeps its headers in a plain object and drops this one unsent: refused, so it is never lost unsaid.
+    if (name.trim().toLowerCase() === "__proto__") throw usageError("--header cannot send a header named __proto__: Node's fetch drops it.");
     checkHeader(name, line.slice(at + 1).trim());
     headers[name.toLowerCase()] = line.slice(at + 1).trim();
   }
@@ -329,7 +358,7 @@ async function api(argv, env, io) {
   const target = targetOf(values, env);
   // The base URL's own path counts too: --base-url .../v2/settings with PUT /tool-keys/exa reaches the secret route.
   const landed = secretAt(verb, `${target.base}${path}`);
-  if (landed) refuseInline(`${verb} ${landed.path}`, values.body);
+  if (landed) refuseLanded(landed, values.body);
   // A body bound for a secret route: an error's answer is never printed, and the body's values are cut from the rest.
   const route = secret || landed;
   const client = route ? guarded(clientOf, target, io, body, route.publicFields) : clientOf(target, io);
@@ -387,16 +416,25 @@ async function command(entry, argv, env, io) {
   const search = query.size ? `?${query}` : "";
   const target = targetOf(values, env);
   const landed = !entry.secretBody && secretAt(entry.method, `${target.base}${path}`);
-  if (landed) refuseInline(`${entry.command.join(" ")} (${landed.path} under the base URL)`, values.body);
+  if (landed) refuseLanded(landed, values.body);
   const client = entry.secretBody || landed ? guarded(clientOf, target, io, body, (entry.secretBody ? entry : landed).publicFields) : clientOf(target, io);
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (!values.wait) return send(client, req);
-  const started = await request(client, req);
+  // The start is bounded as the wait is: by --timeout, which the wait then has what is left of, else as one of the
+  // wait's requests is.
+  const began = Date.now();
+  const bound = timeout ?? REQUEST_MS;
+  const started = await request(client, { ...req, signal: AbortSignal.timeout(timerMs(bound)) });
+  if (started.late) {
+    const said = `The server did not answer the start within ${bound / 1000} s; it may have started the run: look for it with \`agentrun runs list --agent ${args[0]}\`.`;
+    if (timeout === undefined) throw new Exit(3, said);
+    return io.stderr.write(`${said}\n`), 1;
+  }
   if (started.code !== undefined) return started.code;
   const run = jsonOf(started.bytes)?.value;
   if (!runIdOk(run?.run_id)) return io.stderr.write("The server's answer to the start names no usable run_id.\n"), 1;
-  return waitRun(client, run.run_id, timeout);
+  return waitRun(client, run.run_id, timeout === undefined ? undefined : Math.max(1, timeout - (Date.now() - began)));
 }
 
 /** A hand-written command of LOCAL: its flags and arguments checked, then its `run`, with this module's custody of the
