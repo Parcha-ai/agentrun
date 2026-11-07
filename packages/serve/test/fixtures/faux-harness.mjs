@@ -78,8 +78,9 @@ export function script(spec) {
   if (/Write two files while answering\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   // The spend cap's wrap-up across a crash: a request at $0.30, then the turn holds (writing `<file>.held`) with no
   // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
-  // The wrap-up scripts below that test a note due by the run's measured spend ask 1,024 output tokens in their first
-  // request, so its step-0 figure (judged on that request itself, as pi's) is not due first.
+  // The wrap-up scripts below that test a note due by the run's measured spend ask few output tokens in their first
+  // request, so its step-0 figure (judged on that request itself, as pi's) is not due first: 1,024 on the output-priced
+  // faux model, 512 on Sonnet 4.5's prices, whose 5,000-token input alone is $0.019 at the cache write's price.
   const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
   if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3, outputTokensAsked: 1_024 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
   // Claude Code on Sonnet 4.5 (faux-sonnet45.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
@@ -102,14 +103,14 @@ export function script(spec) {
   const bookedLate = /Claude Code on a small cap, its first cost booked when (\S+) exists\./.exec(text)?.[1];
   // Its first request asks 1,024 tokens, so its hold ($0.03), in flight until its cost comes in, leaves request 2 room.
   if (bookedLate) return [centCall(0, { bookWhen: bookedLate, outputTokensAsked: 1_024 }), cc(5_200, 0.01, "Done.")];
-  if (/Claude Code spends four cents first\./.test(text)) return [centCall(0, { usd: 0.04, outputTokensAsked: 1_024 }), cc(5_200, 0.01, "Done.")];
+  if (/Claude Code spends four cents first\./.test(text)) return [centCall(0, { usd: 0.04, outputTokensAsked: 512 }), cc(5_200, 0.01, "Done.")];
   // Codex-shaped: each request needs at least 10,240 output tokens (1,024 for the answer and 9,216 of reasoning at
   // "high", as the proxy reads Codex's body), and costs half a cent: sixty of them, then the answer.
   if (/Make sixty half-cent calls that each need 10,240 output tokens at least\./.test(text)) {
     return [...Array.from({ length: 60 }, (_, k) => centCall(k % 10, { usd: 0.005, outputTokensAsked: 64_000, outputTokensLeast: 10_240 })), cc(7_000, 0.005, "Done.")];
   }
   const restartAt = /Claude Code restarts before the note at (\S+)\./.exec(text)?.[1];
-  if (restartAt) return [{ ...cc(5_000, 0.04, "Working."), outputTokensAsked: 1_024 }, ...(existsSync(restartAt) ? [] : [hangSignalled(`${restartAt}.held`)]), cc(5_200, 0.01, "Done.")];
+  if (restartAt) return [{ ...cc(5_000, 0.04, "Working."), outputTokensAsked: 512 }, ...(existsSync(restartAt) ? [] : [hangSignalled(`${restartAt}.held`)]), cc(5_200, 0.01, "Done.")];
   // The wrap-up due after a $0.40 request, then an answer whose input (5,990 tokens, $0.599 on input-priced faux) fits
   // what is left of a $1 cap only without the note's bytes.
   if (/Wrap up with no room for the note\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { say: "Answered.", inputTokensMax: 5_990, usd: 0.01 }];
