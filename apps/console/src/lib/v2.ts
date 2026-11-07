@@ -81,7 +81,7 @@ export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "
  *  times; `attempts` and `retry_at`: a due one a full server keeps for later. */
 export type Firing = { key: string; by: "schedule" | "manual"; nominal_at: string; status: FiringStatus; at: string; run_id: string | null; reason: string | null; error: { code: string; message: string } | null; count?: number; attempts?: number; retry_at?: string };
 /** A schedule (GET /v2/triggers): `next_at` null when it is paused or has no time left; `last_firing` null until it fires. */
-export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; overlap: "skip"; last_firing: Firing | null };
+export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; last_firing: Firing | null };
 /** A create's or an edit's body: the parts the form holds. */
 export type TriggerInput = { name?: string; enabled?: boolean; source?: TriggerSource | { kind: "schedule"; every_s: number; start_at?: string }; target?: TriggerTarget };
 /** A question the run asked a person (ask_person): a message answers it. */
