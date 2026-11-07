@@ -54,10 +54,11 @@ test("pi: a refusal whose cap and model id hold retry digits is final: the reque
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   // To run it the cap would have to be $0.425 spent and the next request's least, $0.36864: $0.80 up to the cent.
   assert.equal(run.pending.said, "Not sent: this run has spent $0.43 of its $0.4295 cap, and the next step needs at least $0.37. Raise the cap to at least $0.80 to continue.");
-  const refusal = rows.find((r) => r.kind === "error");
-  assert.ok(refusal?.text?.startsWith("spend_cap_reached (out of budget): Not sent: "), "its code keeps it final to pi-ai's retry");
+  // Its row is the pause's (its code, which keeps it final to pi-ai's retry, is cap-clamp.test.mjs's to pin).
+  const refusal = rows.find((r) => r.paused === true);
+  assert.deepEqual([refusal?.kind, refusal?.summary], ["phase", "Paused at the run's cap"], JSON.stringify(refusal));
   assert.equal(posts(), 1, "the refused request never reached the model, and was not tried again");
-  assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal");
+  assert.deepEqual(rows.filter((r) => r.kind === "error" || r.paused === true).map((r) => r.kind), ["phase"], "one refusal");
   assert.ok(ms < 15_000, `no retry backoff: ${ms} ms`);
 });
 
@@ -74,7 +75,7 @@ for (const harness of ["claude-agent", "codex"]) {
     // To run it the cap would have to be $0.3502 spent and the next request's least, $0.1024: $0.46 up to the cent.
     assert.match(run.pending.said, /^Not sent: this run has spent \$0\.35 of its \$0\.4295 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.46 to continue\.$/);
     assert.equal(records(data, started.body.run_id, "faux.request").length, 1, "the second request was never sent");
-    assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal");
+    assert.deepEqual(rows.filter((r) => r.kind === "error" || r.paused === true).map((r) => r.kind), ["phase"], "one refusal");
     assert.ok(ms < 30_000, `no retry backoff: ${ms} ms`);
   });
 }
