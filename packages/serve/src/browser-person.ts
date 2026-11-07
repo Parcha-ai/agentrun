@@ -154,6 +154,16 @@ export function waitingAsk(runDir: string): PendingAsk | undefined {
   }
 }
 
+/** Whether the run's directory still holds an ask's record, answered or not: one its agent's call may still be waiting
+ *  on (the records go when the run ends, or when its process lets its sessions go). */
+export function asked(runDir: string): boolean {
+  try {
+    return asksIn(runDir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** The ask the run waits on (`which`: "open", unexpired, as its status reads it; "waiting", expired or not, as a process
  *  must still take up) once its own waiting row is in `rows`: the run's process writes the record first, then commits the
  *  row. Each ask on a session writes one waiting row, in the order asked, so the nth ask on a session is in once that

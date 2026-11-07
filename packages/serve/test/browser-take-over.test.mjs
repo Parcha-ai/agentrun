@@ -15,6 +15,7 @@ import { test } from "node:test";
 import { ASK } from "./fixtures/faux-browse-handoff.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
 import { builtConsole, call, cookieOf, follow, runDir as runFolder, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { runsTestHooks } from "../dist/runs.js";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const BROWSE_ASK = new URL("./fixtures/faux-browse-ask.mjs", import.meta.url).pathname;
@@ -331,4 +332,25 @@ test("cap: the agent's ask holds the person's 15 minutes first; with no room no 
 test("capabilities say the owner may watch, take over and answer the agent's ask", async (t) => {
   const { api } = await serve(t);
   assert.deepEqual((await api("GET", "/capabilities")).body.features.browser_live, { read_only: false, take_over: true, ask: true });
+});
+
+test("an answer the owner gives after the run's process died, before the server finds it gone, still reaches the agent: the run is started again, and its hand-off's result says done", { timeout: 240_000 }, async (t) => {
+  const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_BROWSER_STATE: join(await scratch(t), "vendor-sessions.json") } });
+  // The server's check of a gone process is held, so the owner answers in between, as a slow check would let them.
+  let entered;
+  const reached = new Promise((resolve) => (entered = resolve));
+  let letGo;
+  const held = new Promise((resolve) => (letGo = resolve));
+  runsTestHooks.beforeRestartCheck = async (runDir) => { if (runDir.endsWith(w.runId)) { entered(); await held; } };
+  t.after(() => { delete runsTestHooks.beforeRestartCheck; });
+  const holderOf = () => runRecordOf(w.server.data, w.runId).holder?.pid;
+  const first = holderOf();
+  process.kill(first, "SIGKILL");
+  await reached;
+  const done = await w.handBack("done");
+  assert.deepEqual([done.status, done.json], [200, { outcome: "done" }]);
+  letGo();
+  assert.ok(await until(() => { const pid = holderOf(); return pid !== undefined && pid !== first; }, 60_000), "a replacement process started");
+  const answered = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 30_000);
+  assert.match(answered || "", /"outcome":"done"/, "the agent's call returned done");
 });

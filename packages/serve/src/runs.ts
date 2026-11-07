@@ -24,7 +24,7 @@ import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { dropHandover } from "./browser-live.js";
-import { askShown, dropAsks, type PendingAsk } from "./browser-person.js";
+import { asked, askShown, dropAsks, HANDOFF_TOOL, type PendingAsk } from "./browser-person.js";
 import { DATA_ENV, dataOfRun, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
 import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
@@ -515,8 +515,17 @@ const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
 /** The ask its agent made for the person in its browser (browser-person.ts) that the run waits on, once its waiting row
  *  is in the run's rows. */
 const browserAsk = (run: Run): PendingAsk | undefined => (run.dir ? askShown(run.dir, run.rows) : undefined);
-/** Whether the run's agent waits on an ask a process must still take up: unanswered, expired or not. */
-const askWaits = (run: Run): boolean => run.dir !== undefined && askShown(run.dir, run.rows, "waiting") !== undefined;
+/** Whether the run's agent waits on an ask a process must still take up: unanswered, expired or not; or answered, while
+ *  the agent's hand-off call has no saved result yet (the owner answered after its process went: the answer is on disk,
+ *  but only a process that takes the ask up hands it to the agent). */
+const askWaits = (run: Run): boolean => run.dir !== undefined && (askShown(run.dir, run.rows, "waiting") !== undefined || (handoffOpen(run.rows) && asked(run.dir)));
+/** Whether a hand-off call of the agent's (HANDOFF_TOOL) has no saved result: the call is still under way, or was cut off
+ *  with its process. A cut-off call shows an "interrupted" result row, which is no result (no output: tool_result_size_bytes
+ *  null, as the timeline marks it); the next process resumes the call and saves its real one. */
+const handoffOpen = (rows: readonly TimelineEvent[]): boolean => {
+  const done = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_name === HANDOFF_TOOL && row.tool_result_size_bytes !== null).map((row) => row.tool_use_id));
+  return rows.some((row) => row.kind === "tool_use" && row.tool_name === HANDOFF_TOOL && !done.has(row.tool_use_id));
+};
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
  *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
@@ -1085,8 +1094,9 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   }
 }
 
-/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went. */
-export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void } = {};
+/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went;
+ *  `beforeRestartCheck` holds a settle that found the run's process gone just before it decides whether to open it again. */
+export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void; beforeRestartCheck?: (runDir: string) => Promise<void> | void } = {};
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
@@ -2903,6 +2913,7 @@ export class Runs {
       // one whose agent waits on its ask for the person in its browser is mid-turn (the tool call waits inside it), and its
       // next process takes the wait up: it reads the owner's answer, or writes the ask's expiry (browser-person.ts).
       // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
+      if (gone) await runsTestHooks.beforeRestartCheck?.(run.dir);
       const stalled = run.kind === "workflow" || (statusOf(run).status !== "input_required" && !raisedToGo(run)) || askWaits(run);
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
