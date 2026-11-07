@@ -19,7 +19,7 @@ import { archilEnv } from "./env.ts";
 import { BoxUnavailableError, EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
 import { BARRIER, syncNow, type SyncTarget } from "./barriers.ts";
 import { openArchilStore, type ArchilStore, type Profile, type Synchronous } from "./store.ts";
-import { currentHolder, openClaimDir, readStoreRecord, RUN_STATUS_TABLE, type BoxMode, type ClaimDir, type RunHolder, type RunRecord, type RunStatus } from "./status.ts";
+import { currentHolder, openClaimDir, parseRunRecord, readStoreRecord, RUN_STATUS_TABLE, RunRecordError, type BoxMode, type ClaimDir, type RunHolder, type RunRecord, type RunStatus } from "./status.ts";
 
 /** pi's store under the claim's `store/` directory. */
 export const STORE_FILE = "run.sqlite";
@@ -520,9 +520,13 @@ class Lease {
 
   /**
    * The record the previous incarnation left in the store, read once it is open under its lock. Without a host epoch,
-   * this incarnation's generation is that record's plus 1.
+   * this incarnation's generation is that record's plus 1. A record naming another run is refused (RunRecordError), so
+   * an open with the wrong id never resumes that run's work or writes its own id over it.
    */
   fromStore(previous: RunRecord | undefined): void {
+    if (previous !== undefined && previous.run !== this.ref.id) {
+      throw new RunRecordError(`the record in ${join(this.rawClaim.store, STORE_FILE)} names run ${JSON.stringify(previous.run)}, not ${JSON.stringify(this.ref.id)}`);
+    }
     this.#previous = previous;
     if (this.epoch === undefined) this.#record = { ...this.#record!, generation: (previous?.generation ?? 0) + 1 };
   }
@@ -655,25 +659,25 @@ class Run implements DurableRun {
   async open(step: Step): Promise<void> {
     const lease = this.#lease;
     const file = join(lease.rawClaim.store, STORE_FILE);
-    this.#store = await step("store", () =>
-      openArchilStore(file, this.#options.profile ?? "exclusive", {
+    // The run's record lives in its store. The previous incarnation's is read under the store's lock before pi's
+    // Harness opens over it, so a malformed record, or one naming another run, is refused before anything of pi runs there.
+    await step("store", async () => {
+      this.#store = await openArchilStore(file, this.#options.profile ?? "exclusive", {
         onFenced: (error) => void lease.fence(error),
         ...(this.#options.keepWal ? { keepWal: true } : {}),
         ...(this.#options.decorateStore === undefined ? {} : { decorate: this.#options.decorateStore }),
         ...(this.#options.synchronous === undefined ? {} : { synchronous: this.#options.synchronous }),
-      }),
-    );
-    const storage = lease.observe(this.#store.storage);
-    // openDurableRun refused an open without Harness options (here or from afterClaim) before this runs.
-    this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness!, env: this.env }, this.#context));
-    // The run's record lives in its store: the previous incarnation's read, this one's written, under the store's lock.
-    await step("record", async () => {
-      const database = this.#store!.database;
+      });
+      const database = this.#store.database;
       await database.exec(`CREATE TABLE IF NOT EXISTS ${RUN_STATUS_TABLE} (id INTEGER PRIMARY KEY CHECK (id = 1), record TEXT NOT NULL)`);
       const row = await database.get<{ record: string }>(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`);
-      lease.fromStore(row ? (JSON.parse(row.record) as RunRecord) : undefined);
-      await this.#keepStatus(lease.record);
+      lease.fromStore(row ? parseRunRecord(row.record) : undefined);
     });
+    const storage = lease.observe(this.#store!.storage);
+    // openDurableRun refused an open without Harness options (here or from afterClaim) before this runs.
+    this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness!, env: this.env }, this.#context));
+    // This incarnation's record, written under the store's lock.
+    await step("record", () => this.#keepStatus(lease.record));
     const before = this.#options.beforeResume;
     if (before) {
       // The storage the Harness was opened over (the claim observes its commits), and its head now: nothing commits
@@ -751,7 +755,8 @@ class Run implements DurableRun {
  *
  * Errors are typed: HeldError (76) when another process holds the run's store, or a process a killed incarnation's
  * commands left will not die; FencedError (75) when the claim cannot be trusted (also passed to `onFenced`); RunError
- * STORE_HEAD_UNREADABLE (70) when the store's head cannot be read.
+ * STORE_HEAD_UNREADABLE (70) when the store's head cannot be read; RunRecordError (65) when the store's record is
+ * malformed or names another run.
  */
 export async function openDurableRun<Tool extends ToolRegistration = ToolRegistration>(
   ref: RunRef,

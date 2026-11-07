@@ -75,7 +75,9 @@ of its name is installed. A tool that only reads can be marked `replay: "safe"` 
 rerun. Any other tool is an effect: its intent is committed before it starts, and after a crash the model is told the call
 was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" | "sleeping", detail)` records the run's
 status in its record, in the store; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
-run's commands and runs the barrier; its record (a run still `running` is `paused`) is written in the store first. The instance ends after its release: returning from `onOpen` after `await run.release()` is enough (the examples call `process.exit(0)`, which is fine too). A module that is missing
+run's commands and runs the barrier; its record (a run still `running` is `paused`) is written in the store first. So
+end a run with `run.release()` alone: an app that closes the Harness itself and then releases leaves the record nowhere to
+go, and the release fences (exit 75). The instance ends after its release: returning from `onOpen` after `await run.release()` is enough (the examples call `process.exit(0)`, which is fine too). A module that is missing
 or throws, or an `onOpen` that rejects, is `AppError` (exit 1; a module that fails lets the claim go first). A `beforeResume` that rejects
 fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
 store the Harness was opened over as four reads (`scanConversations`, `scanTasks`, `scanDocuments`, `document`) with no
@@ -146,7 +148,7 @@ A run on a local directory has nothing mounted and nothing delegated; its host s
 | The instance crashes or is SIGKILLed | Its hold on the store goes with the process. The next open of the directory (by the app, or whatever restarts it) takes the run, ends the commands the killed incarnation left running (its `commands` step, before any code of the new incarnation runs), and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun; no command of the killed incarnation still runs once the run resumes. pi makes each command the leader of its own process group, so the SIGKILL does not reach them and a local run has no unit cgroup: the instance records each command's group under `commands/` (by pid, start ticks and boot) and the next open kills what still matches. A command started within about 0.1 s before the kill can be missed |
 | A process the killed incarnation's commands started does not die at the next open (an uninterruptible wait, or one the run's user may not signal) | The open is refused: `HeldError` `COMMANDS_ALIVE`, exit 76, with the message below; the records stay | none: the run does not resume beside it. End those processes and open the run again |
 | Power loss or an OS crash | The store's commits are durable (SQLite at `synchronous = FULL`); `work/` is the operating system's to flush, since the claim's barrier syncs nothing | the store resumes from its last commit; files the agent wrote in `work/` can be older than what the store recorded |
-| A second process opens the run on this machine | The store's own lock refuses it (`HeldError` `store`, exit 76) | none |
+| A second process opens the run on this machine | The open probes the store's lock before it reaps anything and is refused while another process holds the store (`HeldError` `store`, exit 76). The lock is probed, not held: from the probe to the store's own open (the layout, the commands reap, `afterClaim` and a new run's seed) nothing holds it, so two openers with no host (two library callers at once) can both pass the probe, and the store's own open then refuses one of them. `localPlace`'s release probes the lock and then reaps in the same way | none while the other process holds the store. Two host-less openers at once: the one refused at the store's open may already have killed commands the other started, or run the seed over its files. agentrun-serve starts one run process per run, so it never opens a run twice |
 | A process on another machine reaches the directory (a network share) | Nothing stops it: a local directory has no fence | unsupported, since two writers can corrupt the store |
 
 The refusal names each process, as the open writes it (here one, in a run at `<root>`):
@@ -209,8 +211,11 @@ the open found it and lets the claim go.
 
 `epoch` is the record's generation: a host that holds the run's claim on a record of its own (agentrun-serve's run row)
 hands it. Without it, the generation is the previous record's plus 1, read from the store once the open holds its lock:
-for a caller on one machine with no host epoch. Either way the store's own exclusive lock keeps a second writer out: a
-second open is refused (`HeldError` `store`, exit 76) before it reaps anything.
+for a caller on one machine with no host epoch. Either way the store's own exclusive lock keeps a second writer out. The
+open probes it before it reaps anything and is refused while a process holds the store (`HeldError` `store`, exit 76).
+The probe holds nothing: the lock is free from the probe until the store opens, so two host-less openers at once can both
+pass it (the failure table says what that costs). An open also refuses a record that names another run, or a malformed
+one (`RunRecordError`, exit 65), before it resumes anything.
 
 `archilEnv` and the typed errors (`FencedError`, `HeldError`) are exported for apps that compose their own lifecycle, and
 so are serve (`serveRun`) and parking (`watchParking`, `drain`, `busyState`). `src/index.ts` lists every export; the

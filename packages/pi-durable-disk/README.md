@@ -237,7 +237,7 @@ store when the run has no live door.
 | `REJECTED_BUSY` | the hook refused it as busy | 409 `BUSY`, `status: "REJECTED_BUSY"`; sent again, it is admitted again |
 | `REJECTED_WAITING` | an input with `answers: false` came while a call waits in a park it names; never written | 409 `WAITING`; sent again, it is read again |
 | `FAILED` | `hook.submit` threw, before taking the input | 500 `FAILED`, `status: "FAILED"` |
-| `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting; or the record was admitted by an earlier instance, or before the lease was lost, and no call here carries it | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
+| `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting; or the record was admitted by an earlier instance, or before the run was fenced, and no call here carries it | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
 
 A late answer to an `UNKNOWN` submit is never dropped: the door writes the real outcome (`ACCEPTED`, `REJECTED_BUSY`, or
 `FAILED` if it threw) on the same requestId, unless the run is fenced by then (the fenced commit fails, and the record
@@ -280,7 +280,7 @@ reference. [Library](docs/reference.md#library) describes each in full.
 
 | Name | What it is | Example |
 |---|---|---|
-| `openDurableRun(ref, options)` | Open a run: take the claim and the owner lock, open the store and the Harness, resume, keep the lease. `run.release()` seals it | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
+| `openDurableRun(ref, options)` | Open a run: take the claim, probe the store's lock, open the store and the Harness, write the run's record in the store, resume. `run.release()` records where it stands and lets the claim go | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
 | `localRun(root)` | The `acquire` and `claimDir` that put a run on a plain directory of this machine | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
 | `seed` (an option of `openDurableRun`) | Write what a new run starts with, its store file and workspace files, once, before anything sees the run ([Seeding a new run](docs/reference.md#seeding-a-new-run)) | [seed-a-run](examples/seed-a-run/) |
 | `localPlace({ app })` | Where one run lives and how its instance starts and ends, for a supervisor of your own ([Places](docs/reference.md#places-where-a-runs-instance-starts-and-ends)) | [place-outcome](examples/place-outcome/) |

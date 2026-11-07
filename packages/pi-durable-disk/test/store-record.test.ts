@@ -10,9 +10,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { exitCodeFor, HeldError } from "../src/errors.ts";
 import { localRun } from "../src/local-run.ts";
-import { openDurableRun } from "../src/run.ts";
-import { readLocalRunStatus } from "../src/index.ts";
-import { scratchRoot, scriptedHarness } from "./_run-support.ts";
+import { assertStoreFree, openDurableRun } from "../src/run.ts";
+import { readLocalRunStatus, RunRecordError } from "../src/index.ts";
+import { RUN_STATUS_TABLE } from "../src/internals.ts";
+import { scratchRoot, scriptedHarness, writeStoreRecord } from "./_run-support.ts";
 
 const ref = { disk: "local", region: "local", id: "record-1" };
 
@@ -140,7 +141,7 @@ describe("a run's record, in its store", () => {
     }
   });
 
-  it("a holder paused by SIGSTOP keeps the store's lock: an open beside it is refused (HeldError store, 76); once it is gone the next open takes the run", { timeout: 60_000 }, async () => {
+  it("a holder that opened its store as openArchilStore does, paused by SIGSTOP, keeps the store's lock: the probe and a real open beside it are both refused (HeldError store, 76); once it is SIGKILLed the store opens", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("store-record-paused");
     const HOLD = fileURLToPath(new URL("./fixtures/open-and-hold.ts", import.meta.url));
     const child = spawn(process.execPath, [HOLD, dir.root, ref.id], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, NODE_NO_WARNINGS: "1" } });
@@ -149,6 +150,17 @@ describe("a run's record, in its store", () => {
       const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
       assert.match(String((await lines.next()).value), /^opened 1 \d+$/);
       child.kill("SIGSTOP");
+      const file = join(dir.root, "store", "run.sqlite");
+      const probed = (() => {
+        try {
+          assertStoreFree(file);
+          return null;
+        } catch (error) {
+          return error;
+        }
+      })();
+      assert.ok(probed instanceof HeldError && probed.holder === "store", `the probe is refused while its holder is paused: ${String(probed)}`);
+      assert.equal(exitCodeFor(probed), 76);
       const scripted = scriptedHarness();
       const options = { ...localRun(dir.root), harness: { models: scripted.models, registry: scripted.registry } };
       const refused = await openDurableRun(ref, options).then(() => null, (error: unknown) => error);
@@ -157,6 +169,7 @@ describe("a run's record, in its store", () => {
       child.kill("SIGCONT");
       child.kill("SIGKILL");
       await exited;
+      assertStoreFree(file);
       const run = await openDurableRun(ref, options);
       assert.equal(run.generation, 2, "the next open takes the run once the paused holder is gone");
       await run.release();
@@ -184,6 +197,37 @@ describe("a run's record, in its store", () => {
       assert.deepEqual(await readLocalRunStatus(dir.root), record, "what the WAL committed is in the database file now");
     } finally {
       child.kill("SIGKILL");
+      dir.remove();
+    }
+  });
+
+  it("an open refuses a record that names another run, or one that is malformed: RunRecordError (65), and the record stays as it was", async () => {
+    const dir = scratchRoot("store-record-other");
+    const stored = () => {
+      const db = new DatabaseSync(join(dir.root, "store", "run.sqlite"));
+      try {
+        return (db.prepare(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`).get() as { record: string }).record;
+      } finally {
+        db.close();
+      }
+    };
+    try {
+      const scripted = scriptedHarness();
+      const options = { ...localRun(dir.root), harness: { models: scripted.models, registry: scripted.registry } };
+      const first = await openDurableRun(ref, options);
+      await first.release();
+      const before = stored();
+      const other = await openDurableRun({ ...ref, id: "record-2" }, options).then(() => null, (error: unknown) => error);
+      assert.ok(other instanceof RunRecordError && other.code === "RUN_JSON_INVALID", `a record naming record-1 is refused to record-2: ${String(other)}`);
+      assert.equal(exitCodeFor(other), 65);
+      assert.match(String((other as Error).message), /record-1/);
+      assert.equal(stored(), before, "the refused open left the record as it was");
+      const malformed = { ...JSON.parse(before), generation: "3" };
+      writeStoreRecord(dir.root, malformed);
+      const bad = await openDurableRun(ref, options).then(() => null, (error: unknown) => error);
+      assert.ok(bad instanceof RunRecordError && bad.code === "RUN_JSON_INVALID", `a string generation is refused, not added to: ${String(bad)}`);
+      assert.equal(stored(), JSON.stringify(malformed), "the refused open left the record as it was");
+    } finally {
       dir.remove();
     }
   });

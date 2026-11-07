@@ -253,7 +253,7 @@ export interface InstanceLife {
  * killed) and waits up to `life.drainMs` for running work; with `resume` it then writes the run
  * sleeping with its wake (the deadline its work waits for, null when idle and idle parking is on, otherwise now), so
  * the supervisor starts it again and a deploy never strands it; a wake hook that refuses falls back to a due wake.
- * `pause` seals it paused. An app that released the run itself (`run.release()`, in `onOpen` or after it) has nothing left to
+ * `pause` records it paused. An app that released the run itself (`run.release()`, in `onOpen` or after it) has nothing left to
  * serve: the instance exits 0 when `onOpen` returns, and a stop after that exits 0 without a drain, since the Harness is
  * closed and the run's status final. A rejection of `onOpen` is the app failing (exit 1), except once a drain or a park's release
  * began: closing the Harness under the app makes its work reject ("Session is closed"), and ending the process there
