@@ -6,10 +6,11 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { client, flowAgent, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_SEAL_KEY"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_SEAL_KEY", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -59,4 +60,93 @@ test("a decision-only workflow paused at its cap before its first request tells 
   for (const end = Date.now() + 10_000; Date.now() < end && told().length === 0; ) await sleep(100);
   await sleep(1_500);
   assert.deepEqual(told().map((message) => [message.data.status, message.data.pending]), [["input_required", { kind: "budget" }]], "told once, as a pause at its cap");
+});
+
+const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
+
+/** A map over the input's questions that collects a failed item, each one `llm` call node. */
+const collectingLlm = () => ({
+  v: 2, name: "each",
+  schemas: {
+    In: { type: "object", required: ["questions"], properties: { questions: { type: "array", items: { type: "string" } } } },
+    Llm: { type: "object", required: ["text"], properties: { text: { type: "string" } } },
+    Found: { type: "array" },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Found", path: "found" },
+  root: { node: "chain", steps: [{ node: "map", label: "each", itemsPath: "questions", as: "found", resultPath: "said", maxConcurrency: 2, onItemFailure: "collect", failedAs: "missed", body: { node: "call", label: "ask", via: "tool", tool: "llm", args: { prompt: "{item}" }, out: "Llm", as: "said", deadline_s: 60 } }] },
+});
+
+/** Two model nodes in a chain: under a $0.12 cap the first runs and the second waits; $0.15 is its least. */
+const twoNodes = () => ({
+  v: 2, name: "twice",
+  schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } }, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [
+    { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
+    { node: "extract", label: "second", instructions: "Answer the question again.", out: "Answer", as: "answer" },
+  ] },
+});
+
+test("waits at the same cap are told once, and a refusal at a higher cap (a raise that did not cover the step) is told again", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, KEYS);
+  const hook = await receiver(t);
+  const { api } = await serve(t, { faux: PRICED });
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const told = (runId) => hook.got.filter((message) => message.type === "run.needs_input" && message.data.run_id === runId);
+  // Two items of a map, both waiting at the $0.05 cap: one pause, one notice.
+  assert.equal((await api("POST", "/agents", flowAgent("asks", collectingLlm(), { tools: ["llm"] }))).status, 201);
+  const map = (await api("POST", "/agents/asks/runs", { input: { questions: ["one", "two"] }, max_cost_usd: 0.05 })).body.run_id;
+  await follow(api, map, SETTLED, { deadlineMs: 60_000 });
+  assert.equal((await api("GET", `/runs/${map}`)).body.pending?.kind, "budget");
+  for (const end = Date.now() + 10_000; Date.now() < end && told(map).length === 0; ) await sleep(100);
+  await sleep(1_500);
+  assert.equal(told(map).length, 1, "two waits at one cap are one pause, told once");
+  // A pause at $0.12, then a raise to $0.13 that its step still does not fit ($0.15 is its least): refused again at the
+  // higher cap, it is a pause of its own, told again.
+  assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
+  const chain = (await api("POST", "/agents/twice/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body.run_id;
+  await follow(api, chain, SETTLED, { deadlineMs: 60_000 });
+  for (const end = Date.now() + 10_000; Date.now() < end && told(chain).length === 0; ) await sleep(100);
+  assert.equal(told(chain).length, 1, "the pause at $0.12, told");
+  assert.equal((await api("PATCH", `/runs/${chain}`, { max_cost_usd: 0.13 })).status, 200);
+  for (const end = Date.now() + 15_000; Date.now() < end && told(chain).length < 2; ) await sleep(100);
+  await sleep(1_500);
+  const run = (await api("GET", `/runs/${chain}`)).body;
+  assert.deepEqual([run.status, run.pending?.kind, run.pending?.cap_usd, told(chain).length], ["input_required", "budget", 0.13, 2], JSON.stringify(run));
+});
+
+test("the watch of a paused workflow stats its pause each round and reads it only when it changed, and stops with the run's process and with the server", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "3000" }, KEYS);
+  const data = join(await scratch(t), "agents");
+  const checks = [];
+  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s", onPauseCheck: (runId, what) => void checks.push({ runId, what }) });
+  let closed = false;
+  t.after(() => (closed ? undefined : server.close()));
+  const api = client(server.baseUrl, server.token);
+  const count = (runId, what) => checks.filter((check) => check.runId === runId && check.what === what).length;
+  assert.equal((await api("POST", "/agents", flowAgent("watched", twoNodes()))).status, 201);
+  const start = async () => {
+    const runId = (await api("POST", "/agents/watched/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body.run_id;
+    await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+    for (const end = Date.now() + 5_000; Date.now() < end && count(runId, "read") === 0; ) await sleep(50);
+    return runId;
+  };
+  // Paused, its process held for 3 s: each round stats the pause; the unchanged file is not read again.
+  const held = await start();
+  const [stats, reads] = [count(held, "stat"), count(held, "read")];
+  await sleep(1_200);
+  assert.deepEqual([count(held, "stat") > stats, count(held, "read")], [true, reads], "stat'ed each round, read once while it is unchanged");
+  // Its process let go: the watch is over, with nothing more stat'ed or read.
+  await letGo(data, held);
+  const gone = [count(held, "stat"), count(held, "read")];
+  await sleep(1_500);
+  assert.deepEqual([count(held, "stat"), count(held, "read")], gone, "nothing after the process ended");
+  // Another paused run, its process still held, when the server closes: nothing more after the close.
+  const live = await start();
+  await server.close();
+  closed = true;
+  const after = [count(live, "stat"), count(live, "read")];
+  await sleep(1_500);
+  assert.deepEqual([count(live, "stat"), count(live, "read")], after, "nothing after the server closed");
 });

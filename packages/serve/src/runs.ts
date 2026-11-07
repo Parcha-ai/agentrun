@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -431,6 +431,10 @@ export type Run = {
   /** A raise whose launch failed RAISE_TRIES times: why, since `at`, shown as a row while the run stays paused at its
    *  cap, so the owner reads that the raise was taken and the run could not start, not a call for another raise. */
   raiseFailedRow?: { at: string; words: string };
+  /** The pause at its cap the watch last read (connect: its notice key), so a new one, or one written again, is told. */
+  pauseSeen?: string;
+  /** budget.json's time and size at the watch's last read, so an unchanged file is not read again. */
+  pauseStamp?: string;
   /** It waits for its harness's install before a launch (harnessReady): takePlace counts it as holding a place until
    *  that launch, so nothing takes its place meanwhile. A cancel or an end lets the place go. */
   waitsInstall?: boolean;
@@ -952,6 +956,13 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
 
 /** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
 const waitMark = (run: Run): string => (stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "";
+/** What a wait's run.needs_input notice is keyed on: a workflow paused at its cap, by its pause's own mark (budget.ts:
+ *  where it waits and since when), which needs no row, so a pause at its first decision, before any model row, is told
+ *  too, and a pause written again at a higher cap is told again; any other wait, by waitMark. */
+const noticeMark = (run: Run): string => {
+  const mark = run.kind === "workflow" && run.dir && budgetWaiting(run) ? budgetPausedIn(run.dir) : undefined;
+  return mark ? `budget:${mark.path ?? mark.node ?? ""}:${mark.at}` : waitMark(run);
+};
 
 /** Waits for `work`, or until `deadline` (ms since the epoch), whichever comes first. */
 async function untilDeadline(work: Promise<unknown> | undefined, deadline: number): Promise<void> {
@@ -1242,6 +1253,8 @@ export class Runs {
   /** A test's seam (startServe's `beforeRaiseLaunch`): awaited where a raise that opens a let-go workflow pins what its
    *  launch needs (finishRaise), after its place is taken; one that throws stands for a pin that fails there. */
   beforeRaiseLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `onPauseCheck`): told each stat and each read of a workflow run's pause by its watch. */
+  onPauseCheck?: (runId: string, what: "stat" | "read") => void;
   /** A test's seam (startServe's `onRunLoad`): told each run read in from its store, its timeline with it. */
   onRunLoad?: (runId: string) => void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
@@ -2224,7 +2237,7 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : "question" });
+    if (status === "input_required") this.notice(run, "run.needs_input", noticeMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
@@ -2270,12 +2283,42 @@ export class Runs {
             run.working = true;
             this.refresh(run);
           }
+          // Its pause at its cap is written by its process (budget.json): a new one, or one written again at a higher cap
+          // (a raise that did not cover the step), is read here, so its status and its webhook notice follow it. Each
+          // round costs one stat; the file is read only when its time or size moved since the last read (fs.watch is not
+          // to be trusted on the run's mount).
+          this.watchPause(run);
         } else if (door) await this.follow(run, door, abort.signal).catch(() => undefined);
         if (abort.signal.aborted || (!this.live(run) && !this.doorOf(run))) break;
-        await sleep(run.kind === "workflow" ? 500 : 200);
+        // Unref'd, and cut short by the watch's end (the process's settle, the server's close): nothing waits on it.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, run.kind === "workflow" ? 500 : 200);
+          timer.unref();
+          abort.signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+        });
       }
       if (run.feed === abort) run.feed = undefined;
     })();
+  }
+
+  /** One round of a live workflow run's watch of its pause at its cap: a stat of budget.json, and a read only when it
+   *  changed (its time or size); a new pause, or one written again, refreshes the run (its status, its notice). */
+  private watchPause(run: Run): void {
+    let stamp: string | undefined;
+    try {
+      const stat = statSync(join(run.dir, BUDGET_PAUSE));
+      stamp = `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      stamp = undefined;
+    }
+    this.onPauseCheck?.(run.id, "stat");
+    if (stamp === run.pauseStamp) return;
+    run.pauseStamp = stamp;
+    if (stamp !== undefined) this.onPauseCheck?.(run.id, "read");
+    const pause = stamp === undefined ? undefined : noticeMark(run);
+    if (pause === run.pauseSeen) return;
+    run.pauseSeen = pause;
+    if (pause !== undefined) this.refresh(run);
   }
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {

@@ -237,6 +237,8 @@ export type ServeOptions = {
   beforeRaiseLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: the host's memory, in bytes, that the runs' limit reads (host.ts), in place of this host's. */
   hostMemory?: number;
+  /** A test's seam: told each stat and each read of a workflow run's pause by its watch (runs.ts watchPause). */
+  onPauseCheck?: (runId: string, what: "stat" | "read") => void;
   /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
@@ -981,6 +983,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
   if (options.beforeRaiseLaunch) runs.beforeRaiseLaunch = options.beforeRaiseLaunch;
   if (options.hostMemory) runs.memory = options.hostMemory;
+  if (options.onPauseCheck) runs.onPauseCheck = options.onPauseCheck;
   if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
   if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
   if (options.onRunLoad) runs.onRunLoad = options.onRunLoad;
