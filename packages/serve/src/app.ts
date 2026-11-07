@@ -16,7 +16,7 @@ import { createRegistry, defineExtension, type Extension, type Harness, ROOT_CON
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
-import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
+import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
@@ -208,7 +208,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, learnedTool ? [...named, LEARNED_WORKFLOW_TOOL] : named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate, learnedTool ? [learnedTool] : []);
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
     // A learned workflow's model requests go through the run's models, marked on its store once it opens (markRequests).
-    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness)), learnedTool && marked.open(durable), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
+    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness), durable.store), learnedTool && marked.open(durable), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
@@ -258,7 +258,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
     const onOpen = async (durable: DurableRun) => {
       runHarness = durable.harness;
-      settleIn(rootRecordOf(durable.harness));
+      settleIn(rootRecordOf(durable.harness), durable.store);
       marked.open(durable);
       await toolGate.load(durable, BACKGROUND, coding.tools, learnedTool ? [learnedTool] : []);
       toolGate.start();
@@ -350,7 +350,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     log({ t: event.type, path: event.executionPath, kind: String(detail.kind ?? ""), at: new Date().toISOString(), ...(detail.status ? { status: detail.status } : {}), ...(typeof detail.duration_ms === "number" ? { duration_ms: detail.duration_ms } : {}), ...(detail.error !== undefined ? { error: String((detail.error as Error)?.message ?? detail.error).slice(0, 500) } : {}) });
   };
   const workflows = createWorkflowExtension({
-    options: () => ({ files: workspaceFiles(where.work) }),
+    // Each workflow effect's admission is synced before it is dispatched (pi-durable-disk barriers.ts, workflowAdmit): the
+    // driver's journal is the run's store, opened by now (a workflow starts in the run's open).
+    options: () => ({ files: workspaceFiles(where.work), afterAdmit: async () => {
+      if (!opened) throw new Error("the run's store is not open, so a workflow effect's admission cannot be made durable: it is not sent");
+      await syncNow(opened.store, BARRIER.workflowAdmit);
+    } }),
     run: ({ key, runtime, context, driver }) => {
       // Each typed question's receipt is a row of the run's store before its answer acts, and a resumed run takes an
       // answered one instead of asking again.
@@ -377,7 +382,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
     opened = durable;
-    settleIn(rootRecordOf(durable.harness));
+    settleIn(rootRecordOf(durable.harness), durable.store);
     marked.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });
