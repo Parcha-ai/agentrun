@@ -60,6 +60,10 @@ async function fakeBrowser() {
     refuseService: () => { refusing = true; },
     announce: (requestId, path = "/api/order") => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, type: "Fetch", request: { method: "POST", url: `${url(path)}?card=4111` } } }),
     pause: (requestId, networkId, path = "/api/order") => send({ sessionId: "S1", method: "Fetch.requestPaused", params: { requestId, networkId, resourceType: "Fetch", request: { method: "POST", url: url(path), headers: {} } } }),
+    /** A form's intent, before its request exists, then its Document request and pause. */
+    formIntent: (frameId) => send({ sessionId: "S1", method: "Page.frameRequestedNavigation", params: { frameId, reason: "formSubmissionPost", url: url("/submit"), disposition: "currentTab" } }),
+    announceForm: (requestId) => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, type: "Document", request: { method: "POST", url: url("/submit") } } }),
+    pauseForm: (requestId, networkId, frameId) => send({ sessionId: "S1", method: "Fetch.requestPaused", params: { requestId, networkId, frameId, resourceType: "Document", request: { method: "POST", url: url("/submit"), headers: {} } } }),
     failed: (requestId) => send({ sessionId: "S1", method: "Network.loadingFailed", params: { requestId, type: "Fetch", errorText: "net::ERR_ABORTED" } }),
     close: () => new Promise((resolve) => { for (const c of sockets) c.destroy(); server.close(() => resolve()); }),
   };
@@ -177,6 +181,55 @@ test("a browser that refuses the question is asked once, and a flush still ends 
   assert.ok(Date.now() - start < 1_000, `the flush was bounded (${Date.now() - start} ms)`);
   assert.equal(browser.asked(), 1);
   assert.deepEqual(lost, []);
+});
+
+test("a request that ended unpaused while the new service had not started yet is told lost once it answers", async (t) => {
+  const { browser, observer, lost } = await rig(t);
+  browser.announce("R1");
+  await sleep(100);
+  browser.restart(null);
+  browser.failed("R1");
+  setTimeout(() => browser.restart(300), 600);
+  await observer.flush(undefined, 1_500);
+  assert.deepEqual(lost.map((r) => r.requestId), ["R1"]);
+});
+
+test("a browser that answers but names no network service (one in-process) stops being asked within a bound, even after a held request ended unpaused", async (t) => {
+  const { browser, observer, lost } = await rig(t);
+  browser.restart(null);
+  browser.announce("R1");
+  await sleep(50);
+  browser.failed("R1");
+  await observer.flush(undefined, 400);
+  await sleep(3_000);
+  const asked = browser.asked();
+  await sleep(1_000);
+  assert.equal(browser.asked(), asked, `the asks stopped (${asked} asked)`);
+  assert.ok(asked <= 12, `and they were bounded (${asked})`);
+  assert.deepEqual(lost, []);
+});
+
+test("a form POST whose intent the network service took with it is told lost, and the Document pause that comes after all is refused and journaled denied, never sent under allow", async (t) => {
+  const { browser, observer, rows, lost } = await rig(t, effectDecider("allow"));
+  browser.formIntent("FR1");
+  await sleep(100);
+  browser.restart(200);
+  await sleep(400);
+  assert.deepEqual(lost.map((r) => `${r.requestId} ${r.method} ${r.path}`), ["navigation:FR1 POST /submit"], "the call is told the form was not sent");
+  browser.announceForm("D1");
+  browser.pauseForm("F1", "D1", "FR1");
+  await sleep(200);
+  await observer.flush(undefined, 1_000);
+  assert.deepEqual(rows, ["D1 POST /submit pending", "D1 POST /submit denied"], "allow does not send it");
+  const answers = browser.commands.filter((c) => /^Fetch\.(failRequest|continueRequest)$/.test(c.method)).map((c) => `${c.method} ${c.params.requestId}`);
+  assert.deepEqual(answers, ["Fetch.failRequest F1"]);
+  // A later form in the same frame is a new intent: it is decided as any other.
+  browser.formIntent("FR1");
+  browser.announceForm("D2");
+  browser.pauseForm("F2", "D2", "FR1");
+  await sleep(200);
+  await observer.flush(undefined, 1_000);
+  assert.deepEqual(rows.slice(2), ["D2 POST /submit pending", "D2 POST /submit allowed"]);
 });
 
 test("a journaling observer, which holds nothing, never asks for the network service", async (t) => {

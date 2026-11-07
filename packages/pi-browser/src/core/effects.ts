@@ -22,6 +22,8 @@ const EXTENSION = "chrome-extension://";
 const RUN_CODE = "run code";
 /** How often the network service's pid is asked for while a request waits for its pause. */
 const SERVICE_POLL_MS = 250;
+/** How long answers may name no network service before the browser is taken to have none of its own. */
+const NO_SERVICE_MS = 2_000;
 type Announced = { sessionId: string; seq: number; method: string; url: string };
 
 /** An extension's pages (its offscreen document, its wake page) send nothing a model chose; its service worker is where
@@ -86,8 +88,11 @@ export class EffectObserver {
   /** How far `announceSeq` had got when the service was last asked, whatever it answered. */
   private askedSeq = 0;
   private watching = false;
-  /** The browser refused `SystemInfo.getProcessInfo` (a provider's endpoint may): it is not asked again. */
+  /** The browser refused `SystemInfo.getProcessInfo` (a provider's endpoint may), or kept answering without a network
+   *  service of its own (one in-process) for `NO_SERVICE_MS`: it is not asked again. */
   private noService = false;
+  /** Since when the answers have named no network service: a moment is a new service not started yet, `NO_SERVICE_MS` is none. */
+  private missingSince: number | null = null;
   /** Ends the watch's wait between questions early: a request just announced is asked about at once, so a service that dies
    *  a moment after it is found to have died with it. */
   private nudge: (() => void) | null = null;
@@ -203,6 +208,8 @@ export class EffectObserver {
     else if (m.method === "Network.loadingFinished") this.unannounce(m.params.requestId);
     else if (m.method === "Network.webSocketCreated") this.track(this.socket(m.sessionId!, m.params));
     else if (m.method === "Page.frameRequestedNavigation" && m.params.reason === "formSubmissionPost" && this.sessions.get(m.sessionId!)?.holds) {
+      // A new intent in the frame is a new form: an earlier one told lost no longer refuses it.
+      this.lost.delete(`navigation:${m.params.frameId}`);
       this.announced.set(`navigation:${m.params.frameId}`, { sessionId: m.sessionId!, seq: (this.announceSeq += 1), method: "POST", url: m.params.url });
       this.watch();
     }
@@ -231,7 +238,7 @@ export class EffectObserver {
           });
         }
       } finally { this.watching = false; this.nudge = null; }
-    })();
+    })().catch(() => undefined);
   }
 
   /** One question about the network service at a time, so one restart is found once. */
@@ -262,8 +269,15 @@ export class EffectObserver {
       return "unknown";
     }
     this.askedSeq = Math.max(this.askedSeq, covered);
-    // No pid: Chrome runs no separate network service, or has not started the new one yet.
-    if (pid === null) return "unknown";
+    // No pid: Chrome has not started the new service yet, or runs none of its own. The question is asked again a bounded
+    // number of times; a browser that never names one then stops being asked, and a request that ended unpaused is no
+    // longer kept for an answer that will not come.
+    if (pid === null) {
+      this.missingSince ??= Date.now();
+      if (Date.now() - this.missingSince >= NO_SERVICE_MS) { this.noService = true; this.endedUnpaused.clear(); }
+      return "unknown";
+    }
+    this.missingSince = null;
     if (this.servicePid === null || pid === this.servicePid) {
       this.servicePid = pid;
       this.confirmedSeq = covered;
@@ -298,10 +312,13 @@ export class EffectObserver {
       const covered = this.announceSeq;
       const timer = setTimeout(() => {
         void (async () => {
-          if ([...this.announced.values()].some((entry) => entry.seq <= covered)) await this.conclusiveCheck(ms);
-          for (const [id, entry] of [...this.announced]) if (entry.seq <= covered) this.unannounce(id);
-          done();
-        })();
+          try {
+            if ([...this.announced.values()].some((entry) => entry.seq <= covered)) await this.conclusiveCheck(ms);
+          } finally {
+            for (const [id, entry] of [...this.announced]) if (entry.seq <= covered) this.unannounce(id);
+            done();
+          }
+        })().catch(() => undefined);
       }, ms);
       this.announcedWaiters.push(done);
     });
@@ -357,7 +374,7 @@ export class EffectObserver {
     try { return this.endpoints.includes(new URL(url).href); } catch { return false; }
   }
 
-  private async paused(sessionId: string, p: { requestId: string; networkId?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }): Promise<void> {
+  private async paused(sessionId: string, p: { requestId: string; networkId?: string; frameId?: string; resourceType?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }): Promise<void> {
     const { method, url, postData, headers } = p.request;
     if (SAFE.has(method) || !this.decide || isOwnTraffic(url)) return this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId);
     let request: EffectRequest;
@@ -373,8 +390,11 @@ export class EffectObserver {
     const saved = await this.journal(id, request, "pending", null);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const limit = new Promise<EffectDecision>((resolve) => { timer = setTimeout(() => resolve(REFUSED), this.decideMs); });
-    // A request the call was told the browser lost, and so was not sent, stays not sent.
-    const { allow, verdict } = saved && !this.lost.has(id) ? await Promise.race([this.decide(request), cutoff, limit]).finally(() => clearTimeout(timer)) : REFUSED;
+    // A request the call was told the browser lost, and so was not sent, stays not sent: by its own id, or for a form's
+    // Document by its frame's intent, which is what the call was told of when the form's request did not exist yet.
+    const intent = p.resourceType === "Document" && p.frameId ? `navigation:${p.frameId}` : null;
+    const told = this.lost.has(id) || (intent !== null && this.lost.delete(intent));
+    const { allow, verdict } = saved && !told ? await Promise.race([this.decide(request), cutoff, limit]).finally(() => clearTimeout(timer)) : REFUSED;
     clearTimeout(timer);
     const recorded = await this.journal(id, request, allow ? "allowed" : "denied", verdict);
     if (allow && !recorded) return this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId);
