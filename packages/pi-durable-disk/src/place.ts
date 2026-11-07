@@ -10,15 +10,15 @@ import { fileURLToPath } from "node:url";
 import { runPath } from "./claim.ts";
 import { reapCommands } from "./commands.ts";
 import { HeldError, PdaError } from "./errors.ts";
-import { takeOwnerLock } from "./run.ts";
+import { assertStoreFree, STORE_FILE } from "./run.ts";
 import { listLocalRunFiles, readLocalRunFile } from "./run-files.ts";
-import { readRunRecord, type RunRecord } from "./status.ts";
+import { readLocalRunStatus, type RunRecord } from "./status.ts";
 
 export type PlaceKill = "process" | "box";
 /** The run's paths in the place: its id, its directory, and the `work` and `store` under it. */
 export type PlacePaths = { id: string; root: string; work: string; store: string };
 /**
- * How the run stood when a runner ended: the instance's own report, or `run.json` as it left it. `status` is the run's
+ * How the run stood when a runner ended: the instance's own report, or the run's record as it left it. `status` is the run's
  * word: `complete` when it delivered, else `failed`. `models`, on any status: the role-to-model ids the run's live parts
  * chose (`lead`, `eyes`, ...), when the app reported a plain object of strings; absent otherwise, never `{}` in its place.
  */
@@ -29,8 +29,6 @@ export type PlaceExit = { exit: number | string | null; signal: string | null; o
 export type PlaceRunner = { epoch: number; pid?: number; exited: Promise<PlaceExit> };
 /** What a runner is handed: its number in the run, its environment, and what goes to its stdin. */
 export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: string };
-/** What the place reads of the run: its record, `run.json`. */
-export type PlaceStatus = { record: RunRecord | null };
 /** What a recovery did, and `ms`, the whole of it. */
 export type PlaceRecovery = {
   runner: PlaceRunner;
@@ -77,7 +75,6 @@ export interface Place {
   signals?(attempt: number): AsyncIterable<PlaceSignal>;
   /** Takes the runner away abruptly, as a crash would. Safe on a runner that is already gone. */
   kill(runner: PlaceRunner, kind: PlaceKill): Promise<void>;
-  status?(): Promise<PlaceStatus>;
   /** Kills `last` if it still runs, then starts the next runner. */
   recover(last: PlaceRunner, kind: PlaceKill, order: RunnerOrder): Promise<PlaceRecovery>;
   checkpoint?(): Promise<{ taken: boolean; heldBy?: string }>;
@@ -117,7 +114,7 @@ const MESSAGE_KEEP = 240;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * The outcome `run.json` gives, in the run's vocabulary rather than the record's: `complete` when the run is `done` and
+ * The outcome the run's record gives, in the run's vocabulary rather than the record's: `complete` when the run is `done` and
  * delivered a record (the detail of the app's last status carries one), `failed` for anything else (done with no result,
  * failed, or a run its instance left `running`, `paused` or `sleeping`). Its generation, and what the app put in that
  * detail.
@@ -161,16 +158,16 @@ export interface LocalPlaceOptions {
   root?: string;
   /** The instance program; `run` and its flags are appended. Default: this Node and the package's CLI. */
   command?: string[];
-  /** Extra flags for `run` (heartbeat periods, a park threshold). */
+  /** Extra flags for `run` (a park threshold). */
   runArgs?: string[];
 }
 
 /**
- * The run on a directory of this machine: each runner is `pi-durable-disk run --dir <root> --id <id> --app <app>`, a
+ * The run on a directory of this machine: each runner is `pi-durable-disk run --dir <root> --id <id> --epoch <its order's gen> --app <app>`, a
  * child in its own process group, with `{ PATH, ...order.env }` and nothing else of this process's environment. No disk,
  * no key and no token. A process kill is SIGKILL to the group, and the next runner resumes the run from the directory; a
  * box kill also takes the boxes the run made (`destroyBoxes`), so `kills` has `box` only when the context gives that.
- * A runner's outcome is the instance's `{"outcome":...}` line on stdout, or, without one, `run.json` as it left it.
+ * A runner's outcome is the instance's `{"outcome":...}` line on stdout, or, without one, the run's record as it left it.
  */
 export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => Place {
   if (!options.app) throw new PlaceError("INVALID_ARGUMENT", "localPlace needs the app module the instance runs");
@@ -184,7 +181,8 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
     const boxesTaken = new Map<PlaceRunner, Promise<void>>();
 
     const start = async (order: RunnerOrder): Promise<PlaceRunner> => {
-      const argv = [...command.slice(1), "run", "--dir", root, "--id", paths.id, "--app", options.app, ...(options.runArgs ?? [])];
+      // The runner's number in the run is its epoch: the place is the run's one supervisor.
+      const argv = [...command.slice(1), "run", "--dir", root, "--id", paths.id, "--epoch", String(order.gen), "--app", options.app, ...(options.runArgs ?? [])];
       const child = spawn(command[0], argv, {
         detached: true,
         env: { PATH: process.env.PATH || SAFE_PATH, ...order.env },
@@ -216,7 +214,7 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
           if (done || !ended) return;
           done = true;
           outcome = outcomeLine(partial) ?? outcome;
-          const fallback = outcome ? undefined : outcomeOf(await readRunRecord(root).catch(() => undefined));
+          const fallback = outcome ? undefined : outcomeOf(await readLocalRunStatus(root).catch(() => undefined));
           const report = outcome ?? fallback;
           settle({ exit: ended.signal ?? ended.code, signal: ended.signal, ...(report ? { outcome: report } : {}), stderr: stderr.trim().slice(0, STDERR_KEEP) });
         };
@@ -280,7 +278,6 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
           }
         : {}),
       kill,
-      status: async () => ({ record: (await readRunRecord(root)) ?? null }),
       recover: async (last, kind, order) => {
         await kill(last, kind);
         return { runner: await start(order) };
@@ -288,23 +285,17 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       release: async () => {
         await Promise.all([...alive.keys()].map((runner) => kill(runner, "process")));
         // pi runs each command in a process group of its own, which the instance's kill does not reach: end what the
-        // run recorded, as its next open would, since there may be none. Only under the run's owner lock, as an open
-        // does: while another process holds the run, the commands are its own, not this place's.
+        // run recorded, as its next open would, since there may be none. Only while no process holds the run's store,
+        // as an open does: while another process holds the run, the commands are its own, not this place's.
         const commands = join(root, "commands");
         if (!existsSync(commands)) return;
-        let lock: ReturnType<typeof takeOwnerLock>;
         try {
-          lock = takeOwnerLock(root);
+          assertStoreFree(join(root, "store", STORE_FILE));
         } catch (error) {
           if (error instanceof HeldError) return;
           throw error;
         }
-        let reaped: Awaited<ReturnType<typeof reapCommands>>;
-        try {
-          reaped = await reapCommands(commands);
-        } finally {
-          lock.release();
-        }
+        const reaped = await reapCommands(commands);
         if (reaped.survivors.length > 0) {
           throw new PlaceError("RELEASE_FAILED", `releasing ${root} left commands alive after SIGKILL: pids ${reaped.survivors.map((m) => m.pid).join(", ")}`);
         }
@@ -393,7 +384,7 @@ function requestIn(text: string): RequestCrossing | undefined {
 
 /**
  * The `outcome` of a `{"outcome":{...}}` line with at least a status; undefined for any other line. Its `models` stays
- * only when it is a plain object of strings (`modelsOf`), as `run.json`'s does.
+ * only when it is a plain object of strings (`modelsOf`), as the record's does.
  */
 function outcomeLine(line: string): PlaceOutcome | undefined {
   if (!line.startsWith("{")) return undefined;

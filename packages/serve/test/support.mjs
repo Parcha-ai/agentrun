@@ -276,7 +276,7 @@ export function storeRun(data, runId) {
 
 /** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
  *  the epoch it ran under as `generation`), and its holder from the run's row (the process's `pid`, its door as
- *  `serve`); `{}` when there is neither yet. What run.json once held, read from where it is now. */
+ *  `serve`); `{}` when there is neither yet. */
 export function runRecordOf(data, runId) {
   let claim;
   try {

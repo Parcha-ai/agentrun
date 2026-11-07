@@ -1,5 +1,6 @@
 // Shared by the run suites and their fixtures: a claim over a local directory, a scripted model, a long-running command.
-import { mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -12,7 +13,7 @@ import { ArchilCodingTools } from "../src/env.ts";
 import { FencedError } from "../src/errors.ts";
 import { processTable } from "../src/process-table.ts";
 import type { DurableRun } from "../src/run.ts";
-import { openClaimDir, type ClaimDir } from "../src/status.ts";
+import { openClaimDir, RUN_STATUS_TABLE, type ClaimDir } from "../src/status.ts";
 
 export const ctx = BACKGROUND_CONTEXT;
 
@@ -186,5 +187,17 @@ export function killQuietly(pid: number): void {
     process.kill(pid, "SIGKILL");
   } catch {
     // already gone
+  }
+}
+
+/** A run's record written into its store as the run's process keeps it (RUN_STATUS_TABLE), for a test that needs a record. */
+export function writeStoreRecord(root: string, record: object): void {
+  mkdirSync(join(root, "store"), { recursive: true });
+  const db = new DatabaseSync(join(root, "store", "run.sqlite"));
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS ${RUN_STATUS_TABLE} (id INTEGER PRIMARY KEY CHECK (id = 1), record TEXT NOT NULL)`);
+    db.prepare(`INSERT INTO ${RUN_STATUS_TABLE} (id, record) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET record = excluded.record`).run(JSON.stringify(record));
+  } finally {
+    db.close();
   }
 }

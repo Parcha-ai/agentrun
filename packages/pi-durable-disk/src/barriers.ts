@@ -129,7 +129,7 @@ export interface StoreRow {
 /** Every store a run writes, with how it syncs. */
 export const STORES = {
   "run-journal": {
-    opens: ["pi-durable-disk/src/store.ts", "pi-durable-disk/src/run.ts"],
+    opens: ["pi-durable-disk/src/store.ts", "pi-durable-disk/src/run.ts", "pi-durable-disk/src/status.ts"],
     synchronous: "journal",
     effects: "barriers",
     what: "a run's store/run.sqlite: the pi Harness, the kernel sessions, the workflow journal and the server's marks",
