@@ -1,6 +1,7 @@
 // A claude-agent session's host port (AdapterSession.port): the session's one route for the host's own requests beside the
 // CLI's, on a listener the session holds. It is up from the open, never handed to the CLI, closed with the session or when
-// the host lets the session go (its signal), and a port asked for after that is refused, never started again.
+// the host lets the session go (its signal), and a port asked for after that is refused, never started again. An open
+// that fails leaves none.
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { connect } from 'node:net';
@@ -19,6 +20,9 @@ const listening = (url) => new Promise((resolve) => {
   const socket = connect({ host: hostname, port: Number(port) }, () => { socket.destroy(); resolve(true); });
   socket.on('error', () => resolve(false));
 });
+
+/** The TCP listeners this process holds (a host port is one). */
+const servers = () => process.getActiveResourcesInfo().filter((resource) => resource === 'TCPServerWrap').length;
 
 for (const how of ['close', 'signal']) {
   test(`a claude-agent session's host port is up from its open, for side keys only, and gone once ${how === 'close' ? 'the session closes' : 'the host lets it go'}: a port asked for after is refused, never started again`, async () => {
@@ -39,3 +43,15 @@ for (const how of ['close', 'signal']) {
     if (how === 'signal') await session.close();
   });
 }
+
+test("a claude-agent open that fails once its host port is up (the session's records cannot be read) leaves no listener behind", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentrun-claude-host-'));
+  const adapter = claudeAgentAdapter({ model: 'claude-test', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), standIn: { command: process.execPath }, sdk: fakeSdk() });
+  const spec = { key: 'run:r', label: 'r', system: [], tools: [], context: 'fresh' };
+  const writer = await memorySessionStore().open(spec.key);
+  const refusing = { key: writer.key, read: async () => { throw new Error('the store refused the read'); }, append: (records) => writer.append(records) };
+  const before = servers();
+  await assert.rejects(adapter.open(spec, { writer: refusing, models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} }), /the store refused the read/);
+  for (let i = 0; i < 50 && servers() > before; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(servers(), before, 'no listener outlives an open that failed');
+});
