@@ -6,7 +6,7 @@
   },
   "pools": {
     "gh": { "shards": 2, "suites": ["@parcha/pi-transport"] },
-    "lean": { "shards": 3, "suites": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev", "@parcha/agentrun-pi", "test:examples"] },
+    "lean": { "shards": 2, "suites": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev", "@parcha/agentrun-pi", "test:examples"] },
     "any": { "shards": 6 }
   },
   "pi": { "shards": 7 }

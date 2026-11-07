@@ -83,7 +83,7 @@ jobs:
         # 22.19 = the supported floor, 22.23 = release toolchain, 24.21 = the active LTS line. The merge queue runs the release
         # toolchain only: every pull request and every push to main runs all three.
         node: ${{ fromJSON(github.event_name == 'merge_group' && '["22.23.2"]' || '["22.19.0","22.23.2","24.21.0"]') }}
-        shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, lean-3, any-1, any-2, any-3, any-4, any-5, any-6]
+        shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
         # The downloaded source's consumer runs on the release toolchain only, as it did in `checks`.
         exclude:
           - node: '22.19.0'
@@ -692,6 +692,6 @@ jobs:
           CAPTURES: ${{ runner.temp }}/lean-sweep
         run: >-
           node spec/lean/sweep/collect.mjs --captures "$CAPTURES/lean-sweep-lean-1" --captures "$CAPTURES/lean-sweep-lean-2"
-          --captures "$CAPTURES/lean-sweep-lean-3" spec/lean/.lake/validator-corpus.json
+          spec/lean/.lake/validator-corpus.json
       - name: The Lean validator accepts everything the TypeScript validator accepts
         run: lake exe validator-sweep .lake/validator-corpus.json
