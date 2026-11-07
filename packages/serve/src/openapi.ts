@@ -4,6 +4,7 @@
 // own routes are added as operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
+import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
@@ -525,10 +526,12 @@ const RUN_TRIGGER: Json = {
   ...TRIGGER_MARK,
 };
 const DATE_TIME = { type: "string", format: "date-time" };
-const TRIGGER_SOURCE = {
-  oneOf: TRIGGER_ADAPTERS.flatMap((a) => a.schemas),
-  description: `When it fires: ${TRIGGER_ADAPTERS.map((a) => a.fires).join(", or ")}. Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
-};
+/** A trigger's source, as `adapters` give it. */
+const sourceSchemaOf = (adapters: readonly TriggerAdapter[]) => ({
+  oneOf: adapters.flatMap((a) => a.schemas),
+  description: `When it fires: ${adapters.map((a) => a.fires).join(", or ")}. Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+});
+const TRIGGER_SOURCE = sourceSchemaOf(TRIGGER_ADAPTERS);
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
@@ -548,10 +551,12 @@ const TRIGGER_TARGET = {
   ],
   description: "What each firing does: start a run of an agent, capped, or send a message to one run.",
 };
+/** A firing's `by`, as `adapters` give it. */
+const firedByOf = (adapters: readonly TriggerAdapter[]) => ({ enum: [...adapters.map((a) => a.id), "manual"], description: ["`manual`: a run now, its key from the trigger and its Idempotency-Key.", ...adapters.flatMap((a) => (a.firedBy ? [a.firedBy] : []))].join(" ") });
 const TRIGGER_FIRING = closedWith(
   {
     key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
-    by: { enum: [...SOURCE_KINDS, "manual"], description: ["`manual`: a run now, its key from the trigger and its Idempotency-Key.", ...TRIGGER_ADAPTERS.flatMap((a) => (a.firedBy ? [a.firedBy] : []))].join(" ") },
+    by: firedByOf(TRIGGER_ADAPTERS),
     nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
     status: { enum: [...FIRING_STATUSES], description: `\`due\`: recorded, its run not started yet (a full server keeps it due, with \`retry_at\`). \`started\`: its run is \`run_id\`. \`sent\`: a message_run firing's message reached \`run_id\`. \`skipped\`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; \`reason\` says which. \`failed\`: the run was refused, with \`error\`; a trigger.failed webhook message says so. \`missed\`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), \`count\` of them from \`nominal_at\` on.` },
     at: { ...DATE_TIME, description: "When it was recorded." },
@@ -1682,7 +1687,28 @@ export const REQUEST_EXAMPLES: Record<string, Record<string, { summary: string; 
   },
 };
 
-export function openapiDocument(capabilityOf: (operationId: string) => string | undefined): Json {
+/** `doc` with every source schema and firing `by` the registry gives made `adapters'`, and a hook path for each pushed
+ *  source whose settings are the server's: a server given other sources (a test's) documents its own. */
+function withAdapters(doc: Json, adapters: readonly TriggerAdapter[]): void {
+  const [source, by] = [JSON.stringify(TRIGGER_SOURCE), JSON.stringify(firedByOf(TRIGGER_ADAPTERS))];
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk);
+    if (!value || typeof value !== "object") return value;
+    const text = JSON.stringify(value);
+    if (text === source) return sourceSchemaOf(adapters);
+    if (text === by) return firedByOf(adapters);
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
+  };
+  doc.paths = walk(doc.paths);
+  const paths = doc.paths as Record<string, Record<string, Json>>;
+  const hook = paths["/hooks/{trigger_id}"]!.post!;
+  for (const adapter of adapters) {
+    if (!adapter.push || adapter.settings?.scope !== "server") continue;
+    paths[`/hooks/${adapter.id}`] = { post: { ...hook, operationId: `receiveHook_${adapter.id}`, summary: `Fire a ${adapter.label}: a request it checks, no token`, parameters: [] } };
+  }
+}
+
+export function openapiDocument(capabilityOf: (operationId: string) => string | undefined, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): Json {
   const doc = structuredClone(contract()) as Json & { info: Json; paths: Record<string, Record<string, Json>> };
   const unsupported: string[] = [];
   for (const [path, item] of Object.entries(doc.paths)) {
@@ -1898,6 +1924,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // This document is read from the server it describes, wherever it is published: a client generated from it calls
   // that server, not the first of the contract's.
   doc.servers = [{ url: "/v2", description: "This server." }];
+  if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
   return doc;
 }
 

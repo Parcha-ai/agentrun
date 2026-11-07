@@ -242,6 +242,9 @@ export class Triggers {
     this.file = join(data, TRIGGERS_FILE);
     this.clock = deps.clock ?? REAL_CLOCK;
     this.adapters = deps.adapters ?? TRIGGER_ADAPTERS;
+    // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
+    const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
+    if (shaped) throw new Error(`a trigger source's id never starts as a trigger's does: ${shaped.id}`);
     let text: string | undefined;
     try {
       text = readFileSync(this.file, "utf8");
@@ -305,6 +308,7 @@ export class Triggers {
     if (issues.length || !source || !target) throw invalid(issues);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
+    if (enabled) this.scopeFree(source, id);
     const trigger: Trigger = { id, name: typeof body.name === "string" ? body.name.trim() : id, enabled, source, target, catchup_window_s: settings.catchup_window_s ?? CATCHUP_WINDOW_S, failures_in_a_row: 0, disabled: null, created_at: iso(now), updated_at: iso(now), next_at: enabled ? this.nextIso(source, now) : null, firings: [] };
     // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
     const minted = this.mint(source, id);
@@ -325,6 +329,14 @@ export class Triggers {
   hookable(id: string, kind: string): boolean {
     const trigger = this.unreadable ? undefined : this.triggers.find((t) => t.id === id);
     return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source).delivery === "push" && trigger.enabled;
+  }
+
+  /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
+   *  event there fires. */
+  scoped(kind: string, scope: string): string[] {
+    const adapter = adapterIn(this.adapters, kind);
+    if (this.unreadable || !adapter?.scopeOf) return [];
+    return this.triggers.filter((t) => t.enabled && t.source.kind === kind && adapter.scopeOf!(t.source) === scope).map((t) => t.id);
   }
 
   /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
@@ -368,6 +380,7 @@ export class Triggers {
     if (enabled && next === null && adapter.delivery === "clock") throw invalid([{ field: "enabled", reason: "invalid", message: `This ${adapter.label} has no time left to fire at: give it a new source.` }]);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again = enabled && !trigger.enabled ? { failures_in_a_row: 0, disabled: null } : {};
+    if (enabled) this.scopeFree(source ?? trigger.source, trigger.id);
     this.commit(() => Object.assign(trigger, { ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}), ...settings, ...again, enabled, updated_at: iso(now), next_at: next }));
     this.arm();
     return this.view(trigger);
@@ -747,6 +760,16 @@ export class Triggers {
     const store = this.deps.settings(adapter.id);
     if (!store) throw new Error(`no sealed settings for ${adapter.id}`);
     return Object.fromEntries(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(([field]) => [field, store.mint(id, field)]));
+  }
+
+  /** A scope belongs to one trigger: `source`'s (its adapter's scopeOf), for a trigger `id` that is to be on, is refused
+   *  409 scope_taken while another trigger of its kind that is on listens there. */
+  private scopeFree(source: Source, id: string): void {
+    const adapter = this.adapter(source);
+    if (!adapter.scopeOf) return;
+    const scope = adapter.scopeOf(source);
+    const other = this.triggers.find((t) => t.id !== id && t.enabled && t.source.kind === source.kind && adapter.scopeOf!(t.source) === scope);
+    if (other) throw new ApiError("scope_taken", `The ${adapter.label} scope ${scope} belongs to the trigger ${other.id}: a scope belongs to one trigger. Turn that one off, or give this one another scope.`, { details: { source: adapter.id, scope, trigger_id: other.id } });
   }
 
   /** Why `source` no longer reads on this server, if it does not. */
