@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Cron } from "croner";
 import { ApiError } from "../dist/errors.js";
-import { Triggers } from "../dist/triggers.js";
+import { firingKey, Triggers } from "../dist/triggers.js";
 import { fakeClock } from "./trigger-support.mjs";
 
 /** A promise and its settle functions, for a dependency the test holds open. */
@@ -434,4 +434,30 @@ test("a webhook event's firing is driven in its trigger's turn: a tick while its
   await until(() => calls.length === 2, "tried again at its retry time");
   calls[1].resolve();
   await until(() => triggers.firings(hook.id).firings[0].status === "sent", "sent once the run is idle");
+});
+
+test("triggers.json is read in this build's shape alone: a trigger missing a field an earlier build left out makes the file unreadable, and run_now_kept is not read", async (t) => {
+  // A trigger with no failures_in_a_row, catchup_window_s or disabled: the file does not read, and nothing fires.
+  for (const field of ["failures_in_a_row", "catchup_window_s", "disabled"]) {
+    const first = await engine(t, {});
+    await first.triggers.create(body({ every_s: 600 }));
+    first.triggers.close();
+    const file = join(first.data, "triggers.json");
+    const kept = JSON.parse(await readFile(file, "utf8"));
+    delete kept.triggers[0][field];
+    await writeFile(file, `${JSON.stringify(kept)}\n`);
+    const next = await engine(t, {}, { data: first.data });
+    assert.throws(() => next.triggers.list(), (error) => error.code === "store_unreadable", `without ${field}`);
+  }
+  // A firing an earlier build kept under run_now_kept answers no run now: the same key fires anew.
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers[0].run_now_kept = [{ key: firingKey("manual", made.id, "press-1"), by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "started", at: "2026-06-01T00:00:00.000Z", run_id: "run-old" }];
+  await writeFile(file, `${JSON.stringify(kept)}\n`);
+  const next = await engine(t, {}, { data: first.data });
+  const fired = await next.triggers.fire(made.id, "press-1");
+  assert.equal(fired.created, true, `a new firing, not the old one: ${JSON.stringify(fired)}`);
 });
