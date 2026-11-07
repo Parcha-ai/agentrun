@@ -115,3 +115,87 @@ test("a run waiting for a place that is cancelled ends cancelled, and the place 
   const pid = runRecordOf(data, runId).holder?.pid;
   assert.deepEqual([(await view(api, runId)).status, Number.isInteger(pid) && pid !== process.pid && processAlive(pid)], ["cancelled", false]);
 });
+
+/** Polls `runId` up to `ms` for a status in `want`: the last one read. */
+async function statusWithin(api, runId, want, ms) {
+  let status;
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(200)) {
+    status = (await view(api, runId)).status;
+    if (want.includes(status)) break;
+  }
+  return status;
+}
+
+test("a raise whose launch fails after its place was taken (a pin that throws) leaves the run waiting, never queued for good with no mark and no retry: the next try opens it", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  let failed = 0;
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1, beforeRaiseLaunch: () => { if (failed++ === 0) throw new Error("a pin that fails, once"); } });
+  const gate = join(data, "free");
+  const { runId, busyId } = await waitingForPlace(api, data, "pinned", gate);
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
+  const status = await statusWithin(api, runId, ENDED, 30_000);
+  assert.deepEqual([failed > 0, status], [true, "completed"], "the launch that failed left the run waiting, and the next try opened it under the raised cap");
+});
+
+test("a raised run waiting for a place gets the place that frees, never a newer start: new starts keep being refused until it has opened", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
+  const gate = join(data, "free");
+  const { runId } = await waitingForPlace(api, data, "starved", gate);
+  assert.equal((await api("POST", "/agents", agent("newer"))).status, 201);
+  // A stream of new starts, refused while the place is held; then the place frees.
+  let accepted;
+  let raisedThen;
+  const stream = (async () => {
+    for (const end = Date.now() + 90_000; Date.now() < end; await sleep(50)) {
+      const tried = await api("POST", "/agents/newer/runs", { input: { content: "hi" } });
+      if (tried.status === 202) return void ((accepted = tried.body.run_id), (raisedThen = (await view(api, runId)).status));
+      assert.equal(tried.status, 429, JSON.stringify(tried.body));
+    }
+  })();
+  await sleep(500);
+  await writeFile(gate, "");
+  await stream;
+  assert.ok(accepted, "a new start was accepted in the end");
+  assert.notEqual(raisedThen, "queued", "the freed place went to the raised run that waited for it, not to a newer start");
+});
+
+test("a raise on a server whose memory for runs another run holds starts no process past the memory limit: the run waits for a place, and starts once the memory frees", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const { RUN_MIB } = await import("../dist/harness.js");
+  const { SERVER_MIB } = await import("../dist/host.js");
+  // Room for one pi run and half another: the memory, not the count, is the limit.
+  const MiB = 2 ** 20;
+  const { api, data } = await serve(t, { faux: PRICED, hostMemory: (SERVER_MIB + RUN_MIB.pi + Math.floor(RUN_MIB.pi / 2)) * MiB });
+  assert.ok((await api("GET", "/capabilities")).body.limits.max_concurrent_runs > 1, "the count would let two run");
+  const gate = join(data, "free");
+  const { runId, busyId } = await waitingForPlace(api, data, "memory", gate);
+  let opened = null;
+  for (const end = Date.now() + 3_000; Date.now() < end && !opened; await sleep(100)) {
+    const status = (await view(api, runId)).status;
+    const pid = runRecordOf(data, runId).holder?.pid;
+    if (["working", ...ENDED].includes(status) || (Number.isInteger(pid) && pid !== process.pid && processAlive(pid))) opened = { status };
+  }
+  assert.deepEqual(opened, null, "no process past the memory for runs");
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
+  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  assert.equal((await view(api, runId)).status, "completed", "opened once the memory freed");
+});
+
+test("a server that closes while a raised run waits for a place tries it no more: no launch after the close, whatever frees (a pin)", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const data = join(await scratch(t), "agents");
+  const gate = join(data, "free");
+  let launches = 0;
+  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s", maxRuns: 1, beforeRaiseLaunch: () => void (launches += 1) });
+  const api = client(server.baseUrl, server.token);
+  const { runId } = await waitingForPlace(api, data, "closed", gate);
+  await server.close();
+  await writeFile(gate, "");
+  // Past several of the retry's ticks (every second): none acts.
+  await sleep(3_000);
+  const pid = runRecordOf(data, runId).holder?.pid;
+  assert.deepEqual([launches, Number.isInteger(pid) && pid !== process.pid && processAlive(pid)], [0, false]);
+});
