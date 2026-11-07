@@ -117,6 +117,8 @@ curl -s "$AGENTRUN_BASE_URL/agents/calc/runs" -H "$H" -H 'content-type: applicat
 The whole API is in `GET $AGENTRUN_BASE_URL/openapi.json`, and in brief at `/llms.txt` on the server's root
 (`curl -s "${AGENTRUN_BASE_URL%/v2}/llms.txt"`). The run's page for a person is `${AGENTRUN_BASE_URL%/v2}/#/runs/$run`.
 
+For everything the MCP tools do not cover (tool keys, triggers, webhooks, files, revisions, learning, waiting on a run from a script), use the `agentrun` CLI and its skill, agentrun-cli: `npx @parcha/agentrun skill install`.
+
 ## Troubleshooting
 
 - `401`: the token is not this server's. Read it again from the data directory the server was started with.

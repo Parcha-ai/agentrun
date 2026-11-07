@@ -1,5 +1,6 @@
 // The wrap-up end to end. pi: near its cap the run's model is told once, inside the request it is about to send ("About
-// $X left of this run's budget: finish now with your answer."), and one row of the server's says so; pi's transcript never
+// $X left of this run's budget: finish now with your answer.", or before any request is priced "This run's budget is about
+// $X, enough for little work: answer as soon as you can."), and one row of the server's says so; pi's transcript never
 // holds it and no input is queued, so the model's answer ends the turn. A next turn under the same cap is told nothing
 // again. Another harness (the faux harness standing in for claude-agent): the same words go in a main-model request (the
 // model proxy adds them to its body), once, worked out with what is left as the request takes them, and the row is
@@ -19,11 +20,13 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 /** The wrap-up's words with `left` of the cap (cap.ts wrapUpWords). */
 const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
+/** The same with no priced request yet: its typical cost the next request's expected cost (step 0). */
+const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
 /** The faux harness's notes taken into its requests (FAUX_RECORDS.note), once the run's process has let it go. */
 const notesOf = (data, runId) => entries(data, runId).filter((record) => record.kind === "faux.note").map((record) => record.data.text);
 /** The run's messages in order: the person's and the server's own rows. */
 const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
-const WORDS = /^AgentRun: About \$\d+(?:\.\d\d)? left of this run's budget: finish now with your answer\.$/;
+const WORDS = /^AgentRun: (?:About \$\d+(?:\.\d\d)? left of this run's budget: finish now with your answer|This run's budget is about \$\d+(?:\.\d\d)?, enough for little work: answer as soon as you can)\.$/;
 const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "phase" && WORDS.test(row.summary ?? ""));
 /** The run's root entries, read once its process has let it go. */
 const entries = (data, runId) => {
@@ -45,11 +48,14 @@ test("pi: near its cap the model is told once, in the request it is sent, to fin
   assert.ok(run.cost.usd <= 0.5, `under its cap: $${run.cost.usd}`);
   const rows = await rowsOf(api, runId);
   assert.equal(rows.length, 1, `one row: ${JSON.stringify(rows.map((r) => r.summary))}`);
+  // Its first request is held at nearly the whole $0.50 (16,384 tokens at $100 a million, clamped to the cap): due before
+  // anything is priced, so the words say the budget, not a finish.
+  assert.equal(rows[0].text, WRAP_UP_FIRST("$0.50"), "told at step 0, in its words");
   const seen = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((call) => call.note);
   assert.equal(seen.length, 1, "the model saw the note in one request");
   assert.equal(`AgentRun: ${seen[0].note.replace(/^<system-reminder>|<\/system-reminder>$/g, "")}`, rows[0].summary, "the words it saw are the row's");
   await letGo(data, runId);
-  assert.ok(!entries(data, runId).some((entry) => JSON.stringify(entry.model ?? []).includes("left of this run's budget")), "no entry of pi's transcript holds it");
+  assert.ok(!entries(data, runId).some((entry) => JSON.stringify(entry.model ?? []).includes("run's budget")), "no entry of pi's transcript holds it");
 });
 
 test("pi: the final-answer request that carries the note is the run's last: no further request is sent, live or after a restart that comes after the answer", { timeout: 240_000 }, async (t) => {
