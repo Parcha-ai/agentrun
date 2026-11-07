@@ -5,6 +5,7 @@ import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import { BrowserFailureError, PROFILE_NAME, refusedError } from "../core/custody.js";
+import { DownloadNotSettled } from "../core/downloads.js";
 import { browserFailure } from "../core/failures.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile, SavedProfile } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
@@ -515,30 +516,46 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   };
 }
 
-/** Finished files only: Chrome writes `.crdownload` while it works. */
+/** Chrome writes a download to a `.crdownload` file and renames it to its name once done; at the end (sandboxed, under load)
+ *  it first creates that name empty for a moment, the bytes still in the `.crdownload`. Both are listed as `downloading`
+ *  and never read: a `.crdownload` (under its name without the extension), and an empty file while any `.crdownload` is
+ *  there. A read checks after it ends that the file it opened is still the file at that name, whole. */
 function localDownloads(profileRoot: string): NonNullable<BrowserProvider["downloads"]> {
   const inside = (ref: LeaseRef, name: string) => { if (name !== path.basename(name) || !name) throw new Error("not a download name"); return path.join(downloadsDir(profileRoot, ref.tag), name); };
   return {
     async list(ref): Promise<RemoteFile[]> {
       const dir = downloadsDir(profileRoot, ref.tag);
       const rows: RemoteFile[] = [];
-      for (const name of await readdir(dir).catch(() => [] as string[])) {
-        if (name.endsWith(".crdownload") || name.startsWith(".")) continue;
+      const names = (await readdir(dir).catch(() => [] as string[])).filter((name) => !name.startsWith("."));
+      const writing = names.some((name) => name.endsWith(".crdownload"));
+      const finals = new Set(names.filter((name) => !name.endsWith(".crdownload")));
+      for (const name of names) {
+        const partial = name.endsWith(".crdownload");
+        const shown = partial ? name.slice(0, -".crdownload".length) : name;
+        // A `.crdownload` named for a final name that is there too is that same download, told once.
+        if (partial && finals.has(shown)) continue;
         const info = await stat(path.join(dir, name)).catch(() => null);
-        if (info?.isFile()) rows.push({ name, sizeBytes: info.size, modifiedAt: info.mtime.toISOString() });
+        if (!info?.isFile()) continue;
+        const row: RemoteFile = { name: shown, sizeBytes: info.size, modifiedAt: info.mtime.toISOString() };
+        rows.push(partial || (writing && info.size === 0) ? { ...row, downloading: true } : row);
       }
       return rows.sort((a, b) => a.name.localeCompare(b.name));
     },
     async read(ref, name, maxBytes) {
-      const file = await open(inside(ref, name), "r");
+      const where = inside(ref, name);
+      const file = await open(where, "r");
+      const opened = await file.stat().catch(async (error) => { await file.close().catch(() => undefined); throw error; });
       return (async function* () {
         try {
           let total = 0;
-          for await (const chunk of file.createReadStream()) {
+          for await (const chunk of file.createReadStream({ autoClose: false })) {
             total += (chunk as Buffer).byteLength;
             if (total > maxBytes) throw new Error(`larger than the ${maxBytes}-byte limit`);
             yield chunk as Uint8Array;
           }
+          // The whole file it opened, still at its name: Chrome renames a finished download over the name it created empty.
+          const now = await stat(where).catch(() => null);
+          if (total !== opened.size || !now || now.dev !== opened.dev || now.ino !== opened.ino || now.size !== opened.size || now.mtimeMs !== opened.mtimeMs) throw new DownloadNotSettled(name);
         } finally { await file.close().catch(() => undefined); }
       })();
     },
