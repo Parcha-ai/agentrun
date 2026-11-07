@@ -645,7 +645,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       refuse(res, status, message, req);
       if (!route.free) {
         try {
-          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket);
+          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket, { end: "nothing", label: "never_left" });
         } catch (error) {
           say(`model proxy (${policy.id}): afterRequest threw; the request was not sent and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }

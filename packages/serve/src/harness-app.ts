@@ -153,6 +153,21 @@ export function ownCosts(records: readonly { kind: string; data: unknown }[]): n
   return costs;
 }
 
+/** The wrap-up's note told under `capUsd` in these records: the note (its row's data) of a runner.turn whose request
+ *  carried it and ended answered, by its booking's rule (`answered`). A request that ended unanswered (an error status, a
+ *  loss, our stop, one that never left) or that a crash cut told nothing. */
+export function toldIn(records: readonly { kind: string; data: unknown }[], capUsd: number | undefined): { key: string; capUsd: number; leftUsd: number; words: string } | undefined {
+  if (capUsd === undefined) return undefined;
+  for (const record of records) {
+    if (record.kind !== RUNNER_RECORDS.turn) continue;
+    const data = (record.data ?? {}) as { note?: { key?: unknown; capUsd?: unknown; leftUsd?: unknown; words?: unknown }; rule?: unknown };
+    const note = data.note;
+    if (!note || typeof note.capUsd !== "number" || Math.abs(note.capUsd - capUsd) > CAP_TOLERANCE || typeof note.key !== "string" || typeof note.leftUsd !== "number" || typeof note.words !== "string") continue;
+    if (data.rule === "answered" || (typeof data.rule === "string" && data.rule.startsWith("answered:"))) return { key: note.key, capUsd: note.capUsd, leftUsd: note.leftUsd, words: note.words };
+  }
+  return undefined;
+}
+
 export interface AdapterRun {
   readonly door: DoorHook;
   onOpen(run: DurableRun): Promise<void>;
@@ -203,8 +218,8 @@ export function adapterRun(
   // The session's previous request on each model, as the cap prices the next one by it (cap.ts Previous): each admitted
   // request's input bound and bound, from the guard (one slot: admissions run one at a time) to its start, by turn, until
   // it answers with its usage. In this process only: a new process prices its first request with nothing cached.
-  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number; side?: true } | undefined;
-  const sentOf = new Map<number, { model: string; inputTokensMax?: number; side?: true }>();
+  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number; side?: true; note?: true } | undefined;
+  const sentOf = new Map<number, { model: string; inputTokensMax?: number; side?: true; note?: true }>();
   const previous = new Map<string, Previous>();
   // The run's spend as a paid tool's check reads it (useSpend, set at the open): a paid call refused under it pauses the
   // run at this run's next request (guard).
@@ -221,13 +236,22 @@ export function adapterRun(
   // once admitted, held while the turn it is told in has its person's (or the server's) message still to be written
   // (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
   type WrapRow = { key: string; capUsd: number; leftUsd: number; words: string };
-  const wrap: { costs: number[]; sent: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, entryDue: false };
+  // `pending`: the note a request was admitted carrying, until that request (`turn`, once it starts) ends: told when it
+  // ended answered, else re-armed for the next request. Re-telling is cheap (one note more, held at its bytes); a tell
+  // lost is not, as the run then reaches its cap unwarned.
+  const wrap: { costs: number[]; sent: boolean; taken?: WrapRow; pending?: { data: WrapRow; turn?: number }; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, entryDue: false };
+  /** The note's row (CAP_WRAPUP, display only: whether the note was told is the answered request's runner.turn), now, or
+   *  after the message of the turn it is told in (`entryDue`). */
+  const writeRow = (data: WrapRow) => {
+    if (wrap.entryDue) wrap.row = data;
+    else later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data })))).catch(() => undefined);
+  };
   /** The note for the request the model proxy is placing it in (ModelPort.note), when the wrap-up is due: what is left
    *  of the cap as admission counts it now (`spentUsd`: what the run spent; what its requests and paid calls in flight
    *  are held at) under three times the session's own model's typical request, or an earlier admission found it due. */
   const takeNote = (spentUsd: number | null, model?: string, request?: NoteRequest): string | undefined => {
     wrap.taken = undefined;
-    if (budgetUsd === undefined || wrap.sent || spentUsd === null) return undefined;
+    if (budgetUsd === undefined || wrap.sent || wrap.pending || spentUsd === null) return undefined;
     const held = inFlight.total() + paidHolds();
     // The request taking the note, priced as its admission will price it: its own bound and asks as its client sent them,
     // after the previous request on its model when there is one (the cache), else uncached. Nothing kept in memory, so a
@@ -246,6 +270,9 @@ export function adapterRun(
   };
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
+    // A note an earlier admission carried whose request never started (refused by a stop after its check): re-armed.
+    // Admissions run one at a time, and each request starts in its own, so a pending note with no turn yet is that one.
+    if (wrap.pending && wrap.pending.turn === undefined) wrap.pending = undefined;
     // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
     // learned workflow's: cap.ts sideSpend); theirs in flight are held with the paid calls' (paidHolds, capBefore).
     // A paid call the cap just refused for room (cap.ts takePaidRefusal): this request is refused in its words, so the
@@ -286,20 +313,19 @@ export function adapterRun(
     const inputTokensMax = noted && typeof plainInput === "number" ? plainInput : request.inputTokensMax;
     admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
     if (!answer) return undefined;
-    // Admitted carrying the note: it is sent, once per cap, and its row says so. Only the admission of the request that
-    // carries it settles the note taken: a side call admitted between its take and that admission (the proxy reads the
-    // credential between the two) leaves it for that request.
+    // Admitted carrying the note: it is pending until this request ends, and told only if it ends answered (its runner.turn
+    // keeps the note, `note` below). Only the admission of the request that carries it settles the note taken: a side
+    // call admitted between its take and that admission (the proxy reads the credential between the two) leaves it for
+    // that request.
     const data = noted && !withoutNote && !side ? wrap.taken : undefined;
     if (noted) wrap.taken = undefined;
-    if (data && !wrap.sent) {
-      wrap.sent = true;
-      if (wrap.entryDue) wrap.row = data;
-      else later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data })))).catch(() => undefined);
-    }
+    const carried = data && !wrap.sent && !wrap.pending ? data : undefined;
+    if (carried) wrap.pending = { data: carried };
+    if (admittedNext && carried) admittedNext.note = true;
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy): what the cap
     // holds it at, which the runner records, and counts it at if its cost never comes in; stopped part way by its client,
     // what streamed (cap.ts Admitted), never more than its hold (the runner).
-    return { holdUsd: answer.holdUsd, ...(answer.outputTokensMax === undefined ? {} : { outputTokensMax: answer.outputTokensMax }), stoppedUsd: answer.stoppedUsd, ...(withoutNote ? { withoutNote: true as const } : {}) };
+    return { holdUsd: answer.holdUsd, ...(answer.outputTokensMax === undefined ? {} : { outputTokensMax: answer.outputTokensMax }), stoppedUsd: answer.stoppedUsd, ...(withoutNote ? { withoutNote: true as const } : {}), ...(carried ? { note: carried } : {}) };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */
@@ -495,6 +521,7 @@ export function adapterRun(
       const admitted = admittedNext;
       admittedNext = undefined;
       if (admitted) sentOf.set(event.turn, admitted);
+      if (admitted?.note && wrap.pending && wrap.pending.turn === undefined) wrap.pending.turn = event.turn;
       const bound: Record<string, number> = admitted && admitted.boundUsd > 0 ? { [BOUND_FIELD]: admitted.boundUsd } : {};
       // A side call streams nothing of the session's: what streams meanwhile stays the current request's. Another request
       // of the session's closes what the one before it streamed, now, as that request's own segment (flush writes it
@@ -522,6 +549,18 @@ export function adapterRun(
       // or it was cut: nothing cached to count on).
       const sent = sentOf.get(event.turn);
       sentOf.delete(event.turn);
+      // The request that carried the note ended: told only when it ended answered. An error status, a loss, a cut, our stop
+      // or a request that never left leave the note for the next request. Every path that can carry the note says how its
+      // request ended (the model proxy, the runner's own withdrawals and cut bookings, the faux harness); only side calls
+      // and host requests, which never carry it, may say nothing.
+      if (wrap.pending && wrap.pending.turn === event.turn) {
+        const { data } = wrap.pending;
+        wrap.pending = undefined;
+        if (event.ended?.end === "answered") {
+          wrap.sent = true;
+          writeRow(data);
+        }
+      }
       // A priced request of the session's own model: the wrap-up's typical cost counts it (step 0 ends with the first).
       const priced = pricedUsd(event.usage.usd);
       if (sent && !sent.side && priced !== undefined) wrap.costs.push(priced);
@@ -862,6 +901,14 @@ export function adapterRun(
       const records = await writer.read();
       // The session's own model's priced requests in earlier processes, in order: the wrap-up's typical cost reads them.
       wrap.costs.push(...ownCosts(records));
+      // Told in an earlier process: a request that carried the note under this cap and ended answered (its runner.turn,
+      // written as its cost was, keeps the note). Its row is display only: one lost (a commit that failed) is written
+      // again now. A request that ended unanswered, or that a crash cut (booked cut, with no note), told nothing.
+      const told = toldIn(records, budgetUsd);
+      if (told && !wrap.sent) {
+        wrap.sent = true;
+        later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: CAP_WRAPUP, data: told })))).catch(() => undefined);
+      }
       // Before the cut requests are booked, which may write their entries.
       for (const [request, model] of inSession(records).asked) models.set(request, model);
       const booking = await modelPortFor(writer, {

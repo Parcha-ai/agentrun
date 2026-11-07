@@ -190,7 +190,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("cutBooked" in action) {
               stats.requests += 1;
               await append(FAUX_RECORDS.request, { index: cursor++ });
-              try { return await hang(signal); } finally { await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd }); }
+              try { return await hang(signal); } finally { await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd }, ticket || undefined, { end: "lost", label: "cut" }); }
             }
             stats.requests += 1;
             const index = cursor++;
@@ -211,7 +211,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // Held in flight, admitted and not answered, until the file it waits for exists (or the turn is stopped).
             if ("until" in action && typeof action.until === "string") await untilExists(action.until, signal);
             const tokens = "tokens" in action && action.tokens ? action.tokens : { input: 10, output: 5 };
-            const book = () => io.models.afterRequest({ ...tokens, usd: action.usd === undefined ? 0.001 : action.usd });
+            const usd = action.usd === undefined ? 0.001 : action.usd;
+            const book = () => io.models.afterRequest({ ...tokens, usd }, ticket || undefined, { end: "answered", usd });
             const bookAfter = "calls" in action && action.bookAfter === true;
             if ("bookWhen" in action && typeof action.bookWhen === "string") void untilExists(action.bookWhen, signal).then(book).catch(() => undefined);
             else if (!bookAfter) await book();
