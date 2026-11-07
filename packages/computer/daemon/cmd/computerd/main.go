@@ -1,12 +1,14 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--user <uid:gid>]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
-//	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline.
-//	                    With --user, init starts as root, gives HOME and the socket's directory to uid:gid and becomes
-//	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
-//	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
-//	                    capability in any set and no_new_privs set, or refuses to start
+//	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
+//	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
+//	                    set, the screen and input methods drive that X display. With --user, init starts as root, gives
+//	                    HOME and the socket's directory to uid:gid and becomes it: for a vendor that runs every computer
+//	                    as root (Modal), or whose images' privilege tools cannot be relied on (Daytona). As any user, root
+//	                    included, init first leaves every thread no capability in any set and no_new_privs set, or
+//	                    refuses to start
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--connect <host:port>]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, and the addresses a TCP
@@ -28,6 +30,7 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
 )
 
@@ -76,25 +79,28 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--user <uid:gid>] | stdio | probe [--connect <host:port>]... | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] | stdio | probe [--connect <host:port>]... | version")
 	os.Exit(2)
 }
 
 type account struct{ uid, gid int }
 
 type initOptions struct {
-	deadline time.Time
+	deadline *lifetime.Deadline
 	user     *account
 }
 
-const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then"
+const deadlineWords = "--deadline <time> is required, and --max-deadline <time> may follow, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends at the deadline, which deadline.extend moves up to the maximum"
 const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
 
-// initOptionsOf reads init's `--deadline <time>` and `--user <uid:gid>`, in either order, each at most once. With no
-// deadline, or one that is not RFC 3339, it says why and init refuses to start, so no computer lives forever.
+// initOptionsOf reads init's `--deadline <time>`, the optional `--max-deadline <time>` (the most deadline.extend may move
+// the deadline to) and `--user <uid:gid>`, in any order, each at most once. With no deadline, a time that is not RFC 3339,
+// or a maximum before the deadline, it says why and init refuses to start, so no computer lives forever or past what its
+// provider allows.
 func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	var opts initOptions
-	var sawDeadline, sawUser bool
+	var deadline, most time.Time
+	var sawDeadline, sawMost, sawUser bool
 	for i := 0; i < len(args); i += 2 {
 		flag := args[i]
 		if i+1 >= len(args) {
@@ -109,12 +115,20 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		switch {
 		case flag == "--deadline" && !sawDeadline:
 			sawDeadline = true
-			deadline, err := time.Parse(time.RFC3339Nano, value)
+			at, err := time.Parse(time.RFC3339Nano, value)
 			if err != nil {
 				logger.Printf("init: --deadline %q is not a time in RFC 3339, such as 2026-01-02T15:04:05Z", value)
 				return opts, false
 			}
-			opts.deadline = deadline
+			deadline = at
+		case flag == "--max-deadline" && !sawMost:
+			sawMost = true
+			at, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				logger.Printf("init: --max-deadline %q is not a time in RFC 3339, such as 2026-01-02T15:04:05Z", value)
+				return opts, false
+			}
+			most = at
 		case flag == "--user" && !sawUser:
 			sawUser = true
 			user, ok := accountOf(value)
@@ -127,7 +141,7 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 			logger.Printf("init: %s, given once", userWords)
 			return opts, false
 		default:
-			logger.Printf("init: %s; --user <uid:gid> may follow; %q is neither", deadlineWords, flag)
+			logger.Printf("init: %s; --user <uid:gid> may follow; %q is none of them, or given twice", deadlineWords, flag)
 			return opts, false
 		}
 	}
@@ -135,6 +149,11 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		logger.Printf("init: %s", deadlineWords)
 		return opts, false
 	}
+	if sawMost && most.Before(deadline) {
+		logger.Printf("init: --max-deadline %s is before --deadline %s", most.UTC().Format(time.RFC3339Nano), deadline.UTC().Format(time.RFC3339Nano))
+		return opts, false
+	}
+	opts.deadline = lifetime.New(deadline, most)
 	return opts, true
 }
 
