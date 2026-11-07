@@ -46,6 +46,8 @@ export const WAIT = {
 const failure = (code) => Object.assign(new Error(code), { cause: { code } });
 /** A count of milliseconds as timers take it: a whole number, at least 1 (AbortSignal.timeout throws on a fraction). */
 const wholeMs = (ms) => Math.max(1, Math.ceil(ms));
+/** A JSON object: not null, not a list. */
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 /** `text`'s JSON as `{ value }`, or undefined when it holds none. */
 const jsonOf = (text) => {
   try {
@@ -218,7 +220,7 @@ export async function followTimeline(client, path, headers = {}) {
         if (retry !== undefined) retryMs = retry;
         // An event that is not JSON is the server's bad answer, not a connection gone: said, exit 1, not tried again.
         const json = event === "rows" || event === "end" ? jsonOf(data) : undefined;
-        if ((event === "rows" || event === "end") && (json?.value === null || typeof json?.value !== "object")) {
+        if ((event === "rows" || event === "end") && !isObject(json?.value)) {
           client.io.stderr.write(`The server's timeline stream sent ${event === "end" ? "an" : "a"} ${event} event that is not a JSON object.\n`);
           return 1;
         }
