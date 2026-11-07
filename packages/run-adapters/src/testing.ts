@@ -135,7 +135,12 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;
       io.signal.addEventListener("abort", () => void proxy?.close(), { once: true });
       const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
-      let cursor = records.filter((r) => r.kind === FAUX_RECORDS.request).length;
+      // The script's place: one past its last request's (each faux.request keeps its action's index), never the count of
+      // them, since an action refused with `onRefused: "next"` is skipped with no record.
+      let cursor = records.reduce((next, r) => {
+        const index = r.kind === FAUX_RECORDS.request ? (r.data as { index?: unknown } | null)?.index : undefined;
+        return typeof index === "number" && index + 1 > next ? index + 1 : next;
+      }, 0);
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
       const turnsEnded = records.filter((r) => r.kind === FAUX_RECORDS.turnEnd).length;
       let state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
