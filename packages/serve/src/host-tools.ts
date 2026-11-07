@@ -103,7 +103,9 @@ export type ToolResults = Map<string, { text: string; isError: boolean }>;
  *  reads pi's tool sources for each `api.<member>`). The rest of pi's api (taskId, registry, the task, memo, document and
  *  nested-tool members) belongs to the tool task pi runs a tool in, which a host tool, called by another harness, has
  *  none of: the full type cannot be built here, so a read of any other member throws, naming it, rather than reading as
- *  "is not a function". */
+ *  "is not a function". `conversationId` is not given: serve's browser-cost `capped` reads it, but the browser tools run
+ *  on pi only, never as a host tool (BOXED_TOOLS and the web and monid tools are the host tools); a browser host tool
+ *  would add it here. */
 export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models"] as const;
 type HostApi = Pick<ToolExecutionApi, (typeof HOST_API_MEMBERS)[number]>;
 const hostApi = (given: HostApi): ToolExecutionApi =>
