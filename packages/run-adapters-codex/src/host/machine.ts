@@ -236,7 +236,10 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     // Read in a CODEX_HOME of its own, not the session's, before anything else of the session starts.
     const own = join(dirs.cache, "codex-catalog");
     if (options.catalog) mkdirSync(own, { recursive: true, mode: 0o700 });
-    const catalog = options.catalog ? await patchlessCatalog((spawnOptions) => start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), options.catalog, { home: dirs.home, tmp: dirs.tmp, own }, ctx.signal) : undefined;
+    const read = options.catalog ? await patchlessCatalog((spawnOptions) => start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), options.catalog, { home: dirs.home, tmp: dirs.tmp, own }, ctx.signal) : undefined;
+    const catalog = read?.bytes;
+    // A catalog that could not be read is never silent: the run is told why apply_patch stays listed (the machine's notes).
+    const notes = read?.why ? [read.why] : [];
     const seed = () => {
       if (options.seed) upload(options.seed.dir, seeded);
       if (catalog) upload("codex-home", [{ path: MODEL_CATALOG_FILE, bytes: catalog }]);
@@ -311,7 +314,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
           if (catalog && features?.shell_tool !== true && features?.unified_exec !== true) config.model_catalog_json = join(dirs["codex-home"], MODEL_CATALOG_FILE);
         },
       } : {}),
-      notes: [],
+      notes,
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-harness-codex: the session machine is closed");
         const proc = withoutTurnsAfterStop(start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), ctx.signal);

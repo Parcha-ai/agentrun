@@ -154,8 +154,10 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
       if (tool.name === "read" && typeof path === "string" && inBox === undefined && boxImagePath(path)) {
         const note = (summary: string) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary } })), context);
         const bytes = await boxBytes((await box.env(context, note)) as ExecutionEnv, path, READ_IMAGE_MAX_BYTES + 1, context);
-        const mimeType = bytes ? imageTypeOf(bytes) : undefined;
-        if (!bytes || !mimeType) refuseOutsideWorkspace(path);
+        // Said as what it is: a path the box could not read (no such file, no permission), or bytes that are no image's.
+        if (!bytes) throw new Error(`${path} could not be read in the box`);
+        const mimeType = imageTypeOf(bytes);
+        if (!mimeType) throw new Error(`${path} is not an image`);
         if (bytes.byteLength > READ_IMAGE_MAX_BYTES) throw new Error(`${path} is an image over read's ${READ_IMAGE_MAX_BYTES} bytes: scale it down first (for example with ffmpeg in bash).`);
         // A line naming it, then the image: an answer is never an empty text, on pi or on another harness (host-tools.ts).
         return forModelBlocks([{ type: "text", text: `${path}: ${mimeType}, ${bytes.byteLength} bytes` }, { type: "image", data: Buffer.from(bytes).toString("base64"), mimeType }]);

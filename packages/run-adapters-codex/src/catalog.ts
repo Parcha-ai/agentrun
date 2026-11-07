@@ -45,31 +45,40 @@ const read = new Map<string, Uint8Array>();
 /** How long `codex debug models --bundled` may take (it takes milliseconds). */
 const DUMP_MS = 20_000;
 
+/** Why the session runs on Codex's own catalog, in words for the run (the machine's notes): `cause`, what went wrong. */
+const stillListed = (cause: string) =>
+  `Codex's own apply_patch stays listed: its bundled model catalog could not be read (${cause}). It has no environment to run in here, so a call to it fails: edit files with the host's edit and write tools.`;
+
 /**
  * The catalog without apply_patch for `codex`, read once per binary with
  * `spawn` (`codex debug models --bundled`, its CODEX_HOME `dirs.own`, a
- * directory of its own), or undefined, logged, when it can't be read: the
- * session then runs on Codex's own catalog, apply_patch listed.
+ * directory of its own): its `bytes`, or `why` it can't be read, never
+ * silence. The session then runs on Codex's own catalog, apply_patch listed;
+ * a failure is not remembered, so the next drive tries again.
  */
-export async function patchlessCatalog(spawn: (options: MachineSpawn) => SessionProcess | Promise<SessionProcess>, codex: CodexCommand, dirs: { home: string; tmp: string; own: string }, signal: AbortSignal): Promise<Uint8Array | undefined> {
+export async function patchlessCatalog(spawn: (options: MachineSpawn) => SessionProcess | Promise<SessionProcess>, codex: CodexCommand, dirs: { home: string; tmp: string; own: string }, signal?: AbortSignal): Promise<{ bytes: Uint8Array; why?: undefined } | { bytes?: undefined; why: string }> {
   const key = JSON.stringify([codex.command, ...(codex.args ?? [])]);
   const known = read.get(key);
-  if (known) return known;
-  const why = "codex: its bundled model catalog could not be read: Codex's own apply_patch stays listed";
+  if (known) return { bytes: known };
+  const failed = (cause: string, fields: Record<string, unknown>) => {
+    const why = stillListed(cause);
+    codex.log?.(`codex: ${why}`, fields);
+    return { why };
+  };
   let child: SessionProcess;
   try {
     child = await spawn({
       command: codex.command,
       args: [...(codex.args ?? []), 'debug', 'models', '--bundled'],
       cwd: dirs.own,
-      signal,
+      ...(signal ? { signal } : {}),
       env: { HOME: dirs.home, CODEX_HOME: dirs.own, TMPDIR: dirs.tmp, NO_COLOR: '1' },
       isolatedCommands: true,
     });
   } catch (err) {
-    if (signal.aborted) throw err;
-    codex.log?.(why, { error: String((err as Error)?.message ?? err).slice(0, 200) });
-    return undefined;
+    if (signal?.aborted) throw err;
+    const error = String((err as Error)?.message ?? err).slice(0, 200);
+    return failed(`it did not start: ${error}`, { error });
   }
   child.end();
   const out: string[] = [];
@@ -84,13 +93,14 @@ export async function patchlessCatalog(spawn: (options: MachineSpawn) => Session
     await child.exited;
   }
   await reading;
-  if (signal.aborted) throw signal.reason ?? new Error('agentrun-harness-codex: the drive stopped');
+  if (signal?.aborted) throw signal.reason ?? new Error('agentrun-harness-codex: the drive stopped');
   const catalog = exit?.code === 0 ? withoutApplyPatch(out.join('\n')) : undefined;
   if (!catalog) {
-    codex.log?.(why, { exit: exit ?? `none in ${DUMP_MS / 1000} s`, stderr: child.stderrTail().slice(-300) });
-    return undefined;
+    const stderr = child.stderrTail().trim().slice(-300);
+    const cause = !exit ? `no answer in ${DUMP_MS / 1000} s` : exit.code === 0 ? 'its answer is not a catalog' : `exit ${exit.code === null ? `signal ${exit.signal}` : `code ${exit.code}`}${stderr ? `: ${stderr.split('\n').at(-1)}` : ''}`;
+    return failed(cause, { exit: exit ?? 'none', stderr });
   }
   const bytes = new TextEncoder().encode(catalog);
   read.set(key, bytes);
-  return bytes;
+  return { bytes };
 }

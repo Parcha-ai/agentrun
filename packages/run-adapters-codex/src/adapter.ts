@@ -99,7 +99,8 @@ export function kernelTool(tool: HostTool): KernelTool {
       // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
       if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
-      return result.text;
+      // With its images, recorded with the outcome: the answer to Codex carries them after the text (code-mode.ts withImages).
+      return result.images?.length ? { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) } : result.text;
     },
   };
 }
