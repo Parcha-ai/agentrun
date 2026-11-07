@@ -291,6 +291,23 @@ test("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that each ne
   assert.deepEqual(notesOf(data, runId), [rows[0].text]);
 });
 
+test("claude-agent on the faux harness: the least of the request taking the note is priced as its admission will price it, reading the cache: a first request that wrote the cache never makes the second, whose least reads it, due", { timeout: 180_000 }, async (t) => {
+  const sonnet = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: sonnet });
+  assert.equal((await api("POST", "/agents", agent("cached-least", { harness: "claude-agent", instructions: "Grow a cached context briefly." }))).status, 201);
+  // $0.66: over 3 x request 0's step-0 figure (its 20,000-token input uncached and 1,024 tokens, $0.21), so request 0 is
+  // not due. After it ($0.053), $0.607 is left: over 3 x the typical $0.053 and over 2 x request 1's least read from the
+  // cache (about $0.117), but under 2 x the same least uncached (about $0.313). Priced without the cache, request 1 would
+  // be told.
+  const runId = (await api("POST", "/agents/cached-least/runs", { input: { content: "go" }, max_cost_usd: 0.66 })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [], "no row: each request's least, read from the cache, leaves room for about two more");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [], "and no note in any request");
+});
+
 test("claude-agent on the faux harness: at step 0, with no previous request in hand, the next request's least is priced uncached, and it alone makes the wrap-up due, in the budget's words (a pin)", { timeout: 180_000 }, async (t) => {
   const booked = join(await scratch(t), "booked");
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
