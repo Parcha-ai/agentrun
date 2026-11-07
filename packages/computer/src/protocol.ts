@@ -404,7 +404,7 @@ export const MAX_ACTIONS = 100;
 export const MAX_BATCH_WAIT_MS = 300_000;
 /** The most times one key action presses its keys. */
 export const MAX_KEY_REPEAT = 100;
-/** The one canonical key table. */
+/** The one canonical key table. The daemon's Go table (daemon/internal/keys) mirrors it, and a Go test keeps them equal. */
 export const KEYS = [
 	"enter", "tab", "space", "backspace", "delete", "escape", "insert",
 	"up", "down", "left", "right", "home", "end", "pageup", "pagedown",
