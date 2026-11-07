@@ -106,8 +106,10 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *  - initFails: words init writes to stderr before it exits 1 (no daemon listens);
  *  - notListening: how many bridges find no daemon listening before one does;
  *  - box: what the daemon reports, over the defaults (hello, uid, gid, status fields, kernel, reached, accepted (the
- *    probe targets that accept and send nothing back: by default every IPv4 one with no internet access), display), and
- *    what `computerd probe --diagnose` prints (diagnosis), or diagnose: "fails" (exit 1) or "garbage" (not JSON);
+ *    probe targets that accept and send nothing back: by default every IPv4 TCP one with no internet access), display),
+ *    udpAnswers (with no internet access, a host:port/udp target answers anyway, as it would were E2B's firewall to let
+ *    DNS over UDP out), probe: "no-accepted" (the probe's report has no accepted list), and what
+ *    `computerd probe --diagnose` prints (diagnosis), or diagnose: "fails" (exit 1) or "garbage" (not JSON);
  *  - display: "ok" (Xvfb brings the display up after one hello), "never" (the server runs, the display never comes),
  *    "dies" (the server exits 1 at once);
  *  - lingers: { reads, lists }: after a kill, getInfo still reads it running for `reads` reads, and list still lists it
@@ -234,12 +236,18 @@ export function fakeE2B({
 			}
 			if (argv[0] === DAEMON && argv[1] === "probe") {
 				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
-				// With no internet access, E2B's firewall accepts each IPv4 connection and then closes it with nothing sent
-				// back (docs network/internet-access, "Behavior of blocked TCP connections"); the live diagnostic of
-				// 2026-11-07 read the IPv6 target refused. Open answers every target.
-				const reached = sb.box.reached ?? (sb.allowInternetAccess === false ? [] : targets);
-				const accepted = sb.box.accepted ?? (sb.allowInternetAccess === false ? targets.filter((target) => !target.startsWith("[")) : []);
-				return out(`${JSON.stringify({ uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, reached, accepted })}\n`);
+				// With no internet access, E2B's firewall accepts each IPv4 TCP connection and then closes it with nothing
+				// sent back (docs network/internet-access, "Behavior of blocked TCP connections"; e2b-dev/infra@ff3922213
+				// tcpfirewall/handlers.go); the live runs of 2026-11-07 read the IPv6 target refused. Non-TCP to the deny
+				// set is dropped in nftables (infra@ff3922213 tcpfirewall rules 3 and 5), so a host:port/udp target gets no
+				// reply: refused, as the live diagnostic read 53/udp everywhere. Open answers every target.
+				const udp = (target) => target.endsWith("/udp");
+				const none = sb.allowInternetAccess === false;
+				const reached = sb.box.reached ?? (none ? (sb.box.udpAnswers ? targets.filter(udp) : []) : targets);
+				const accepted = sb.box.accepted ?? (none ? targets.filter((target) => !udp(target) && !target.startsWith("[")) : []);
+				const report = { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, reached, accepted };
+				if (sb.box.probe === "no-accepted") delete report.accepted;
+				return out(`${JSON.stringify(report)}\n`);
 			}
 			if (argv[0] === "sh" && /netstat/.test(argv[2] ?? "")) return out("", sb.processes.some((p) => p.running && /novnc_proxy/.test(p.argv[0])) ? 0 : 1);
 			return out(`${argv.join(" ")}\n`);

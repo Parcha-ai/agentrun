@@ -531,6 +531,62 @@ test("network none: a probe whose targets only accepted keeps the computer, the 
 	assert.deepEqual(fake.kills, []);
 });
 
+/** E2B's default probe targets: TCP to 443 and DNS over UDP to 53, over IPv4 and IPv6, as Modal's. */
+const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
+const probeRun = (fake) => fake.requests.find((r) => r.method === "exec.run" && r.params.argv[1] === "probe" && r.params.argv[2] !== "--diagnose");
+
+test("network none: the probe tries TCP to 443 and DNS over UDP to 53, over IPv4 and IPv6, and E2B's firewall reads the UDP targets refused", async () => {
+	const { provider, fake } = setup();
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	assert.deepEqual(probeRun(fake).params.argv, [DAEMON, "probe", ...PROBE_TARGETS.flatMap((target) => ["--connect", target])]);
+	// IPv4 TCP accepted with nothing back, IPv6 refused, UDP dropped (no reply: refused): only the IPv4 TCP targets are named.
+	assert.deepEqual(made.value.notes, [ACCEPTED_NOTE]);
+	assert.deepEqual(fake.kills, []);
+});
+
+test("network none: a UDP target that answers refuses the computer at create and at attach, whatever the TCP targets did", async () => {
+	const { provider, fake } = setup({}, { box: { udpAnswers: true } });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false, "a DNS answer over UDP is an answer");
+	assert.equal(made.error.code, "refused");
+	assert.match(made.error.message, /network: declared none, read back an answer from 1\.1\.1\.1:53\/udp, \[2606:4700:4700::1111\]:53\/udp/);
+	assert.equal(fake.kills.length, 1, "the sandbox is killed");
+
+	const second = setup();
+	const { ref, sb } = seeded(second.fake);
+	sb.box.udpAnswers = true;
+	const attached = await second.provider.attach({ id: ref.id });
+	assert.equal(attached.ok, false);
+	assert.match(attached.error.message, /left as it is.*read back an answer from 1\.1\.1\.1:53\/udp/);
+	assert.deepEqual(second.fake.kills, []);
+});
+
+test("probeTargets takes host:port over TCP and host:port/udp, and refuses any other suffix in words", () => {
+	assert.doesNotThrow(() => setup({ probeTargets: ["1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp", "example.com:443"] }));
+	for (const bad of [[], ["example.com"], ["1.1.1.1:53/sctp"], ["1.1.1.1:53/"]]) {
+		assert.throws(() => setup({ probeTargets: bad }), /host:port or host:port\/udp/, JSON.stringify(bad));
+	}
+});
+
+test("network none: a probe report with no accepted list is refused in words, never read as nothing accepted", async () => {
+	const { provider, fake } = setup({}, { box: { probe: "no-accepted" } });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "refused");
+	assert.match(made.error.message, /the probe in .* wrote a report with no accepted list/);
+	assert.equal(fake.kills.length, 1);
+});
+
+test("the probe's exec.run bound covers its longest run: 10 s to connect and 10 s to answer", async () => {
+	const { probeMs, ...rest } = TIMEOUTS;
+	const { provider, fake } = setup({ timeouts: rest });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	assert.ok(probeRun(fake).params.timeoutMs >= 30_000, `exec.run gives the probe ${probeRun(fake).params.timeoutMs} ms; its longest run is 20 s`);
+	assert.equal(probeMs, 1_000, "the other tests' short bound");
+});
+
 test("network() reads the policy back from E2B, and refuses a change: it is fixed at create", async () => {
 	const { provider, fake } = setup();
 	const { ref } = seeded(fake);
