@@ -95,6 +95,8 @@ const READY_TIMEOUT_MS = 45_000;
 const DOOR_EXIT_WAIT_MS = 2_000;
 /** How often a raised workflow run waiting for a place to open again in tries again (finishRaise, waitForPlace). */
 const PLACE_RETRY_MS = 1_000;
+/** How many launches in a row a raised run waiting for a place may fail before it leaves the queue (finishRaise). */
+const RAISE_TRIES = 3;
 /** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
  *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
@@ -423,6 +425,12 @@ export type Run = {
    *  again (finishRaise): its words, since `at`, shown as a row; queued meanwhile. Its pause's mark stays until it opens,
    *  so a restart finishes the raise the same way. */
   placeWait?: { at: string; words: string };
+  /** The tries in a row whose launch failed after its place was taken (finishRaise): back of the queue after each, and
+   *  off it after RAISE_TRIES, its mark kept, so a run whose launch keeps failing never holds a place reserved. */
+  raiseTries?: number;
+  /** A raise whose launch failed RAISE_TRIES times: why, since `at`, shown as a row while the run stays paused at its
+   *  cap, so the owner reads that the raise was taken and the run could not start, not a call for another raise. */
+  raiseFailedRow?: { at: string; words: string };
   /** It waits for its harness's install before a launch (harnessReady): takePlace counts it as holding a place until
    *  that launch, so nothing takes its place meanwhile. A cancel or an end lets the place go. */
   waitsInstall?: boolean;
@@ -752,6 +760,8 @@ const workflowBudgetPending = (run: Run): Pending | undefined => {
   return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: mark.at, node: mark.node };
 };
 /** The row a run shows while its harness installs for it (harness-install.ts), since `at`. */
+/** The row a raised workflow run shows once its launch failed RAISE_TRIES times (finishRaise), since `at`. */
+export const raiseFailedRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "server:raise-failed", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 /** The row a raised workflow run shows while it waits for a place to open again in (finishRaise), since `at`. */
 export const placeRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "server:waiting-place", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 export const installRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
@@ -1605,7 +1615,9 @@ export class Runs {
     // While its harness installs, the run says so (a phase row of the server's, gone once it is installed).
     const installing = run.installRow ? [...rows, installRow(run.installRow)] : rows;
     // While a raised run waits for a place to open again in, it says so (gone once it opens).
-    const placing = run.placeWait ? [...installing, placeRow(run.placeWait)] : installing;
+    const waitingPlace = run.placeWait ? [...installing, placeRow(run.placeWait)] : installing;
+    // A raise taken whose launch kept failing: the run says why it is paused again.
+    const placing = run.raiseFailedRow ? [...waitingPlace, raiseFailedRow(run.raiseFailedRow)] : waitingPlace;
     const view = withLearning(placing, run.meta.learning, this.learning.shown());
     // Every row only this view makes, remembered by id, so the live path's keep never holds one once it is no longer made.
     servedOnlyIds(view, (run.madeHere ??= new Set()));
@@ -3290,7 +3302,7 @@ export class Runs {
    *  process's drain and kill, never refused for a place already being given back. A harness whose one run is more than
    *  the whole memory for runs is refused at once, never a 429 (capabilities say so too). From the read of what is held
    *  to the reservation nothing awaits, so two starts at once never both take the last of it. */
-  private async takePlace(harness: string): Promise<() => void> {
+  private async takePlace(harness: string, waiter?: Run): Promise<() => void> {
     const { memory, options: { maxRuns: max } } = this;
     const need = runMibOf(harness);
     const never = neverFits(harness, memory);
@@ -3300,8 +3312,11 @@ export class Runs {
       // cancelled or ends.
       // So does one that waits for its harness's install (waitsInstall), until that launch, a cancel or its end.
       const holding = [...this.runs.values()].filter((run) => this.live(run) || ((run.claimWait === true || run.waitsInstall === true) && !run.cancel && !run.outcome && !run.finishing));
-      const counted = max === undefined || holding.length + this.starting < max;
-      const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib);
+      // A raised run waiting for a place (finishRaise) has one kept for it, oldest first: every other start counts the
+      // waiters, and a waiter the ones ahead of it, so a place that frees goes to the run that waited, never a newer start.
+      const reserved = this.placesAhead(waiter);
+      const counted = max === undefined || holding.length + this.starting + reserved.length < max;
+      const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib) + reserved.reduce((sum, run) => sum + runMibOf(run.harness), 0);
       // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).
       const fits = held === 0 || held + need <= runsMemoryMib(memory);
       if (counted && fits) break;
@@ -3602,21 +3617,33 @@ export class Runs {
     // and opens once one frees (waitForPlace): never a process past the limits, never the raise refused or lost.
     let release: () => void;
     try {
-      release = await this.takePlace(run.harness);
+      release = await this.takePlace(run.harness, run);
     } catch (error) {
-      if (!(error instanceof ApiError) || error.code !== "rate_limited") throw error;
-      this.waitForPlace(run, cap);
-      return true;
+      if (error instanceof ApiError && error.code === "rate_limited") {
+        this.waitForPlace(run, cap);
+        return true;
+      }
+      // A run this host never holds (agent_not_runnable) waits for nothing: off the queue, still paused, saying why.
+      this.leavePlaceQueue(run);
+      throw error;
     }
     try {
       // Read again: the place may have been waited for, and the run ended, cancelled, opened or finished meanwhile.
       if (run.outcome || run.cancel || this.live(run) || !budgetPausedIn(run.dir)) return true;
-      this.placeWaiters.delete(run);
-      run.placeWait = undefined;
+      // What its launch needs, pinned while its pause's mark still stands: a pin that fails leaves the run waiting, its
+      // mark kept, at the back of the queue (or off it after RAISE_TRIES), never queued for good with neither.
+      try {
+        await this.beforeRaiseLaunch?.(run.id);
+        await this.pinNeeds(run);
+        await this.pinSignIn(run);
+      } catch (error) {
+        this.raiseFailed(run, cap, error as Error);
+        return true;
+      }
+      if (run.outcome || run.cancel || this.live(run) || !budgetPausedIn(run.dir)) return true;
+      this.leavePlaceQueue(run);
+      run.raiseFailedRow = undefined;
       clearBudgetPause(run.dir);
-      await this.beforeRaiseLaunch?.(run.id);
-      await this.pinNeeds(run);
-      await this.pinSignIn(run);
       this.launch(run);
       this.show(run);
       this.refresh(run);
@@ -3637,6 +3664,43 @@ export class Runs {
     this.placeRetry ??= setInterval(() => void this.retryPlaces(), PLACE_RETRY_MS).unref();
   }
 
+  /** The raised runs waiting for a place that a start by `waiter` leaves room for: every live one for any other start,
+   *  and the ones queued ahead of it for a waiter (oldest first). */
+  private placesAhead(waiter: Run | undefined): Run[] {
+    const ahead: Run[] = [];
+    for (const run of this.placeWaiters) {
+      if (run === waiter) break;
+      if (!run.cancel && !run.outcome && !run.finishing && !this.live(run)) ahead.push(run);
+    }
+    return ahead;
+  }
+
+  /** `run` off the queue for a place: what it reserved is free, and it shows no wait for one. */
+  private leavePlaceQueue(run: Run): void {
+    const queued = this.placeWaiters.delete(run) || run.placeWait !== undefined;
+    run.placeWait = undefined;
+    run.raiseTries = undefined;
+    if (queued) {
+      this.show(run);
+      this.refresh(run);
+    }
+  }
+
+  /** A raised run whose launch failed after its place was taken: to the back of the queue, its mark kept, and off it
+   *  after RAISE_TRIES failures in a row (still paused at its cap; a raise retried, or the server's next start, finishes it
+   *  then), so it never holds a place reserved for good. */
+  private raiseFailed(run: Run, cap: number, error: Error): void {
+    const tries = (run.raiseTries ?? 0) + 1;
+    warn(run.id, `its raise did not open it (${tries} of ${RAISE_TRIES}): ${error.message}`);
+    this.placeWaiters.delete(run);
+    if (tries >= RAISE_TRIES) {
+      run.raiseFailedRow = { at: new Date().toISOString(), words: `The cap was raised to ${money(cap)}, but the run could not be started: ${error.message.slice(0, 300)}. It stays paused; the same raise again, or the server's next start, tries once more.` };
+      return this.leavePlaceQueue(run);
+    }
+    run.raiseTries = tries;
+    this.waitForPlace(run, cap);
+  }
+
   private async retryPlaces(): Promise<void> {
     if (this.placeRetrying) return;
     this.placeRetrying = true;
@@ -3644,10 +3708,7 @@ export class Runs {
       for (const run of [...this.placeWaiters]) {
         if (this.closing) break;
         if (run.outcome || run.cancel || run.finishing) {
-          this.placeWaiters.delete(run);
-          run.placeWait = undefined;
-          this.show(run);
-          this.refresh(run);
+          this.leavePlaceQueue(run);
           continue;
         }
         await this.finishRaise(run).catch((error: Error) => warn(run.id, `its raise is not finished yet: ${error.message}`));
@@ -4099,6 +4160,9 @@ export class Runs {
 
   async close(): Promise<void> {
     this.closing = true;
+    // The retry for raised runs waiting for a place stops now: nothing is launched past the close.
+    clearInterval(this.placeRetry);
+    this.placeRetry = undefined;
     this.learning.close();
     const live = [...this.runs.values()].filter((run) => run.child);
     for (const run of live) {

@@ -199,3 +199,35 @@ test("a server that closes while a raised run waits for a place tries it no more
   const pid = runRecordOf(data, runId).holder?.pid;
   assert.deepEqual([launches, Number.isInteger(pid) && pid !== process.pid && processAlive(pid)], [0, false]);
 });
+
+test("the place kept for a raised run waiting for one goes back when it is cancelled: a new start then takes the place that frees", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
+  const gate = join(data, "free");
+  const { runId, busyId } = await waitingForPlace(api, data, "gone", gate);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(api, runId, ENDED, { deadlineMs: 30_000 });
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
+  assert.equal((await api("POST", "/agents", agent("after-cancel"))).status, 201);
+  let started;
+  for (const end = Date.now() + 10_000; Date.now() < end && started?.status !== 202; await sleep(200)) started = await api("POST", "/agents/after-cancel/runs", { input: { content: "hi" } });
+  assert.equal(started?.status, 202, `nothing keeps the place for a cancelled run: ${JSON.stringify(started?.body)}`);
+});
+
+test("a raised run whose launch keeps failing leaves the queue after three tries, still paused at its cap, and keeps no place: a new start then takes it", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  let failed = 0;
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1, beforeRaiseLaunch: () => { failed += 1; throw new Error("a pin that always fails"); } });
+  const gate = join(data, "free");
+  const { runId, busyId } = await waitingForPlace(api, data, "failing", gate);
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
+  for (const end = Date.now() + 15_000; failed < 3 && Date.now() < end; ) await sleep(200);
+  await sleep(2_500);
+  const run = await view(api, runId);
+  assert.deepEqual([failed, run.status, run.pending?.kind], [3, "input_required", "budget"], JSON.stringify(run));
+  assert.equal((await api("POST", "/agents", agent("after-fails"))).status, 201);
+  const started = await api("POST", "/agents/after-fails/runs", { input: { content: "hi" } });
+  assert.equal(started.status, 202, `the run that kept failing keeps no place: ${JSON.stringify(started.body)}`);
+});
