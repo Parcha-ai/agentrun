@@ -761,16 +761,21 @@ export class DaytonaProvider implements ComputerProvider {
 		const ref = { id: made.id, name };
 		// From here the sandbox exists: every step takes the caller's signal, and a failure or an abort deletes it.
 		const prepared = await this.#prepare(spec, ref, made, deadline, daemon, sha256, signal);
-		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" });
+		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
 		if (prepared.ok) return ok(ref);
-		return this.#abandon(ref, prepared.error);
+		return this.#abandon(ref, prepared.error, signal);
 	}
 
-	async #abandon(ref: ComputerRef, error: ComputerError): Promise<Result<never>> {
-		// Never signalled: the cleanup of an aborted create must outlive the abort. Bounded by goneMs.
+	async #abandon(ref: ComputerRef, error: ComputerError, signal?: AbortSignal): Promise<Result<never>> {
+		// The delete itself is never signalled: it is sent even after an abort. The wait for the sandbox to go takes the
+		// caller's signal, as Modal's terminate does, so an aborted create returns once the delete is sent.
 		const deleted = await this.#delete(ref.id);
-		const removed = deleted.ok ? await this.#settle(ref, "gone", "delete") : deleted;
-		const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message}); Daytona ends it at its TTL`;
+		const removed = deleted.ok ? await this.#settle(ref, "gone", "delete", signal) : deleted;
+		const after = removed.ok
+			? "was deleted"
+			: deleted.ok && removed.error.code === "aborted"
+				? "was sent a delete, and the wait for it to go was aborted; Daytona ends it at its TTL if the delete did not take"
+				: `could not be deleted (${removed.error.message}); Daytona ends it at its TTL`;
 		return fail(error.code, `the computer ${ref.name} ${after}: ${error.message}`);
 	}
 
