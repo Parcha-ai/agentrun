@@ -27,6 +27,8 @@ export interface ComputerCapabilities {
 	os: "linux" | "windows" | "macos" | "android" | "ios";
 	/** What the daemon in each computer must offer. */
 	daemon: DaemonCapability[];
+	/** What spec.user may ask for instead of the non-root default: root ("0"), another uid. Absent: neither. */
+	user?: Array<"root" | "uid">;
 }
 
 /** Why a spec is refused, in words, before any vendor call. */
