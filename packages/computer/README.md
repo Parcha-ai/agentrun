@@ -782,8 +782,8 @@ the daemon runs it as:
 - Daytona's toolbox daemon, the sandbox's first process, listens on port 2280 on every interface and checks no
   credential: its only middlewares are recovery, tracing, logging and errors, and its token is sent only with its
   telemetry. Its `/process/execute` runs any command as the toolbox's user. That user in the default snapshot has
-  passwordless `sudo` for every command (`daytona ALL=(ALL) NOPASSWD:ALL`). So from inside,
-  `curl -X POST http://127.0.0.1:2280/process/execute -d '{"command":"sudo -n id -u"}'` runs `id -u` as root.
+  passwordless `sudo` for every command (`daytona ALL=(ALL) NOPASSWD:ALL`). So any workload in the sandbox can ask
+  the toolbox to run a command through `sudo`, and reach root inside the sandbox.
 - The provider depends on the same thing: it installs and starts the daemon through that toolbox, as root or through
   passwordless `sudo`, and refuses a sandbox with neither. Every sandbox it accepts has this way to root.
 - The daemon's user (1000:1000, no capabilities, `no_new_privs` on every thread) is hygiene, not a boundary. It stops
