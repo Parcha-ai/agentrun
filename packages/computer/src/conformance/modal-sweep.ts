@@ -17,9 +17,9 @@
 // It reads COMPUTER_MODAL_TOKEN_ID, COMPUTER_MODAL_TOKEN_SECRET, COMPUTER_MODAL_APP and COMPUTER_MODAL_SERVER_URL, and
 // builds its client as the conformance module does (modalClient): the token passed explicitly, the server pinned, an
 // ambient MODAL_SERVER_URL refused. It needs no AGENTRUN_COMPUTER_LIVE_MODAL: it makes nothing.
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
 import { COMPUTER_LABEL } from "../drift.js";
+import { isCommand } from "../entry.js";
 import { type ModalSandbox, type ModalSdk, untilFinished } from "../modal.js";
 import { MODAL_ENV, type ModalModuleOptions, modalClient } from "./modal.js";
 
@@ -179,6 +179,6 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	return stillThere.length === 0 ? 0 : 1;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCommand(import.meta)) {
 	process.exitCode = await main(process.argv.slice(2));
 }
