@@ -40,8 +40,11 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 /** `sideAfterNote`: a client's side call on another model (a title, a summary: ModelRequest.side) admitted and answered
  *  at `usd` after this request took its host's note and before this request is admitted, as a Claude Code side call can
  *  be while the model proxy reads the credential between the two. `sideDuring`: one admitted and answered at `usd` while
- *  this request still streams (after its first call's text, before that call), so two of its requests are in flight. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number } };
+ *  this request still streams (after its first call's text, before that call), so two of its requests are in flight.
+ *  `sideFirst`: one admitted before this request, then `say` streamed before this request is admitted: text of the
+ *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
+ *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -164,6 +167,14 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("sideAfterNote" in action && action.sideAfterNote) {
               const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
               await io.models.afterRequest({ input: 10, output: 5, usd: action.sideAfterNote.usd }, side || undefined);
+            }
+            if ("sideFirst" in action && action.sideFirst) {
+              const { usd, say } = action.sideFirst;
+              const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
+              const paySide = () => io.models.afterRequest({ input: 10, output: 5, usd }, side || undefined);
+              if ("bookWhen" in action && typeof action.bookWhen === "string") void untilExists(action.bookWhen, signal).then(paySide).catch(() => undefined);
+              else await paySide();
+              io.onEvent({ type: "text", delta: say });
             }
             const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
             if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });

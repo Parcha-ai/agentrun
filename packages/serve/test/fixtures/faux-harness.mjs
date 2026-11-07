@@ -99,6 +99,10 @@ export function script(spec) {
   // The same, but the first request is paid only once <file> exists: after the second has started and answered.
   const paidLate = /Write on a slow store, paid once (\S+) exists\./.exec(text);
   if (paidLate) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookWhen: paidLate[1] }, { say: "Wrote it.", usd: 0.002 }];
+  // Text of the session's before any request of this process's own (a resumed turn's, say), a side call the only one
+  // open; then one request that answers. Both are paid only once <file> exists.
+  const sideFirst = /Answer after text with only a side call open, paid once (\S+) exists\./.exec(text);
+  if (sideFirst) return [{ say: "Answered.", usd: 0.002, bookWhen: sideFirst[1], sideFirst: { usd: 0.0005, say: "Before." } }];
   // The same two requests, the first's cost unknown (its provider gave none).
   if (/Write unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
   // The same, the second ending the turn, then a follow-up's request, under a cap.

@@ -147,3 +147,28 @@ for (const [on, capped] of [["claude-agent", false], ["codex", false], ["claude-
     assert.equal(usage?.usd, 0.0035, `every request's cost, the side call's too, known: ${JSON.stringify(usage)}`);
   });
 }
+
+for (const on of ["claude-agent", "codex"]) {
+  test(`${on}: text of the session's with no request of this process's own yet, a side call the only one open, is the session request's, its cost pending as that request's own, never the side call's`, async (t) => {
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const paid = join(data, "..", `side-first-${on}`);
+    assert.equal((await api("POST", "/agents", agent("side-first", { harness: on, instructions: `Answer after text with only a side call open, paid once ${paid} exists.`, tools: ["read"] }))).status, 201);
+    const runId = (await api("POST", "/agents/side-first/runs", { input: { content: "Answer." } })).body.run_id;
+    // Neither is paid by the turn's end (the file is never written): the text is written at an unknown cost, booked to a
+    // request still open. Which one is the question: the oldest open is the side call.
+    const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 30_000 });
+    assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+    const kinds = (root) => root.map((e) => `${e.kind}${e.data?.request ? `#${e.data.request}` : ""}${e.data?.side ? "(side)" : ""}${e.kind === "pi.assistant" ? `:${contentOf(e)}` : ""}`);
+    let root = rootOf(data, runId);
+    const starts = root.filter((e) => e.kind === "agentrun.request_started").map((e) => e.data.request);
+    assert.equal(starts.length, 2, `a side call's start and the session request's: ${JSON.stringify(kinds(root))}`);
+    const [side, main] = starts;
+    const before = root.findIndex((e) => e.kind === "pi.assistant" && contentOf(e) === "Before.");
+    assert.ok(before >= 0, JSON.stringify(kinds(root)));
+    const bookedTo = root.slice(before + 1).find((e) => e.kind === "adapter.request")?.data?.request;
+    assert.equal(bookedTo, main, `the text is the session request's (#${main}), never the side call's (#${side}): ${JSON.stringify(kinds(root))}`);
+    // Its cost pending as the session request's own, and nothing of the side call's on it.
+    assert.equal(root.slice(before + 1).find((e) => e.kind === "agentrun.request_cost_pending")?.data?.request, main, `the text's cost is #${main}'s, still to come: ${JSON.stringify(kinds(root))}`);
+    assert.ok(!root.some((e) => (e.kind === "adapter.request" || e.kind === "agentrun.request_cost_pending" || e.kind === "agentrun.request_continued") && e.data?.request === side), `no text booked to the side call #${side}: ${JSON.stringify(kinds(root))}`);
+  });
+}
