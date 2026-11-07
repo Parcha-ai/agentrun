@@ -237,7 +237,8 @@ does.
 **Lifetime.** `capabilities().maxLifetimeMs` is the vendor's hard cap for the provider instance (Docker: 30 days).
 `checkLifetime(lifetimeMs, capabilities)` is the one rule every `check()` shares: a whole number of milliseconds above
 0, at most the cap, refused in words with no vendor call. A provider may offer `extend(ref, ttlMs)`, which sets the
-deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs) by moving the
+deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs: either is refused
+in words with the deadline unchanged, so an extend never shortens a computer's life) by moving the
 vendor's timer, the deadline label and init's own deadline (`deadline.extend`, typed in `protocol.ts`; init answers it
 from the X11 shim's change on, and is `unsupported` until then), and `stream(ref)`, the vendor's live screen URL. Docker
 has neither: its deadline is a container label, which cannot change after create, so ask for the whole lifetime at
@@ -513,7 +514,9 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capabilities; and from the extension `touch.pinch` (two fingers logged moving apart), `lifetime.extend` (`extend`:
   made with 45 s and extended to 120 s, at 60 s it answers ping with a process started earlier still running and
-  `list()` shows the new deadline; an extend past the cap is refused with the deadline unchanged) and `screen.stream`
+  `list()` shows the new deadline; three extends are refused with the deadline unchanged: to an earlier
+  deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s, within the cap on its own but past
+  create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
   (`stream`: an https URL that answers 200; only its origin is ever reported).
 
 A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, or an optional
