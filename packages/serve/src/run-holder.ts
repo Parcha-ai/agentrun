@@ -17,6 +17,9 @@ export const LAUNCH_HOLDER = "launching";
 /** The mark a launch puts in its process's environment, `<run id>:<epoch>`: how a row that still names LAUNCH_HOLDER (its
  *  server went, or its store was held, before the process was named) finds the process that launch started. */
 export const RUN_LAUNCH_ENV = "AGENTRUN_RUN_LAUNCH";
+/** The epoch of the run's claim its process was launched under (runs.ts launch): a run process reads it here to label the
+ *  box it makes (run-box.ts EPOCH_LABEL). */
+export const RUN_EPOCH_ENV = "AGENTRUN_RUN_EPOCH";
 
 /** A run's process as its row names it. */
 export type RunHolder = { pid: number; start: number; boot: string | null; door?: string; nonce?: string };

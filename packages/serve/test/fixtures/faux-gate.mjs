@@ -46,6 +46,12 @@ export default function reply(context, faux) {
       return faux.message(faux.toolCall("web_fetch", { url: later[1] }), { stopReason: "toolUse" });
     })();
   }
+  // "Write <path> once.": write on the path, "hello" its content; then "Saw: " and the last thing it was told.
+  const written = /Write (\S+) once\./.exec(textOf(context.messages.find((m) => m.role === "user")))?.[1];
+  if (written) {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
+    return faux.message(faux.toolCall("write", { path: written, content: "hello" }), { stopReason: "toolUse" });
+  }
   const url = urlOf(textOf(context.messages.find((m) => m.role === "user")));
   if (!url) return faux.message("Nothing to do.");
   // "Slowly, please." as the last message: a turn that streams for 8 s, unless it is stopped.

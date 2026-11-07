@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyPublished, waitForRegistryVersions, registryBackoffMs, installRegistryConsumer, PACKUMENT_ACCEPT } from './verify-published.mjs';
+import { verifyPublished, waitForRegistryVersions, registryBackoffMs, installRegistryConsumer, PACKUMENT_ACCEPT, commandArgs } from './verify-published.mjs';
 import { ownVersionPackages, releasePackageNames, releasePackages } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
@@ -83,6 +83,45 @@ test('a package on its own version line carries a plain version and every other 
   await refuse({ agentrun: version });
   await refuse({ dsl: '0.3.0' });
 }));
+// A canary from main (npm's `canary` dist-tag): every package carries <core>-canary.<run>.g<sha7>, one suffix for the whole plan.
+test('a canary plan is verified only under canary, every package on one canary suffix; a release plan under canary is refused', () => fixture(async root => {
+  const suffix = '-canary.7.g6b98062';
+  const canary = packages.map(pkg => ({ ...pkg, version: (ownVersionPackages.includes(pkg.directory) ? '0.3.1' : '0.1.0') + suffix }));
+  const plan = { status: 'passed', tag: 'canary', registry: 'https://registry.npmjs.org/' };
+  const write = list => writeFile(join(root, '.release/release-plan.json'), JSON.stringify({ ...plan, packages: list }));
+  const none = async () => { throw new Error('must not fetch'); };
+  await write(canary);
+  const own = canary.find(pkg => pkg.directory === 'dsl');
+  const ownMetadata = { name: own.name, version: own.version, dist: { integrity: own.integrity, tarball: 'https://registry.npmjs.org/example.tgz' } };
+  const result = await verifyPublished(root, 'dsl', { canary: true, allowAbsent: true, wait, fetchImpl: async url => String(url).endsWith('.tgz') ? new Response(bytes) : Response.json(ownMetadata) });
+  assert.deepEqual(result.packages.map(pkg => [pkg.name, pkg.version, pkg.status]), [['@parcha/agentrun-dsl', '0.1.0-canary.7.g6b98062', 'matched']]);
+  // Without canary, the same plan is not on the release's version lines.
+  await assert.rejects(verifyPublished(root, 'dsl', { allowAbsent: true, wait, fetchImpl: none }), /is not on its version line/);
+  // Under canary: a release plan, two suffixes in one plan, and a suffix without the commit are refused.
+  await write(packages);
+  await assert.rejects(verifyPublished(root, 'dsl', { canary: true, allowAbsent: true, wait, fetchImpl: none }), /is not a canary/);
+  await write(canary.map(pkg => pkg.directory === 'agentrun' ? { ...pkg, version: '0.3.1-canary.8.g6b98062' } : pkg));
+  await assert.rejects(verifyPublished(root, 'dsl', { canary: true, allowAbsent: true, wait, fetchImpl: none }), /one canary suffix/);
+  await write(canary.map(pkg => ({ ...pkg, version: pkg.version.replace(/\.g[0-9a-f]+$/, '') })));
+  await assert.rejects(verifyPublished(root, 'dsl', { canary: true, allowAbsent: true, wait, fetchImpl: none }), /is not a canary/);
+}));
+test('the command\'s arguments: --canary and --allow-absent after --package, alone or both in either order, each reach its mode', () => {
+  const args = list => commandArgs(['node', 'scripts/verify-published.mjs', ...list]);
+  assert.deepEqual(args(['--package', 'dsl']), { selected: 'dsl', allowAbsent: false, canary: false });
+  assert.deepEqual(args(['--package', 'all', '--canary']), { selected: 'all', allowAbsent: false, canary: true });
+  assert.deepEqual(args(['--package', 'dsl', '--allow-absent']), { selected: 'dsl', allowAbsent: true, canary: false });
+  assert.deepEqual(args(['--package', 'dsl', '--allow-absent', '--canary']), { selected: 'dsl', allowAbsent: true, canary: true });
+  assert.deepEqual(args(['--package', 'dsl', '--canary', '--allow-absent']), { selected: 'dsl', allowAbsent: true, canary: true });
+  for (const bad of [['--package', 'dsl', '--canary', '--bogus'], ['--package', 'dsl', '--bogus'], ['--canary', '--package', 'dsl'], ['--package', 'dsl', '--canary', '--canary'], ['--package']]) {
+    assert.throws(() => args(bad), /Usage: node scripts\/verify-published\.mjs/, bad.join(' '));
+  }
+});
+test('the command refuses bad arguments at its usage line, before any registry read', async () => {
+  const run = args => exec(process.execPath, ['scripts/verify-published.mjs', ...args], { cwd: new URL('..', import.meta.url) }).then(() => '', error => String(error.stderr));
+  for (const bad of [['--package', 'dsl', '--canary', '--bogus'], ['--canary', '--package', 'dsl']]) {
+    assert.match(await run(bad), /Usage: node scripts\/verify-published\.mjs/, bad.join(' '));
+  }
+});
 test('invalid release plans also replace prior successful verification evidence', () => fixture(async (root, receipt) => {
   await writeFile(join(root, '.release/release-plan.json'), '{}');
   await assert.rejects(verifyPublished(root, 'dsl', { fetchImpl: async () => { throw new Error('must not fetch'); }, wait }));

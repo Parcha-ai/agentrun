@@ -35,6 +35,7 @@ import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runMode
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
+import { RUN_EPOCH_ENV } from "./run-holder.js";
 import { planeOf } from "./tool-plane.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, readsFiles, systemOf } from "./skills.js";
@@ -134,7 +135,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const place = storedPlace(meta?.place);
   const root = dataOfRun(where.root);
   // A remote box (Daytona) is the server's to make and seed, reached through its relay; Docker's is made here.
-  const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place }) : undefined;
+  // Its box carries the epoch of the claim this process was launched under (runs.ts launch): a box of an earlier one is
+  // an earlier process's, destroyed before this one makes its own (run-box.ts fenceRunBoxes).
+  const epoch = Number(process.env[RUN_EPOCH_ENV] ?? "0");
+  const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place, epoch: Number.isSafeInteger(epoch) ? epoch : 0 }) : undefined;
   // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
   if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
@@ -233,7 +237,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // calls a crash cut, and a rerun of one it let through must find its mark (tool-gate.ts prime).
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async (run: BeforeResume) => { await toolGate.prime(run.harness, run.context); await markResumed(run); for (const settle of settles) await settle(run.harness); },
+    beforeResume: async (run: BeforeResume) => { await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).

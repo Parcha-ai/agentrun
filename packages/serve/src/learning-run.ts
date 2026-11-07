@@ -21,7 +21,9 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { statusesOf } from "./learning-routes.js";
+import { cutStrings, redacted } from "./key-refusal.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -533,6 +535,22 @@ export class LearningRuns {
     this.saved = undefined;
   }
 
+  /** Agent `agentId`'s run's `learning` as it reads now (learning.ts currentLearning): what it held for its owner's OK
+   *  checked against the folder's main (learning-routes.ts statusesOf, one read per commit of main). Its record stays as
+   *  the merge wrote it; one that held nothing is read as it is, with no read of the folder. */
+  async current(agentId: string, learning: Learning | undefined): Promise<Learning | undefined> {
+    if (!holdsForOk(learning)) return learning;
+    return currentLearning(learning, await statusesOf(this.options.agents.dir, agentId));
+  }
+
+  /** `rows` with their learning row as it reads now (current): its words from what it held, checked against main. */
+  async rowsNow(agentId: string, learning: Learning | undefined, rows: readonly TimelineEvent[]): Promise<TimelineEvent[]> {
+    const now = await this.current(agentId, learning);
+    if (now === learning || !now) return [...rows];
+    const [row] = withLearning([], now, this.shown()) as (TimelineEvent & { learning?: unknown })[];
+    return rows.map((one) => (one.kind === "learning" && row ? ({ ...one, summary: row.summary, text: row.text, learning: row.learning } as TimelineEvent) : one));
+  }
+
   /** A run's learning as its view shows it (learning.ts learningView), cut of the host's secrets now; `settled`, once
    *  the run has ended and settled, shows the notes it read. */
   view(learning: Learning | undefined, settled: boolean) {
@@ -658,7 +676,7 @@ export class LearningRuns {
     const after = run.lastEntry ?? Math.max(0, ...run.rows.map((row) => entryOf(row.id)).filter(Number.isInteger));
     run.meta.reflect = { outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
     // The job's error, kept for a restart: the turn's is never the run's.
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
+    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refused(run)), ...(run.error.details ? { details: cutStrings(run.error.details, (text) => redacted(text, this.refused(run))) as { reason: string } } : {}) };
     // Its answer is final now: when, and what its job cost, before the end-of-run turn spends any more.
     this.setLearning(run, "reflecting", null, said.reflecting, { answered_at: run.endedAt, job_cost_usd: this.kernel.costOf(run.rows) });
     this.kernel.mark(run);
