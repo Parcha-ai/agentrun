@@ -10,7 +10,7 @@ import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
 import { bookRequest, type Ended } from "./booking.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
+import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 /** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
  *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
@@ -139,7 +139,7 @@ export interface ModelPortOptions {
    *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
   draining?: () => Error | undefined;
   /** A note the host has for the session's next main-model request, taken by the call (ModelPort.note). */
-  note?: (model: string) => string | undefined;
+  note?: (model: string, request?: NoteRequest) => string | undefined;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
   stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string) => Error;
 }

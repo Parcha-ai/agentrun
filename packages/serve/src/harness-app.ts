@@ -36,7 +36,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, type NoteRequest, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import { foldSession, INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { failureText } from "@parcha/agentrun-kernel/process";
 import { BARRIER, syncNow, type DoorContext, type DoorEvent, type DoorHook, type DurableRun } from "@parcha/pi-durable-disk";
@@ -215,26 +215,33 @@ export function adapterRun(
   // keeps it to once per cap across processes. Both are decided as the proxy takes the note into a request, with what is
   // left then, and the row is written, and the note counted sent, only once that request is admitted carrying it
   // (`noted`), as pi's judge does: nothing is recorded for a note no request carried.
-  // `costs`: the session's own model's priced requests, side calls left out. `due`: an admission found the wrap-up due
-  // with nothing priced yet (step 0: that request at its input and a typical answer standing in for a typical one), which
-  // the proxy measures only after it has placed a note: the next request takes it, in step 0's words as pi says them,
-  // however its first request is priced by then. In memory only, as nothing was told: a process opened again reads the
-  // costs, and words the note by them. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
+  // `costs`: the session's own model's priced requests, side calls left out; a process opened again reads them back.
+  // With none, step 0: the request taking the note is judged on itself, its input and a typical answer (CapGuard.typicalUsd),
+  // as pi's judge does, and told in that request. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
   // once admitted, held while the turn it is told in has its person's (or the server's) message still to be written
   // (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
   type WrapRow = { key: string; capUsd: number; leftUsd: number; words: string };
-  const wrap: { costs: number[]; sent: boolean; due: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, due: false, entryDue: false };
+  const wrap: { costs: number[]; sent: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, entryDue: false };
   /** The note for the request the model proxy is placing it in (ModelPort.note), when the wrap-up is due: what is left
    *  of the cap as admission counts it now (`spentUsd`: what the run spent; what its requests and paid calls in flight
    *  are held at) under three times the session's own model's typical request, or an earlier admission found it due. */
-  const takeNote = (spentUsd: number | null): string | undefined => {
+  const takeNote = (spentUsd: number | null, model?: string, request?: NoteRequest): string | undefined => {
     wrap.taken = undefined;
     if (budgetUsd === undefined || wrap.sent || spentUsd === null) return undefined;
     const held = inFlight.total() + paidHolds();
-    const due = wrap.costs.length > 0 ? wrapUpDue(budgetUsd, spentUsd, held, typicalCost(wrap.costs, 0)) : undefined;
-    if (!due && !wrap.due) return undefined;
-    const leftUsd = due?.leftUsd ?? budgetUsd - spentUsd - held;
-    wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd, wrap.due) };
+    // The request taking the note, priced as its admission will price it: its own bound and asks as its client sent them,
+    // after the previous request on its model when there is one (the cache), else uncached. Nothing kept in memory, so a
+    // process opened again judges its first request so too.
+    const before = model ? previous.get(model) : undefined;
+    const asked = request ? { ...request, ...(before ? { previous: before } : {}) } : undefined;
+    // Due by the typical (the measured one once a cost is priced; before that, step 0, this request's own input and a
+    // typical answer, as pi's judge does) or by this request's least, room for about one more.
+    const typical = wrap.costs.length > 0 ? typicalCost(wrap.costs, 0) : asked ? cap?.typicalUsd?.(asked) : undefined;
+    const due = wrapUpDue(budgetUsd, spentUsd, held, typical ?? 0, asked ? cap?.leastUsd?.(asked) : undefined);
+    if (!due) return undefined;
+    const leftUsd = due.leftUsd;
+    // Worded by what was priced as it is taken: the budget's words with nothing priced, else "finish now".
+    wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd, wrap.costs.length === 0) };
     return wrap.taken.words;
   };
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
@@ -273,7 +280,10 @@ export function adapterRun(
     }
     inFlight.admitted(answer?.holdUsd);
     const side = (request as { side?: unknown }).side === true;
-    const inputTokensMax = withoutNote ? (plainInput as number) : request.inputTokensMax;
+    // The bound its `previous` is read against for the next request on its model: the body as its client sent it, without
+    // the note (the note goes after the client's content, in this request alone, so the next request's cached prefix is the
+    // client's body). Its hold above is what it sends, the note included.
+    const inputTokensMax = noted && typeof plainInput === "number" ? plainInput : request.inputTokensMax;
     admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}) } : undefined;
     if (!answer) return undefined;
     // Admitted carrying the note: it is sent, once per cap, and its row says so. Only the admission of the request that
@@ -281,15 +291,6 @@ export function adapterRun(
     // credential between the two) leaves it for that request.
     const data = noted && !withoutNote && !side ? wrap.taken : undefined;
     if (noted) wrap.taken = undefined;
-    // None priced yet: this request at its input and a typical answer is the typical one, and what is left as its admission counts it
-    // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
-    // next request. Never a side call's: the note is for the session's own model.
-    if (!data && !side && budgetUsd !== undefined && !wrap.sent && wrap.costs.length === 0) {
-      const spentNow = plus(plus(request.spentUsd, charged), sideSpend());
-      const held = request.inFlight.reduce((sum, r) => sum + (r.holdUsd ?? 0), paidHolds());
-      // Its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its whole output allowance.
-      if (spentNow !== null && wrapUpDue(budgetUsd, spentNow, held, answer.typicalUsd ?? answer.holdUsd)) wrap.due = true;
-    }
     if (data && !wrap.sent) {
       wrap.sent = true;
       if (wrap.entryDue) wrap.row = data;
@@ -521,7 +522,7 @@ export function adapterRun(
       // or it was cut: nothing cached to count on).
       const sent = sentOf.get(event.turn);
       sentOf.delete(event.turn);
-      // A priced request of the session's own model: the wrap-up's typical cost counts it.
+      // A priced request of the session's own model: the wrap-up's typical cost counts it (step 0 ends with the first).
       const priced = pricedUsd(event.usage.usd);
       if (sent && !sent.side && priced !== undefined) wrap.costs.push(priced);
       const last = sent && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
@@ -869,7 +870,7 @@ export function adapterRun(
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
         onEvent: onModel,
-        note: () => takeNote(plus(plus(booking.spentUsd(), charged), sideSpend())),
+        note: (model: string, request?: NoteRequest) => takeNote(plus(plus(booking.spentUsd(), charged), sideSpend()), model, request),
         stopped: () => halted ?? cancelStop() ?? (parked === undefined ? undefined : PARKED),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
