@@ -253,7 +253,7 @@ describe("the CLI on a local directory", () => {
     }
   });
 
-  it("refuses --dir beside the Archil flags, with a usage error (exit 2) naming them", async () => {
+  it("refuses an unknown flag beside --dir, a missing --app and an unknown box mode with a usage error (exit 2)", async () => {
     const written: string[] = [];
     const write = process.stderr.write;
     process.stderr.write = ((chunk: string) => (written.push(String(chunk)), true)) as typeof process.stderr.write;
@@ -267,8 +267,8 @@ describe("the CLI on a local directory", () => {
     } finally {
       process.stderr.write = write;
     }
-    assert.match(written.join(""), /--dir is a run on a local directory: it takes no --disk\n/);
-    assert.match(written.join(""), /it takes no --region, --mount-root\n/);
+    assert.match(written.join(""), /Unknown option '--disk'/);
+    assert.match(written.join(""), /Unknown option '--region'/);
     assert.match(written.join(""), /--box-mode is one of bwrap, seatbelt, provider, unsandboxed, unavailable\n/);
     assert.match(written.join(""), /"error":"BOX_UNAVAILABLE".*held until a server with a box opens it/);
     assert.equal(existsSync(join(tmpdir(), `pdd-unavailable-${process.pid}`)), false, "the refused run's directory was made");

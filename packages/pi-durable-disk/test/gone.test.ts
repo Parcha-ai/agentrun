@@ -11,11 +11,11 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url),
 
 /** The Archil run path, the supervisor and its host drivers, the client that woke a run through them, and fork. */
 const GONE_ROOT = [
-  "ARCHIL_SCOPED", "acquire", "revoke", "takeOver", "readReleased", "withClaim", "listRunFiles", "readRunFile", "RunFileError",
+  "ARCHIL_SCOPED", "acquire", "revoke", "takeOver", "readReleased", "withClaim", "listRunFiles", "readRunFile",
   "archilControl", "deleteRunTree", "ensureRunning", "readRunStatus", "SuperviseError",
   "localHost", "LocalHostError", "dockerHost", "DockerHostError",
   "DAYTONA_LIST_PRICES", "DaytonaApiError", "daytonaHost", "DaytonaHostError", "daytonaRest", "daytonaUsdPerSecond",
-  "requestRun", "archilPlace", "fork", "ForkError", "forkLocal",
+  "requestRun", "ServeError", "archilPlace", "fork", "ForkError", "forkLocal",
 ];
 const GONE_INTERNALS = ["createRunDir", "findDelegations", "mintMountToken", "pathlessResolver", "removeMountToken", "unmountClaim", "LABEL_FLEET", "LABEL_RUN", "sandboxName", "sandboxStatus", "sweepSandboxes"];
 

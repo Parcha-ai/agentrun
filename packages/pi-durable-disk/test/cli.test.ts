@@ -36,7 +36,7 @@ async function said(argv: string[]): Promise<{ code: number; err: string }> {
 
 // A run up to its duration flags; its directory cannot be made, so a run that got past its flags stops there, before it
 // opens anything.
-const RUN = ["run", "--dir", "/proc/pda-no-such-dir/r1", "--app", "a.ts"];
+const RUN = ["run", "--dir", "/dev/null/r1", "--app", "a.ts"];
 const UNIT_FLAGS: [string[], string][] = ["park-threshold", "park-idle", "drain-timeout"].map((f) => [RUN, f] as [string[], string]);
 
 test("every duration flag whose name carries no unit refuses a bare number, with the hint, before the command does anything", async () => {
