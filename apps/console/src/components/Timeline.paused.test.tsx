@@ -107,13 +107,23 @@ describe("the timeline, the pause row the server writes for a request the spend 
     expect(lis[1].textContent).toContain(WAITING);
   });
 
-  it("after a raise: the same row, the same look, and no waiting row; the raise's message follows it", () => {
-    const raised = row({ id: "u2", seq: 3, kind: "user_message", summary: "The cap was raised to $2; continue the task.", text: "The cap was raised to $2; continue the task." });
-    const lis = draws([pausedRow(), raised], true);
-    expect(lis[0].textContent).toContain(PAUSED_SAYS);
-    expect(lis[0].querySelector(".lucide-circle-pause")).not.toBeNull();
-    expect(warning(lis[0])).toBe(false);
-    expect(red(lis[0])).toBe(false);
+  it("after a raise: the same row, the same look, and no waiting row; the server's raise message follows it as AgentRun's", () => {
+    // As served: the person's message, the pause row, then the server's own message for the raise (origin "server").
+    const asked = row({ id: "u1", seq: 1, kind: "user_message", summary: "Write one.", text: "Write one." });
+    const RAISED = "The cap was raised to $2; continue the task.";
+    const raised = row({ id: "u2", seq: 3, kind: "user_message", origin: "server", summary: RAISED, text: RAISED });
+    const lis = draws([asked, pausedRow(), raised], true);
+    expect(lis).toHaveLength(3);
+    expect(lis[0].textContent).toContain("You");
+    expect(lis[1].textContent).toContain(PAUSED_SAYS);
+    expect(lis[1].querySelector(".lucide-circle-pause")).not.toBeNull();
+    expect(warning(lis[1])).toBe(false);
+    expect(red(lis[1])).toBe(false);
+    // The raise's message is the server's: AgentRun, not You, muted.
+    expect(lis[2].textContent).toContain("AgentRun");
+    expect(lis[2].textContent).not.toContain("You");
+    expect(titleOf(lis[2])?.textContent).toBe(RAISED);
+    expect(titleOf(lis[2])?.className).toContain("text-muted-foreground");
     expect(lis.some((li) => (li.textContent ?? "").includes("Waiting for you"))).toBe(false);
     expect(lis.some((li) => (li.textContent ?? "").includes("Paused at cap"))).toBe(false);
   });
