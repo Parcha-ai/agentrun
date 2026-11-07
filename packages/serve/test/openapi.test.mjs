@@ -186,6 +186,9 @@ test("the contract's operations are as vendored; this server's own are added and
   // contract's components are as vendored.
   const components = structuredClone(doc.components);
   const marked = [];
+  // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
+  // (RUN_FIELDS_SENT) may be, so a required addition anywhere else still fails this comparison.
+  const unrequired = [];
   const notes = [];
   const strip = (schema, at) => {
     for (const [field, property] of Object.entries(schema.properties ?? {})) {
@@ -220,7 +223,10 @@ test("the contract's operations are as vendored; this server's own are added and
       inner(property, `${at}.${field}`);
       delete schema.properties[field];
       // One this server always sends is required beside the contract's (RUN_FIELDS_SENT): taken out with it.
-      if (schema.required?.includes(field)) schema.required = schema.required.filter((name) => name !== field);
+      if (schema.required?.includes(field)) {
+        schema.required = schema.required.filter((name) => name !== field);
+        unrequired.push(`${at}.${field}`);
+      }
       marked.push(`${at}.${field}`);
     }
   };
@@ -247,6 +253,7 @@ test("the contract's operations are as vendored; this server's own are added and
   // A security scheme this server adds is its own, marked (the owner's session that approving a note takes).
   for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
+  assert.deepEqual(unrequired.sort(), ["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)).sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });
