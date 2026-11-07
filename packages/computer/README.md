@@ -756,7 +756,7 @@ So the provider pushes it in at create and starts it as a long-lived command, an
    to the daemon's user (mode 700, never through a symbolic link), sets `no_new_privs` and empties the capability
    bounding set on every thread, so a setuid program such as `sudo` cannot raise it, then becomes uid and gid 1000
    with no supplementary groups and empties the inheritable set. The provider relies on no privilege tool of the
-   snapshot's: Daytona's default snapshot has BusyBox's `setpriv`, which has no `--reuid`. The provider never deletes
+   snapshot's: the first live start failed on the snapshot's `setpriv`, and the daemon's own drop replaced it. The provider never deletes
    that session: deleting it ends init.
 4. `connect()` starts `computerd stdio` as root the same way, in a session of its own, to reach a socket in a
    directory that is the daemon's user's alone; it only carries bytes. Init and the bridge each check the daemon's
