@@ -230,6 +230,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		const refs: Array<{ ref: ComputerRef; by: ComputerProvider }> = [];
 		const connections: ComputerConnection[] = [];
 		let started: Promise<StartedFixture> | undefined;
+		/** The fixture's stop, set as soon as it is launched: one that never logs ready is stopped as well. */
+		let stopFixture: (() => Promise<void>) | undefined;
 		let dirs = 0;
 		// Set when the case ends: what a provider call gives after that is ended at once, not left to the case.
 		let ended = false;
@@ -321,7 +323,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (fixture === undefined) {
 						return t.skip("no fixture was given: --fixture names computerd-fixture for a desktop, or the fixture APK for an Android phone");
 					}
-					started ??= startFixture(t, fixture);
+					started ??= startFixture(t, fixture, (stop) => {
+						stopFixture = stop;
+					});
 					return started;
 				},
 				fetch: (url, init) => fetcher(url, { ...init, signal: init?.signal ?? caseSignal }),
@@ -395,8 +399,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		} finally {
 			ended = true;
 			clearTimeout(timeout);
-			// The fixture is stopped while the case's connection is still open; a stop that fails is not the case's verdict.
-			if (started !== undefined) await bounded(started.then((one) => one.stop()).catch(() => {}), CLOSE_MS);
+			// The fixture is stopped while the case's connection is still open, whether or not it logged ready; a start still
+			// launching is given CLOSE_MS to launch or fail first. A stop that fails is not the case's verdict.
+			if (started !== undefined) {
+				if (stopFixture === undefined) await bounded(started.catch(() => {}), CLOSE_MS);
+				if (stopFixture !== undefined) await bounded(stopFixture().catch(() => {}), CLOSE_MS);
+			}
 			for (const connection of connections) await bounded(connection.close().catch(() => {}), CLOSE_MS);
 			for (const { ref, by } of refs) await release(ref, by);
 		}

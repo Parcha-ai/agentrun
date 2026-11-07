@@ -532,7 +532,7 @@ installed with `apps.install` and launched, logging to its files directory, with
 `ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
 button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
 contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
-fixture is stopped when its case ends. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
 `no way to observe the effect: declare files or apps.ui_tree`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
