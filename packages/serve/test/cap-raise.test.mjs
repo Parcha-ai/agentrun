@@ -328,7 +328,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const run = await view(api, run_id);
     assert.deepEqual([run.status, run.error, run.pending], ["completed", null, null], JSON.stringify(run));
     assert.deepEqual(said(rows), ["go", CONTINUE("$1"), WRAP_UP("$1"), "Once more."]);
-    assert.equal(rows.filter((row) => row.kind === "error").length, 1, `one error row, the paused turn's refusal: ${JSON.stringify(rows.filter((row) => row.kind === "error"))}`);
+    assert.deepEqual(rows.filter((row) => row.kind === "error" || row.paused === true).map((row) => row.kind), ["phase"], `no error row, and one pause row, the paused turn's refusal: ${JSON.stringify(rows.filter((row) => row.kind === "error" || row.paused === true))}`);
   });
 }
 

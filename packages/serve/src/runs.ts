@@ -15,7 +15,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -661,17 +661,29 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
 /** The row a run shows while its harness installs for it (harness-install.ts), since `at`. */
 const installRow = ({ at, words }: { at: string; words: string }): TimelineEvent => ({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 
-/** The waiting row of a run paused at its cap, after the refusal's error row: "Waiting for you to raise the cap", and no
+/** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
+ *  its id the refusal's with NOTE_SUFFIX, so it is no message: isMessageRow), marked `paused`, never an error row. The
+ *  refusal's sentence is the pause's (pending.said), which a client shows once, as its banner. */
+const BUDGET_PAUSED = "Paused at the run's cap";
+/** The waiting row of a run paused at its cap, after the refusal's row: "Waiting for you to raise the cap", and no
  *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
 const BUDGET_WAITING = "Waiting for you to raise the cap";
 function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
-  const at = rows.findLastIndex((row) => row.kind === "error");
+  const at = rows.findLastIndex((row) => row.paused === true);
   if (at < 0) return [...rows];
-  // The refusal's own marker (`paused`, servedError) stays on the refusal's row: the waiting row is no refusal.
-  const { paused: _marker, ...error } = rows[at]!;
-  const paused: TimelineEvent = { ...error, id: `${error.id}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+  // The refusal's own marker (`paused`, servedError) and the server's origin stay on the refusal's row: the waiting row
+  // is no refusal and no row of the server's, and keeps the id it had, the refusal's own with ":paused".
+  const { paused: _marker, origin: _origin, ...refusal } = rows[at]!;
+  const own = refusal.id.endsWith(NOTE_SUFFIX) ? refusal.id.slice(0, -NOTE_SUFFIX.length) : refusal.id;
+  const paused: TimelineEvent = { ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
   return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
 }
+/** Whether an error row of `run`'s is a refusal for room it paused at: one in an agentic run's own turn (decide never
+ *  fails that run on it; it waits for a raise, pausedAt), now or before a raise. Read from the row and the run's kind
+ *  alone, never from its status, so a row reads the same live, on a full re-read and from a server started again. A
+ *  workflow's refusal and the end-of-run turn's (learning: the run has ended) pause nothing; a refusal no cap fixes is
+ *  no refusal for room. */
+const pausedOn = (run: Pick<Run, "kind">, row: TimelineEvent): boolean => run.kind === "agentic" && row.agent_label !== LEARNING_LABEL && roomRefusal(row.text ?? undefined) !== undefined;
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
  *  last meaningful row is its answer when that row is one, a final answer's or a text row's. */
 const importAnswerOf = (rows: readonly TimelineEvent[]) => {
@@ -1495,18 +1507,20 @@ export class Runs {
     return text ? this.shown(run, this.plainKey(run, text) ?? text) : text;
   }
 
-  /** An error row as served: its summary and text in errorWords' terms. The run's own rows, which its status reads, keep
-   *  what the harness said. */
+  /** An error row as served: its summary and text in errorWords' terms, or the pause's phase row of a refusal for room the
+   *  run paused at. The run's own rows, which its status reads, keep what the harness said. */
   private servedError(run: Run, row: TimelineEvent): TimelineEvent {
-    // A refusal for room pauses the run (pausedAt), and its row says so (`paused`): the request was not sent, and a raise
-    // goes on, so it reads as a pause, never as a failure. Every refusal for room pauses, so the row keeps it after a raise.
-    const paused = roomRefusal(row.text ?? undefined) !== undefined ? { paused: true as const } : {};
+    // A refusal for room the run paused at (pausedOn) is a pause, never a failure: the request was not sent, and a raise
+    // goes on. Its row is a phase row in short words, marked `paused`; the refusal's sentence is the banner's
+    // (pending.said), never said again here. It is the server's row (origin server), and no message: its id ends in
+    // NOTE_SUFFIX, which isMessageRow passes over, as the wrap-up's does. It stays so after a raise, as the run's history.
+    if (pausedOn(run, row)) return { ...row, id: `${row.id}${NOTE_SUFFIX}`, kind: "phase", origin: "server", summary: BUDGET_PAUSED, text: BUDGET_PAUSED, paused: true };
     const plain = this.plainKey(run, row.text ?? undefined);
     if (plain) {
       const words = this.shown(run, plain);
-      return { ...row, summary: words, text: words, ...paused };
+      return { ...row, summary: words, text: words };
     }
-    return { ...row, ...(row.summary ? { summary: this.shown(run, row.summary) } : {}), ...(row.text ? { text: this.shown(run, row.text) } : {}), ...paused };
+    return { ...row, ...(row.summary ? { summary: this.shown(run, row.summary) } : {}), ...(row.text ? { text: this.shown(run, row.text) } : {}) };
   }
 
   /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
