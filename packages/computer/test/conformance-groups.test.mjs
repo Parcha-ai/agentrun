@@ -207,6 +207,9 @@ test("checkActions counts every duration toward the batch's cap and bounds a key
 	assert.deepEqual(failure([{ type: "pinch", at: [1, 1], scale: 2, ms: MAX_BATCH_WAIT_MS + 1 }]), [0, "limit"]);
 	assert.deepEqual(failure([{ type: "hold", keys: ["shift"], ms: 1 }, { type: "long_press", at: [1, 1], ms: MAX_BATCH_WAIT_MS }]), [1, "limit"]);
 	assert.equal(checkActions([{ type: "long_press", at: [1, 1], ms: MAX_BATCH_WAIT_MS }], all), undefined, "a long press of the whole cap is allowed");
+	// An ms on an action that has no duration is not counted: a negative one cannot buy back time (review: extra durations).
+	assert.deepEqual(failure([{ type: "key", keys: ["a"], ms: -300_001 }, { type: "wait", ms: 600_001 }]), [1, "limit"]);
+	assert.deepEqual(failure([{ type: "click", at: [1, 1], ms: -1 }, { type: "wait", ms: MAX_BATCH_WAIT_MS + 1 }]), [1, "limit"]);
 	assert.equal(MAX_KEY_REPEAT, 100);
 	assert.deepEqual(failure([{ type: "key", keys: ["a"], repeat: 1e9 }]), [0, "limit"]);
 	assert.deepEqual(failure([{ type: "key", keys: ["a"], repeat: MAX_KEY_REPEAT + 1 }]), [0, "limit"]);
