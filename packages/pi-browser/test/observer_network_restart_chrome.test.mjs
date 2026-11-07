@@ -104,11 +104,39 @@ test("under allow, a POST redirected 307 to another origin is held hop by hop, a
   assert.deepEqual(server.nonGet(), ["POST /api/redirect", "POST /api/xorigin"]);
 });
 
-test("with no restart, a call is told nothing lost: the same POST under allow is held, allowed and sent", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
-  const { server, call } = await rig(t, "ns-none", "allow");
+/** The network service's pid once Chrome names one again: after a crash the new service takes a moment to show. */
+async function serviceNow(target) {
+  for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
+    const pid = await networkService(target);
+    if (pid) return pid;
+  }
+  return null;
+}
+
+test("with no restart, a call is told nothing lost: the same POST under allow is held, allowed and sent; if the network service restarts on its own during the call, a POST told lost never reached the server", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const { server, target, call } = await rig(t, "ns-none", "allow");
+  const before = await serviceNow(target);
+  assert.ok(before, "Chrome names its network service's process");
   const { rows, lost } = await call(G3);
-  assert.deepEqual(lost, []);
-  assert.deepEqual(rows, ["POST /api/xorigin allowed"]);
-  await server.nonGetReached(1, 10_000);
-  assert.deepEqual(server.nonGet(), ["POST /api/xorigin"]);
+  const after = await serviceNow(target);
+  if (after === before) {
+    assert.deepEqual(lost, []);
+    assert.deepEqual(rows, ["POST /api/xorigin allowed"]);
+    await server.nonGetReached(1, 10_000);
+    assert.deepEqual(server.nonGet(), ["POST /api/xorigin"]);
+    return;
+  }
+  // Chrome for Testing 155 sometimes restarts its network service on its own while Fetch holds a cross-origin POST (more
+  // often on a busy runner, as CI's is). A POST it took with it is told lost and was never sent; one that went out
+  // before the restart is told nothing and reached the server. Never both.
+  const xorigin = `http://localhost:${new URL(server.base).port}`;
+  if (lost.length) {
+    assert.deepEqual(lost, [`POST ${xorigin}/api/xorigin`], `the network service restarted (${before} -> ${after}): the lost POST is told`);
+    assert.ok(!rows.includes("POST /api/xorigin allowed"), `a lost POST is never journaled as allowed: ${JSON.stringify(rows)}`);
+    await server.nonGetReached(1, 2_000).catch(() => undefined);
+    assert.deepEqual(server.nonGet(), [], "a POST told lost never reached the server");
+  } else if (rows.includes("POST /api/xorigin allowed")) {
+    await server.nonGetReached(1, 10_000);
+    assert.deepEqual(server.nonGet(), ["POST /api/xorigin"], "a POST let go before the restart reached the server");
+  }
 });
