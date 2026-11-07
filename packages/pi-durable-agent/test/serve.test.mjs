@@ -577,7 +577,7 @@ test("a store that is not a store, or one from a newer pi-durable, is a plain 50
     db.close();
     const newer = await request(served.url, { target: "/api/runs/holder" });
     assert.equal(newer.status, 500);
-    assert.match(JSON.parse(newer.body).error, /pi-durable schema 3; this version reads 2/);
+    assert.match(JSON.parse(newer.body).error, /pi-durable schema 3; this version reads 1 and 2/);
     assert.ok(!newer.body.includes(seeded.dir), "no path in the answer");
     const agent = new DatabaseSync(path.join(seeded.home.dir, "agent.sqlite"));
     agent.exec("UPDATE durable_schema SET version = 3");
