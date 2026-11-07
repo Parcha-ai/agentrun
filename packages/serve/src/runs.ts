@@ -1212,6 +1212,10 @@ export class Runs {
       run.error = { code: "run_failed", message: UNREADABLE_RUN_META, retryable: false };
       run.meta.unshown = true;
     }
+    // An ended run whose serve.json was damaged since: withheld as an ended run whose sign-in does not open is (below:
+    // no store read, no answer, output or error words), on the same terms. It ended as it ended: nothing is stopped or
+    // failed, and nothing is saved, so its words are shown again only once serve.json reads (each server decides anew).
+    if (row.state !== "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) run.meta.unshown = true;
     // A run still going whose agent's browser sign-in does not open under this server's seal key: whatever it said, or
     // says, could repeat the pointer, which nothing here can cut. Its rows are never read, and it ends failed, saying
     // why: a live process is stopped (below), one already gone is never opened again.
@@ -1576,7 +1580,10 @@ export class Runs {
   /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
    *  this server's secrets and tokens and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
    *  when that can't be read back here, as a load would hide the run. */
-  private async rowShown(agentId: string, meta: Partial<RunMeta> | null): Promise<((text: string) => string) | "withheld"> {
+  private async rowShown(agentId: string, meta: Partial<RunMeta> | null, damaged = false): Promise<((text: string) => string) | "withheld"> {
+    // Its serve.json there but unreadable: what it was handed went with it (load hides such a run, its revision granting
+    // the browser; a list row, which reads no revision, withholds it whatever its revision).
+    if (damaged) return "withheld";
     const browser = isObject(meta?.tool_plane) ? keptVendor(meta.tool_plane as Plane).browser : undefined;
     const handed = meta?.sign_in_handed === true || (typeof meta?.sign_in_handed === "string" && /^[0-9a-f]{64}$/.test(meta.sign_in_handed)) ? meta.sign_in_handed : undefined;
     const pointers = await this.handedPointers(agentId, browser, handed);
@@ -3914,7 +3921,8 @@ export class Runs {
     const review = reviewOfRow(row, meta);
     // Its error and review are the run's words (its error can quote what it said; an escalation's reason is its own):
     // cut as its view's are, or withheld when the pointer they could hold can't be read back here.
-    const shown = failed || review ? await this.rowShown(row.agent, meta) : undefined;
+    const damaged = meta === null || !isObject(meta) ? existsSync(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META)) : false;
+    const shown = failed || review ? await this.rowShown(row.agent, isObject(meta) ? meta : null, damaged) : undefined;
     const say = (text: string) => (shown === "withheld" ? WITHHELD_SIGN_IN : shown!(text));
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, console_url: runLink(origin, row.id), revision: row.revision, kind: row.kind, sha: null,

@@ -1487,3 +1487,27 @@ test("an escalated run handed a sign-in that can't be read back has its review's
   assert.equal((await api("GET", `/runs/${runId}`)).body.review?.reason, withheld, "its view");
   assert.deepEqual(await reasons(), [withheld, withheld], "held now");
 });
+
+test("an ended run whose serve.json is damaged after it ended is withheld: whether it was handed a sign-in went with that file", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  await follow(first.api, runId, ["completed"], { deadlineMs: 60_000 });
+  await first.close();
+  await writeFile(join(runDir(first.data, runId), "serve.json"), "{\"title\": \"Browse");
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", `/runs/${runId}/timeline`)).body), JSON.stringify((await api("GET", "/runs")).body), JSON.stringify((await api("GET", "/agents/alpha/runs")).body)]) {
+    assert.ok(!shown.includes(ref), shown);
+    assert.ok(!shown.includes("I kept"), shown);
+  }
+  assert.deepEqual([view.status, view.result?.final_answer ?? null], ["completed", null], "it ended as it ended; its words withheld");
+});
