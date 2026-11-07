@@ -507,3 +507,91 @@ test("once the connection has closed, input leaves the disconnect notice alone: 
     assert.equal(after.hidden, false);
   }
 });
+
+test("a view-only viewer: ready with readOnly shows 'view only', turns its controls off and sends nothing but its hello; no_page says 'No page yet' until a page or a frame comes", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-ro", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const viewer = await openTab(attached.sdkCdpUrl, `${web.base}/v/${web.id}#t=${TOKEN}`);
+  tabs.push(viewer);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "idle", readOnly: true });
+  const state = () => viewer.evaluate(`({ drive: document.getElementById("drive").textContent, url: document.getElementById("url").disabled, back: document.getElementById("back").disabled, notice: document.getElementById("notice").hidden ? "" : document.getElementById("notice").textContent })`);
+  assert.ok(await until(async () => (await state()).drive === "view only"), "it says view only");
+  assert.deepEqual([(await state()).url, (await state()).back], [true, true], "its address bar and buttons are off");
+  web.send({ type: "no_page" });
+  assert.ok(await until(async () => /No page yet/.test((await state()).notice)), "no page yet");
+  // The agent acting and done in the meantime leaves it: only a page or a frame clears it.
+  web.send({ type: "status", drive: "agent" });
+  web.send({ type: "status", drive: "idle" });
+  await settle(200);
+  assert.match((await state()).notice, /No page yet/, "status messages leave 'No page yet' up");
+  // Nothing the person does is sent: a key, a click, the address bar.
+  await viewer.evaluate(`document.getElementById("sink").focus()`);
+  await viewer.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", text: "a", windowsVirtualKeyCode: 65 });
+  await viewer.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+  const box = await viewer.evaluate(`(() => { const r = document.getElementById("screen").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await viewer.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  await viewer.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  await settle(300);
+  assert.deepEqual(web.received, [{ type: "hello", token: TOKEN }], "the hello alone");
+  web.send({ type: "page", url: "https://example.com/", title: "Example" });
+  assert.ok(await until(async () => (await state()).notice === ""), "a page clears it");
+});
+
+test("no_page clears the canvas and drops the frame waiting; a decode begun before it neither paints nor takes 'No page yet' down; a frame after it draws as before", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-np", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  assert.ok(attached, "the browser answered attach");
+  const open = async (url) => { const tab = await openTab(attached.sdkCdpUrl, url); tabs.push(tab); return tab; };
+  // Frames the viewer can decode, one per colour: Chrome makes them.
+  const maker = await open("about:blank");
+  const jpegOf = async (colour) => Buffer.from(await maker.evaluate(`(async () => { const c = new OffscreenCanvas(200, 100); const g = c.getContext("2d"); g.fillStyle = ${JSON.stringify(colour)}; g.fillRect(0, 0, 200, 100); const b = await c.convertToBlob({ type: "image/jpeg", quality: 0.9 }); const a = new Uint8Array(await b.arrayBuffer()); let s = ""; for (const x of a) s += String.fromCharCode(x); return btoa(s); })()`), "base64");
+  const [red, green, blue] = [await jpegOf("#ff0000"), await jpegOf("#00ff00"), await jpegOf("#0000ff")];
+
+  const viewer = await open(`${web.base}/v/${web.id}#t=${TOKEN}`);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  const pixel = () => viewer.evaluate(`Array.from(document.getElementById("screen").getContext("2d").getImageData(100, 50, 1, 1).data)`);
+  const notice = () => viewer.evaluate(`document.getElementById("notice").hidden ? "" : document.getElementById("notice").textContent`);
+  web.send({ type: "ready", drive: "idle" });
+  web.send({ type: "page", url: "https://one.example/", title: "One" });
+  web.sendFrame(red, 1000, 500);
+  assert.ok(await until(async () => (await pixel())[0] > 200), "the first page's frame was drawn");
+
+  // From here a decode waits until the test lets it finish: one in flight across no_page, and one waiting behind it.
+  await viewer.evaluate(`(() => { window.__real = window.createImageBitmap; window.__held = []; window.createImageBitmap = (blob) => new Promise((resolve, reject) => window.__held.push(() => window.__real(blob).then(resolve, reject))); })()`);
+  web.sendFrame(green, 1000, 500);
+  assert.ok(await until(() => viewer.evaluate(`window.__held.length === 1`)), "a decode is in flight");
+  web.sendFrame(green, 1000, 500);
+  await settle(200);
+  web.send({ type: "no_page" });
+  assert.ok(await until(async () => /No page yet/.test(await notice())), "no page yet");
+  assert.deepEqual(await pixel(), [0, 0, 0, 0], "the old page's picture is cleared");
+
+  await viewer.evaluate(`window.__held.shift()()`);
+  await settle(500);
+  assert.deepEqual(await pixel(), [0, 0, 0, 0], "the decode begun before no_page paints nothing");
+  assert.match(await notice(), /No page yet/, "nor takes 'No page yet' down");
+  assert.equal(await viewer.evaluate(`window.__held.length`), 0, "the frame that was waiting was dropped, not decoded");
+
+  // A new page's frame draws and takes the notice down, as before.
+  await viewer.evaluate(`window.createImageBitmap = window.__real`);
+  web.sendFrame(blue, 1000, 500);
+  assert.ok(await until(async () => (await pixel())[2] > 200), "a frame after no_page is drawn");
+  assert.equal(await notice(), "", "and takes 'No page yet' down");
+});
