@@ -219,10 +219,12 @@ const browserTool: ToolEntry = {
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
+      import("@parcha/pi-browser/live-view"),
+      import("./browser-live.js"),
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
@@ -241,9 +243,21 @@ const browserTool: ToolEntry = {
         };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
     const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
+    // The owner's live view (browser-live.ts): pi-browser's own viewer, read-only, on a loopback port of this process's,
+    // over every provider (the handed one, the run's own), on the same person/model registry as the toolset; framed by
+    // the console's own origin alone.
+    const gates = createDrivingGates();
+    const view = createLiveView({ hostOrigin: "'self'", gates, readOnly: true });
+    const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
-      return handedProvider as never;
+      return watched as never;
+    };
+    // Each session's viewer reaches the server in the run's directory, never work/: written as it launches, gone as it ends.
+    const onSession = async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => {
+      if (change === "released") return live.dropHandover(host.where.root, row.session.tag);
+      const handover = row.liveView ? live.handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
+      if (handover) await live.writeHandover(host.where.root, handover);
     };
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
@@ -255,13 +269,18 @@ const browserTool: ToolEntry = {
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     const saved = kept?.save
-      ? { onSession: (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 })) }
-      : {};
+      ? (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 }))
+      : undefined;
+    // Both hosts of a session's changes: the live view's hand-over, and the sign-in's saved mark.
+    const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
+      saved?.(row, change);
+      await onSession(row, change);
+    };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, signIns: kept !== undefined, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -281,13 +300,19 @@ const browserTool: ToolEntry = {
       await spend.reopened(harness, browser.docs, context);
     });
     host.beforeRelease(async (harness) => {
-      if (refused) return;
-      const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
-      for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
-        const conversation = await harness.conversation(id as never, context);
-        if (conversation) await browser.release(conversation as never, "close", context);
+      try {
+        if (refused) return;
+        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+        for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
+          const conversation = await harness.conversation(id as never, context);
+          if (conversation) await browser.release(conversation as never, "close", context);
+        }
+        await browser.drain(harness as never, context);
+      } finally {
+        // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it.
+        await view.close();
+        await live.dropHandover(host.where.root);
       }
-      await browser.drain(harness as never, context);
     });
     return { tools, extensions: [extension] };
   },

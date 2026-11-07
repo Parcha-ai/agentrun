@@ -23,6 +23,7 @@ import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
+import { dropHandover } from "./browser-live.js";
 import { DATA_ENV, dataOfRun, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
 import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
@@ -1232,6 +1233,8 @@ export class Runs {
         run.cancel = true;
         run.finishing = "cancelled";
       }
+      // A process an earlier server started that is gone took its browser's view with it.
+      if (!lives) void dropHandover(dir).catch(() => undefined);
       if (run.meta.unshown && !lives && !run.outcome) {
         // Its process gone: never opened again. The start's recovery settles it, failed (settleOnce reads `finishing`).
         run.error ??= { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
@@ -1453,6 +1456,13 @@ export class Runs {
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
   private live(run: Run): boolean {
     return Boolean(run.child || run.orphan);
+  }
+
+  /** Whether run `id` has a process serving it now: the child this server started, or an adopted one that is alive. A
+   *  run's live browser view is that process's alone (browser-live.ts). */
+  hasProcess(id: string): boolean {
+    const run = this.runs.get(id);
+    return Boolean(run && ((run.child && run.child.exitCode === null && run.child.signalCode === null) || (run.orphan && alive(run.orphan))));
   }
 
   /** How an agentic run ends: over its cap, or as the turn of the person's newest message ended (turns.ts), once every
@@ -1708,6 +1718,8 @@ export class Runs {
       clearInterval(timer);
       run.orphan = undefined;
       run.orphanHolder = undefined;
+      // Its live browser view went with the process (browser-live.ts).
+      void dropHandover(run.dir).catch(() => undefined);
       void this.settle(run, null, !holderLives(holder) && !released);
     };
     const timer = setInterval(() => {
@@ -2599,6 +2611,9 @@ export class Runs {
         run.child = undefined;
         run.door = undefined;
       }
+      // Its live browser view went with it, however it ended (browser-live.ts): a process killed before it let its
+      // sessions go leaves its hand-over behind, naming a port another listener may take.
+      void dropHandover(run.dir).catch(() => undefined);
       this.reportedBack(run);
       void this.settle(run, code, true);
     });
