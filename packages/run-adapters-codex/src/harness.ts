@@ -34,6 +34,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
+import { outputTextOf } from './scripts.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
@@ -1247,6 +1248,13 @@ export function owedSubmissions(state: SessionState, placed: string[], clientIds
     .filter((s): s is Submission => !!s && (s.kind === 'prompt' || s.kind === 'steer' || s.kind === 'followUp'));
 }
 
+/** `text`, then a line saying how many images the recorded `output` held, when it held any: they are not shown again. */
+function withImagesNoted(text: string, output: unknown): string {
+  const images = (output as { images?: unknown } | null)?.images;
+  const count = Array.isArray(images) ? images.length : 0;
+  return count ? `${text}\n\nIt also returned ${count} image${count === 1 ? '' : 's'} (not shown again after the interruption).` : text;
+}
+
 /**
  * The output injected for a call the rollout left dangling, from what the
  * log knows: the committed result (exactly once), the recorded failure, or
@@ -1257,7 +1265,9 @@ export function repairOutput(state: SessionState, call: RolloutCall): string {
   // Input to a running command (unified exec): that process went with the drive that ran it.
   if (!e && call.name === 'write_stdin') return 'Interrupted: the session stopped, and the process this input was for was stopped with it. Check the state its command left before running it again.';
   if (!e) return 'Not executed: the session stopped before this call started. Call it again if it is still needed.';
-  if (e.status === 'completed') return typeof e.output === 'string' ? e.output : JSON.stringify(e.output);
+  // A result with images (kernelTool records { text, images }) is repaired as its text and a line on them: their data never
+  // reaches the model as JSON text. Handing them back as images is not done here yet.
+  if (e.status === 'completed') return withImagesNoted(outputTextOf(e.output), e.output);
   if (recoveryNote(state)?.calls.find((c) => c.callId === call.callId)?.status === 'retryable') return 'Interrupted before it reported a result. It is safe to repeat.';
   if (e.status === 'failed' && e.error) {
     if (e.error.interrupted && e.replay === 'safe') return 'Interrupted before it reported a result. It is safe to repeat.';
