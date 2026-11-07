@@ -22,6 +22,7 @@ const INCARNATION = randomUUID();
 
 export const VisionLooks = defineDocFamily<{ looks: FiledLook[] } & JsonObject, null>({
   kind: 'vision.looks', version: 1, family: true, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ looks: [] }),
+  checkpointWhen: () => false,
 });
 
 const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };

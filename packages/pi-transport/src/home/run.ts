@@ -35,6 +35,7 @@ const HomeDoc = defineDoc<{ root?: string }>({
 	version: 1,
 	scope: "session",
 	initial: () => ({}),
+	checkpointWhen: () => false,
 });
 
 /** Where a session was or is, as a recording names it: its box by a label the host gives, never the provider's id. */
@@ -86,6 +87,7 @@ export const MovesDoc = defineDocFamily<JsonObject, null>({
 	scope: "session",
 	family: true,
 	initial: () => ({}),
+	checkpointWhen: () => false,
 });
 
 /** The record an order's move asks the target to write, or `undefined` when its host sends none or no head is known. */
