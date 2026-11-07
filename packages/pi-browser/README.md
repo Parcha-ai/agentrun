@@ -172,7 +172,8 @@ holds the browser for the person (`drivingGates(tag).take()`) until their `give`
 (2 minutes), or the session's release, and `end` is called once with why (`given`, `answered`, `cap`, `idle`, `away`, `released`). A host gives the
 browser back at its spend cap with `drivingGates(tag).give("cap", words)`: the viewer's `hold` end carries the words as `message`. The viewer is told `hold` as it starts
 and ends; `ready` carries `takeOver: true` and whether it holds now, so a viewer that reconnects within the away window still holds it. While held, every model call
-waits inside its tool (it does not fail; an abort ends the wait with nothing done), then goes on with its old element ids dropped and told plainly that the person had
+waits inside its tool (it does not fail; an abort ends the wait with nothing done), and past the hold's end until the person's last command has returned (a Back
+between reading the history and moving; at most `settleMs`, 10 s, after which that command is let go and moves nothing more), then goes on with its old element ids dropped and told plainly that the person had
 the browser and the page may have changed. Each change of hands moves the gate's epoch (`drivingGates(tag).epoch()`), and a driver a call took before it is refused at
 its next act (a `FenceRefusal`), so an agent action from before the person took over never reaches the page: a `run` of
 several actions has all of them checked against the snapshot first (`checkActions`: a stale id anywhere sends none), then is
