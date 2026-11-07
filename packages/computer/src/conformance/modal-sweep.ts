@@ -3,16 +3,18 @@
 //   node packages/computer/dist/conformance/modal-sweep.js --before <file>
 //   node packages/computer/dist/conformance/modal-sweep.js --after <file>
 //
-// --before records into <file> the id of every sandbox in the app COMPUTER_MODAL_APP that carries the provider's tag
+// --before records into <file> the app and server it listed, and the id of every sandbox in the app COMPUTER_MODAL_APP
+// that carries the provider's tag
 // agentrun.computer=1: sandboxes.list({ appId, tags }) returns those with at least those tags, and running ones only
 // (modal-client@64880502:js/src/sandbox.ts:1116-1159, includeFinished: false), so a finished sandbox is in neither list
-// and needs no sweep. --after lists them again, terminates every one whose id is not in <file>, then reads each of those
+// and needs no sweep. --after refuses a file whose app or server is not the one the environment names now, or that
+// names none, before it lists anything: another app's computers would all read as new. Otherwise it lists them again, terminates every one whose id is not in <file>, then reads each of those
 // back with sandboxes.fromId and poll (sandbox.ts:960-962, 2766-2772; poll is null while it runs) until it reports an
 // exit code, or Modal no longer knows it, up to 60 s each, and prints one JSON line, {"swept":n,"gone":m,"stillThere":
 // [ids]}: swept is every tagged sandbox it found that was not there before, and gone + stillThere.length = swept. A
 // sandbox in <file> is never touched: no call names it. Exit 0 when every swept sandbox has finished, 1 when one still
-// runs, 2 on a usage error, a before file it cannot read, a missing token or app, or a listing Modal refused (nothing
-// is terminated then).
+// runs, 2 on a usage error, a before file it cannot read or of another app or server, a missing token or app, or a
+// listing Modal refused (nothing is terminated then).
 //
 // It reads COMPUTER_MODAL_TOKEN_ID, COMPUTER_MODAL_TOKEN_SECRET, COMPUTER_MODAL_APP and COMPUTER_MODAL_SERVER_URL, and
 // builds its client as the conformance module does (modalClient): the token passed explicitly, the server pinned, an
@@ -21,7 +23,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { COMPUTER_LABEL } from "../drift.js";
 import { isCommand } from "../entry.js";
 import { type ModalSandbox, type ModalSdk, untilFinished } from "../modal.js";
-import { MODAL_ENV, type ModalModuleOptions, modalClient } from "./modal.js";
+import { MODAL_ENV, type ModalModuleOptions, modalClient, modalServerUrl } from "./modal.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
 export interface Writer {
@@ -47,12 +49,14 @@ export interface SweepIo {
 
 const TAG = { [COMPUTER_LABEL]: "1" };
 const USAGE = `usage: node packages/computer/dist/conformance/modal-sweep.js --before <file> | --after <file>
-  --before <file>  record the id of every running sandbox carrying ${COMPUTER_LABEL}=1 in the app into <file>
-  --after <file>   terminate every running sandbox carrying ${COMPUTER_LABEL}=1 in the app whose id is not in <file>,
+  --before <file>  record the app, the server and the id of every running sandbox carrying ${COMPUTER_LABEL}=1 in the app into <file>
+  --after <file>   refuse a <file> of another app or server; else terminate every running sandbox carrying ${COMPUTER_LABEL}=1
+                   in the app whose id is not in <file>,
                    read each back until it has finished (up to 60 s each), and print {"swept":n,"gone":m,"stillThere":[ids]}
   settings: ${MODAL_ENV.tokenId} and ${MODAL_ENV.tokenSecret} (required), ${MODAL_ENV.app} (required) and
             ${MODAL_ENV.serverUrl}, as the conformance module reads them; never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET
-exit: 0 every swept sandbox has finished, 1 one still runs, 2 usage error, unreadable before file, no token or app, or a refused listing`;
+exit: 0 every swept sandbox has finished, 1 one still runs, 2 usage error, unreadable before file or one of another app
+      or server, no token or app, or a refused listing`;
 
 class Usage extends Error {}
 
@@ -96,8 +100,14 @@ function parse(argv: string[]): { mode: "before" | "after"; file: string } {
 	return found;
 }
 
-/** The ids a before file holds, or why it is not one. */
-function beforeIds(file: string): Set<string> {
+/** What a before file holds: the app and server it was listed from, and the ids; or why it is not one. */
+interface Before {
+	app: unknown;
+	serverUrl: unknown;
+	ids: Set<string>;
+}
+
+function readBefore(file: string): Before {
 	let text: string;
 	try {
 		text = readFileSync(file, "utf8");
@@ -110,9 +120,23 @@ function beforeIds(file: string): Set<string> {
 	} catch {
 		record = undefined;
 	}
-	const ids = (record as { ids?: unknown } | null | undefined)?.ids;
+	const { ids, app, serverUrl } = (record ?? {}) as { ids?: unknown; app?: unknown; serverUrl?: unknown };
 	if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && id !== "")) throw new Usage(`${file} is not a before file: it holds no "ids" array of sandbox ids`);
-	return new Set(ids as string[]);
+	return { app, serverUrl, ids: new Set(ids as string[]) };
+}
+
+/**
+ * Why the before file is not of the app and server the environment names now, or undefined when it is. --after takes
+ * every tagged sandbox not in the file as new, so a file of another app, or of the same app name on another server,
+ * would have it terminate every computer there.
+ */
+function otherPlace(file: string, before: Before, app: string, serverUrl: string): string | undefined {
+	const refuse = (why: string) => `${file} ${why}, so nothing was listed or terminated: every computer there would read as new`;
+	if (typeof before.app !== "string" || before.app === "") return refuse(`names no app; it is not a before file of this sweep`);
+	if (typeof before.serverUrl !== "string" || before.serverUrl === "") return refuse(`names no server; it is not a before file of this sweep`);
+	if (before.app !== app) return refuse(`was recorded in the app ${before.app}, and ${MODAL_ENV.app} names ${app} now`);
+	if (before.serverUrl !== serverUrl) return refuse(`was recorded from ${before.serverUrl}, and the sweep would list ${serverUrl} now (${MODAL_ENV.serverUrl})`);
+	return undefined;
 }
 
 /** Every running sandbox in the app carrying the tag, by id, the whole listing within listMs. */
@@ -137,13 +161,19 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	let before: Set<string> | undefined;
 	let app: string;
 	let sdk: ModalSdk;
+	const serverUrl = modalServerUrl(env);
 	try {
 		args = parse(argv);
-		if (args.mode === "after") before = beforeIds(args.file);
+		const recorded = args.mode === "after" ? readBefore(args.file) : undefined;
 		const named = env[MODAL_ENV.app];
 		if (named === undefined || named === "") throw new Error(`the sweep needs ${MODAL_ENV.app} in the environment: the app the run's sandboxes are in`);
 		app = named;
 		sdk = await modalClient({ env, ...(io.ModalClient ? { ModalClient: io.ModalClient } : {}) });
+		if (recorded !== undefined) {
+			const other = otherPlace(args.file, recorded, app, serverUrl);
+			if (other !== undefined) throw new Error(other);
+			before = recorded.ids;
+		}
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n${error instanceof Usage ? `${USAGE}\n` : ""}`);
 		return 2;
@@ -155,7 +185,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	}
 	if (before === undefined) {
 		const ids = listed.value.map((sandbox) => sandbox.sandboxId).sort();
-		writeFileSync(args.file, `${JSON.stringify({ tag: `${COMPUTER_LABEL}=1`, app, at: new Date().toISOString(), ids }, null, 2)}\n`);
+		writeFileSync(args.file, `${JSON.stringify({ tag: `${COMPUTER_LABEL}=1`, app, serverUrl, at: new Date().toISOString(), ids }, null, 2)}\n`);
 		await write(stdout, `${JSON.stringify({ recorded: ids.length, file: args.file })}\n`);
 		return 0;
 	}
