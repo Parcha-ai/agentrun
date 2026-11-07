@@ -2063,13 +2063,12 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   and handed the key of; a tier the run has no model of runs there too), in a session of its own with no tool of its
   own, each call node `via: "tool"` on a tool the agent has, its paid requests booked under
   the `learned_workflow` call, and web_search on the provider's own search where it resolves native, through the run's
-  models. Its model requests are the run's, under its cap and on its timeline as side requests labelled
-  `learned_workflow`: on claude-agent and codex, the harness's requests and the workflow's count against one total, and
-  each holds its worst case in flight where the other's check sees it, and the workflow's go where the harness's go (on
-  OPENROUTER_API_KEY alone, through OpenRouter, by OpenRouter's name for the run's model; claude-agent through the
-  operator's own gateway at ANTHROPIC_BASE_URL, or any harness at an origin its requests could not follow, is offered
-  none, which its pin names in `workflows_off`; opencode takes codex's route). A call a crash cut off is answered interrupted,
-  never run again. The tool gate holds
+  models. Its model requests are the run's, under its cap: on pi, side requests of the run's models labelled
+  `learned_workflow` on its timeline; on claude-agent, codex and opencode, requests on the run's one route, the session's
+  model proxy, under a key of the run's own: the same body rules, provider, key, price and cap as the harness's own
+  requests, booked on the session's records labelled `learned_workflow`. So they go wherever the harness's go (the
+  operator's gateway at ANTHROPIC_BASE_URL or AGENT_MODEL_BASE_URL, OpenRouter, the vendor's API), and every run is
+  offered the workflows its pin names. A call a crash cut off is answered interrupted, never run again. The tool gate holds
   `learned_workflow` like any tool: its settings key is `learned_workflow`, allowed by default (the agent's own graded
   workflow, each node checked), and tool settings may set it to ask (the run parks until an owner answers) or deny.
 

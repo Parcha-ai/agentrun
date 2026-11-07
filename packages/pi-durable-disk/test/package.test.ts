@@ -42,7 +42,7 @@ test("package.json is publishable and points only into what it ships", () => {
   }
   assert.equal(pkg.scripts.prepack, "npm run build", "pack and publish build first");
   assert.equal((pkg as { sideEffects?: unknown }).sideEffects, false, "a bundler may drop the modules an app does not use");
-  assert.ok("./lease" in pkg.exports, "the narrow lease entry");
+  assert.equal("./lease" in pkg.exports, false, "no lease entry");
   assert.deepEqual(pkg.exports["./internals"], { types: "./dist/internals.d.ts", default: "./dist/internals.js" }, "the internals entry");
   assert.equal(pkg.bin["pi-durable-disk"], "./dist/cli.js");
   for (const file of ["README.md", "CHANGELOG.md", "LICENSE", "NOTICE"]) {
@@ -64,7 +64,7 @@ test("the build is JavaScript with no .ts import left", async () => {
   assert.equal(rewrite.status, 0, rewrite.stderr);
 
   const emitted = [...walk(dist)].map((f) => relative(dist, f));
-  for (const file of ["index.js", "index.d.ts", "lease.js", "internals.js", "internals.d.ts", "cli.js", "claim.js", "watchdog.js"]) assert.ok(emitted.includes(file), `${file} is emitted`);
+  for (const file of ["index.js", "index.d.ts", "internals.js", "internals.d.ts", "cli.js", "claim.js", "run.js"]) assert.ok(emitted.includes(file), `${file} is emitted`);
   assert.ok(emitted.every((f) => /\.(js|d\.ts)$/.test(f)), `only .js and .d.ts: ${emitted.filter((f) => !/\.(js|d\.ts)$/.test(f))}`);
   const relativeTs = /(?:from|import\(|import)\s*["']\.{1,2}\/[^"']*\.ts["']/;
   for (const file of emitted) assert.ok(!relativeTs.test(readFileSync(join(dist, file), "utf8")), `${file} still imports a .ts file`);

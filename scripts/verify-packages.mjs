@@ -67,8 +67,6 @@ const forbid = [
 // copy, so a reader of the tarball can check what was copied; no other package may carry it.
 const allowedExtraFiles = {
   'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
-  // The learning repository's contract ships with its checker.
-  learn: ['package/SPEC.md'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
@@ -144,7 +142,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'computer', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'decisions', 'computer', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -319,7 +317,6 @@ import { join } from 'node:path';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import * as pi from '@parcha/agentrun-pi';
 import * as archil from '@parcha/pi-durable-disk';
-import * as archilLease from '@parcha/pi-durable-disk/lease';
 import * as archilInternals from '@parcha/pi-durable-disk/internals';
 import * as browser from '@parcha/pi-browser';
 import * as browserAgent from '@parcha/pi-browser/coding-agent';
@@ -338,7 +335,6 @@ import * as agentHome from '@parcha/pi-durable-agent';
 import * as gitRemote from '@parcha/pi-git-remote';
 import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
 import * as agentLearn from '@parcha/pi-agent-learn';
-import * as learnCheck from '@parcha/agentrun-learn';
 import * as decisions from '@parcha/agentrun-decisions';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
@@ -381,7 +377,7 @@ let disposed=false;
 const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async options=>({session:{subscribe(){return()=>{};},async abort(){},dispose(){disposed=true;},async prompt(){await options.customTools.find(t=>t.name==='submit').execute('submit',{value:{total:5}});}}})});
 assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
 assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
-assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archilLease.openRunLease,'function'); assert.equal(typeof archilLease.leaseParkTarget,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false); assert.equal('supervise' in archilLease,false);
+assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archil.localRun,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false);
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
@@ -405,11 +401,10 @@ assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWor
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
-{ const draft={v:2,name:'w',schemas:{S:{type:'object'}},output:{schemaId:'S'},root:{node:'agent',label:'a',instructions:'Do it.',out:'S',as:'a',tools:['bash']}}; const changes=[{path:'workflows/w/workflow.json',status:'added',bytes:Buffer.from(JSON.stringify(draft))},{path:'AGENTS.md',status:'modified',bytes:Buffer.from('x')}]; assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes}).problems.map(p=>p.rule),['no_tool_list','locked','memo_missing']); assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes,tools:['read_page']}).problems.map(p=>p.rule),['workflow','locked','memo_missing']); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,learnCheck:true,decisions:true,adapters:true,harness:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,decisions:true,adapters:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -431,7 +426,6 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
     assert.match(serveNotice, /dist\/console\/THIRD-PARTY-NOTICES\.txt/, "agentrun-serve's NOTICE points to the console's notices");
     receipt.checks.push('The installed agentrun-serve carries the console (dist/console/index.html) and its third-party notices (dist/console/THIRD-PARTY-NOTICES.txt, which NOTICE names); its files passed the same scans.');
   }
-  assert.match((await offlineNode(['node_modules/@parcha/agentrun-learn/dist/cli.js', '--help'])).stdout, /^usage: agentrun-learn check /, 'the installed agentrun-learn bin prints its usage');
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.
   await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
@@ -529,8 +523,7 @@ void [place, kernel];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'adapters-consumer.ts'], consumer);
   await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
-import { openRunLease } from '@parcha/pi-durable-disk/lease';
-const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
+const durable: [typeof openDurableRun, RunRef | undefined] = [openDurableRun, undefined];
 // @ts-expect-error a run reference names its disk.
 const incomplete: RunRef = { region: 'aws-us-east-1', id: 'r1' };
 void [durable, incomplete];

@@ -70,3 +70,30 @@ test("run and status take a local directory only: the Archil flags are unknown o
   assert.equal(status.code, 2);
   assert.match(status.err, /^Unknown option '--disk'/);
 });
+
+// The lease: its file, its watchdog, owner.lock, the seal and the ./lease entry.
+const GONE_LEASE_ROOT = ["StoreBehindSealError", "leaseParkTarget"];
+const GONE_LEASE_INTERNALS = ["isLeaseFresh", "parseRunRecord", "RUN_JSON"];
+
+test("the ./lease entry is gone, and no entry exports the lease, the seal or the lease file's readers", async () => {
+  assert.equal(pkg.exports["./lease"], undefined);
+  assert.ok(!existsSync(`${ROOT}src/lease.ts`), "no lease entry module");
+  assert.ok(!existsSync(`${ROOT}src/watchdog.ts`), "no lease watchdog");
+  const root = await import("../src/index.ts");
+  const internals = await import("../src/internals.ts");
+  assert.deepEqual(GONE_LEASE_ROOT.filter((name) => name in root), []);
+  assert.deepEqual(GONE_LEASE_INTERNALS.filter((name) => name in internals), []);
+  const run = await import("../src/run.ts");
+  assert.deepEqual(["openRunLease", "OWNER_LOCK", "LeaseLapsedError", "StoreBehindSealError", "takeOwnerLock"].filter((name) => name in run), []);
+});
+
+test("run takes its host's epoch: without --epoch it refuses with exit 2, saying so, and the lease flags are unknown options", async () => {
+  const bare = await said(["run", "--dir", "/dev/null/r1", "--app", "a.ts"]);
+  assert.equal(bare.code, 2);
+  assert.match(bare.err, /^--epoch is required: the host that starts a run holds its claim and hands it its epoch \(run --dir PATH --epoch N\)\n/);
+  for (const flag of ["--heartbeat-ms", "--lease-expiry-ms", "--lease-margin-ms"]) {
+    const { code, err } = await said(["run", "--dir", "/dev/null/r1", "--epoch", "1", "--app", "a.ts", flag, "1000"]);
+    assert.equal(code, 2, flag);
+    assert.match(err, new RegExp(`^Unknown option '${flag}'`), flag);
+  }
+});

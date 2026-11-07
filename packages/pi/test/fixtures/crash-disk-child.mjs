@@ -64,7 +64,7 @@ const claim = (ref) => {
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
-    async release() { return { via: 'archil' }; },
+    async release() { return { via: 'none' }; },
   };
 };
 const run = await openDurableRun({ disk: 'dsk-local', region: 'local', id: 'run-1' }, {
