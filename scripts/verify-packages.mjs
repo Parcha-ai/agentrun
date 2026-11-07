@@ -157,7 +157,7 @@ try {
     const names = (await run('tar', ['-tzf', tarball])).stdout.trim().split('\n');
     for (const name of names) {
       assert.ok(name.startsWith('package/') && !name.split('/').includes('..'), `Unsafe archive path in ${manifest.name}`);
-      assert.ok(name.endsWith('/') || (allowedExtraFiles[directory] ?? []).includes(name) || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|bin\/archil-scoped|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
+      assert.ok(name.endsWith('/') || (allowedExtraFiles[directory] ?? []).includes(name) || /^package\/(?:package\.json|README(?:\.md)?|CHANGELOG\.md|LICENSE(?:\.txt|\.md)?|NOTICE(?:\.txt|\.md)?|dist\/.+|schema\/.+|skills\/.+)$/.test(name), `File outside the public package allowlist: ${name}`);
       assert.ok(!/(?:^|\/)(?:\.env(?:\..*)?|node_modules|\.git|\.cascade|\.release|test|tests)(?:\/|$)/.test(name), `Unexpected packed path: ${name}`);
       assert.ok(!/\.(?:pem|key|p12|pfx|map)$/.test(name), `Unexpected packed file: ${name}`);
     }
@@ -381,7 +381,7 @@ let disposed=false;
 const runNode=createPiRunner({model:{},modelRuntime:{},sessionFactory:async options=>({session:{subscribe(){return()=>{};},async abort(){},dispose(){disposed=true;},async prompt(){await options.customTools.find(t=>t.name==='submit').execute('submit',{value:{total:5}});}}})});
 assert.deepEqual(await runNode({kind:'agent',label:'fake',system:[],user:'Return total',schema:workflow.schemas.Result}),{total:5});
 assert.ok(disposed); assert.equal(typeof authorWorkflow,'function');
-assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archilLease.openRunLease,'function'); assert.equal(typeof archilLease.leaseParkTarget,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false); assert.ok(existsSync(archil.ARCHIL_SCOPED)); assert.equal('supervise' in archilLease,false);
+assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archilLease.openRunLease,'function'); assert.equal(typeof archilLease.leaseParkTarget,'function'); assert.equal(typeof archilInternals.runPath,'function'); assert.equal('openRunLease' in archil,false); assert.equal('supervise' in archilLease,false);
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');

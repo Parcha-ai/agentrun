@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { BARRIER, BARRIERS, NORMAL_PRECONDITIONS, STORES, syncNow, type BarrierRow, type StoreRow } from "../src/barriers.ts";
 import { JOURNAL_SYNCHRONOUS, openArchilStore, type Synchronous } from "../src/store.ts";
@@ -136,8 +137,38 @@ const OPENS = /openArchilStore\(|openNodeSqliteStorage\(|openNodeSqliteDatabase\
 const EFFECTFUL = /\.install\(|setProvider\(|syncNow\(/;
 const CALL = /syncNow\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
 
-/** Every way the table and the source disagree. `sources`: file (relative to packages/) to its text. */
-function violations(table: Table, journal: Synchronous, sources: ReadonlyMap<string, string>): string[] {
+/** `text` with every comment blanked (its newlines kept), so a comment that names a barrier or an opener neither
+ *  satisfies nor trips the guard. TypeScript's parser finds them: never a `//` in a string, a template or a regular
+ *  expression. `file` says how to parse it (JavaScript or TypeScript). */
+function withoutComments(text: string, file = "source.ts"): string {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, /\.m?js$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS);
+  const out = text.split("");
+  const blank = (ranges: readonly ts.CommentRange[] | undefined) => {
+    for (const { pos, end } of ranges ?? []) for (let at = pos; at < end; at++) if (out[at] !== "\n" && out[at] !== "\r") out[at] = " ";
+  };
+  // Every comment is trivia around a token: before it (from the line after the token before) or after it on its line.
+  const visit = (node: ts.Node): void => {
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
+    const children = node.getChildren(source);
+    if (children.length === 0) {
+      blank(ts.getLeadingCommentRanges(text, node.pos));
+      blank(ts.getTrailingCommentRanges(text, node.end));
+    }
+    for (const child of children) visit(child);
+  };
+  visit(source);
+  return out.join("");
+}
+
+/** What a comment could meet: a file with none of it is checked as it is, unparsed. */
+const MATCHED = new RegExp([CALL.source, OPENS.source, EFFECTFUL.source].join("|"));
+
+/** Every way the table and the source disagree, read with comments left out: a barrier's call, a hook's await line
+ *  (`via`) or a store's open that is only in a comment counts as missing. `sources`: file (relative to packages/) to its
+ *  text. */
+function violations(table: Table, journal: Synchronous, given: ReadonlyMap<string, string>): string[] {
+  const vias = Object.values(table.barriers).flatMap((row) => (row.via ? [row.via.text] : []));
+  const sources = new Map([...given].map(([file, text]) => [file, MATCHED.test(text) || vias.some((via) => text.includes(via)) ? withoutComments(text, file) : text]));
   const out: string[] = [];
   const called = new Map<string, Set<string>>();
   for (const [file, text] of sources) {
@@ -177,35 +208,6 @@ function violations(table: Table, journal: Synchronous, sources: ReadonlyMap<str
   return out;
 }
 
-/**
- * `text` with its comments blanked (line and block, outside string and template literals), so a comment that names a
- * barrier or an opener neither satisfies nor trips the guard. Line breaks are kept.
- */
-function withoutComments(text: string): string {
-  let out = "";
-  let quote: string | undefined;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]!;
-    if (quote) {
-      out += c;
-      if (c === "\\") out += text[++i] ?? "";
-      else if (c === quote) quote = undefined;
-    } else if (c === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-      out += "\n";
-    } else if (c === "/" && text[i + 1] === "*") {
-      const end = text.indexOf("*/", i + 2);
-      const stop = end < 0 ? text.length : end + 2;
-      out += text.slice(i, stop).replace(/[^\n]/g, " ");
-      i = stop - 1;
-    } else {
-      if (c === '"' || c === "'" || c === "`") quote = c;
-      out += c;
-    }
-  }
-  return out;
-}
-
 function sourcesOf(root: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const pkg of readdirSync(root)) {
@@ -215,7 +217,7 @@ function sourcesOf(root: string): Map<string, string> {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) walk(path);
-        else if (/\.(ts|mts|js|mjs)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) out.set(relative(root, path), withoutComments(readFileSync(path, "utf8")));
+        else if (/\.(ts|mts|js|mjs)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) out.set(relative(root, path), readFileSync(path, "utf8"));
       }
     };
     walk(src);
@@ -262,6 +264,47 @@ describe("the barriers table, held to the source", () => {
       "x/src/c.ts: opens a store or sets its sync, and no store in the table lists it",
       "quiet: listed with no effects, but x/src/q.ts runs a tool, a model or a barrier on it",
     ]);
+  });
+
+  it("a comment meets no check: a via line or a barrier's call that is only in a comment is missing; the same lines as code, beside text that only looks like a comment, pass", () => {
+    const t: Table = {
+      barriers: { hooked: { store: "s", site: "x/src/a.ts", status: "active", why: "", via: { file: "x/src/d.ts", text: "if (hook) await persist(hook);" } } },
+      stores: { s: { opens: ["x/src/a.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
+    };
+    const commented = new Map([
+      ["x/src/a.ts", "openNodeSqliteStorage(f);\n// await syncNow(store, BARRIER.hooked);\n/* syncNow(store, BARRIER.hooked) */"],
+      ["x/src/d.ts", "// if (hook) await persist(hook);\n/**\n * if (hook) await persist(hook);\n */\nconst later = 1;"],
+    ]);
+    assert.deepEqual(violations(t, "FULL", commented), [
+      "hooked: active, but x/src/a.ts has no syncNow(…, BARRIER.hooked)",
+      'hooked: x/src/d.ts no longer has "if (hook) await persist(hook);"',
+    ]);
+    const code = new Map([
+      ["x/src/a.ts", 'openNodeSqliteStorage(f);\nconst url = "http://x"; await syncNow(store, BARRIER.hooked); // synced'],
+      ["x/src/d.ts", "const slashes = /\\/\\//; const text = `// ${slashes}`; if (hook) await persist(hook); /* admitted */"],
+    ]);
+    assert.deepEqual(violations(t, "FULL", code), []);
+  });
+
+  it("a regular expression is code: a `//` or a quote inside one starts no comment and no string, so a real call beside it counts and a commented one after it does not", () => {
+    const t: Table = {
+      barriers: {
+        here: { store: "s", site: "x/src/a.ts", status: "active", why: "", via: { file: "x/src/a.ts", text: "if (hook) await persist(hook);" } },
+        ghost: { store: "s", site: "x/src/a.ts", status: "active", why: "" },
+      },
+      stores: { s: { opens: ["x/src/a.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
+    };
+    const lines = [
+      "openArchilStore(f);",
+      "const slashes = /\\/\\//; await syncNow(store, BARRIER.here); if (hook) await persist(hook);",
+      'const quote = /"/; // await syncNow(store, BARRIER.ghost);',
+      "const tick = /'/; const done = \"ok\";",
+    ];
+    const code = withoutComments(lines.join("\n")).split("\n");
+    assert.deepEqual(code.slice(0, 2), lines.slice(0, 2), "a `//` inside a regular expression is no comment: the call and the via line beside it are code");
+    assert.equal(code[2]!.trimEnd(), 'const quote = /"/;', "a quote inside a regular expression opens no string: the comment after it is blanked");
+    assert.equal(code[3], lines[3]);
+    assert.deepEqual(violations(t, "FULL", new Map([["x/src/a.ts", lines.join("\n")]])), ["ghost: active, but x/src/a.ts has no syncNow(…, BARRIER.ghost)"]);
   });
 
   it("reads code only: a barrier call or an opener inside a comment neither counts nor trips it, and a string keeps its slashes", () => {

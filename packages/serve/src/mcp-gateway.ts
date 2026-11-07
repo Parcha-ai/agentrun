@@ -24,7 +24,8 @@ import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
-import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
+import { TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
+import { writeHold } from "./paid-calls.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -346,7 +347,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       // answers: its owner says each call costs that. One that never left (a failed connect, a stop) books nothing.
       const result = await call(async () => {
         try {
-          await record(commit, TOOL_STARTED, { ...label, heldUsd: price });
+          await writeHold((kind, data) => record(commit, kind, data), { ...label, heldUsd: price });
           return undefined;
         } catch (error) {
           return `${name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})`;

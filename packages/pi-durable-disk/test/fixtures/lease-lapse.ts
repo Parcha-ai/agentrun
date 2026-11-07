@@ -16,7 +16,6 @@ let held: number | undefined;
 const clock = () => held ?? performance.now();
 const { models, registry, agent } = scriptedHarness();
 const run = await openDurableRun(ref, {
-  mountToken: "unused",
   acquire: async () => fakeClaim(root, ref),
   claimDir: localClaimDir,
   harness: { models, registry },
