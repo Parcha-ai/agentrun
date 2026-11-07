@@ -1,0 +1,10 @@
+---
+packages: @parcha/agentrun-computer
+kind: feature
+---
+An E2B provider, one registry line (`e2b`): `E2BProvider` in `dist/e2b.js` makes E2B sandboxes from a template, `desktop` (E2B Desktop) by default, as kind `desktop`, or kind `linux` with `COMPUTER_E2B_KIND=linux`. computerd is a `child` of E2B's envd: create uploads it as root, checks its sha256, and starts `computerd init` as a background command with no command timeout, `DISPLAY` and `--max-deadline`; the X server starts through the daemon, as on a Docker desktop, and hello re-checks the display on every connect. Every call goes through the host's `e2b` package (2.63.0), of which the provider names only the slice it calls and imports nothing at load.
+- The key is `COMPUTER_E2B_API_KEY` alone, never `E2B_API_KEY`: every SDK call is given the key, the domain (`COMPUTER_E2B_DOMAIN`), the API URL and `debug: false` explicitly, so no ambient `E2B_*` is read, and the provider refuses to start while `E2B_SANDBOX_URL` is set, which no option clears.
+- Lifetime: E2B's timeout is the lifetime, capped at Hobby's 1 h by default and up to Pro's 24 h with `COMPUTER_E2B_MAX_LIFETIME_MS`; `extend()` moves E2B's timer, then init's deadline, never past create's time plus the cap.
+- Network none is no internet access and no public traffic, read back by `getInfo` and probed from inside; open is internet access, still with no public traffic. `stream()` exists only with `COMPUTER_E2B_PUBLIC_STREAM=1`, whose computers are network open: x11vnc on loopback with an 8-character password and noVNC in front, the URL never logged.
+- Release kills and waits until E2B no longer has or lists the sandbox, within `goneMs` and the caller's signal; a create that fails or is aborted at any step kills its sandbox. `dist/conformance/e2b.js` (live switch `AGENTRUN_COMPUTER_LIVE_E2B=1`, 30-minute computers) and `dist/conformance/e2b-sweep.js` come with it.
+- The child daemon's install, init and stdio commands and its read-back move from `daytona.ts` to `child.ts`, and the display start from `docker.ts` to `desktop.ts`, shared; Daytona's commands are unchanged.

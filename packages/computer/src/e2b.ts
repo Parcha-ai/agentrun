@@ -802,7 +802,7 @@ export class E2BProvider implements ComputerProvider {
 	#sandboxDrift(spec: ComputerSpec, info: E2BSandboxInfo, metadata: Record<string, string>): string[] {
 		const found: string[] = [];
 		const mismatch = (field: string, declared: unknown, actual: unknown) => found.push(`${field}: declared ${show(declared)}, read back ${show(actual)}`);
-		// E2B reports the template's id, and its alias when it has one (index.mjs:5433-5436): a template asked for by an
+		// E2B reports the template's id, and its alias when it has one (index.mjs:5435-5437): a template asked for by an
 		// alias E2B does not report back cannot be held to it, and its label (below) records what was asked.
 		const alias = info.name;
 		if (info.templateId !== spec.image && alias !== undefined && alias !== spec.image && !alias.startsWith(`${spec.image}:`)) {

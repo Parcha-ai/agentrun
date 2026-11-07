@@ -34,7 +34,13 @@ describe(
 			const fixture = join(dir, "computerd-fixture");
 			execFileSync("go", ["build", "-trimpath", "-ldflags", "-s -w", "-o", fixture, "./cmd/fixture"], {
 				cwd: DAEMON,
-				env: { PATH: process.env.PATH, HOME: process.env.HOME, GOCACHE: process.env.GOCACHE, GOPATH: process.env.GOPATH, CGO_ENABLED: "0", GOOS: "linux", GOARCH: "amd64" },
+				// Go's own settings and the target, and nothing else of this process's environment: never the key.
+				env: {
+					...Object.fromEntries(["PATH", "HOME", "TMPDIR", "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOPROXY", "GOTOOLCHAIN"].filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]])),
+					CGO_ENABLED: "0",
+					GOOS: "linux",
+					GOARCH: "amd64",
+				},
 				stdio: "inherit",
 			});
 			const { conformanceImage, conformanceNotes, createDriftedProvider, createProvider } = await import("../../dist/conformance/e2b.js");
