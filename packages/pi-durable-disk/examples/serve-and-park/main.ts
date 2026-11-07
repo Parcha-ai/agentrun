@@ -114,7 +114,7 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-/** The run's status from its directory: the record `readRunStatus` reads from a disk, read here from `run.json` under the run's root. */
+/** The run's status from its directory: its record, read from `run.json` under the run's root. */
 async function runRecord() {
   const record = await readLocalRunStatus(root);
   if (record === null) throw new Error(`the run has no run.json under ${root}`);

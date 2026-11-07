@@ -26,6 +26,12 @@ export interface BarrierRow {
   /** For a chokepoint whose sync is reached through a hook: the file and text that call it. */
   readonly via?: { readonly file: string; readonly text: string };
   readonly status: BarrierStatus;
+  /**
+   * An active barrier's proof: its box-loss end-to-end test, the one file (relative to the repository) that loses a box
+   * while the effect it guards is in flight and shows the effect is not sent again. `null` while it has none: the run
+   * journal may not go NORMAL then (NORMAL_PRECONDITIONS.barrierProofs).
+   */
+  readonly proof?: string | null;
   readonly why: string;
 }
 
@@ -35,6 +41,7 @@ export const BARRIERS = {
     store: "run-journal",
     site: "serve/src/tool-gate.ts",
     status: "active",
+    proof: "packages/serve/test/barriers-box-loss.test.mjs",
     why: "a pi tool call that is not replay-safe, or a billed replay-safe one: its intent, before it executes",
   },
   kernelEffectIntent: {
@@ -42,35 +49,41 @@ export const BARRIERS = {
     site: "serve/src/sessions.ts",
     via: { file: "run-adapters/src/kernel/drive.ts", text: "await writer.sync?.()" },
     status: "active",
+    proof: "packages/serve/test/barriers-box-loss.test.mjs",
     why: "a kernel effect (claude-agent, codex, opencode) that is not replay-safe: its start record, before it runs",
   },
   sideRequestStarted: {
     store: "run-journal",
     site: "serve/src/harness-app.ts",
     status: "active",
+    proof: null,
     why: "a non-pi harness's model request: its start mark and bound, before it is sent",
   },
   modelRequestStarted: {
     store: "run-journal",
     site: "serve/src/request-start.ts",
-    status: "planned",
+    status: "active",
+    proof: "packages/serve/test/barrier-box-loss.test.mjs",
     why: "a pi model or compaction request: its start mark and bound, before it is sent",
   },
   paidToolHold: {
     store: "run-journal",
     site: "serve/src/paid-calls.ts",
-    status: "planned",
+    status: "active",
+    proof: "packages/serve/test/barrier-box-loss.test.mjs",
     why: "a paid tool call's hold (paid calls, monid, the MCP gateway), before the call is sent",
   },
   workflowAdmit: {
     store: "run-journal",
-    site: "dsl/src/recovery/driver.ts",
-    status: "planned",
+    site: "serve/src/app.ts",
+    via: { file: "dsl/src/recovery/driver.ts", text: "if (options.afterAdmit) await persist(options.afterAdmit);" },
+    status: "active",
+    proof: "packages/serve/test/barrier-box-loss.test.mjs",
     why: "a workflow effect's admission with its intent, before it is dispatched",
   },
   decisionHold: {
     store: "run-journal",
-    site: "serve/src/decisions.ts",
+    site: "serve/src/decision-cap.ts",
     status: "planned",
     why: "a workflow decision's admitted hold, before the decision is sent",
   },
@@ -78,20 +91,15 @@ export const BARRIERS = {
     store: "run-journal",
     site: "pi-durable-disk/src/run.ts",
     status: "active",
+    proof: null,
     why: "a status transition the run writes (its end among them)",
   },
   runRelease: {
     store: "run-journal",
     site: "pi-durable-disk/src/run.ts",
     status: "active",
+    proof: null,
     why: "the release: what the run committed is durable before its claim is sealed and let go",
-  },
-  homeToolIntent: {
-    store: "home",
-    site: "pi-transport/src/home/tool-barrier.ts",
-    via: { file: "pi-transport/src/home/run.ts", text: "registry.install(toolBarrier(registry" },
-    status: "active",
-    why: "a home tool call that is not replay-safe: its intent, before it executes (the home's own barrier, an fdatasync of its WAL file: its store holds only pi-durable's tables, so no marker commit)",
   },
 } as const satisfies Record<string, BarrierRow>;
 
@@ -124,12 +132,6 @@ export const STORES = {
     effects: "none",
     what: "the server's checkpoint of a run's store when it takes the run back: synced before the WAL that held it goes",
   },
-  home: {
-    opens: ["pi-transport/src/home/run.ts"],
-    synchronous: "NORMAL",
-    effects: "barriers",
-    what: "the home runner's own store",
-  },
   "agent-home": {
     opens: ["pi-durable-agent/src/store.ts"],
     synchronous: "FULL",
@@ -148,29 +150,11 @@ export const STORES = {
     effects: "none",
     what: "an imported run's timeline, written once",
   },
-  "home-replay": {
-    opens: ["pi-transport/src/home/commit-log.ts"],
-    synchronous: "NORMAL",
-    effects: "none",
-    what: "a home store rebuilt from its commit log",
-  },
-  "home-rebuild": {
-    opens: ["pi-transport/src/home/store.ts"],
-    synchronous: "NORMAL",
-    effects: "none",
-    what: "a home store's schema probe and rebuild",
-  },
   "agent-pack": {
     opens: ["pi-durable-agent/src/pack.ts"],
     synchronous: "FULL",
     effects: "none",
     what: "a packed agent's clean copy (VACUUM INTO), SQLite's own default, a rollback journal at FULL",
-  },
-  "home-lock": {
-    opens: ["pi-transport/src/home/lock.ts"],
-    synchronous: "FULL",
-    effects: "none",
-    what: "the lock file beside a home store: an exclusive lock, no data",
   },
   "server-lock": {
     opens: ["serve/src/server-lock.ts"],
@@ -198,6 +182,22 @@ export const NORMAL_PRECONDITIONS = {
   endToEndBoxLoss: {
     done: false,
     what: "a box-loss test through the real chokepoints (the tool gate, the kernel drive, the side-request mark) on a NORMAL run's store, not only ordering tests",
+  },
+  retryMarkSynced: {
+    done: false,
+    what: "a pi request's lost attempt is marked ended at its hold before pi-ai's retry is sent (serve/src/request-start.ts:121), but that mark is not synced: a lost box can drop it while the retry goes out",
+  },
+  holdRefusedUnsynced: {
+    done: false,
+    what: "a paid call refused after its hold was written (serve/src/paid-calls.ts:81-84, a sync that fails) and a model request ended unsent after its start mark (modelRequestStarted) leave their refusal or unsent end unsynced",
+  },
+  browserSessionBarrier: {
+    done: false,
+    what: "a browser call's hold (serve/src/browser-cost.ts:167, paidCall over keepHold) is kept in memory, not written and synced before the call goes, so it has no barrier",
+  },
+  barrierProofs: {
+    done: false,
+    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof); sideRequestStarted, runStatus and runRelease have none yet (null)",
   },
 } as const satisfies Record<string, { readonly done: boolean; readonly what: string }>;
 

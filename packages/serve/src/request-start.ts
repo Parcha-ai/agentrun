@@ -23,7 +23,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-works/pi-ai";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { CAP_WRAPUP, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
-import type { DurableRun } from "@parcha/pi-durable-disk";
+import { BARRIER, type DurableRun, syncNow } from "@parcha/pi-durable-disk";
 import { anyAttemptLost, ATTEMPTS, type Attempt, attemptLost, BOUND_FIELD, BOUND_USD, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, type RefusalFigures, refusalFields, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 import { isConnectCode, isGatewayTimeout } from "@parcha/agentrun-kernel";
@@ -55,6 +55,13 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   const mark = async (kind: string, data: Record<string, Mark> = {}) => {
     const run = await opened;
     await run.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT);
+  };
+  /** A request's start mark, then the run journal's barrier (pi-durable-disk barriers.ts, modelRequestStarted): the mark,
+   *  with the hold and bound a crash is read at, is on disk before the request is sent. A sync that fails fails the
+   *  request unsent, as a mark that was not written does. */
+  const markStarted = async (data: Record<string, Mark>) => {
+    await mark(REQUEST_STARTED, data);
+    await syncNow((await opened).store, BARRIER.modelRequestStarted);
   };
   const failed = (model: Model<Api>, why: string): AssistantMessage => ({
     role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
@@ -173,7 +180,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     void (async () => {
       if (cancelled()) return refused();
       try {
-        await mark(REQUEST_STARTED, startOf(options));
+        await markStarted(startOf(options));
       } catch (error) {
         const message = failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
         outer.push({ type: "error", reason: "error", error: message });
@@ -283,7 +290,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     // A cancelled run sends no summary either; pi writes no entry for a failed summary, so nothing needs marking.
     if (cancelled()) return refuse(model, what, options?.signal, false);
     try {
-      await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options), ...boundOf(options) });
+      await markStarted({ ...COMPACTION, ...heldOf(options), ...boundOf(options) });
     } catch (error) {
       return failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
     }

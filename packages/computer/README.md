@@ -31,7 +31,9 @@ capabilities are `["exec", "files", "processes"]`.
   name is its number, `"63"`).
   On timeout, or when the call is cancelled with `$/cancelRequest {id}`, the guard sends SIGTERM to the group and
   every process under it, then SIGKILL 2 s later. A timeout is a result with `timedOut: true`; a cancel is an
-  `aborted` error. Nothing a run starts outlives it.
+  `aborted` error. Nothing a run starts outlives it. `timeoutMs` counts from the call, the start included: a guard that
+  never reports the program's start (its exec stalled on a filesystem) is killed with everything under it, and the run
+  times out.
 - `stdout` and `stderr` come back apart, in base64. Each keeps at most 360 KiB (`maxOutput`, the default and the most):
   both, in base64, fit one 1 MiB line. The rest is read and dropped, and `truncated` is true.
 - The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then `env` over them. Nothing else of the
@@ -87,12 +89,14 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   offset past the end is `invalid`. `exited` is true once the process has ended and nothing is left past `nextOffset`.
 - `waitMs` (at most 30 000) makes a read wait, when nothing past `offset` has come yet, until bytes come, the process
   ends, or the time is up. So a client follows a process with one call in flight and no busy loop.
-- A process whose guard was killed reports the guard's end.
+- A process whose guard was killed reports the guard's end; one whose guard init's shutdown reaped first reports `KILL`.
 - A listing holds at most 64 KiB of each argv, in JSON. A longer one is listed by its first arguments that fit, with
   `argvClipped` set; the caller that started it has the whole of it.
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
+- Starts take turns. A `process.start` cancelled while it waits for its turn, or before its program runs, is `aborted`,
+  and nothing it started is left.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
   a `timeout` error that says how much was written. A cancelled write, waiting for its turn or writing, is `aborted`.
 - The guard keeps no copy of a program's stdin, stdout or stderr pipes once the program runs. So when the program, and
@@ -101,6 +105,12 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
   first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
   start is refused as `limit`.
+- The rings, of running and ended processes alike, hold at most 256 MiB of output together (256 entries' full rings
+  would be 4 GiB, the default box's memory). Past that, the daemon first lets go of the rings of the processes that
+  ended first until it is back under. Such a process stays listed with its exit status; a read of its streams returns
+  no data, `dropped` counts every byte from `offset` on, and `exited` is true. When no ended ring is left and running
+  processes still hold more, each running process's ring stops growing and keeps at most an equal share of the budget
+  (never under 64 KiB), dropping its oldest bytes; a read from an offset it dropped reports them in `dropped`.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
@@ -188,32 +198,253 @@ await docker.release(made.value, "delete");
 
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (at most 30 days), a network
   allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
-  does not support. `create` never throws on a spec `check` passes.
+  does not support. Once the host has been read (below), it also refuses with `field: "host"` for each enforcement
+  the host lacks. `create` never throws on a spec `check` passes.
+- Before `docker run`, `create` reads the host's enforcement once per provider (`host()`, from `docker info`; see
+  below), and refuses a host that lacks any of it in words, having made nothing.
 - `create` runs `docker run` as a non-root user (`--user`, below), with every capability dropped (`--cap-drop ALL`),
-  `--security-opt no-new-privileges`, `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
+  `--security-opt no-new-privileges`, `--ipc private --cgroupns private` (never the daemon's defaults, which a host can
+  set to `shareable` or, on cgroup v1, the host's cgroup namespace), `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
   CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
   the same; 1024 pids), and the daemon bind-mounted read-only at `/opt/agentrun/computerd` as
   the entrypoint, `computerd init --deadline <time>`, which is PID 1, holds every process and reaps orphans. The label
   `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it ends every
-  process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline. Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running
-  after its start is removed.
+  process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline.
+  Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running after its
+  start is removed.
 - **A computer runs as a non-root user by default; root must be asked for in the spec.** `user` is a uid or uid:gid
   in numbers (a name is refused: the image may not have it; a uid alone is its own gid). The spec's `user` wins, then
-  the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process is root. The provider
-  option refuses root; only a spec's `user: "0"` runs a computer as root, and that root has no capability either.
+  the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process's uid or gid is 0. The
+  provider option refuses root and root's group (`"1000:0"` throws); only a spec's `user: "0"` runs a computer as
+  root, and only a spec's gid 0 (such as `"1000:0"`) puts it in root's group. That root has no capability either.
 - `/run/agentrun`, init's socket directory, is a tmpfs owned by the computer's user, mode 700, with `noexec`, `nosuid`
-  and `nodev`.
+  and `nodev`, and `size=1m`: it holds only the socket.
 - `/work` is the computer's home (`HOME=/work`) and its workdir unless the spec names one: a tmpfs owned by the
   computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
-  the memory limit, and it does not survive a stop. Storage that lasts is the agent disk's job, not this package's.
+  the memory limit, and it does not survive a stop. So it holds at most half of `memoryMb` (`size=2048m` by default): a
+  full `/work` fails a write with "No space left on device" instead of letting the memory limit OOM-kill a process,
+  PID 1 included. Storage that lasts is the agent disk's job, not this package's.
+- `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
+  refuses with every mismatch in words.
+- `create(spec, { signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
+  nothing), `docker run`, and after it inspect and hello (hello also has its own 30 s limit). An abort at any step after `docker run` deletes the computer and returns
+  `aborted`; `create` never returns ok once its signal has aborted.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
-  Each `connect` is a connection of its own; processes are shared by all of them.
+  Each `connect` is a connection of its own; processes are shared by all of them. A daemon whose version is not the
+  provider's, or that lacks a capability the provider declares, is refused (`refused`) and the stream closed.
+- `attach({ id })` finds a computer by its name (`computer-<12 hex digits>`) or its container id (12 to 64 hex digits);
+  `attach({ labels })` by labels, which must match exactly one computer: none is `not_found`, more is `invalid`
+  ("2 computers match ..."). Then `attach` runs the drift check on what it found: the spec is read back from the
+  computer's own report (image, network, sizes, user, workdir, deadline) and held to what `check` allows (and the
+  deadline to the ISO time create writes, at most 30 days away), then the whole inspect is checked as at create, and,
+  when the computer runs, its daemon's hello. A computer that drifts is refused (`refused`) with every mismatch, and
+  left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone. A
+  computer that passes is returned as its ref with `spec`, the spec read back (`{ image, user, network, cpus,
+  memoryMb, pids, workdir, deadline }`), so a caller sees what it attached to: `user` is `uid:gid` (`"0:0"` for a
+  computer whose spec asked for root) and `network` the policy read back. `list` keeps its own shape (`ComputerInfo`).
+- `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
+  matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
+  between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
+  the ISO time the provider writes), `state` (`running` or `stopped`) and `network` as read back.
+- `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
+  (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
+  `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
+  network is fixed at create, since Docker cannot move a container with no network onto one.
 - `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
+- Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
+  any other container is `not_found`.
 
 Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
 
-What a Docker computer cannot do: run as root unless its spec asks, switch users, gain a capability, reach any network
+What a Docker computer cannot do: run as root or in root's group unless its spec asks, switch users, gain a capability, reach any network
 when asked for `none`, write the daemon, or run past its deadline.
+
+### The drift check
+
+After `docker run`, `create` reads the computer's own report and compares it with the spec, in `drift(spec, inspected,
+hello, expected)`, a pure function that returns one sentence per mismatch (`inspectDrift` is its inspect half). The
+check is closed: every field of `HostConfig` and `Config` is either one create asks for, one with a stated default,
+or one that widens nothing the box bounds; any other field, one a later Docker adds included, must be empty (absent,
+null, `""`, 0, false, `[]` or `{}`), or it is drift naming it. The table below was made from `docker inspect` of a
+computer this provider made on Docker 29.
+
+From `docker inspect`, what create asks for:
+
+| Field | Must be |
+| --- | --- |
+| network (`HostConfig.NetworkMode`, `NetworkSettings.Networks`) | `none` or `open` as declared, read back as `network(ref)` does |
+| `HostConfig.CapDrop`, `CapAdd`, `Privileged` | `["ALL"]`, nothing added, false |
+| `HostConfig.SecurityOpt` | exactly `["no-new-privileges"]`: `seccomp=unconfined`, `apparmor=unconfined`, `label=disable`, `systempaths=unconfined` or any other option is drift |
+| `HostConfig.IpcMode`, `CgroupnsMode` | `private`, `private` |
+| `HostConfig.Runtime` | `runc` |
+| `HostConfig.MaskedPaths`, `ReadonlyPaths` | hold Docker's own since 20.10 (`/proc/acpi`, `/proc/asound`, `/proc/kcore`, `/proc/keys`, `/proc/latency_stats`, `/proc/sched_debug`, `/proc/scsi`, `/proc/timer_list`, `/proc/timer_stats`, `/sys/firmware`; `/proc/bus`, `/proc/fs`, `/proc/irq`, `/proc/sys`, `/proc/sysrq-trigger`); a newer Docker's extra masked paths are fine |
+| `HostConfig.PidsLimit` | `pids`, or 1024 |
+| `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, or 4096 MiB |
+| `HostConfig.CpuPeriod`, `CpuQuota` | 100000, and `cpus` (or 2) times 100000 |
+| `HostConfig.Tmpfs` | exactly `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec` and `size=` half of `memoryMb` in MiB, `/run/agentrun` `noexec` and `size=1m`); options in any order; a missing or other size, or another tmpfs, is drift |
+| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`), and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
+| `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
+| `Config.Image`, `WorkingDir` | the spec's image; its `workdir`, or `/work` |
+| `Config.Env` | one `HOME`, `HOME=/work`; the image's other variables are its own |
+| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]` |
+| `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for; others are the image's |
+| `AppArmorProfile` | `docker-default` when the host has AppArmor, else empty |
+| `ProcessLabel` | of type `container_t` when the host has SELinux, else empty |
+
+Defaults other than empty: `HostConfig.RestartPolicy` no restart (`{"Name": "no"}`; a restart policy would bring a
+computer back after its deadline), `Isolation` empty or `default`, `MemorySwappiness` null or -1.
+
+Must be empty, each a mismatch by name: `Binds`, `VolumeDriver`, `VolumesFrom`, `PortBindings`, `PublishAllPorts`,
+`Links`, `ExtraHosts`, `Dns`, `DnsOptions`, `DnsSearch`, `PidMode`, `UTSMode`, `UsernsMode`, `Cgroup`, `CgroupParent`,
+`GroupAdd`, `Devices`, `DeviceCgroupRules`, `DeviceRequests`, `Sysctls`, `OomKillDisable`, `OomScoreAdj`,
+`CpuShares`, `NanoCpus`, `CpuRealtimePeriod`, `CpuRealtimeRuntime`, `CpusetCpus`, `CpusetMems`, `CpuCount`,
+`CpuPercent`, `MemoryReservation`, `KernelMemory`, `KernelMemoryTCP`, `BlkioWeight`, `BlkioWeightDevice`,
+`BlkioDeviceReadBps`, `BlkioDeviceWriteBps`, `BlkioDeviceReadIOps`, `BlkioDeviceWriteIOps`, `IOMaximumIOps`,
+`IOMaximumBandwidth`, `StorageOpt`, `Init`, `Annotations`, `AutoRemove`, `ReadonlyRootfs`; `Config.Volumes`; and
+every field not named in this section.
+
+Irrelevant, not checked: `HostConfig.LogConfig` (the host's log driver), `ConsoleSize`, `ContainerIDFile` (a
+client-side file), `ShmSize` (`/dev/shm` is charged to the computer's memory), `Ulimits` (an rlimit cannot raise a
+cgroup limit); `Config.Hostname`, `Domainname`, `AttachStdin`, `AttachStdout`, `AttachStderr`, `Tty`, `OpenStdin`,
+`StdinOnce`, `ExposedPorts` (nothing is published), `Healthcheck`, `ArgsEscaped`, `OnBuild`, `StopSignal`,
+`StopTimeout`, `Shell`, `MacAddress`, `NetworkDisabled`: the image's settings, which act only inside the computer.
+The rest of the report (`State`, `NetworkSettings` past its networks, paths, `Driver`) is Docker's own bookkeeping.
+
+From the daemon's `hello`, over one short connection: the provider's version, `os` linux, every capability in
+`capabilities().daemon`, and `arch` the Docker host's architecture (`docker info`, x86_64 as amd64, aarch64 as arm64).
+
+Any mismatch, or a computer that cannot be inspected or whose daemon does not answer, and the computer is deleted
+before `create` returns `refused` with every mismatch. A computer is never left running wider than it was declared.
+`attach` runs the same check and refuses, but never deletes.
+
+### The host's enforcement
+
+A computer's sizes are cgroup limits, which only a host that enforces them makes real. `host()` reads `docker info`
+once per provider (a failed read is not kept, so the next call reads again), and `hostOf(info)` turns it into the
+host's architecture, its security modules, and each enforcement it lacks:
+
+| `docker info` | Required | Refusal |
+| --- | --- | --- |
+| `MemoryLimit` | true | this Docker host does not enforce memory limits, so a computer's memory size is only configuration |
+| `SwapLimit` | true | ... swap limits, so a computer could swap past its memory size |
+| `PidsLimit` | true | ... pids limits, so a computer's pids limit is only configuration |
+| `CPUCfsQuota`, `CPUCfsPeriod` | true | ... CPU quotas (periods), so a computer's cpus are only configuration |
+| `SecurityOptions` seccomp | present, its profile not `unconfined` | this Docker host has no seccomp (its default seccomp profile is unconfined), so a computer could make any system call |
+| `SecurityOptions` apparmor, selinux | reported | none: the drift check expects the profile or label Docker then gives every container |
+
+Seccomp is required: it is a computer's only system call filter, and every Linux Docker has it. AppArmor and SELinux
+are reported, not required: a host has the one its distribution ships, or neither, and a computer's confinement does
+not rest on them (no capabilities, no-new-privileges, seccomp, its own namespaces); where the host has one, a computer
+without its profile or label is drift. `create` and `attach` refuse on a host that lacks any requirement, before any
+other Docker call; `check` refuses too once the host has been read.
+
+### The janitor
+
+A Docker computer stops itself at its deadline (init exits), but Docker deletes nothing, so the provider declares
+`lifetime: "janitor"` and `sweep(provider, { labels?, now?, signal? })` (in `src/janitor.ts`) deletes computers instead. It works for any provider that declares `lifetime: "janitor"`
+and refuses one that declares `"vendor"`. It lists the provider's computers with `labels` (all of them by default) and
+deletes each whose deadline is at or before `now`, or whose deadline is missing or unreadable, stopped or running (a
+computer past its deadline has usually stopped itself already); it keeps the rest and
+returns `{ deleted, kept }`. It never touches a container the provider does not list: on Docker, one without
+`agentrun.computer=1` and a computer's name. A computer it cannot delete does not stop it; the result is then an error
+naming it and what was deleted.
+
+This package does not schedule the janitor. Whoever runs computers runs `sweep` on a schedule (a cron job, or a timer
+in a long-lived service), with Docker's CLI on its PATH. A computer stops at its deadline whether the janitor runs or not;
+its stopped container may stay up to one interval longer.
+
+```ts
+import { DockerProvider, sweep } from "@parcha/agentrun-computer";
+
+const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }));
+if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
+```
+
+## Conformance
+
+A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
+`src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`) and
+the capabilities it needs, and uses only `ComputerProvider`, `DaemonClient` and the suite's assertion helpers.
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider docker
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--json]
+```
+
+```text
+computer conformance · docker · computerd 0.1.0-beta.30 linux/amd64
+core health    hello ping unknown-method                    ✓ 3
+core exec      argv streams exit-code cwd env timeout abort ✓ 11
+               truncation setsid-escapee unprivileged user
+...
+full exec      root-on-request user-uid                     ✓ 2
+full provider  network-switch network-switch-allow          ✓ 3 - 2
+               network-open network-allow janitor
+  - provider.network-switch-allow: the provider does not declare network:allow
+  - provider.network-allow: the provider does not declare network:allow
+core PASS 52/52 · full 5/7 · network:allow not declared
+```
+
+A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
+usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, image, daemon: {
+version, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason? }], core, undeclared, cleanup }`). A
+failure is listed under its line with what the case found.
+
+`--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
+skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 10/10 · 42 Core cases
+not run`, never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
+`--only` that names every Core case is a whole run, and can pass.
+
+What a provider module implements:
+
+- `export function createProvider()` returning a `ComputerProvider` (sync or async): `id`, `version`,
+  `capabilities()`, `check`, `create`, `attach`, `list`, `network`, `connect` and `release`, as in `src/provider.ts`.
+  `connect` hands out a connection whose daemon answers the methods in `src/protocol.ts`.
+- `export function createDriftedProvider()`, for the drift case: the same provider with a daemon that reports a version
+  other than `version`. A computer of that daemon must never be handed out: `create` refuses it (and deletes it), or
+  `connect` refuses it. Without this export the case is skipped, so Core does not pass.
+
+Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
+
+- **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no effective or
+  permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
+  `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
+  that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
+  (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
+  `network` read-back and `release`, a change to a network the provider does not declare refused with the
+  network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
+  (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
+  behind.
+- **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
+  (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
+  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
+  asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
+  capabilities.
+
+A case whose needs the provider does not declare (in `capabilities()`), or the daemon does not declare (in hello), is
+skipped with the reason and never fails. A skipped Full case is reported as not declared; a skipped Core case means
+the provider lacks something every computer must have, so Core does not pass.
+
+The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
+and network `none`. It deletes each computer a case made when the case ends, and the shared one at the end; for a
+provider with lifetime `"janitor"` it then sweeps that label, and it lists the label to show nothing is left. A case
+that runs past 3 minutes fails and its computers are deleted. Every provider call is bounded: a create or connect for
+the shared computer that does not answer within 3 minutes fails the cases that need it, a release, sweep or list
+that does not answer within a minute is named in `cleanup.errors`, and a computer or connection that arrives after
+its case ended is deleted or closed as it arrives and named in `cleanup.late`; the run waits, bounded, for every
+create a case started, a refused one included, so a late computer is deleted before the report returns. A call still
+pending when that bound (a minute) runs out is named in `cleanup.errors`, since what it makes may be left, and Core
+fails, as it does for a computer left behind. A case calls
+`t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
+expects, or the drifted provider's computer). With `--provider docker`, a `docker
+version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
+is out. Cases do not assume root: the suite assumes only that the
+computer's `HOME`, which the provider sets, is a directory its user can write, and works under
+`$HOME/agentrun-conformance-<run id>`.
+
+From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs? })` returns
+the report, and `formatReport(report)` the text above.
 
 ## Build
 
@@ -230,8 +461,12 @@ cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 ```
 
-The live tests need Docker, `debian:bookworm-slim` pulled, and both builds. They use the daemon for Docker's own
-architecture, and remove every container they make by its exact name, pass or fail.
+The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
+them check what only Docker shows (the user, sizes, tmpfs mounts and hardening flags in `docker inspect`, the daemon
+mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
+stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`
+and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a daemon of another version). They use
+the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail.
 
 ## Acknowledgements
 
