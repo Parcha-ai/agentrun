@@ -397,7 +397,10 @@ func TestInitEndsAnOrphanWhoseGuardWasKilled(t *testing.T) {
 	in := startInit(t)
 	c := dial(t, in.socket)
 	var p started
-	c.ok("process.start", map[string]any{"argv": []string{"sh", "-c", "sleep 305 & echo $$ $!; kill -9 $PPID; wait"}}, &p)
+	// The program kills its guard only once the start has returned: a guard killed before it reports the program's
+	// pid fails the start instead.
+	c.ok("process.start", map[string]any{"argv": []string{"sh", "-c", "read go; sleep 305 & echo $$ $!; kill -9 $PPID; wait"}, "stdin": true}, &p)
+	c.ok("process.write", map[string]any{"id": p.ID, "data": []byte("go\n")}, nil)
 	pids := pidsIn(t, c.readUntil(p.ID, "\n"), 2)
 	var w waited
 	c.ok("process.wait", map[string]any{"id": p.ID, "timeoutMs": patience.Milliseconds()}, &w)

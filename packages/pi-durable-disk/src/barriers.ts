@@ -109,14 +109,6 @@ export const BARRIERS = {
     proof: null,
     why: "the release: what the run committed is durable before its claim is sealed and let go",
   },
-  homeToolIntent: {
-    store: "home",
-    site: "pi-transport/src/home/tool-barrier.ts",
-    via: { file: "pi-transport/src/home/run.ts", text: "registry.install(toolBarrier(registry" },
-    status: "active",
-    proof: "packages/pi-transport/test/home-tool-barrier.test.ts",
-    why: "a home tool call that is not replay-safe: its intent, before it executes (the home's own barrier, an fdatasync of its WAL file: its store holds only pi-durable's tables, so no marker commit)",
-  },
 } as const satisfies Record<string, BarrierRow>;
 
 export type BarrierName = keyof typeof BARRIERS;
@@ -148,12 +140,6 @@ export const STORES = {
     effects: "none",
     what: "the server's checkpoint of a run's store when it takes the run back: synced before the WAL that held it goes",
   },
-  home: {
-    opens: ["pi-transport/src/home/run.ts"],
-    synchronous: "NORMAL",
-    effects: "barriers",
-    what: "the home runner's own store",
-  },
   "agent-home": {
     opens: ["pi-durable-agent/src/store.ts"],
     synchronous: "FULL",
@@ -172,29 +158,11 @@ export const STORES = {
     effects: "none",
     what: "an imported run's timeline, written once",
   },
-  "home-replay": {
-    opens: ["pi-transport/src/home/commit-log.ts"],
-    synchronous: "NORMAL",
-    effects: "none",
-    what: "a home store rebuilt from its commit log",
-  },
-  "home-rebuild": {
-    opens: ["pi-transport/src/home/store.ts"],
-    synchronous: "NORMAL",
-    effects: "none",
-    what: "a home store's schema probe and rebuild",
-  },
   "agent-pack": {
     opens: ["pi-durable-agent/src/pack.ts"],
     synchronous: "FULL",
     effects: "none",
     what: "a packed agent's clean copy (VACUUM INTO), SQLite's own default, a rollback journal at FULL",
-  },
-  "home-lock": {
-    opens: ["pi-transport/src/home/lock.ts"],
-    synchronous: "FULL",
-    effects: "none",
-    what: "the lock file beside a home store: an exclusive lock, no data",
   },
   "server-lock": {
     opens: ["serve/src/server-lock.ts"],
