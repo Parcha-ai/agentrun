@@ -378,12 +378,15 @@ function savedPublic(data, key, tokenEndpoint) {
 }
 
 /** A loopback service an authorization server might steer this server to: it counts what reaches it. */
+/** A private target the authorization server names: `hits` holds only requests for its own unguessable path, so a stray
+ *  request another test sends to a reused port is not taken for this server being steered there. */
 async function target(t) {
   const hits = [];
-  const http = createServer((req, res) => (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const path = `/internal/admin-${randomBytes(8).toString("hex")}`;
+  const http = createServer((req, res) => (req.url?.startsWith(path) && hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
-  return { url: `http://127.0.0.1:${http.address().port}/internal/admin?op=x`, hits };
+  return { url: `http://127.0.0.1:${http.address().port}${path}?op=x`, hits };
 }
 
 test("a public MCP server's authorization server may not steer this server to a private address: sign-in and refresh refuse it, and the target hears nothing", async (t) => {
