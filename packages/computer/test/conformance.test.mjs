@@ -14,8 +14,9 @@ import { fakeComputers } from "./fake-computer.mjs";
 const IMAGE = "debian:bookworm-slim";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
-const GROUPS = ["health", "exec", "files", "process", "provider", "drift"];
-const CAPABILITIES = ["exec", "files", "processes", "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid"];
+const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "screen", "input", "touch", "apps", "lifetime"];
+const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "extend", "stream"];
 
 const pass = (id, extra = {}) => ({ id, level: "core", group: id.split(".")[0], needs: [], run: async () => {}, ...extra });
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
@@ -54,7 +55,7 @@ test("a case that passes is pass; one that throws is fail, with what it found as
 	assert.equal(report.provider, "fake");
 	assert.equal(report.providerVersion, "1.0.0");
 	assert.equal(report.image, IMAGE);
-	assert.deepEqual(report.daemon, { version: "1.0.0", arch: "amd64" });
+	assert.deepEqual(report.daemon, { version: "1.0.0", os: "linux", arch: "amd64" });
 	assert.deepEqual(
 		report.results.map(({ id, level, group }) => [id, level, group]),
 		[
@@ -65,8 +66,8 @@ test("a case that passes is pass; one that throws is fail, with what it found as
 	);
 });
 
-test("a case whose needs the provider or the daemon does not declare is skip with the reason, never fail", async () => {
-	const { provider } = fakeComputers({ daemon: ["exec", "files"], network: ["none", "open"], lifetime: "vendor", hello: { capabilities: ["exec"] } });
+test("a Core case whose needs its kind requires fails in words when the provider or the daemon lacks one; any other undeclared need is skip", async () => {
+	const { provider } = fakeComputers({ groups: ["exec", "files"], network: ["none", "open"], lifetime: "vendor", hello: { groups: ["exec"] } });
 	let ran = 0;
 	const count = async () => void ran++;
 	const report = await runConformance(provider, {
@@ -84,22 +85,27 @@ test("a case whose needs the provider or the daemon does not declare is skip wit
 	assert.equal(ran, 2);
 	assert.deepEqual(statuses(report), {
 		"exec.argv": "pass",
-		"files.read": "skip",
-		"process.start": "skip",
+		"files.read": "fail",
+		"process.start": "fail",
 		"provider.open": "pass",
 		"provider.allow": "skip",
 		"provider.janitor": "skip",
 		"exec.root": "skip",
 	});
 	assert.deepEqual(reasons(report), {
-		"files.read": "the daemon's hello does not declare files",
-		"process.start": "the provider does not declare processes",
+		"files.read": "a linux computer with daemon pid1 must declare files: the daemon's hello does not declare files",
+		"process.start": "a linux computer with daemon pid1 must declare processes: the provider does not declare processes",
 		"provider.allow": "the provider does not declare network:allow",
 		"provider.janitor": 'the provider declares lifetime "vendor", not lifetime:janitor',
 		"exec.root": "the provider does not declare user:root",
 	});
-	assert.equal(report.core, "fail", "a Core case that could not run is not a Core pass");
+	assert.equal(report.core, "fail", "a Core case missing what its kind requires is not a Core pass");
 	assert.deepEqual(report.undeclared, ["network:allow", "lifetime:janitor", "user:root"]);
+	assert.deepEqual(
+		report.results.filter((r) => r.undeclared).map((r) => [r.id, r.undeclared]),
+		[["provider.allow", ["network:allow"]], ["provider.janitor", ["lifetime:janitor"]], ["exec.root", ["user:root"]]],
+		"each skip names the needs that were not declared",
+	);
 });
 
 test("Core passes when every Core case passes, whatever Full skips", async () => {
@@ -236,7 +242,7 @@ test("the report prints one line per level and group, failures and skips under i
 		],
 	});
 	const lines = formatReport(report).trimEnd().split("\n");
-	assert.equal(lines[0], "computer conformance · fake · computerd 1.0.0 linux/amd64");
+	assert.equal(lines[0], "computer conformance · fake · linux, daemon pid1 · computerd 1.0.0 linux/amd64");
 	assert.match(lines[1], /^core health +hello ping +✓ 2$/);
 	assert.match(lines[2], /^core exec +argv streams +✓ 1 ✗ 1$/);
 	assert.equal(lines[3], "  ✗ exec.argv: one and two: expected 2, got 1");
@@ -251,7 +257,7 @@ test("the CLI loads a provider module by path, prints the report, and exits 0 wh
 	const out = sink();
 	const code = await main(["--provider", "./fixtures/fake-provider.mjs"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] });
 	assert.equal(code, 0);
-	assert.match(out.text(), /^computer conformance · fake-module · computerd 1\.0\.0 linux\/amd64\n/);
+	assert.match(out.text(), /^computer conformance · fake-module · linux, daemon pid1 · computerd 1\.0\.0 linux\/amd64\n/);
 	assert.match(out.text(), /core PASS 1\/1/);
 });
 
@@ -261,7 +267,8 @@ test("the CLI's --json prints the report object; a Core failure exits 1", async 
 	const code = await main(["--provider", "./fixtures/fake-provider.mjs", "--json", "--image", "alpine:3.20"], { stdout: out, cwd: HERE, cases });
 	assert.equal(code, 1);
 	const report = JSON.parse(out.text());
-	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "core", "daemon", "image", "provider", "providerVersion", "results", "undeclared"]);
+	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "core", "daemon", "daemonMode", "image", "kind", "provider", "providerVersion", "results", "undeclared"]);
+	assert.deepEqual([report.kind, report.daemonMode, report.daemon], ["linux", "pid1", { version: "1.0.0", os: "linux", arch: "amd64" }]);
 	assert.equal(report.provider, "fake-module");
 	assert.equal(report.image, "alpine:3.20");
 	assert.equal(report.core, "fail");
@@ -296,7 +303,7 @@ test("the CLI as a process: a usage error exits 2; a provider that cannot make a
 	assert.equal(usage.code, 2, usage.stderr);
 	const broken = await run(["--provider", "./fixtures/broken-provider.mjs", "--only", "health"]);
 	assert.equal(broken.code, 1, broken.stderr);
-	assert.match(broken.stdout, /computer conformance · broken · no daemon reached/);
+	assert.match(broken.stdout, /computer conformance · broken · linux, daemon pid1 · no daemon reached/);
 	assert.match(broken.stdout, /✗ health\.hello: no computer: create was refused: no capacity in this region/);
 	assert.match(broken.stdout, /core FAIL 0\/\d+/);
 });
@@ -311,10 +318,13 @@ test("each case of the suite is data: a unique id in its group, a level, and nee
 		ids.add(c.id);
 		assert.ok(c.level === "core" || c.level === "full", `${c.id}: level ${c.level}`);
 		for (const need of c.needs) assert.ok(CAPABILITIES.includes(need), `${c.id} needs ${need}`);
-		if (c.level === "core") assert.ok(c.needs.every((need) => ["exec", "files", "processes", "network:none"].includes(need)), `${c.id}: a Core case needs only Core capabilities`);
+		// A Core case needs only what some kind may require: groups and network none, never an optional provider method.
+		if (c.level === "core") assert.ok(c.needs.every((need) => [...PROTOCOL_GROUPS, "network:none"].includes(need)), `${c.id}: a Core case needs only groups and network:none`);
 		assert.equal(typeof c.run, "function");
 	}
-	for (const group of GROUPS) assert.ok(conformanceCases.some((c) => c.group === group && c.level === "core"), `a Core case in ${group}`);
+	// lifetime's one case is Full: extend is optional for every kind.
+	for (const group of GROUPS.filter((g) => g !== "lifetime")) assert.ok(conformanceCases.some((c) => c.group === group && c.level === "core"), `a Core case in ${group}`);
+	assert.ok(conformanceCases.some((c) => c.group === "lifetime"), "a case in lifetime");
 });
 
 const byId = (...ids) => conformanceCases.filter((c) => ids.includes(c.id));
@@ -374,9 +384,9 @@ test("Core needs network none: a provider that offers only open fails Core in wo
 		image: IMAGE,
 		cases: [pass("health.ping"), ...byId("drift.network")],
 	});
-	assert.deepEqual(statuses(report), { "health.ping": "fail", "drift.network": "skip" });
+	assert.deepEqual(statuses(report), { "health.ping": "fail", "drift.network": "fail" });
 	assert.match(reasons(report)["health.ping"], /create was refused: network none is not offered/);
-	assert.equal(reasons(report)["drift.network"], "the provider does not declare network:none");
+	assert.equal(reasons(report)["drift.network"], "a linux computer with daemon pid1 must declare network:none: the provider does not declare network:none");
 	assert.deepEqual(fake.made, [], "no computer was made with a wider network");
 	assert.equal(report.core, "fail");
 });
@@ -405,11 +415,12 @@ test("exec.user-uid fails a computer whose requested user has capabilities", asy
 	assert.equal(statuses(await runConformance(clean.provider, { image: IMAGE, cases: byId("exec.user-uid") }))["exec.user-uid"], "pass");
 });
 
-test("a files case that makes a directory needs exec too: a daemon with files and no exec skips it in words", async () => {
-	const fake = fakeComputers({ daemon: ["files"] });
+test("a files case that makes a directory needs exec too: a linux computer with files and no exec fails it in words", async () => {
+	const fake = fakeComputers({ groups: ["files"] });
 	const report = await runConformance(fake.provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.group === "files") });
 	for (const result of report.results.filter((r) => r.id !== "files.relative-path")) {
-		assert.deepEqual([result.id, result.status, result.reason], [result.id, "skip", "the provider does not declare exec"]);
+		const reason = "a linux computer with daemon pid1 must declare exec: the provider does not declare exec";
+		assert.deepEqual([result.id, result.status, result.reason], [result.id, "fail", reason]);
 	}
 });
 
@@ -469,7 +480,7 @@ test("the CLI as a process prints a report of more than 1 MiB whole through a pi
 	assert.equal(code, 1, stderr);
 	assert.ok(stdout.length > 1024 * 1024, `${stdout.length} bytes`);
 	const report = JSON.parse(stdout);
-	assert.equal(report.results.length, 3);
+	assert.equal(report.results.length, 4);
 	for (const result of report.results) assert.ok(result.reason.length > 512 * 1024, result.id);
 });
 

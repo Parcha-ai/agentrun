@@ -10,9 +10,9 @@ const hostOf = (info) => computer.hostOf(info);
 const DEADLINE = "2026-11-06T12:00:00.000Z";
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: { team: "a" } };
 const SIZED = { ...SPEC, network: "open", cpus: 1.5, memoryMb: 512, pids: 64 };
-const EXPECTED = { version: "1.2.3", capabilities: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline: DEADLINE, user: "1000:1000", apparmor: false, selinux: false };
+const EXPECTED = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"], arch: "amd64", daemonPath: "/data/computerd", deadline: DEADLINE, user: "1000:1000", apparmor: false, selinux: false };
 const MIB = 1024 * 1024;
-const HELLO = { version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] };
+const HELLO = { version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 /** The tmpfs options create gives 1000:1000, before their sizes. */
 const WORK_OPTIONS = "rw,nosuid,nodev,exec,uid=1000,gid=1000,mode=0700";
 const SOCKET_OPTIONS = "rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700";
@@ -50,7 +50,7 @@ test("a computer made as declared has no drift", () => {
 	assert.deepEqual(drift(SIZED, inspected(true), HELLO, EXPECTED), []);
 	assert.deepEqual(after((i) => (i.HostConfig.CapAdd = [])), []);
 	assert.deepEqual(after((i) => (i.Config.Labels.extra = "x")), [], "labels Docker or the image adds are no drift");
-	assert.deepEqual(drift(SPEC, inspected(), { ...HELLO, capabilities: [...HELLO.capabilities, "display"] }, EXPECTED), [], "a daemon may offer more");
+	assert.deepEqual(drift(SPEC, inspected(), { ...HELLO, groups: ["processes", "exec", "files"] }, EXPECTED), [], "groups in another order");
 	assert.deepEqual(after((i) => (i.HostConfig.Tmpfs["/work"] = "size=2048m,mode=0700,gid=1000,uid=1000,exec,nodev,nosuid,rw")), [], "a tmpfs's options in another order");
 	assert.deepEqual(after((i) => i.HostConfig.MaskedPaths.splice(2, 1)), [], "Docker's masked paths of another version");
 	assert.deepEqual(after((i) => i.HostConfig.MaskedPaths.push("/sys/devices/system/cpu/cpu0/thermal_throttle")), [], "masked per CPU");
@@ -328,10 +328,14 @@ test("the labels: agentrun.computer=1, the deadline as set, and every label the 
 	one(after((i) => (i.Config.Labels = null)).filter((m) => /label team/.test(m)), /label team/);
 });
 
-test("hello: the provider's version, every declared capability, linux, and the host's architecture", () => {
+test("hello: the provider's version, its kind and exactly its groups, linux, and the host's architecture", () => {
 	one(helloDrift({ ...HELLO, version: "1.2.4" }, EXPECTED), /version 1\.2\.4.*expected 1\.2\.3/);
-	one(helloDrift({ ...HELLO, capabilities: ["exec", "files"] }, EXPECTED), /processes/);
-	one(helloDrift({ ...HELLO, capabilities: undefined }, EXPECTED), /capabilit/);
+	one(helloDrift({ ...HELLO, groups: ["exec", "files"] }, EXPECTED), /groups lack processes/);
+	one(helloDrift({ ...HELLO, groups: undefined }, EXPECTED), /groups/);
+	one(helloDrift({ ...HELLO, groups: [...HELLO.groups, "screen"] }, EXPECTED), /offers groups screen, which the provider does not declare/);
+	one(helloDrift({ ...HELLO, kind: "desktop" }, EXPECTED), /kind desktop, expected linux/);
+	one(helloDrift({ ...HELLO, kind: undefined }, EXPECTED), /kind nothing, expected linux/);
+	one(helloDrift({ version: "1.2.3", os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] }, EXPECTED).filter((m) => !/kind/.test(m)), /groups/);
 	one(helloDrift({ ...HELLO, os: "windows" }, EXPECTED), /os windows/);
 	one(helloDrift({ ...HELLO, arch: "arm64" }, EXPECTED), /arch arm64.*amd64/);
 	assert.deepEqual(helloDrift({ ...HELLO, arch: "arm64" }, { ...EXPECTED, arch: undefined }), [], "arch is checked only when known");
