@@ -201,8 +201,8 @@ for (const [point, status] of [['after-admit', 'unknown'], ['after-complete', 'c
 test('an execution path is read back from the ids the DSL builds: an effect\'s id, and a node attempt\'s session key', async () => {
   let emit;
   const recorded = [];
-  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { write: (lines) => { recorded.push(...lines); } });
-  const document = (id, kind, key) => ({ type: 'document', record: { id, kind, key, scope: { kind: 'session' } }, conversationId: undefined, version: 1, value: {}, ops: [] });
+  const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ write: (lines) => { recorded.push(...lines); } });
+  const document = (id, kind, key) => ({ type: 'document', kind: 'change', record: { id, kind, key, scope: { kind: 'session' } }, conversationId: undefined, version: 1, value: {}, ops: [] });
   const paths = ['/root/steps/0', '/root/steps/2/items/3', '/root/steps/1/branches/a:b', '/root/steps/0#call:1/x'];
   const cases = [
     ...paths.flatMap((path, i) => [
@@ -237,15 +237,15 @@ test('two journals in one store: a commit\'s generation is its own driver revisi
 });
 
 test('a record in a node attempt\'s conversation takes the node\'s path: its entries, documents and tasks, from a snapshot or a later commit', async () => {
-  const node = (id, conversation, path) => ({ type: 'document', record: { id, kind: 'agentrun.nodes', key: recovery.frozenStepSessionId('run-1', `node ${id}`, 'step', path, 0), scope: { kind: 'session' } },
+  const node = (id, conversation, path) => ({ type: 'document', kind: 'change', record: { id, kind: 'agentrun.nodes', key: recovery.frozenStepSessionId('run-1', `node ${id}`, 'step', path, 0), scope: { kind: 'session' } },
     conversationId: undefined, version: 1, value: { conversation, digest: null, startedMs: null, closed: false }, ops: [] });
   const snapshot = [{ channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', commit: 1, order: 0, gen: 3, snapshot: true, data: { doc: 'agentrun.nodes', key: node(4, 7, '/root/steps/3').record.key, value: { conversation: 7 }, version: 1 } }];
   let emit;
   const recorded = [];
-  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { from: snapshot, write: (lines) => { recorded.push(...lines); } });
+  const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ from: snapshot, write: (lines) => { recorded.push(...lines); } });
   emit({ seq: 2, changes: [
     { type: 'entry', value: { id: 20, conversationId: 7, kind: 'pi.assistant', model: [] } },
-    { type: 'document', record: { id: 5, kind: 'pi.usage', scope: { kind: 'conversation', conversationId: 7 } }, conversationId: 7, version: 1, value: {}, ops: [] },
+    { type: 'document', kind: 'change', record: { id: 5, kind: 'pi.usage', scope: { kind: 'conversation', conversationId: 7 } }, conversationId: 7, version: 1, value: {}, ops: [] },
     { type: 'task', value: { id: 21, conversationId: 7, kind: 'pi.generation', state: { status: 'running' } } },
     { type: 'entry', value: { id: 22, conversationId: 8, kind: 'pi.user' } },
   ] }, ctx);
@@ -261,7 +261,7 @@ test('a host\'s gen never overrides a driver generation: the recorder takes its 
   const run = async (options, changes) => {
     let emit;
     const recorded = [];
-    const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { ...options, write: (lines) => { recorded.push(...lines); } });
+    const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ ...options, write: (lines) => { recorded.push(...lines); } });
     emit({ seq: 9, changes }, ctx);
     await stop();
     return recorded.map((line) => line.gen);
@@ -279,7 +279,7 @@ test('a host\'s gen never overrides a driver generation: the recorder takes its 
 test('a conversation record is a durable pi.conversation line, { id, parent?, owner? } and nothing else, at its commit and before its entries: a fork, a task-owned conversation and an ownerless one', async () => {
   let emit;
   const recorded = [];
-  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { gen: 2, write: (lines) => { recorded.push(...lines); } });
+  const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ gen: 2, write: (lines) => { recorded.push(...lines); } });
   emit({ seq: 4, changes: [
     { type: 'entry', value: { id: 120, conversationId: 51, kind: 'pi.user', message: 'a fork\'s first message' } },
     { type: 'conversation', value: { id: 51, parent: { conversationId: 33, at: 90 }, owner: { conversationId: 33, taskId: 70 }, title: 'content that is never recorded' } },
