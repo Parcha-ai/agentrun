@@ -212,17 +212,25 @@ export interface ProbeReport {
 const isAddresses = (value: unknown): value is string[] => Array.isArray(value) && value.every((one) => typeof one === "string");
 const isId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
-/** The probe's JSON line from exec.run's stdout (base64), or undefined; a report with no accepted reads it as none. */
-export function probeReportOf(stdout: string): ProbeReport | undefined {
+/**
+ * The probe's JSON line from exec.run's stdout (base64), or what is wrong with it in words. The accepted list is
+ * required: a report without it cannot tell a target that only accepted from one refused, so it is no read-back of
+ * network none.
+ */
+export function probeReportOf(stdout: string): ProbeReport | { not: string } {
+	const text = Buffer.from(stdout, "base64").toString("utf8");
+	const notReport = { not: `wrote what is not its report: ${text.slice(0, 200)}` };
+	let value: Partial<ProbeReport> | null;
 	try {
-		const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as Partial<ProbeReport> | null;
-		if (isId(value?.uid) && isId(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached) && (value.accepted === undefined || isAddresses(value.accepted))) {
-			return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted ?? [] };
-		}
+		value = JSON.parse(text) as Partial<ProbeReport> | null;
 	} catch {
-		// Not the probe's JSON: undefined.
+		return notReport;
 	}
-	return undefined;
+	if (!(isId(value?.uid) && isId(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached))) return notReport;
+	if (!isAddresses(value.accepted)) {
+		return { not: `wrote a report with no accepted list, so a target that only accepted cannot be told from one refused: ${text.slice(0, 200)}` };
+	}
+	return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted };
 }
 
 /** Network none's drift by the probe: a target that answered, in words; none when nothing answered. */

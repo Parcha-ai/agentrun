@@ -139,7 +139,10 @@ export interface ModalProviderOptions {
 	/** Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 1000:1000. */
 	user?: string;
 	timeouts?: Partial<ModalTimeouts>;
-	/** host:port addresses the probe tries, to show none of them answers a computer with network none. */
+	/**
+	 * The addresses the probe tries, to show none of them answers a computer with network none: host:port over TCP, or
+	 * host:port/udp, a DNS query over UDP.
+	 */
 	probeTargets?: string[];
 }
 
@@ -251,7 +254,8 @@ const WORKDIR = /^\/[A-Za-z0-9._/-]*$/;
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
 const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it";
-const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$/;
+/** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
+const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 /** Modal's own default request (guide/sandbox-resources, "Pay for what you use"): a spec's sizes are limits, as in Docker. */
 const CPU_REQUEST = 0.125;
 const MEMORY_REQUEST_MIB = 128;
@@ -318,8 +322,11 @@ export function modalCommands({
 		stdio: [daemon, "stdio"],
 	};
 }
-/** Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). */
-const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+/**
+ * Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). TCP to 443, and
+ * DNS over UDP to 53, the classic path out where TCP is dropped, over IPv4 and IPv6.
+ */
+const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
 const CLOSE_WAIT_MS = 5_000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
@@ -602,7 +609,7 @@ export class ModalProvider implements ComputerProvider {
 		}
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0) throw new Error("probeTargets must name at least one address for the probe");
 		const bad = probeTargets.find((target) => typeof target !== "string" || !TARGET.test(target));
-		if (bad !== undefined) throw new Error(`the probe target ${JSON.stringify(bad)} is not host:port`);
+		if (bad !== undefined) throw new Error(`the probe target ${JSON.stringify(bad)} is not host:port or host:port/udp`);
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.#daemonImage = daemonImage;
@@ -859,7 +866,7 @@ export class ModalProvider implements ComputerProvider {
 			return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 		}
 		const report = probeReportOf(stdout);
-		if (report === undefined) return fail("refused", `the probe in ${name} wrote what is not its report: ${Buffer.from(stdout, "base64").toString("utf8").slice(0, 200)}`);
+		if ("not" in report) return fail("refused", `the probe in ${name} ${report.not}`);
 		return ok(report);
 	}
 

@@ -17,7 +17,7 @@ const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const SPEC_TAG = "agentrun.computer.spec";
-const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 const LAYER = [`COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`, "ENV HOME=/work", "WORKDIR /work"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -72,6 +72,9 @@ test("the constructor refuses, in words, what would make a computer it cannot vo
 	assert.throws(make({ user: "alice" }), /uid:gid/);
 	assert.throws(make({ probeTargets: [] }), /probe/);
 	assert.throws(make({ probeTargets: ["example.com"] }), /host:port/);
+	assert.throws(make({ probeTargets: ["1.1.1.1:53/sctp"] }), /host:port/);
+	assert.throws(make({ probeTargets: ["1.1.1.1:53/"] }), /host:port/);
+	assert.doesNotThrow(make({ probeTargets: ["1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp", "example.com:443"] }), "a UDP target is host:port/udp");
 	assert.throws(make({ timeouts: { createMs: 0 } }), /createMs/);
 	assert.throws(() => new ModalProvider({ sdk: {}, app: APP, daemonImage: DAEMON_IMAGE }), /sdk/);
 	assert.deepEqual(fake.calls, [], "no SDK call");
@@ -343,6 +346,11 @@ test("create: a sandbox that is not running after create, or has no daemon, is r
 	await driftedCreate({ box: { daemon: false } }, /no daemon listens/, SPEC, { timeouts: { helloMs: 300 } });
 	await driftedCreate({ box: { probe: "fails" } }, /probe/);
 	await driftedCreate({ box: { probe: "garbled" } }, /probe/);
+});
+
+test("create: a probe report with no accepted list is refused in words, never read as nothing accepted", async () => {
+	const error = await driftedCreate({ box: { probe: "no-accepted" } }, /the probe in .* wrote a report with no accepted list/);
+	assert.equal(error.code, "refused");
 });
 
 test("create: a daemon that never answers hello is a timeout, and the sandbox is terminated", async () => {

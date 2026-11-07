@@ -108,7 +108,8 @@ interface Target {
 }
 
 /** A bare name, which is an id; a module path has a slash or an extension. */
-const BARE = /^[a-z][a-z0-9-]*$/;
+// Any bare name, whatever its case: "Docker" is an unknown provider, not a module path.
+const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
 
 /**
  * The conformance module for --provider: a registry id's provider file, or the module at a path. A provider file's

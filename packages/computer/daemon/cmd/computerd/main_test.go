@@ -313,11 +313,40 @@ func TestProbePrintsOneJSONLineOfWhatAnsweredAndWhatOnlyAccepted(t *testing.T) {
 	}
 }
 
+func TestProbeTakesAUDPTargetAsHostPortSlashUDP(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	go func() {
+		buffer := make([]byte, 512)
+		n, from, err := conn.ReadFrom(buffer)
+		if err != nil || n < 12 {
+			return
+		}
+		_, _ = conn.WriteTo(append([]byte{buffer[0], buffer[1], 0x81, 0x80}, buffer[4:n]...), from)
+	}()
+	target := conn.LocalAddr().String() + "/udp"
+	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe", "--connect", target)
+	if code != 0 {
+		t.Fatalf("probe --connect %s: exit %d, stderr %q", target, code, stderr)
+	}
+	var report struct {
+		Reached []string `json:"reached"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil || len(report.Reached) != 1 || report.Reached[0] != target {
+		t.Fatalf("probe wrote %q (%v); want %s reached", stdout, err, target)
+	}
+}
+
 func TestProbeRefusesATargetThatIsNotHostAndPort(t *testing.T) {
 	for _, args := range [][]string{
 		{"probe", "--connect"},
 		{"probe", "--connect", "example.com"},
 		{"probe", "example.com:443"},
+		{"probe", "--connect", "example.com:53/sctp"},
+		{"probe", "--connect", "example.com:53/"},
 	} {
 		code, _, stderr := computerdOut(t, 30*time.Second, args...)
 		if code != 2 || !strings.Contains(stderr, "host:port") {

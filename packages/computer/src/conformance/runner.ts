@@ -4,7 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { sweep } from "../janitor.js";
 import { type ComputerClient, type ExecRunParams, type Group, GROUPS, type HelloResult } from "../protocol.js";
-import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec } from "../provider.js";
+import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, CreatedComputer } from "../provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
 import { conformanceCases } from "./cases/index.js";
 import { type StartedFixture, startFixture } from "./fixture.js";
@@ -124,11 +124,17 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			report.cleanup.errors.push(words(error).startsWith(`release ${ref.name}`) ? words(error) : `release ${ref.name} threw: ${words(error)}`);
 		}
 	};
+	/** Records the notes a create returned beside its ref, each naming the computer: never dropped with the ref. */
+	const noteCreated = (created: Result<CreatedComputer>) => {
+		if (!created.ok || !Array.isArray(created.value.notes)) return;
+		for (const note of created.value.notes) (report.computerNotes ??= []).push({ computer: created.value.name, note: String(note) });
+	};
 	/** Deletes the computer a create gives after nobody waits for it any more, and names it in the report. */
-	const lateCreate = (creating: Promise<Result<ComputerRef>>, what: string, by: ComputerProvider = provider) =>
+	const lateCreate = (creating: Promise<Result<CreatedComputer>>, what: string, by: ComputerProvider = provider) =>
 		keep(
 			creating.then(
 				async (created) => {
+					noteCreated(created);
 					if (!created.ok) return;
 					report.cleanup.late.push(created.value.name);
 					await release(created.value, by);
@@ -150,7 +156,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		(shared ??= (async () => {
 			const stop = new AbortController();
 			const creating = provider.create(spec(), { signal: stop.signal });
-			let created: Result<ComputerRef>;
+			let created: Result<CreatedComputer>;
 			try {
 				created = await within(creating, caseTimeoutMs, "create");
 			} catch (error) {
@@ -158,6 +164,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				lateCreate(creating, "create (the run's computer)");
 				return { error: words(error) };
 			}
+			noteCreated(created);
 			if (!created.ok) return { error: createError(created) };
 			sharedRef = created.value;
 			const connecting = provider.connect(created.value);
@@ -261,6 +268,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
 		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider) => {
 			const creating = by.create(whole, { signal: caseSignal }).then((created) => {
+				noteCreated(created);
 				if (created.ok) track(created.value, by);
 				return created;
 			});

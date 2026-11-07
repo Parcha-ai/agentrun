@@ -985,7 +985,7 @@ export class E2BProvider implements ComputerProvider {
 		if (timedOut) return fail("timeout", `the probe in ${name} did not end within ${seconds(probeMs)}`);
 		if (exitCode !== 0) return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 		const report = probeReportOf(stdout);
-		return report === undefined ? fail("refused", `the probe in ${name} wrote what is not its report`) : ok(report);
+		return "not" in report ? fail("refused", `the probe in ${name} ${report.not}`) : ok(report);
 	}
 
 	static {

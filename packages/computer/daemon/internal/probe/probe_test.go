@@ -292,9 +292,120 @@ func TestRunWithNothingReachedIsEmptyListsInJSON(t *testing.T) {
 	}
 }
 
-func TestTheConnectBoundsAreThreeSecondsAndFourKiB(t *testing.T) {
-	if probe.ConnectBounds != (probe.Bounds{Connect: 3 * time.Second, Read: 3 * time.Second, MaxRead: 4096}) {
-		t.Fatalf("ConnectBounds %+v; want 3 s to connect, 3 s to answer, 4 KiB read", probe.ConnectBounds)
+func TestTheConnectBoundsAreTenSecondsAndFourKiB(t *testing.T) {
+	if probe.ConnectBounds != (probe.Bounds{Connect: 10 * time.Second, Read: 10 * time.Second, MaxRead: 4096}) {
+		t.Fatalf("ConnectBounds %+v; want 10 s to connect, 10 s to answer, 4 KiB read", probe.ConnectBounds)
+	}
+}
+
+func TestAnAnswerAtFourSecondsIsAnsweredWithinTheCreateTimeWindow(t *testing.T) {
+	// A transparent proxy that connects onward lazily, under load: the accept is at once, the answer seconds later.
+	address := listening(t, func(conn net.Conn) {
+		_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+		buffer := make([]byte, 4096)
+		if _, err := conn.Read(buffer); err != nil {
+			return
+		}
+		time.Sleep(4 * time.Second)
+		_, _ = conn.Write(alert)
+	})
+	result := probe.Run([]string{address}, probe.ConnectBounds)
+	if !reflect.DeepEqual(result.Reached, []string{address}) || len(result.Accepted) != 0 {
+		t.Fatalf("reached %q, accepted %q (%+v); want [%s] reached: an answer at 4 s is an answer", result.Reached, result.Accepted, result.Results, address)
+	}
+}
+
+// udpServing listens for datagrams on this machine's IPv4 loopback and hands each one to answer, with a way to reply.
+func udpServing(t *testing.T, answer func(query []byte, reply func([]byte))) string {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	go func() {
+		buffer := make([]byte, 4096)
+		for {
+			n, from, err := conn.ReadFrom(buffer)
+			if err != nil {
+				return
+			}
+			query := append([]byte(nil), buffer[:n]...)
+			answer(query, func(b []byte) { _, _ = conn.WriteTo(b, from) })
+		}
+	}()
+	return conn.LocalAddr().String()
+}
+
+func TestAUDPTargetIsADNSQueryOverUDP(t *testing.T) {
+	for address, want := range map[string]string{
+		"1.1.1.1:53/udp":                "dns",
+		"[2606:4700:4700::1111]:53/udp": "dns",
+		"9.9.9.9:5353/udp":              "dns",
+		"1.1.1.1:53":                    "dns",
+	} {
+		if got := probe.ProtocolOf(address); got != want {
+			t.Errorf("ProtocolOf(%q) = %q; want %q", address, got, want)
+		}
+	}
+}
+
+func TestADNSResponseOverUDPWithTheQuerysIdIsAnswered(t *testing.T) {
+	got := make(chan []byte, 1)
+	address := udpServing(t, func(query []byte, reply func([]byte)) {
+		got <- query
+		if len(query) < 12 {
+			return
+		}
+		reply(append([]byte{query[0], query[1], 0x81, 0x80}, query[4:]...))
+	}) + "/udp"
+	result := probe.Run([]string{address}, quick)
+	if !reflect.DeepEqual(result.Reached, []string{address}) || len(result.Accepted) != 0 {
+		t.Fatalf("reached %q, accepted %q (%+v); want [%s] reached", result.Reached, result.Accepted, result.Results, address)
+	}
+	one := result.Results[0]
+	if one.Target != address || one.Protocol != "dns" || one.Outcome != "answered" || !strings.Contains(one.Detail, "DNS response with the query's id") {
+		t.Fatalf("%+v; want %s answered by a DNS response with the query's id", one, address)
+	}
+	// The query is a bare DNS message (no TCP length in front): a recursive query, one question.
+	if query := <-got; len(query) < 12 || query[2] != 0x01 || binary.BigEndian.Uint16(query[4:]) != 1 {
+		t.Fatalf("the probe sent % x; want a DNS query with one question", query)
+	}
+}
+
+func TestAUDPTargetThatNeverRepliesIsRefusedNeverAccepted(t *testing.T) {
+	address := udpServing(t, func([]byte, func([]byte)) {}) + "/udp"
+	start := time.Now()
+	result := probe.Run([]string{address}, quick)
+	if took := time.Since(start); took > quick.Read+time.Second {
+		t.Fatalf("the probe took %v; the read bound is %v", took, quick.Read)
+	}
+	if len(result.Reached) != 0 || len(result.Accepted) != 0 {
+		t.Fatalf("reached %q, accepted %q; want neither: UDP has no accept, so no reply is refused", result.Reached, result.Accepted)
+	}
+	if one := result.Results[0]; one.Outcome != "refused" || !strings.Contains(one.Detail, "no reply") {
+		t.Fatalf("%+v; want refused, no reply within the bound", one)
+	}
+}
+
+func TestAUDPPortNothingListensOnIsRefused(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := conn.LocalAddr().String() + "/udp"
+	_ = conn.Close()
+	result := probe.Run([]string{address}, quick)
+	if len(result.Reached) != 0 || len(result.Accepted) != 0 || result.Results[0].Outcome != "refused" {
+		t.Fatalf("%+v; want refused where nothing listens", result.Results)
+	}
+}
+
+func TestAUDPReplyThatIsNotTheDNSResponseStillCountsAsAnAnswer(t *testing.T) {
+	address := udpServing(t, func(_ []byte, reply func([]byte)) { reply([]byte("garbage")) }) + "/udp"
+	result := probe.Run([]string{address}, quick)
+	if !reflect.DeepEqual(result.Reached, []string{address}) || !strings.Contains(result.Results[0].Detail, "not a DNS response") {
+		t.Fatalf("%+v; want answered: bytes came back over UDP, in no DNS", result.Results)
 	}
 }
 

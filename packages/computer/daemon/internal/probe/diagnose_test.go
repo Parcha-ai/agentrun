@@ -344,8 +344,8 @@ func TestDiagnoseDNSIsAnsweredByAnyReply(t *testing.T) {
 
 	mute := udpServer(t, func([]byte) []byte { return nil })
 	got = only(t, probe.Diagnose([]probe.Check{{Probe: "dns", Address: mute}}, short))
-	if got.Outcome != "refused" || !strings.Contains(got.Detail, "no answer") {
-		t.Fatalf("nothing came back, and the probe reported %+v; want refused: no answer", got)
+	if got.Outcome != "refused" || !strings.Contains(got.Detail, "no reply") {
+		t.Fatalf("nothing came back, and the probe reported %+v; want refused: no reply", got)
 	}
 }
 

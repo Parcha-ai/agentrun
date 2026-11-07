@@ -132,11 +132,12 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			client.close();
 		});
 
-		it(`${image}: the provider's probe through the daemon with no network: every target refused outright, none reached and none accepted`, async () => {
+		it(`${image}: the provider's probe through the daemon with no network: every target, TCP and UDP, refused outright, none reached and none accepted`, async () => {
 			const { name } = sandbox(image);
 			upload(name);
 			const client = await connected(name);
-			const targets = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+			// The Modal provider's default targets: TCP to 443, and DNS over UDP to 53 (UDP has no accept: no reply is refused).
+			const targets = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 			const argv = ["/opt/agentrun/computerd", "probe", ...targets.flatMap((target) => ["--connect", target])];
 			const ran = await client.call("exec.run", { argv, timeoutMs: 30_000 }, { signal: AbortSignal.timeout(40_000) });
 			client.close();
@@ -147,7 +148,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.deepEqual(report.accepted, [], "Docker's network none accepts nothing either: each connection is refused outright");
 			assert.deepEqual(
 				report.results.map(({ target, protocol, outcome }) => [target, protocol, outcome]),
-				targets.map((target) => [target, "tls", "refused"]),
+				targets.map((target) => [target, target.endsWith("/udp") ? "dns" : "tls", "refused"]),
 			);
 		});
 
