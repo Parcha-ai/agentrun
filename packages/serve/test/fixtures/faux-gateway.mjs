@@ -6,6 +6,7 @@
 //   POST /v1/chat/completions   OpenAI Chat Completions
 // A base with a path (`/api/v1/...`, as OpenRouter serves them) is answered the same: the route is the path's end. Any
 // other path is recorded and answered 404, so a request sent to the wrong place shows in `requests` and fails its run.
+// A request whose body is not JSON (a stranger's bare `GET /` probing loopback ports) is answered 400, not recorded.
 // Streams when the request asks to (`stream: true`), else one JSON answer. A Responses or Chat Completions stream ends
 // with `data: [DONE]`, as Chat Completions streams do: pi's OpenAI client stops on it in either, and codex's stand-in
 // app-server reads to it.
@@ -41,11 +42,13 @@ export async function startFauxGateway(options = {}) {
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
-      let body = null;
+      // A request with no JSON body is no model request: a stranger's probe of a loopback port (a bare `GET /`, F3) is
+      // answered 400 and never recorded among a test's requests.
+      let body;
       try {
-        body = raw ? JSON.parse(raw) : null;
+        body = JSON.parse(raw);
       } catch {
-        body = raw;
+        return void res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "not a model request: its body is not JSON" } }));
       }
       const [path, ...rest] = (req.url ?? "/").split("?");
       const request = { method: req.method ?? "", path, query: rest.join("?"), headers: Object.fromEntries(RECORDED_HEADERS.map((name) => [name, req.headers[name]])), body };
