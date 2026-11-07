@@ -55,7 +55,8 @@ test('through the proxy, a turn\'s first request ([user, system]) is admitted at
   const fetchUp = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{}', { headers: { 'content-type': 'application/json' } }));
   const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, log: () => {}, fetch: fetchUp }, 'session-key');
   t.after(() => proxy.close());
-  const start = { model: 'claude-main', max_tokens: 32_000, messages: [{ role: 'user', content: 'Write the report.' }, { role: 'system', content: [{ type: 'text', text: 'The current date is 2026-11-07.' }] }] };
+  // As the real CLI sends a turn's first request in a session with a tool: the session's tool offered, its system message last.
+  const start = { model: 'claude-main', max_tokens: 32_000, tools: [{ name: 'mcp__hands__lookup', description: 'Look up a thing.', input_schema: { type: 'object', properties: {} } }], messages: [{ role: 'user', content: 'Write the report.' }, { role: 'system', content: [{ type: 'text', text: 'The current date is 2026-11-07.' }] }] };
   const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(start) });
   await res.text();
   assert.equal(res.status, 200);
