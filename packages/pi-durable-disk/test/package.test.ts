@@ -3,10 +3,10 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as Record<string, unknown> & {
@@ -56,6 +56,7 @@ test("package.json is publishable and points only into what it ships", () => {
 
 test("the build is JavaScript with no .ts import left", async () => {
   const dist = join(BUILD_ROOT, "dist");
+  mkdirSync(BUILD_ROOT, { recursive: true });
   writeFileSync(join(BUILD_ROOT, "package.json"), JSON.stringify({ type: "module" }));
   const tsc = spawnSync(process.execPath, [createRequire(import.meta.url).resolve("typescript/bin/tsc"), "-p", join(ROOT, "tsconfig.build.json"), "--outDir", dist], { cwd: ROOT, encoding: "utf8" });
   assert.equal(tsc.status, 0, `${tsc.stdout}${tsc.stderr}`);
