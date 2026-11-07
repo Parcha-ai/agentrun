@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "@parcha/pi-durable-agent";
@@ -837,6 +837,47 @@ test("a loopback MCP server's authorization server may use only the MCP server's
   const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
   store.attach(own.origin);
   assert.match((await store.oauthStart("docs", { url: mcp.url })).authorization_url, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
+});
+
+test("with a public address for browsers, this server's own listening port is still refused to a loopback MCP server's authorization server, and hears nothing; its other ports still sign in", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  // Where this server listens: a service on that port stands for it. Browsers reach it at a public address instead.
+  const listening = await targetOn(t, "127.0.0.1"); // key-gate: this server's own listening address, which an authorization server must not reach
+  for (const [what, metadata] of [["token endpoint", { token_endpoint: `${listening.origin}/x` }], ["registration endpoint", { registration_endpoint: `${listening.origin}/x` }]]) {
+    const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+    t.after(() => mcp.close());
+    const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+    store.attach("https://agents.example.test", listening.origin);
+    await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
+  }
+  assert.deepEqual(listening.hits, [], "the listening port heard nothing");
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+  const { mcp } = await fakes(t);
+  const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+  store.attach("https://agents.example.test", listening.origin);
+  const started = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
+  assert.equal(started.searchParams.get("redirect_uri"), `https://agents.example.test${CALLBACK}`, "the browser still comes back at the public address");
+});
+
+test("a server started with a public address refuses a loopback MCP server's authorization server that names the port it listens on", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { baseUrl, token } = await serve(t, { publicUrl: "https://agents.example.test" });
+  // As a browser at the public address reaches it, through its proxy: the sign-in starts only there.
+  const start = (body) => new Promise((resolve, reject) => {
+    const req = request(`${baseUrl}/settings/mcp-servers/loop/oauth/start`, { method: "POST", agent: false, headers: { host: "agents.example.test", "x-forwarded-proto": "https", "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) } }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).on("end", () => resolve({ status: res.statusCode, body: JSON.parse(text || "null") }));
+    });
+    req.on("error", reject).end(JSON.stringify(body));
+  });
+  for (const [what, metadata] of [["token endpoint", { token_endpoint: `${new URL(baseUrl).origin}/x` }], ["registration endpoint", { registration_endpoint: `${new URL(baseUrl).origin}/x` }]]) {
+    const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+    t.after(() => mcp.close());
+    const started = await start({ url: mcp.url });
+    assert.match(started.body?.error?.message ?? "", /private address; refused/, `${what}: ${JSON.stringify(started.body)}`);
+  }
 });
 
 test("pi: a start whose sign-in server never answers its token refresh answers within ten seconds, not the 30 s two full tries took", { timeout: 120_000 }, async (t) => {
