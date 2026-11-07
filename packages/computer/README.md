@@ -266,8 +266,9 @@ hands" placement.
 
 computerd drives the X display named by `DISPLAY` when init started, in pure Go (`daemon/internal/x11`, written against
 the X protocol with no cgo and no dependency, so the daemon stays one static binary): pixels from `GetImage` on the
-root window, input from the XTEST extension's `FakeInput`. A batch of actions is one write and one round trip, with no
-program started for any action. The image needs only an X server.
+root window, input from the XTEST extension's `FakeInput`, with no program started for any action. The image needs
+only an X server. Only a display in this computer is driven: the unix socket, or TCP to a loopback address; any other
+`DISPLAY` is refused before anything is sent to it, so this host's cookie never goes elsewhere.
 
 - The display is reached when it is first asked for, and again after it goes: hello declares `screen`,
   `input.pointer` and `input.keys`, and kind `desktop`, only while the display answers with XTEST. So a provider may
@@ -283,9 +284,14 @@ program started for any action. The image needs only an X server.
   that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
   than newline and tab, `invalid`). Its own bounds are `limit`: 64 Ki characters a `type`, `repeat` 1000, 10,000
   clicks a scroll, 1000 points a drag, 16 keys at once. Then the batch runs; a point off the display stops it there
-  (`invalid`, naming the display's size), and an X error from the server stops it at the action that sent it.
+  (`invalid`, naming the display's size), and an X error from the server stops it at the action that sent it: the
+  batch waits for the server (one round trip) after each action with a button, a key or a keyboard map change, so no
+  later action runs, and `done` and `failed` say what did. A cancel stops it at the next key, click or point, releases
+  what the batch held, and answers `aborted`.
 - Scroll: `dy` above 0 turns down, below 0 up, `dx` right and left, one wheel click each, vertical first. A key or
-  character that needs shift gets it, pressed before and released after.
+  character that needs shift gets it, pressed before and released after. `type` gives exactly its text whatever
+  Caps Lock is: when it is on, it is turned off for the typing and back on after, as xdotool does. A `key` action
+  presses keys as a keyboard does, so Caps Lock applies to it.
 - Typing a character the keyboard map has no key for (é on a US map, any CJK character, an emoji) uses the keysym remap
   xdotool does: the character is bound to a keycode with no keysym (`ChangeKeyboardMapping`), then typed with it.
   Unlike xdotool the binding is not undone, which would race a client still reading the map; it stays, so the
