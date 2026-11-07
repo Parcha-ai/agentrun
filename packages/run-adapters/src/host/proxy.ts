@@ -537,11 +537,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     // A note the host has for the session's next main-model request (the spend cap's wrap-up): a paid request on the
     // session's model whose policy can place it takes it, once, before the body is measured, so the cap admits its bytes.
-    // One the policy fails to place is dropped, said once; the request goes as the client sent it. The body as the client
-    // sent it is kept (`plain`): a request the cap admits only without the note's bytes goes as that (ModelTicket.noteDropped).
+    // Only the turn's own request (ProviderPolicy.answers): a side call on the session's model (a title, a summary, when
+    // the client has no small model) takes none. One the policy fails to place is dropped, said once; the request goes as
+    // the client sent it. The body as the client sent it is kept (`plain`): a request the cap admits only without the
+    // note's bytes goes as that (ModelTicket.noteDropped).
     let noted = false;
     let plain: Record<string, unknown> | undefined;
-    if (!route.free && asked === model && policy.addNote && hooks.note) {
+    if (!route.free && asked === model && (policy.answers ? policy.answers(body) : true) && policy.addNote && hooks.note) {
       // The request as its client sent it, measured first, so the host prices it as its admission will (the wrap-up's least).
       let request: NoteRequest = {};
       try {
