@@ -2,29 +2,27 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { Timeline } from "@/components/Timeline";
-import { rowFailed } from "@/lib/timeline";
+import { rowFailed, rowPaused } from "@/lib/timeline";
 import type { TimelineRow } from "@/lib/v2";
 
-// A request the run's spend cap couldn't cover is not sent, and the run pauses (budget). Its timeline row keeps kind
-// "error" and says `paused: true` (tl-jobs' serve/cap-words: pi-durable-agent TimelineEvent.paused, serve's
-// TimelineRow.paused): it reads as a pause, labelled "Paused", in the warning tone, with the server's words, and no red.
-// A raise doesn't turn it back into an error: the row says what happened then.
+// A request the run's spend cap couldn't cover is not sent, and the run pauses (budget). The server marks the pause with
+// a row of its own: kind "phase", origin "server", id "<refusal row id>:note", `paused: true`, summary and text "Paused at
+// the run's cap". The same row, under the same id, is served while paused, after a raise, on a re-read and after a
+// restart. While paused a waiting row follows it ("Waiting for you to raise the cap", no `paused`); after a raise that
+// row is gone and the pause row stays. The console reads it as any server row (AgentRun, the served summary, muted) with
+// a pause icon, and nothing red. A request that failed at the cap is kind "error" with no `paused`: an error, in red.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-// The served words (#1768, serve's cap refusal), verbatim: nothing spent; after spending; a paid tool's allowance.
+// The banner's sentence (serve's cap refusal, pending.said), verbatim: the row never repeats it.
 const WORDS = "Not sent: the next step needs at least $0.11, and this run's cap is $0.05. Raise the cap to at least $0.11 to continue.";
-const AFTER_SPENDING = "Not sent: this run has spent $0.02 of its $0.05 cap, and the next step needs at least $0.05. Raise the cap to at least $0.08 to continue.";
-const PAID_TOOL = "Not sent: this run has spent $0.02 of its $0.05 cap, and the next step, monid_run, could cost up to $0.05 (the allowance). Raise the cap to at least $0.08 to continue.";
 const WAITING = "Waiting for you to raise the cap";
 const row = (over: Partial<TimelineRow> & Record<string, unknown>): TimelineRow => ({ id: "e1", seq: 2, kind: "error", summary: WORDS, text: null, timestamp: "2026-11-05T17:09:00Z", tool_name: null, ...over } as TimelineRow);
-const draw = (r: TimelineRow, live = false) => {
-  const host = document.body.appendChild(document.createElement("div"));
-  root = createRoot(host);
-  act(() => root!.render(createElement(Timeline, { rows: [r], live })));
-  return host.querySelector("li") as HTMLElement;
-};
+/** The pause row, as served. */
+const PAUSED_SAYS = "Paused at the run's cap";
+const pausedRow = (over: Record<string, unknown> = {}): TimelineRow => row({ id: "e1:note", seq: 2, kind: "phase", origin: "server", paused: true, summary: PAUSED_SAYS, text: PAUSED_SAYS, ...over });
+const waitingRow = (): TimelineRow => row({ id: "e1:paused", seq: 3, kind: "waiting", summary: WAITING, text: WAITING });
 const red = (el: Element) => [el, ...el.querySelectorAll("*")].some((e) => /\b(text|border|bg)-destructive/.test(e.getAttribute("class") ?? ""));
 
 // The waiting row's chip says what the run waits on, from the run's own pending.kind (rows carry no kind of their own:
@@ -60,7 +58,7 @@ describe("the run page passes the run's pending.kind to its timeline", () => {
     const { messageFeatures, runFixture } = await import("@/fixtures");
     const f = runFixture("run.completed.idle.1");
     const run = { ...f.run, kind: "agentic", status: "input_required", state: "waiting", result: null, pending: { kind: "budget", cap_usd: 0.05, said: WORDS, at: "2026-11-05T17:09:00Z" } };
-    const rows = [row({ id: "e1", seq: 2, paused: true }), row({ id: "w1", seq: 3, kind: "waiting", summary: WAITING, text: WAITING })];
+    const rows = [pausedRow(), waitingRow()];
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(RunDetail, { run, agentName: "capped", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, tab: "timeline" } as never)));
@@ -72,46 +70,66 @@ describe("the run page passes the run's pending.kind to its timeline", () => {
   });
 });
 
-describe("the timeline, a request the spend cap held back", () => {
-  it("reads as a quiet pause marker: \"Paused at its spend cap\", the warning tone, nothing red, and the banner's sentence not said again", () => {
-    const li = draw(row({ paused: true }));
-    expect(li.textContent).toContain("Paused at its spend cap");
-    expect(li.textContent).not.toContain(WORDS);
+describe("the timeline, the pause row the server writes for a request the spend cap held back", () => {
+  const draws = (rows: TimelineRow[], live = false) => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Timeline, { rows, live })));
+    return [...host.querySelectorAll("ol > li")] as HTMLElement[];
+  };
+  const warning = (el: Element) => [el, ...el.querySelectorAll("*")].some((e) => /\b(text|border|bg)-warning/.test(e.getAttribute("class") ?? ""));
+  /** The row's title line: the served summary, as the timeline shows a row's words. */
+  const titleOf = (li: Element) => [...li.querySelectorAll("span.block")].find((e) => /text-\[15px\]/.test(e.getAttribute("class") ?? ""));
+
+  it("reads as a server row: AgentRun, the served summary as its title, muted, with a pause icon, no warning border and nothing red", () => {
+    const [li] = draws([pausedRow()]);
+    expect(li.textContent).toContain("AgentRun");
+    expect(titleOf(li)?.textContent).toBe(PAUSED_SAYS);
+    expect(titleOf(li)?.className).toContain("text-muted-foreground");
+    expect(li.querySelector(".lucide-circle-pause")).not.toBeNull();
+    expect(warning(li)).toBe(false);
+    expect(red(li)).toBe(false);
     expect(li.textContent).not.toMatch(/Error/);
-    expect(red(li)).toBe(false);
-    expect(li.querySelector(".border-warning\\/60")).not.toBeNull();
+    // The console adds no words of its own: not the old "Paused at its spend cap", not the banner's sentence.
+    expect(li.textContent).not.toContain("Paused at its spend cap");
+    expect(li.textContent).not.toContain(WORDS);
   });
 
-  it("each of the served refusals stays off the row and opens with it: after spending, and a paid tool's allowance", async () => {
-    for (const words of [AFTER_SPENDING, PAID_TOOL]) {
-      const li = draw(row({ paused: true, summary: words }));
-      expect(li.textContent).toContain("Paused at its spend cap");
-      expect(li.textContent).not.toContain(words);
-      await act(async () => { li.querySelector("button")!.click(); });
-      expect(li.textContent).toContain(words);
-      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
-    }
+  it("is no failure to the rest of the page (a failure's count, its repeats); it is the pause", () => {
+    expect(rowFailed(pausedRow())).toBe(false);
+    expect(rowPaused(pausedRow())).toBe(true);
+    expect(rowPaused(row({ kind: "phase", origin: "server", id: "x:note", summary: "Spent $0.01 so far" }))).toBe(false);
   });
 
-  it("keeps the server's words a click away, on expand", async () => {
-    const li = draw(row({ paused: true }));
-    await act(async () => { li.querySelector("button")!.click(); });
-    expect(li.textContent).toContain(WORDS);
+  it("while paused, the waiting row follows it and carries the cap's chip", () => {
+    const lis = draws([pausedRow(), waitingRow()]);
+    expect(lis).toHaveLength(2);
+    expect(lis[1].textContent).toContain(WAITING);
   });
 
-  it("is no failure to the rest of the page (a failure's count, its repeats)", () => {
-    expect(rowFailed(row({ paused: true }))).toBe(false);
-    expect(rowFailed(row({}))).toBe(true);
+  it("after a raise: the same row, the same look, and no waiting row; the raise's message follows it", () => {
+    const raised = row({ id: "u2", seq: 3, kind: "user_message", summary: "The cap was raised to $2; continue the task.", text: "The cap was raised to $2; continue the task." });
+    const lis = draws([pausedRow(), raised], true);
+    expect(lis[0].textContent).toContain(PAUSED_SAYS);
+    expect(lis[0].querySelector(".lucide-circle-pause")).not.toBeNull();
+    expect(warning(lis[0])).toBe(false);
+    expect(red(lis[0])).toBe(false);
+    expect(lis.some((li) => (li.textContent ?? "").includes("Waiting for you"))).toBe(false);
+    expect(lis.some((li) => (li.textContent ?? "").includes("Paused at cap"))).toBe(false);
   });
 
-  it("stays a pause once the run goes on after a raise", () => {
-    const li = draw(row({ paused: true }), true);
-    expect(li.textContent).toContain("Paused at its spend cap");
-    expect(red(li)).toBe(false);
+  it("a request that failed at the cap (kind error, no paused) is an error, in red, with no pause icon", () => {
+    const failedAtCap = row({ summary: "Not sent: the next step needs at least $0.11, and this run's cap is $0.05." });
+    const [li] = draws([failedAtCap]);
+    expect(li.textContent).toMatch(/Error/);
+    expect(red(li)).toBe(true);
+    expect(li.querySelector(".lucide-circle-pause")).toBeNull();
+    expect(rowFailed(failedAtCap)).toBe(true);
+    expect(rowPaused(failedAtCap)).toBe(false);
   });
 
   it("an error the server doesn't mark paused is still an error, in red", () => {
-    const li = draw(row({ summary: "Model request failed: 529 overloaded" }));
+    const [li] = draws([row({ summary: "Model request failed: 529 overloaded" })]);
     expect(li.textContent).toMatch(/Error/);
     expect(red(li)).toBe(true);
   });
