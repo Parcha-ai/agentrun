@@ -18,12 +18,15 @@ export class AgentRunRefused extends AgentRunError {
   readonly status: number;
   readonly code: string | undefined;
   readonly error: ServerError | undefined;
-  constructor(route: string, status: number, code: string | undefined, error: ServerError | undefined, why?: string) {
+  /** How long the server asked to be left before the same request again (its Retry-After), in milliseconds. */
+  readonly retryAfterMs: number | undefined;
+  constructor(route: string, status: number, code: string | undefined, error: ServerError | undefined, why?: string, retryAfterMs?: number) {
     super(why ?? `The server refused ${route}: ${status}${code ? ` ${code}` : ""}.`);
     this.name = "AgentRunRefused";
     this.status = status;
     this.code = code;
     this.error = error;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 

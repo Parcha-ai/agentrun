@@ -143,6 +143,9 @@ export function operationsOf(doc) {
         },
         answers: Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {})),
         answer: answerOf(doc, op),
+        // The headers a success answers with, as the document declares them (ETag, Location): a client returns the ones
+        // a later request needs, an ETag for If-Match.
+        answerHeaders: [...new Set(Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.headers ?? {})))].sort(),
       });
     }
   }

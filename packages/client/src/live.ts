@@ -1,6 +1,6 @@
 // `runs.wait` and `runs.follow`: a run until it ends or waits on a person, and its timeline as it changes. Hand-written
 // over the timeline route's two forms, the long-polled JSON page and the event stream, as the CLI's follow.mjs is.
-import { backoff, LATE, pause, segmentOf, wholeMs, type Exchange } from "./http.js";
+import { backoff, LATE, MAX_RETRY_AFTER_MS, pause, segmentOf, wholeMs, type Exchange } from "./http.js";
 import { AgentRunError, AgentRunRefused, AgentRunTimeout, AgentRunUnreachable, AgentRunUsage } from "./errors.js";
 import type { Run, TimelinePage } from "./operations.generated.js";
 
@@ -162,6 +162,8 @@ export async function* followRun(send: Send, baseUrl: string, runId: string, opt
     let progress = false;
     let reconnect = false;
     let cause = "stream_closed";
+    // A gateway's Retry-After: the least wait before the next try, capped as a GET's retry is.
+    let floor = 0;
     const silent = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const heard = () => {
@@ -173,7 +175,7 @@ export async function* followRun(send: Send, baseUrl: string, runId: string, opt
       let response: Response | undefined;
       try {
         // No try timeout of its own: the idle timer bounds it.
-        response = await send({ method: "GET", path, route: TIMELINE, retryable: false, signal: signal ? AbortSignal.any([signal, silent.signal]) : silent.signal, timeoutMs: 2 ** 31 - 1, headers: { accept: "text/event-stream", ...(last !== undefined ? { "last-event-id": last } : {}) } });
+        response = await send({ method: "GET", path, route: TIMELINE, retryable: false, streamed: true, signal: signal ? AbortSignal.any([signal, silent.signal]) : silent.signal, timeoutMs: 2 ** 31 - 1, headers: { accept: "text/event-stream", ...(last !== undefined ? { "last-event-id": last } : {}) } });
         reached = true;
       } catch (error) {
         // A server that never answered is unreachable now; once it has, a dropped connection, silence or a gateway's
@@ -183,6 +185,7 @@ export async function* followRun(send: Send, baseUrl: string, runId: string, opt
         if (!gateway && !(error instanceof AgentRunUnreachable && reached) && !silent.signal.aborted) throw error;
         reached = true;
         cause = gateway ? `http_${(error as AgentRunRefused).status}` : error instanceof AgentRunUnreachable ? error.cause : "stream_silent";
+        if (gateway) floor = Math.min((error as AgentRunRefused).retryAfterMs ?? 0, MAX_RETRY_AFTER_MS);
       }
       if (response && !/^text\/event-stream\b/i.test(response.headers.get("content-type") ?? "")) {
         await response.body?.cancel().catch(() => undefined);
@@ -194,7 +197,11 @@ export async function* followRun(send: Send, baseUrl: string, runId: string, opt
           if (seen !== undefined) last = seen;
           if (event === "rows") {
             progress = true;
-            yield objectOf(data, "rows") as unknown as TimelinePage;
+            const page = objectOf(data, "rows") as unknown as TimelinePage;
+            // The idle timer measures the server's silence, not the time the reader holds a page: off while yielded.
+            clearTimeout(timer);
+            yield page;
+            heard();
           }
           if (event === "end") {
             if (objectOf(data, "end").reason === "terminal") return;
@@ -220,6 +227,6 @@ export async function* followRun(send: Send, baseUrl: string, runId: string, opt
     // The stream ended with no `end`, or broke: the connection dropped.
     tries = progress ? 1 : tries + 1;
     if (tries > RETRIES) throw new AgentRunUnreachable(baseUrl, cause);
-    await pause(backoff(tries, retryMs), signal);
+    await pause(backoff(tries, Math.max(retryMs, floor)), signal);
   }
 }
