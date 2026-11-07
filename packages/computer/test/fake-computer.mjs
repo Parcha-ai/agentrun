@@ -1,5 +1,5 @@
 // A fake provider whose computers are records in memory, each with a fake daemon on an in-memory stream: hello, ping,
-// files.mkdir, and exec.run, which answers id -u, cat /proc/self/status, env and a write to $HOME as a computer would
+// files.mkdir, files.write and files.list over paths in memory, and exec.run, which answers id -u, cat /proc/self/status, env and a write to $HOME as a computer would
 // and echoes any other argv. Every other method is unsupported. No Docker, no daemon.
 import { PassThrough } from "node:stream";
 import { DaemonClient } from "../dist/index.js";
@@ -42,6 +42,25 @@ function processes(computer, method, params) {
 	return { running: entry.running, exitCode: entry.exitCode, signal: entry.signal };
 }
 
+/** files.mkdir, files.write and files.list over a computer's tree of paths; list pages hold filesPage entries. */
+function files(computer, method, params) {
+	const tree = computer.tree;
+	if (method === "files.mkdir") tree.set(params.path, "dir");
+	if (method === "files.write") tree.set(params.path, "file");
+	if (method === "files.write") return { size: Buffer.from(params.data, "base64").length };
+	if (method !== "files.list") return {};
+	const depth = params.depth ?? 1;
+	const walk = (dir, level) =>
+		[...tree.keys()]
+			.filter((path) => path.startsWith(`${dir}/`) && !path.slice(dir.length + 1).includes("/"))
+			.sort()
+			.flatMap((path) => [{ path, type: tree.get(path) }, ...(tree.get(path) === "dir" && level < depth ? walk(path, level + 1) : [])]);
+	const all = walk(params.path, 1);
+	const from = params.offset ?? 0;
+	const page = all.slice(from, from + computer.filesPage);
+	return { entries: page, truncated: from + page.length < all.length };
+}
+
 /** A daemon's end of a connection: answers each request line. */
 function fakeDaemon(hello, computer) {
 	const toDaemon = new PassThrough();
@@ -60,7 +79,7 @@ function fakeDaemon(hello, computer) {
 			else if (request.method === "exec.run") {
 				const stdout = output(request.params.argv, { ...computer, user: request.params.user });
 				reply({ result: { exitCode: 0, stdout: b64(stdout), stderr: "", timedOut: false, truncated: false } });
-			} else if (request.method === "files.mkdir") reply({ result: {} });
+			} else if (["files.mkdir", "files.write", "files.list"].includes(request.method)) reply({ result: files(computer, request.method, request.params) });
 			else if (["process.start", "process.wait", "process.signal", "process.list"].includes(request.method)) {
 				const result = processes(computer, request.method, request.params);
 				if (result === undefined) reply({ error: { code: -32000, message: `no process ${request.params.id}`, data: { kind: "not_found" } } });
@@ -79,15 +98,20 @@ function fakeDaemon(hello, computer) {
  * - `connectThrows`: connect throws that message. `uid`: the default user's uid; `users`: names to uids.
  * - `capsForUser`: a computer whose spec asked for a user has every capability.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
- * - `listPage`: how many processes one process.list page holds.
+ * - `listPage`: how many processes one process.list page holds. `filesPage`: how many entries one files.list page holds.
  * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
  *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
  * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
+ * - `kind`, `mode` (capabilities().daemon), `groups`, `maxLifetimeMs`: what capabilities() declares; check() refuses a
+ *   lifetime past maxLifetimeMs. `hello` is merged over the hello the daemon gives.
  */
 export function fakeComputers({
 	id = "fake",
 	version = "1.0.0",
-	daemon = ["exec", "files", "processes"],
+	kind = "linux",
+	mode = "pid1",
+	groups = ["exec", "files", "processes"],
+	maxLifetimeMs = 24 * 60 * 60_000,
 	hello = {},
 	network = ["none"],
 	lifetime = "janitor",
@@ -106,6 +130,7 @@ export function fakeComputers({
 	listPage = 100,
 	networkSwitches = false,
 	attachSpec = {},
+	filesPage = 100,
 } = {}) {
 	const computers = new Map();
 	const made = [];
@@ -115,10 +140,11 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ lifetime, network, isolation: "container", os: "linux", daemon, ...(user ? { user } : {}) }),
+		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, ...(user ? { user } : {}) }),
 		check(spec) {
 			const refusals = [];
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
+			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
 			const kind = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(kind)) refusals.push({ field: "network", message: `network ${kind} is not offered` });
 			return refusals;
@@ -145,6 +171,8 @@ export function fakeComputers({
 					users,
 					processes: [],
 					listPage,
+					tree: new Map(),
+					filesPage,
 				},
 			};
 			computers.set(name, record);
@@ -180,7 +208,7 @@ export function fakeComputers({
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
 			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
-			const value = { version, os: "linux", arch: "amd64", capabilities: daemon, ...hello };
+			const value = { version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
 			const client = new DaemonClient(fakeDaemon(value, computers.get(ref.name).daemon));

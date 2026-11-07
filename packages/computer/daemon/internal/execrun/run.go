@@ -3,6 +3,7 @@ package execrun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -39,11 +40,14 @@ type Result struct {
 	Truncated bool   `json:"truncated"`
 }
 
-// Run runs spec to its end, through a guard (guard.go) that is a child subreaper for this one run. On timeout or cancel
+// Run runs spec to its end, through a guard (guard.go) that is a child subreaper for this one run. The timeout counts
+// from the call, so it covers the start too: a guard that never reports the program's pid is killed with everything
+// under it, as on a timeout or cancel before the program started. On timeout or cancel
 // the guard sends SIGTERM to the program's group and every descendant, then SIGKILL KillGrace later; a timeout is a
 // result with TimedOut set, a cancel an aborted error. When the program ends, the guard kills and reaps every
 // descendant it left, in its group or not: nothing a run starts outlives it.
 func Run(ctx context.Context, spec Spec) (Result, error) {
+	deadline := time.Now().Add(spec.Timeout)
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return Result{}, rpc.Errorf(rpc.KindInvalid, "argv needs at least a program")
 	}
@@ -67,16 +71,27 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 	if ctx.Err() != nil {
 		return Result{}, rpc.Errorf(rpc.KindAborted, "exec.run was cancelled before it started")
 	}
-	g, err := Start(Program{Argv: spec.Argv, Cwd: spec.Cwd, Env: spec.Env, User: spec.User}, nil, stdout.writer, stderr.writer)
+	startCtx, cancelStart := context.WithDeadline(ctx, deadline)
+	g, err := Start(startCtx, Program{Argv: spec.Argv, Cwd: spec.Cwd, Env: spec.Env, User: spec.User}, nil, stdout.writer, stderr.writer)
+	cancelStart()
 	stdout.collect()
 	stderr.collect()
 	if err != nil {
 		drain(stdout, stderr)
+		var late *startTimedOut
+		timedOut := errors.As(err, &late)
+		var e *rpc.Error
+		if ctx.Err() != nil && (timedOut || errors.As(err, &e) && e.Kind == rpc.KindAborted) {
+			return Result{}, rpc.Errorf(rpc.KindAborted, "exec.run was cancelled; the program and everything it started were ended")
+		}
+		if timedOut {
+			return Result{ExitCode: late.code, Signal: late.signal, Stdout: stdout.bytes(), Stderr: stderr.bytes(), TimedOut: true, Truncated: stdout.truncated || stderr.truncated}, nil
+		}
 		return Result{}, err
 	}
 	defer g.Close()
 
-	timer := time.NewTimer(spec.Timeout)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	timedOut, aborted := false, false
 	select {
@@ -113,6 +128,17 @@ func stopGuard(g *Guarded) error {
 	case <-g.Done():
 		return nil
 	case <-time.After(KillGrace + guardSlack):
+	}
+	return killGuard(g)
+}
+
+// killGuard sends SIGKILL to every descendant of the guard and then to the guard, and waits for the guard to be reaped.
+func killGuard(g *Guarded) error {
+	// Once the guard was reaped its pid is free and may already belong to another process: signal nothing.
+	select {
+	case <-g.Done():
+		return nil
+	default:
 	}
 	pid := g.guard.Process.Pid
 	for _, d := range proctree.Descendants(pid) {

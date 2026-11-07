@@ -9,6 +9,7 @@ import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
 import { decisionKey } from "./decisions.js";
 import { effectKey } from "./store.js";
+import { walHasCommit } from "./wal.js";
 
 type Database = import("node:sqlite").DatabaseSync;
 type Json = any;
@@ -22,15 +23,45 @@ type DriverRecord = { binding: string | null; inputs: Record<string, string> | n
 
 /** How a reader opens the store file. `immutable` opens it as SQLite's immutable file, for a store no process writes any
  *  more and with no write-ahead log beside it (an ended run's): nothing beside it is read or made. */
-export type DurableReadOptions = { immutable?: boolean };
+/** `immutable`: a file nothing writes again. `unlocked`: a file a process may hold under an exclusive lock with its WAL
+ *  in heap (a run's own, written as pi-durable-disk's exclusive profile writes it): read with no locking (`vfs=unix-none`)
+ *  and an exclusive locking mode, the WAL read into heap, so the read neither waits on the writer nor makes a -shm. */
+export type DurableReadOptions = { immutable?: boolean; unlocked?: boolean };
 
 /** The run's store `file`, opened read-only for `read`; null when there is no such file. Every query of one `read` runs
  *  in one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
 export function withDurableFile<T>(file: string, read: (db: Database) => T, options: DurableReadOptions = {}): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-  const db = new DatabaseSync(options.immutable ? `${pathToFileURL(file).href}?immutable=1` : file, { readOnly: true, timeout: 5000 });
-  try { db.exec("BEGIN"); return read(db); } finally { db.close(); }
+  for (let attempt = 1; ; attempt++) {
+    // Unlocked, a WAL with no verified commit yet is never opened (wal.ts): SQLite's lock-free reader recovers no frame
+    // from it and removes it at its close, under a writer that may still be writing its first transaction there. Then
+    // the database file is whole: immutable, and its read kept only when the file did not change during it (a run's
+    // process wrote and its checkpoint landed meanwhile), else dropped and made again.
+    const walFrames = options.unlocked && walHasCommit(`${file}-wal`);
+    const alone = options.unlocked && !walFrames;
+    const before = alone ? fileMark(file) : undefined;
+    const at = options.immutable || alone ? `${pathToFileURL(file).href}?mode=ro&immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
+    const db = new DatabaseSync(at, { readOnly: true, timeout: 5000 });
+    let result: T;
+    try {
+      if (options.unlocked && walFrames) db.exec("PRAGMA locking_mode = EXCLUSIVE");
+      db.exec("BEGIN");
+      result = read(db);
+    } finally { db.close(); }
+    if (!alone || fileMark(file) === before) return result;
+    if (attempt >= 3) throw new Error(`the run's store ${file} changed during each of ${attempt} reads`);
+  }
+}
+
+/** What says store `file` changed: its inode, size and modification time, and its header's file change counter and page
+ *  count (bytes 24 to 31). A checkpoint writes the file, so its time and size move even where WAL mode leaves the counter. */
+function fileMark(file: string): string {
+  const at = fs.statSync(file, { bigint: true });
+  const header = Buffer.alloc(8);
+  const fd = fs.openSync(file, "r");
+  try { fs.readSync(fd, header, 0, 8, 24); } finally { fs.closeSync(fd); }
+  return `${at.ino}:${at.size}:${at.mtimeNs}:${header.toString("hex")}`;
 }
 
 /** A document's value: its latest base with every later delta applied, as the storage materializes it. */
@@ -82,7 +113,7 @@ export function durableDoc<T = Record<string, unknown>>(file: string, kind: stri
 /** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order, in whichever form the store holds: the single
  *  document's `receipts` list, or the keyed documents (one row each, in the order of their keys). A reader that folds decisions from the
  *  store uses this and not `durableDoc(file, "agentrun.decisions").receipts`, which is nothing in the keyed form. */
-export function durableDecisions(file: string): Array<Record<string, unknown>> {
+export function durableDecisions(file: string, options: DurableReadOptions = {}): Array<Record<string, unknown>> {
   return withDurableFile(file, (db) => {
     const single = sessionDoc(db, "agentrun.decisions") as { receipts?: unknown } | undefined;
     if (single) return Array.isArray(single.receipts) ? (single.receipts as Array<Record<string, unknown>>) : [];
@@ -90,7 +121,7 @@ export function durableDecisions(file: string): Array<Record<string, unknown>> {
     const rows: Array<Record<string, unknown>> = [];
     if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
     return rows;
-  }) ?? [];
+  }, options) ?? [];
 }
 
 /** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no

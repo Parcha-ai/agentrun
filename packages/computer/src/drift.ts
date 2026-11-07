@@ -1,6 +1,6 @@
 // The drift check for a Docker computer: what the computer reports of itself after create, from docker inspect and the
 // daemon's hello, against what was declared. Pure: no Docker call. Each mismatch is one sentence; none is an empty list.
-import type { DaemonCapability, HelloResult } from "./protocol.js";
+import type { ComputerKind, Group, HelloResult } from "./protocol.js";
 import type { ComputerSpec, NetworkPolicy } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
@@ -119,10 +119,11 @@ export function hostOf(info: DockerInfo | null | undefined): DockerHost {
 	return { arch: GO_ARCH[machine] ?? machine, apparmor: named("apparmor") !== undefined, selinux: named("selinux") !== undefined, problems };
 }
 
-/** What the daemon must report: the provider's version and daemon capabilities, and the host's architecture. */
+/** What the daemon must report: the provider's version, kind and groups, and the host's architecture. */
 export interface HelloExpected {
 	version: string;
-	capabilities: DaemonCapability[];
+	kind: ComputerKind;
+	groups: Group[];
 	/** Go's name (amd64, arm64); not checked when absent. */
 	arch?: string;
 }
@@ -203,9 +204,16 @@ export function helloDrift(hello: HelloResult | null | undefined, expected: Hell
 	if (expected.arch !== undefined && hello?.arch !== expected.arch) {
 		found.push(`hello: the daemon reports arch ${text(hello?.arch)}, expected the host's ${expected.arch}`);
 	}
-	const offered: unknown = hello?.capabilities;
-	const missing = expected.capabilities.filter((capability) => !(Array.isArray(offered) && offered.includes(capability)));
-	if (missing.length > 0) found.push(`hello: the daemon's capabilities lack ${missing.join(", ")}, which the provider declares`);
+	if (hello?.kind !== expected.kind) found.push(`hello: the daemon reports kind ${text(hello?.kind)}, expected ${expected.kind}`);
+	const offered: unknown = hello?.groups;
+	if (!Array.isArray(offered)) {
+		found.push(`hello: the daemon reports groups ${show(offered)}, not a list; expected ${expected.groups.join(", ")}`);
+		return found;
+	}
+	const missing = expected.groups.filter((group) => !offered.includes(group));
+	if (missing.length > 0) found.push(`hello: the daemon's groups lack ${missing.join(", ")}, which the provider declares`);
+	const extra = offered.filter((group) => !(expected.groups as unknown[]).includes(group));
+	if (extra.length > 0) found.push(`hello: the daemon offers groups ${extra.map(text).join(", ")}, which the provider does not declare`);
 	return found;
 }
 

@@ -23,18 +23,19 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	checkLifetime,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
@@ -69,7 +70,8 @@ const INSPECT_BATCH = 50;
 const LIST_FORMAT =
 	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Config":{"Labels":{{json .Config.Labels}}},' +
 	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}}}';
-/** The longest lifetime: 30 days. A computer meant to live longer is asked for again. */
+/** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
+ *  container label, and a label cannot change after create. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
 const NUL = "a NUL byte cannot be passed to docker run";
@@ -117,7 +119,17 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	capabilities(): ComputerCapabilities {
-		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"] };
+		return {
+			kind: "linux",
+			lifetime: "janitor",
+			network: ["none", "open"],
+			isolation: "container",
+			os: "linux",
+			daemon: "pid1",
+			groups: ["exec", "files", "processes"],
+			maxLifetimeMs: MAX_LIFETIME_MS,
+			user: ["root", "uid"],
+		};
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it. */
@@ -133,11 +145,7 @@ export class DockerProvider implements ComputerProvider {
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
-		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
-			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which the janitor deletes the computer");
-		} else if (lifetimeMs > MAX_LIFETIME_MS) {
-			refuse("lifetimeMs", `lifetimeMs is at most 30 days (${MAX_LIFETIME_MS} ms); ask for a new computer after that`);
-		}
+		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
 		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= 0.01)) refuse("cpus", "cpus must be a number of CPUs of at least 0.01");
@@ -245,7 +253,8 @@ export class DockerProvider implements ComputerProvider {
 
 	#expected(host: DockerHost, deadline: string, user: string) {
 		const { arch, apparmor, selinux } = host;
-		return { version: VERSION, capabilities: this.capabilities().daemon, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
+		const { kind, groups } = this.capabilities();
+		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
 	}
 
 	/** The Docker host's architecture and enforcement (hostOf), read by docker info once per provider. */
@@ -283,7 +292,7 @@ export class DockerProvider implements ComputerProvider {
 		const at = Date.parse(deadline);
 		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {
 			found.push(`deadline: the label ${DEADLINE_LABEL} reads ${JSON.stringify(deadline)}, not the ISO time create writes`);
-		} else if (at > Date.now() + MAX_LIFETIME_MS + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
+		} else if (at > Date.now() + this.capabilities().maxLifetimeMs + 60_000) found.push(`deadline: ${deadline} is past the 30 days create allows`);
 		const spec = {
 			image: config.Image,
 			lifetimeMs: 1,
@@ -298,24 +307,27 @@ export class DockerProvider implements ComputerProvider {
 		const user = userOf(config.User) ?? String(config.User);
 		const expected = this.#expected(host.value, deadline, user);
 		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !line.startsWith("network:")));
+		let kind: AttachedComputer["spec"]["kind"];
 		if (report.State?.Running === true) {
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			await opened.value.close();
 			found.push(...helloDrift(opened.value.hello, expected));
+			kind = opened.value.hello.kind;
 		}
 		if (found.length > 0) {
 			return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
 		const { image, network: read, cpus, memoryMb, pids, workdir } = spec;
-		return ok({ ...ref, spec: { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at) } });
+		return ok({ ...ref, spec: { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at), ...(kind === undefined ? {} : { kind }) } });
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
-		const found = helloDrift(opened.value.hello, { version: VERSION, capabilities: this.capabilities().daemon });
+		const { kind, groups } = this.capabilities();
+		const found = helloDrift(opened.value.hello, { version: VERSION, kind, groups });
 		if (found.length === 0) return opened;
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${found.join("; ")}`);

@@ -7,7 +7,11 @@ import { secret } from "./secrets.js";
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { defaultData } from "./files.js";
+import { chmodSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./files.js";
+import { startedWith } from "./adapters.js";
+import { stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import type { ImageState } from "./box-image.js";
@@ -154,6 +158,8 @@ const onBoxImage = (state: ImageState) => {
   if (bannered) console.log(line);
   else early.push(line);
 };
+// How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
+Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
 try {
   serve = await startServe({
@@ -179,6 +185,20 @@ for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
 if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-const stop = () => void serve.close().then(() => process.exit(0));
-process.once("SIGINT", stop);
-process.once("SIGTERM", stop);
+const record = join(resolve(data), SERVER_FILE);
+// The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
+// not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
+// (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
+// a clean stop that removes it, never the default end by signal that leaves it behind.
+const stop = stopOnSignals({
+  close: () => (removeOwnRecord(record), serve.close()),
+  stopping: () => serve.stopping(),
+  done: (code) => (removeOwnRecord(record), process.exit(code)),
+  say: (line) => console.error(line),
+});
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+// Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
+// waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
+writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
+chmodSync(record, 0o600);

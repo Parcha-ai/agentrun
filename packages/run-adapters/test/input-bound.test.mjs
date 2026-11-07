@@ -196,3 +196,11 @@ test("through the proxy and the runner, the host's beforeRequest sees the sent b
   assert.equal(sent.length, 1, 'the provider never saw the request over the cap');
   assert.deepEqual(asked.map((r) => r.inputTokensMax > room), [false, true]);
 });
+
+test("a request in flight carries what its host held it at, so a budget holds it at that figure beside the next one", async () => {
+  const asked = [];
+  const booking = await modelPortFor(await memorySessionStore().open('chat:held'), { key: 'chat:held', budgetUsd: 1, beforeRequest: (r) => { asked.push(r); return { holdUsd: 0.25 }; } });
+  await booking.models.beforeRequest({ model: 'm', inputTokensMax: 10 });
+  await booking.models.beforeRequest({ model: 'm', inputTokensMax: 20 });
+  assert.deepEqual(asked.at(-1).inFlight, [{ turn: 1, model: 'm', inputTokensMax: 10, holdUsd: 0.25 }]);
+});

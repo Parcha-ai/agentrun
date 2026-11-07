@@ -23,6 +23,9 @@ const isId = (v: unknown): v is Id => typeof v === "string" || (typeof v === "nu
 export interface McpRouteOptions {
   /** How often a call in flight sends a keepalive. Default 15 s. */
   keepaliveMs?: number;
+  /** The `_meta` key of a `tools/call` that carries the harness's own id for the call (McpClient.callIdMeta); none, the
+   *  call has no id. */
+  callIdMeta?: string;
 }
 
 /** The handler a model proxy mounts at `/mcp/<server>` (ModelProxyOptions.mcp). */
@@ -92,7 +95,9 @@ export function mcpRoute(mcp: SessionMcp, options: McpRouteOptions = {}): McpHan
   async function call(server: string, id: Id, params: Record<string, unknown>, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const meta = isPlain(params._meta) ? params._meta : {};
     const progressToken = isId(meta.progressToken) ? meta.progressToken : undefined;
-    const callId = typeof meta["claudecode/toolUseId"] === "string" ? meta["claudecode/toolUseId"] : undefined;
+    // The harness's own id for the call, under the key its adapter declared (McpClient.callIdMeta), and no other.
+    const own = options.callIdMeta !== undefined && Object.hasOwn(meta, options.callIdMeta) ? meta[options.callIdMeta] : undefined;
+    const callId = typeof own === "string" ? own : undefined;
     const stream = String(req.headers.accept ?? "").includes("text/event-stream");
     const controller = new AbortController();
     const key = keyOf(server, id);
@@ -117,6 +122,7 @@ export function mcpRoute(mcp: SessionMcp, options: McpRouteOptions = {}): McpHan
       const args = isPlain(params.arguments) ? params.arguments : {};
       const granted = typeof name === "string" && servers.get(server)!.tools.some((tool) => tool.name === name);
       result = granted
+        // The door calls the session's MCP (serve's gateway.call); its target is the tool plane's one invoke() (fix 2).
         ? await mcp.call(server, name as string, args, { signal: controller.signal, ...(callId ? { callId } : {}) })
         : { content: [{ type: "text", text: `${String(name).slice(0, 64)} is not a tool of the MCP server ${server} in this session.` }], isError: true };
     } catch (error) {
@@ -126,7 +132,8 @@ export function mcpRoute(mcp: SessionMcp, options: McpRouteOptions = {}): McpHan
       running.delete(key);
     }
     if (res.destroyed) return;
-    const body = { jsonrpc: "2.0", id, result };
+    // What the client reads of the answer: its content, and whether it failed (never the host's `parked`).
+    const body = { jsonrpc: "2.0", id, result: { content: result.content, ...(result.isError ? { isError: true } : {}) } };
     if (!stream) return json(res, 200, body);
     send(body);
     res.end();

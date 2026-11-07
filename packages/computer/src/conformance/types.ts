@@ -1,28 +1,50 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
-import type { DaemonClient } from "../client.js";
-import type { DaemonCapability, DaemonMethod, DaemonMethods, ExecRunParams, HelloResult } from "../protocol.js";
-import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec } from "../provider.js";
+import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
+import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
+import type { StartedFixture } from "./fixture.js";
 
-/** Core: what every computer must do. Full: an optional capability, tested only where it is declared. */
+/** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
-export type Group = "health" | "exec" | "files" | "process" | "provider" | "drift";
+/** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "screen" | "input" | "touch" | "apps" | "lifetime";
 
 /**
- * What a case needs: a daemon capability (declared by both the provider's capabilities().daemon and the daemon's
- * hello), a network the provider declares, the janitor as the keeper of deadlines, or a spec.user the provider takes.
+ * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
+ * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, or a provider
+ * method that is optional (extend, stream), declared by being there.
  */
 export type Capability =
-	| DaemonCapability
+	| Group
 	| "network:none"
 	| "network:open"
 	| "network:allow"
 	| "lifetime:janitor"
 	| "user:root"
-	| "user:uid";
+	| "user:uid"
+	| "extend"
+	| "stream";
 
-/** What every computer must declare: a provider without one of these cannot pass Core. */
-export const CORE_CAPABILITIES: readonly Capability[] = ["exec", "files", "processes", "network:none"];
+/**
+ * What a computer of this kind and daemon mode must declare: a case that needs one of these fails Core when it is
+ * missing, where a case that needs an undeclared optional group is skipped. exec, files and processes are Core whenever
+ * computerd runs (pid1 or child); with daemon none they are tested only when declared. Network none is Core wherever
+ * computerd runs; a phone is tested on an open network.
+ */
+export function coreGroups(kind: ComputerKind, daemon: DaemonMode): Capability[] {
+	const computerd: Capability[] = daemon === "none" ? [] : ["exec", "files", "processes", "network:none"];
+	switch (kind) {
+		case "linux":
+			return computerd;
+		case "desktop":
+			return [...computerd, "screen", "input.pointer", "input.keys"];
+		case "android":
+		case "ios":
+			return ["screen", "input.touch"];
+		default:
+			return computerd;
+	}
+}
 
 /** exec.run's result with its streams decoded. */
 export interface Ran {
@@ -42,8 +64,8 @@ export interface CaseContext {
 	readonly signal: AbortSignal;
 	/** The case's computer: the run's shared one, or one made for this case alone. */
 	readonly ref: ComputerRef;
-	/** A connection of the case's own to that computer, after hello. */
-	readonly client: DaemonClient;
+	/** A connection of the case's own to that computer, after hello: computerd, or the provider itself (daemon none). */
+	readonly client: ComputerClient;
 	readonly hello: HelloResult;
 	/** The label every computer of this run carries. */
 	readonly runLabels: Record<string, string>;
@@ -68,8 +90,16 @@ export interface CaseContext {
 	dir(): Promise<string>;
 	/** The same provider with a daemon that reports another version; skips the case when none was given. */
 	drifted(): Promise<ComputerProvider>;
-	exec(argv: string[], extra?: Partial<ExecRunParams>, client?: DaemonClient): Promise<Ran>;
-	call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], client?: DaemonClient): Promise<DaemonMethods[M]["result"]>;
+	/**
+	 * Starts the run's fixture in the case's computer and waits until it is up: an app that logs each input event it
+	 * gets, so a case checks what an action did with no model. It is stopped when the case ends. Skips the case when the
+	 * run was given no fixture, or none can start on this kind of computer.
+	 */
+	fixture(): Promise<StartedFixture>;
+	/** fetch, as the run was given it; the global one by default. */
+	fetch(url: string, init?: { signal?: AbortSignal; method?: string }): Promise<{ status: number }>;
+	exec(argv: string[], extra?: Partial<ExecRunParams>, client?: ComputerClient): Promise<Ran>;
+	call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], client?: ComputerClient): Promise<DaemonMethods[M]["result"]>;
 	ok<T>(result: Result<T>, what: string): T;
 	/** Asserts the result is an error, with one of these codes when given. */
 	refused(result: Result<unknown>, what: string, codes?: ComputerErrorCode[]): ComputerError;
@@ -90,7 +120,7 @@ export interface Case {
 	/** `<group>.<name>`. */
 	id: string;
 	level: Level;
-	group: Group;
+	group: CaseGroup;
 	needs: Capability[];
 	/** "shared" (default): the run's computer; "fresh": one of its own; "none": no computer. */
 	computer?: "shared" | "fresh" | "none";
@@ -102,30 +132,38 @@ export interface Case {
 export interface CaseResult {
 	id: string;
 	level: Level;
-	group: Group;
+	group: CaseGroup;
 	status: "pass" | "fail" | "skip";
 	reason?: string;
+	/**
+	 * On a skip: the needs that were not declared and are optional for this kind of computer. A Core case skipped for
+	 * these does not fail Core; any other skip of a Core case does.
+	 */
+	undeclared?: Capability[];
 }
 
 export interface ConformanceReport {
 	/** The provider's id. */
 	provider: string;
 	providerVersion: string;
+	/** What the provider declares the computer is, and who answers its methods. */
+	kind: ComputerKind;
+	daemonMode: DaemonMode;
 	image: string;
-	/** What the daemon of the run's computer said in hello; null when no computer could be made. */
-	daemon: { version: string; arch: string } | null;
+	/** What the run's computer said in hello; null when no computer could be made. */
+	daemon: { version: string; os: string; arch: string } | null;
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
 	/** When only was given: the Core cases it left out, which did not run. */
 	coreNotRun?: string[];
 	results: CaseResult[];
 	/**
-	 * pass when every Core case ran and passed, and the run left no computer behind. partial when only left Core cases
-	 * out and every case that ran passed (a Core case skipped is not a pass), with nothing left behind: no Core verdict.
-	 * fail otherwise.
+	 * pass when every Core case ran and passed, but those skipped for an optional group the computer does not declare,
+	 * and the run left no computer behind. partial when only left Core cases out and every case that ran passed (a Core
+	 * case skipped for any other reason is not a pass), with nothing left behind: no Core verdict. fail otherwise.
 	 */
 	core: "pass" | "partial" | "fail";
-	/** Capabilities Full cases needed that the provider or the daemon does not declare. */
+	/** What cases needed that the provider or the computer does not declare and its kind does not require. */
 	undeclared: Capability[];
 	/**
 	 * The computers of this run deleted, those still there after it, what went wrong, and the computers a provider gave
@@ -152,4 +190,11 @@ export interface ConformanceOptions {
 	patience?: number;
 	/** The longest each cleanup call (release, the sweep, list) may take; default 60 s. */
 	cleanupTimeoutMs?: number;
+	/**
+	 * The fixture on this machine, for the cases that check what input did: computerd-fixture for a desktop, the
+	 * fixture APK for an Android phone. Without it those cases skip, and Core cannot pass where kind requires them.
+	 */
+	fixture?: string;
+	/** fetch for screen.stream; default the global one. */
+	fetch?: CaseContext["fetch"];
 }

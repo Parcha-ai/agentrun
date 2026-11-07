@@ -1,5 +1,5 @@
 Patch: 020-mcp-servers
-Reason: an app's remote MCP servers are called by the CLI's own MCP client at the session's model proxy (/mcp/<server>, behind the session key), set over its stdin with setMcpServers (an options.mcpServers entry would be in its argv), each call allowed by name and recorded as a built-in's (intent before it runs, outcome after); a server that does not connect fails the turn, and tool search is off so the granted tools are offered whole
+Reason: an app's remote MCP servers are called by the CLI's own MCP client at the session's model proxy (/mcp/<server>, behind the session key), set over its stdin with setMcpServers (an options.mcpServers entry would be in its argv), each call allowed by name and recorded as a built-in's (intent before it runs, outcome after); the proxy answers the handshake itself, so a remote server that can't be reached shows at its first call as that call's error, and tool search is off so the granted tools are offered whole
 Upstream: ours
 Pins: claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it
 ---
@@ -16,8 +16,8 @@ index 4d284db..f80efe5 100644
 +   * model proxy (`<modelUrl>/mcp/<name>`, behind the session's key), with the
 +   * tools granted on each: those are allowed by name (`mcp__<name>__<tool>`)
 +   * and each call is recorded as a built-in's. They are set over the CLI's
-+   * stdin (`setMcpServers`), never in its argv. A server that does not
-+   * connect fails the turn. Default none.
++   * stdin (`setMcpServers`), never in its argv. The proxy answers the
++   * handshake: an unreachable server shows at its first call. Default none.
 +   */
 +  mcpServers?: readonly { readonly name: string; readonly tools: readonly string[] }[];
    /** Provider-hosted tools the model may use; default none. `web_search` turns the CLI's WebSearch on, built-ins off or

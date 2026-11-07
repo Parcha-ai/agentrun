@@ -1,5 +1,6 @@
 // The store: pi's SqliteStorage over one database file in one of two profiles, behind a fence-aware facade.
-// Both profiles run at synchronous = FULL with mmap off, and every pragma is read back before the store opens. After a
+// Both profiles run at the journal's `synchronous` level (JOURNAL_SYNCHRONOUS; barriers.ts says when a NORMAL store
+// syncs) with mmap off, and every pragma is read back before the store opens. After a
 // storage error of the I/O, full or not-a-database class the handle is fenced: nothing is retried on it, nothing read
 // from it is trusted, and every later call fails at once with StoreFencedError. The facade is the only place the
 // package reads a storage error.
@@ -70,10 +71,22 @@ export class StorePragmaError extends Error {
   }
 }
 
-/** What each profile must read back after it is set. `synchronous` 2 is FULL. */
+/** A store's `synchronous` level: FULL syncs the WAL at every commit; NORMAL only at a checkpoint and at a barrier (barriers.ts). */
+export type Synchronous = "FULL" | "NORMAL";
+
+/** What `PRAGMA synchronous` reads back for each level. */
+export const SYNCHRONOUS_LEVEL = { FULL: 2, NORMAL: 1 } as const satisfies Record<Synchronous, number>;
+
+/**
+ * The level a run's journal opens at. FULL until every barrier in barriers.ts is active: test/barriers.test.ts fails
+ * while it is NORMAL and any barrier is still planned.
+ */
+export const JOURNAL_SYNCHRONOUS: Synchronous = "FULL";
+
+/** What each profile must read back after it is set, at the journal's level. */
 export const PROFILE_PRAGMAS = {
-  exclusive: { locking_mode: "exclusive", journal_mode: "wal", synchronous: 2, mmap_size: 0 },
-  shared: { locking_mode: "normal", journal_mode: "wal", synchronous: 2, mmap_size: 0 },
+  exclusive: { locking_mode: "exclusive", journal_mode: "wal", synchronous: SYNCHRONOUS_LEVEL[JOURNAL_SYNCHRONOUS], mmap_size: 0, wal_autocheckpoint: 0 },
+  shared: { locking_mode: "normal", journal_mode: "wal", synchronous: SYNCHRONOUS_LEVEL[JOURNAL_SYNCHRONOUS], mmap_size: 0 },
 } as const satisfies Record<Profile, Record<string, string | number>>;
 
 /**
@@ -82,15 +95,16 @@ export const PROFILE_PRAGMAS = {
  */
 export const FULLFSYNC_PRAGMAS = { fullfsync: 1, checkpoint_fullfsync: 1 } as const;
 
-/** What `profile` must read back on `platform`: its own pragmas, and on macOS `FULLFSYNC_PRAGMAS` too. */
-export function profilePragmas(profile: Profile, platform: NodeJS.Platform = process.platform): Readonly<Record<string, string | number>> {
-  return platform === "darwin" ? { ...PROFILE_PRAGMAS[profile], ...FULLFSYNC_PRAGMAS } : PROFILE_PRAGMAS[profile];
+/** What `profile` must read back on `platform` at `synchronous` (default the journal's): its own pragmas, and on macOS `FULLFSYNC_PRAGMAS` too. */
+export function profilePragmas(profile: Profile, platform: NodeJS.Platform = process.platform, synchronous: Synchronous = JOURNAL_SYNCHRONOUS): Readonly<Record<string, string | number>> {
+  const own = { ...PROFILE_PRAGMAS[profile], synchronous: SYNCHRONOUS_LEVEL[synchronous] };
+  return platform === "darwin" ? { ...own, ...FULLFSYNC_PRAGMAS } : own;
 }
 
-/** Read every pragma of `profile` on `platform` (default this one) back and refuse (StorePragmaError) when any differs. */
-export async function assertPragmas(database: SqliteExecutor, profile: Profile, platform: NodeJS.Platform = process.platform): Promise<void> {
+/** Read every pragma of `profile` on `platform` (default this one) at `synchronous` back and refuse (StorePragmaError) when any differs. */
+export async function assertPragmas(database: SqliteExecutor, profile: Profile, platform: NodeJS.Platform = process.platform, synchronous: Synchronous = JOURNAL_SYNCHRONOUS): Promise<void> {
   const mismatches: PragmaMismatch[] = [];
-  for (const [pragma, expected] of Object.entries(profilePragmas(profile, platform))) {
+  for (const [pragma, expected] of Object.entries(profilePragmas(profile, platform, synchronous))) {
     const row = await database.get<Record<string, SqliteValue>>(`PRAGMA ${pragma}`);
     const actual = row === undefined ? undefined : Object.values(row)[0];
     if (actual !== expected) mismatches.push({ pragma, expected, actual });
@@ -221,7 +235,30 @@ export type OpenOptions = {
   readonly decorate?: (database: SqliteDatabase) => SqliteDatabase;
   /** The platform whose pragmas the store takes (`profilePragmas`); default this one. For tests. */
   readonly platform?: NodeJS.Platform;
+  /** The store's `synchronous` level; default the journal's (JOURNAL_SYNCHRONOUS). */
+  readonly synchronous?: Synchronous;
+  /**
+   * The exclusive profile only: the store's close leaves its WAL in place. node:sqlite's close checkpoints the WAL into
+   * the database file; with this, close only lets go of the store, and the connection stays open, held here, until the
+   * process ends, which a process.exit does without a checkpoint (a natural end of the event loop would close it, and
+   * checkpoint). For a run's own process, which ends by process.exit (cli.ts), so whoever takes the run back next
+   * checkpoints it. A second open of the file in this process is refused busy, as the connection still holds its lock.
+   */
+  readonly keepWal?: boolean;
 };
+
+/** The connections a keepWal store's close let go of: held, so a collected handle never closes, and checkpoints, its file. */
+const keptOpen = new Set<SqliteDatabase>();
+
+/** `database` whose close lets go of it without closing the connection (keepWal). */
+const keepingWal = (database: SqliteDatabase): SqliteDatabase =>
+  new Proxy(database, {
+    get(target, key, receiver) {
+      if (key === "close") return async () => void keptOpen.add(target);
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 
 export type ArchilStore = {
   readonly storage: SqliteStorage;
@@ -229,6 +266,8 @@ export type ArchilStore = {
   readonly database: FencedDatabase;
   readonly profile: Profile;
   readonly file: string;
+  /** The level it commits at between barriers (`syncNow`). */
+  readonly synchronous: Synchronous;
 };
 
 /**
@@ -246,24 +285,29 @@ export async function openArchilStore(
   if (profile !== "exclusive" && profile !== "shared") throw new TypeError(`unknown store profile ${JSON.stringify(profile)}`);
   const fence = new Fence(options.onFenced);
   const decorate = options.decorate ?? ((database: SqliteDatabase) => database);
+  const synchronous = options.synchronous ?? JOURNAL_SYNCHRONOUS;
+  if (!Object.hasOwn(SYNCHRONOUS_LEVEL, synchronous)) throw new TypeError(`unknown synchronous level ${JSON.stringify(synchronous)}`);
   let database: FencedDatabase | undefined;
   try {
     if (file !== ":memory:") await mkdir(dirname(file), { recursive: true });
     if (profile === "exclusive") {
       const raw = await fence.guard(() => new NodeSqliteDatabase(new DatabaseSync(file, { timeout: 0 })));
-      database = new FencedDatabase(decorate(raw), fence);
+      database = new FencedDatabase(decorate(options.keepWal ? keepingWal(raw) : raw), fence);
       await database.exec("PRAGMA locking_mode = EXCLUSIVE"); // before WAL: the WAL index stays in heap
       await database.exec("PRAGMA journal_mode = WAL");
+      // No checkpoint while it runs: whoever takes the run back checkpoints it, with no writer left.
+      await database.exec("PRAGMA wal_autocheckpoint = 0");
     } else {
       database = new FencedDatabase(decorate(await fence.guard(() => openNodeSqliteDatabase(file))), fence);
     }
-    await database.exec("PRAGMA synchronous = FULL"); // fsync the WAL on every commit
+    // FULL syncs the WAL at every commit; NORMAL at a checkpoint and at each barrier (barriers.ts).
+    await database.exec(`PRAGMA synchronous = ${synchronous}`);
     await database.exec("PRAGMA mmap_size = 0"); // no mmap I/O of the database file on a network filesystem
     const platform = options.platform ?? process.platform;
     for (const pragma of platform === "darwin" ? Object.keys(FULLFSYNC_PRAGMAS) : []) await database.exec(`PRAGMA ${pragma} = ON`);
-    await assertPragmas(database, profile, platform);
+    await assertPragmas(database, profile, platform, synchronous);
     const storage = await SqliteStorage.open(database);
-    return { storage, database, profile, file };
+    return { storage, database, profile, file, synchronous };
   } catch (error) {
     if (database !== undefined && !fence.fenced) await database.close().catch(() => undefined);
     if (resultCodes(error).some((code) => BUSY_CODES.has(primary(code)))) throw new StoreBusyError(file, profile, error);

@@ -5,21 +5,19 @@
 // (a loopback server here), which answers each one the same, so the end-of-run turn adds nothing.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { copyFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, learner, made, settled, started } from "./learn-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
-const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 
 test("on codex's real adapter, a run whose job reads a note through the host's read tool used it: its rows name the tool `read` with the path as given, and its learning block, in its view and its list, names the note", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   // serve's gateway: each Responses request streamed back as one short answer with its usage.
   const gateway = createServer(async (req, res) => {
     if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
@@ -49,6 +47,6 @@ test("on codex's real adapter, a run whose job reads a note through the host's r
   const reads = rows.filter((row) => row.tool_name === "read").map((row) => [row.kind, row.tool_input_preview, row.tool_status]);
   assert.deepEqual(reads, [["tool_use", ".learning/check-units.md", null], ["tool_result", null, "success"]], JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.summary])));
   settled(view, rows, "dropped", "empty");
-  assert.deepEqual(view.learning.used, [{ file: "check-units.md", name: "Check units" }]);
-  assert.deepEqual((await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).learning.used, view.learning.used);
+  assert.deepEqual(view.learning.read, [{ file: "check-units.md", name: "Check units" }]);
+  assert.deepEqual((await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).learning.read, view.learning.read);
 });
