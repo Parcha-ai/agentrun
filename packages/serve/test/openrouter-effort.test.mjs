@@ -16,7 +16,7 @@ import { verifyCodexBinary } from "../../run-adapters-codex/dist/verify.js";
 import * as adapters from "../dist/adapters.js";
 import { runModels } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { scratch } from "./support.mjs";
+import { harnessData, scratch } from "./support.mjs";
 
 const KEY = `not-a-secret-${"openrouter"}`;
 const ONLY = { OPENROUTER_API_KEY: KEY };
@@ -75,10 +75,11 @@ test("claude-agent on OpenRouter alone: each level reaches /api/v1/messages as a
   const real = await import("@parcha/agentrun-harness-claude");
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const chosen = adapters.claudeModel(ONLY, undefined);
+  const data = await harnessData(t);
   for (const level of LEVELS) {
     const { sent, fetch } = await openrouter(t);
     const load = async () => ({ ...real, claudeAgentAdapter: (options) => real.claudeAgentAdapter({ ...options, fetch }) });
-    const adapter = await adapters.claudeOf(ONLY, { model: chosen.model, models: builtinModels() }, load);
+    const adapter = await adapters.claudeOf({ ...ONLY, AGENTRUN_SERVE_DATA: data }, { model: chosen.model, models: builtinModels() }, load);
     const end = await turn(t, adapter, level);
     assert.equal(end.status, "completed", `${level}: ${JSON.stringify(end)}`);
     const thinking = sent.filter((r) => r.body?.thinking !== undefined);
@@ -107,7 +108,8 @@ test("codex on OpenRouter alone: each level reaches /api/v1/responses as reasoni
     const { sent, fetch } = await openrouter(t, () => new Response(said(sent.length), { status: 200, headers: { "content-type": "text/event-stream" } }));
     const dir = await scratch(t);
     const load = async () => ({ ...real, codexAdapter: (options) => real.codexAdapter({ ...options, sessionsDir: dir, fetch }) });
-    const adapter = await adapters.codexOf(ONLY, { model: chosen.model, models: builtinModels() }, load);
+    // Codex as the first-use install puts it in the data (harness-install.ts), linked from this checkout's.
+    const adapter = await adapters.codexOf({ ...ONLY, AGENTRUN_SERVE_DATA: await harnessData(t) }, { model: chosen.model, models: builtinModels() }, load);
     const end = await turn(t, adapter, level);
     assert.equal(end.status, "completed", `${level}: ${JSON.stringify(end)}`);
     assert.ok(sent.length >= 1, `${level}: a request`);

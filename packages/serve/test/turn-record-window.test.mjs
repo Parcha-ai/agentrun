@@ -7,7 +7,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv, writtenJson } from "./support.mjs";
 
 const SEND_CUT = new URL("./fixtures/faux-harness-send-cut.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -71,8 +71,8 @@ for (const harness of ["claude-agent", "codex"]) {
     await writeFile(arm, "");
     await writeFile(go, "");
     let hold = null;
-    for (const end = Date.now() + 55_000; !(hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))); await sleep(50)) assert.ok(Date.now() < end, "the follow-up's send reaches its record");
-    assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid, hold.pid, "the held process is the run's");
+    hold = await writtenJson(held, "the follow-up's send reaches its record");
+    assert.equal(runRecordOf(data, runId).holder?.pid, hold.pid, "the held process is the run's");
     process.kill(hold.pid, "SIGKILL");
     closed = true;
     await one.close();

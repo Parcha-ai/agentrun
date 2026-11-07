@@ -1,5 +1,6 @@
 export * from "./protocol.js";
 export * from "./result.js";
 export * from "./provider.js";
-export { DaemonClient, type DaemonStream } from "./client.js";
+export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
+export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { DockerProvider, type DockerProviderOptions } from "./docker.js";

@@ -10,7 +10,9 @@ The decision models:
 
 - **Jev** (TypeSafe), the default. It answers yes/no questions with a probability, picks from a list with a
   confidence, and reads page images.
-- **Parallel**, for questions that need the web. Its answers come with citations.
+- **Parallel**, for questions that need the web. Its answers come with citations. With `PARALLEL_API_KEY` it runs on
+  Parallel's own API; without it, an OpenRouter key alone is enough: it runs on OpenRouter's `parallel/decisions-fast`,
+  with the same citations.
 - **OpenRouter decision models**, here `perplexity/pplx-decider-v1.2`, `liquid/d1` and `cloudflare/clef`, used as
   extra jurors.
 

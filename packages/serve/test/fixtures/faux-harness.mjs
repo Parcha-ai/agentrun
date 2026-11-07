@@ -29,6 +29,19 @@ const hangOnceSignalled = (signal, then) => {
   return new Proxy(then, { has(target, key) { if (key !== "hang") return key in target; if (held) return false; held = true; writeFileSync(signal, ""); return true; } });
 };
 
+/** Request `k` of a conversation that grows by a tool call and its result each request, as Claude Sonnet 5.5 bills it
+ *  (faux-sonnet-priced.mjs): a 20,000-token prompt that grows 1,100 tokens a request, its body 4 bytes a token (the
+ *  input bound the proxy measures), each request reading the previous one's whole prompt from the cache and writing the
+ *  rest, 3 tokens of input after the last breakpoint and 300 of output. `miss`: it finds no cache, its whole prompt
+ *  written. */
+export function grown(k, { miss = false } = {}) {
+  const prompt = (n) => 20_000 + 1_100 * n;
+  const cacheRead = k === 0 || miss ? 0 : prompt(k - 1);
+  const tokens = { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
+  const usd = (tokens.input * 2 + tokens.output * 10 + tokens.cacheRead * 0.2 + tokens.cacheWrite * 2.5) / 1e6;
+  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, tokens, usd };
+}
+
 export function script(spec) {
   const text = spec.system.join("\n");
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name) })}\n`);
@@ -63,6 +76,18 @@ export function script(spec) {
   // The same two calls, each ending before its request is paid, as with Claude Code, whose cost comes in after its
   // response: each result is stored before the answer that holds its call.
   if (/Write two files while answering\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
+  // The spend cap's wrap-up across a crash: a request at $0.30, then the turn holds (writing `<file>.held`) with no
+  // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
+  const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
+  if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
+  // The wrap-up due after a $0.40 request, then an answer whose input (5,990 tokens, $0.599 on input-priced faux) fits
+  // what is left of a $1 cap only without the note's bytes.
+  if (/Wrap up with no room for the note\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { say: "Answered.", inputTokensMax: 5_990, usd: 0.01 }];
+  // The wrap-up due after a $0.40 request; the next request, which takes the note, has a side call admitted and answered
+  // between that take and its own admission; then one request more.
+  if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
+  // The wrap-up due only after a turn's one request ($0.40): the next turn's first request is the first that can take it.
+  if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4 }, { say: "Second.", usd: 0.01 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   // Reads a file the run was given (an upload, copied into its inputs/), then says so.
   const upload = /Read the upload (\S+)\./.exec(text)?.[1];
@@ -81,9 +106,9 @@ export function script(spec) {
   const failWith = /^Fail with: (.*)$/m.exec(text)?.[1];
   if (failWith) return [{ fail: failWith }];
   // Calls each tool the line lists, in order, then says so: `Box calls: [{"call": "bash", "args": {...}}, ...]`. `{work}`
-  // in a call names the run's work directory on this machine, the harness's cwd (from AGENTRUN_TEST_DATA, the data root).
+  // in a call names the run's work directory on this machine, the harness's cwd (its run's folder, the --dir it was given).
   const boxed = /^Box calls: (\[.*\])$/m.exec(text)?.[1];
-  const work = `${process.env.AGENTRUN_TEST_DATA}/runs/${spec.key.slice("run:".length)}/work`;
+  const work = `${process.argv[process.argv.indexOf("--dir") + 1]}/work`;
   if (boxed) return [...JSON.parse(boxed.replaceAll("{work}", work)).map((step) => ({ ...step, usd: 0.001 })), { say: "Done in the box.", usd: 0.001 }];
   // monid's run called, then the turn holds with no request open (writing the signal) until it is stopped; the next
   // turn's request answers. A hold keeps its place in the script, so it holds once, and that place is the answer after.
@@ -168,6 +193,24 @@ export function script(spec) {
   // A request answered and booked with nothing after it until the file exists: no boundary writes its entry.
   const hold = /Hold until (\S+)\./.exec(text)?.[1];
   if (hold) return [{ say: "Halfway.", usd: 0.002 }, ...(existsSync(hold) ? [] : [{ hang: true }]), { say: "Done holding.", usd: 0.004 }];
+  // A growing conversation whose requests read the cache (grown), 80 of them: a cap pauses it on the way. "..., missing
+  // the cache at request N until F.": request N finds no cache and is held in flight until the file F exists. "..., cut
+  // at request 1 until F.": a crash cuts request 1 until F exists; then an answer as large as request 2's.
+  const growing = /Grow a cached context(?:, missing the cache at request (\d+) until (\S+)|, cut at request 1 until (\S+))?\./.exec(text);
+  if (growing) {
+    const [, missAt, missUntil, cutUntil] = growing;
+    if (cutUntil) return [grown(0), ...(existsSync(cutUntil) ? [] : [{ ...grown(1), cut: true }]), { say: "After the cut.", inputTokensMax: grown(2).inputTokensMax, tokens: grown(2).tokens, usd: grown(2).usd }];
+    return Array.from({ length: 80 }, (_, k) => (missAt !== undefined && k === Number(missAt) ? { ...grown(k, { miss: true }), until: missUntil } : grown(k)));
+  }
+  // Request 2 answers before its cost is booked (only once the file exists: a provider whose usage comes after its
+  // answer, and a process gone before it did), then a next turn's request.
+  const bookWhen = /Grow, then answer with its cost booked when (\S+) exists\./.exec(text)?.[1];
+  if (bookWhen) {
+    const second = grown(1);
+    // The next turn's request only in a process opened once `<file>.next` exists (the script is read at each open).
+    const next = existsSync(`${bookWhen}.next`) ? [{ say: "Second turn.", inputTokensMax: grown(2).inputTokensMax, tokens: grown(2).tokens, usd: grown(2).usd }] : [];
+    return [grown(0), { say: "Answered.", inputTokensMax: second.inputTokensMax, tokens: second.tokens, usd: second.usd, bookWhen }, ...next];
+  }
   // A chat: each turn says its answer and ends.
   return Array.from({ length: 10 }, (_, i) => [{ say: `Answer ${i + 1}.`, usd: 0.001 }, { end: true, usd: 0.001 }]).flat();
 }

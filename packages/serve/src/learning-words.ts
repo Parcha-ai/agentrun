@@ -141,10 +141,8 @@ export const said = {
   stale: (problems: readonly Pick<Problem, "rule">[]) => problems.length && problems.every((problem) => problem.rule === "supersedes")
     ? "Not kept: a note it would replace is gone or was changed since."
     : `Not kept: the agent's notes changed while this run ran (${rulesIn(problems)}).`,
-  noWriteTool: "Not kept: this agent can't write notes (give it the write tool).",
   noBudget: "Skipped: no budget left in this run to look back.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover looking back.",
-  screen: "Not kept: a new note read like instructions planted in a page, not a lesson.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
 };
 

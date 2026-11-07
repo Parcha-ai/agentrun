@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fetchPage } from "../dist/web-fetch-direct.js";
 import { network } from "./fixtures/fake-network.mjs";
-import { answerFlow, client, follow, scratch, serve } from "./support.mjs";
+import { answerFlow, client, follow, runDir, scratch, serve } from "./support.mjs";
 
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 
@@ -78,7 +78,7 @@ test("a URL on a port other than 80 or 443 is refused before its host is looked 
 
 /** What each web_fetch call of run `runId` was answered, parsed, from its released store. */
 function pagesOf(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])

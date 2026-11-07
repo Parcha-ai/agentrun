@@ -10,7 +10,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -85,7 +85,7 @@ test("an opencode run whose cap can't cover one request's least pauses before an
   await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 60_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
-  const words = /^Not sent: this run's cap of \$0\.001 can't cover one .+ request \(at least \$(\d+\.\d+)\)\. Raise the cap to at least \$(\d+\.\d+) to run it\.$/.exec(ended.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d+), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d+) to continue\.$/.exec(ended.pending.said);
   assert.ok(words, ended.pending.said);
   assert.equal(words[2], words[1], "nothing spent or held: the cap to raise to is the least");
   assert.ok(Number(words[1]) >= 0.002048, `the least covers the answer's 1,024 tokens: $${words[1]}`);
@@ -124,7 +124,7 @@ test("a run on opencode goes through the adapter's proxy to serve's gateway, pri
   assert.ok(child, "OpenCode's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
-  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(data, "runs", run.body.run_id, "work")), "in the run's workspace, where its file tools write");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(runDir(data, run.body.run_id), "work")), "in the run's workspace, where its file tools write");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen.length, 1, "one model request");
@@ -146,7 +146,7 @@ test("an opencode run whose process is killed mid-turn is relaunched: OpenCode g
     assert.ok(i < 300, "the turn's model request reaches the gateway");
     await sleep(100);
   }
-  const record = async () => JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
+  const record = async () => runRecordOf(data, run.body.run_id);
   const killed = (await record()).holder.pid;
   const child = await processOf(standIn);
   assert.ok(child, "OpenCode's process runs");

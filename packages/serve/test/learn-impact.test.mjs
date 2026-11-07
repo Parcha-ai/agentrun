@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, LEARN, learner, made, savedOf, started } from "./learn-support.mjs";
-import { serve, storeRun } from "./support.mjs";
+import { runDir, serve, storeRun } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 const median = (values) => {
@@ -23,7 +23,7 @@ const median = (values) => {
  *  job's cost and its look-back's add up to its row's cost. */
 function figuresOf(data, runId) {
   const row = storeRun(data, runId);
-  const { learning } = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+  const { learning } = JSON.parse(readFileSync(join(runDir(data, runId), "serve.json"), "utf8"));
   const started = Date.parse(row.startedAt);
   if (!learning) return { duration: (Date.parse(row.endedAt) - started) / 1000, cost: row.costUsd };
   assert.ok(Date.parse(learning.answered_at) < Date.parse(row.endedAt), "it answered before it looked back");

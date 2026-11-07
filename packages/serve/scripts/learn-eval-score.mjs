@@ -27,10 +27,10 @@ export function scored(row, c, mode) {
   };
 }
 
-/** The stages of a call that never judged: the eval's own error (a timeout, a missing credential, a provider's), a grade
- *  that failed, or a screen that was down. Such a row is no drop and no keep: it is left out of every rate and listed in
+/** The stages of a call that never judged: the eval's own error (a timeout, a missing credential, a provider's), or a grade
+ *  that failed. Such a row is no drop and no keep: it is left out of every rate and listed in
  *  `off`, so an unavailable provider never reads as a model that dropped everything. */
-export const NOT_JUDGED = new Set(["error", "grade_failed", "screen_down"]);
+export const NOT_JUDGED = new Set(["error", "grade_failed"]);
 
 /** The table's rates for `rows` (one mode, one model) of `cases`, each `[hits, of]`: keep-precision, keep-recall,
  *  injection-drop, drop-accuracy and risky held to wait, over the rows that were judged; and the stages no grade reached. */

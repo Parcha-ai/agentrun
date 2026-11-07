@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 const STAND_INS = {
@@ -44,7 +45,7 @@ async function gateway(t, text) {
 /** The turn ends on the run's root (adapter.turn_end), in order, read with the store open read-only. */
 function sessionTurnEnds(data, runId) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)))
         .filter((e) => e.kind === "adapter.turn_end").map((e) => e.data?.status);
@@ -61,7 +62,7 @@ for (const harness of ["opencode", "codex"]) {
     const gw = await gateway(t, (i) => (i === 0 ? "Before the drain." : "After the drain."));
     const dir = await scratch(t);
     const standIn = join(dir, `${harness}-stand-in.mjs`);
-    await copyFile(STAND_INS[harness].file, standIn);
+    await (harness === "codex" ? copyStandIn(standIn) : copyFile(STAND_INS[harness].file, standIn));
     const saved = { ...process.env };
     t.after(() => {
       for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
@@ -76,7 +77,7 @@ for (const harness of ["opencode", "codex"]) {
       assert.ok(i < 600, "the turn's first model request reaches the gateway");
       await sleep(100);
     }
-    const record = async () => JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
+    const record = async () => runRecordOf(data, run.body.run_id);
     // The instance's own drain: SIGTERM to the run's process, as a server stop sends it.
     const drained = (await record()).holder.pid;
     process.kill(drained, "SIGTERM");
@@ -126,7 +127,7 @@ test("opencode, a guard: a person's stop while the first request is in flight st
   assert.equal((await api("POST", `/runs/${run.body.run_id}/stop`)).body.stopped, true);
   await follow(api, run.body.run_id, ["input_required"], { deadlineMs: 60_000 });
   // The run's process is replaced: killed, so the next message opens a new one from the store.
-  const record = JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
+  const record = runRecordOf(data, run.body.run_id);
   const pid = record.holder?.pid;
   if (pid && !gone(pid)) process.kill(pid, "SIGKILL");
   for (let i = 0; pid && !gone(pid); i++) {
@@ -141,7 +142,7 @@ test("opencode, a guard: a person's stop while the first request is in flight st
   assert.equal(last.status, "completed", JSON.stringify(seen));
   assert.ok(!rows.some((r) => r.kind === "phase" && /^Resumed/.test(String(r.summary))), `nothing resumed: ${JSON.stringify(seen)}`);
   assert.equal(rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text, "After the stop.");
-  const after = async () => JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
+  const after = async () => runRecordOf(data, run.body.run_id);
   for (let i = 0; ; i++) { const now = (await after()).holder?.pid; if (now === undefined || gone(now)) break; assert.ok(i < 600, "the run's process lets go"); await sleep(100); }
   assert.deepEqual(sessionTurnEnds(data, run.body.run_id), ["interrupted", "completed"], `the stopped turn's end, then the follow-up's: ${JSON.stringify(seen)}`);
 });
@@ -176,7 +177,7 @@ test("opencode, a guard: an answer the provider's content filter stops ends the 
   const { last } = await follow(api, run.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 120_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   // Nothing goes on after the end: the run's process lets go, and no later request reaches the provider.
-  for (let i = 0; ; i++) { const now = JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8")).holder?.pid; if (now === undefined || gone(now)) break; assert.ok(i < 600, "the run's process lets go"); await sleep(100); }
+  for (let i = 0; ; i++) { const now = runRecordOf(data, run.body.run_id).holder?.pid; if (now === undefined || gone(now)) break; assert.ok(i < 600, "the run's process lets go"); await sleep(100); }
   await sleep(2_000);
   const after = (await api("GET", `/runs/${run.body.run_id}`)).body;
   const outcome = { status: last.status, code: view.error?.code, requests: seen.length, later: after.status, ends: sessionTurnEnds(data, run.body.run_id) };

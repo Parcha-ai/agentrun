@@ -32,7 +32,9 @@ export const RUN_MIB: Readonly<Record<HarnessId, number>> = { pi: 128, "claude-a
  *  null when it runs none there; harnessOffers sets it. `keys`, on one unavailable only for want of a model key: the keys
  *  any one of which, saved, lets it run here, so a key's row names it before it is saved (tool-keys.ts' rowUnlocks).
  *  The server's own: capabilities never serve it. */
-export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[] };
+/** `installs`: `on_first_use` on claude-agent or codex while its CLI is not installed in this server's data: its first run
+ *  (or the first agent made on it) installs it (harness-install.ts). */
+export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
 export type HarnessCapability = HarnessOffer & { default_model: string | null; run_memory_mib: number };
@@ -61,12 +63,15 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       const { hostMemory, neverFits } = await import("./host.js");
       const memory = hostMemory();
       const probed = env[FAUX_HARNESS_ENV] ? harnessesOf(env) : await (async () => {
-        const { harnessRefusal } = await import("./adapters.js");
+        const { harnessInstalled, harnessRefusal } = await import("./adapters.js");
+        const { HARNESS_INSTALLS } = await import("./harness-install.js");
         return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
           if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
           // The start's probe: these offers hold until a restart (server.ts), so the reason says so where installing fixes it.
+          // Claude Code not installed yet says so (its install probes the offers again).
+          const firstUse = HARNESS_INSTALLS[id] && !(await harnessInstalled(id, env)) ? { installs: "on_first_use" as const } : {};
           const refused = await harnessRefusal(id, env, undefined, { atStart: true });
-          return refused === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), ...refused };
+          return refused === undefined ? { id, available: true, steer: steersMidTurn(id), ...firstUse } : { id, available: false, steer: steersMidTurn(id), ...refused, ...firstUse };
         }));
       })();
       // A harness that runs here but whose one run is more than this host's memory for runs never starts: said here, so

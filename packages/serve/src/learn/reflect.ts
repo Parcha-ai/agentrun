@@ -165,53 +165,68 @@ export type Reflection =
 /** The longest answer read, in UTF-16 units: 8 notes at the note cap, a skill and a workflow draft at theirs, fenced,
  *  with room for a few lines around them. */
 export const ANSWER_MAX = 100_000;
-/** A fence's opening line: up to 3 spaces, 3 or more backticks or tildes, and its info string. */
-const OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+/** A learning block's opening line, up to 3 spaces in: its fence, its kind and the rest of its info string. */
+const LEARNING_OPEN = /^ {0,3}(`{3,4})(note|skill|workflow)(?![^ \t])[ \t]*(.*)$/;
+/** A fence longer than any learning block's (five backticks or more): an example, skipped whole to its close. */
+const LONG_OPEN = /^ {0,3}(`{5,})/;
 /** Front matter's name line after a `---` line, a few lines down: a note written outside a block. */
 const LOOSE_NOTE = /^---[ \t]*\n(?:[^\n]*\n){0,3}?[ \t]*name:/m;
 
+/** The opening a line is of a learning block in the fence asked for (```note <file>, or in four backticks to hold a
+ *  code example; ````skill <name> and ````workflow <name>), or undefined. */
+function learningOpen(line: string): { fence: string; kind: string; words: string[] } | undefined {
+  const open = LEARNING_OPEN.exec(line);
+  if (!open || (open[1]!.length === 3 && open[2] !== NOTE_BLOCK)) return undefined;
+  return { fence: open[1]!, kind: open[2]!, words: open[3]!.split(/[ \t]+/).filter(Boolean) };
+}
+/** Whether `line` closes a block fenced with `fence`: that fence exactly, up to 3 spaces in. */
+const closes = (line: string, fence: string) => line.trimEnd().replace(/^ {0,3}/, "") === fence;
+
 /** The notes in an end-of-run turn's answer (reflectPrompt's format): each ```note <file> block's file name and text,
- *  in order, and each ````skill <name> and ````workflow <name> block's name and text. Every other block, and every line
- *  outside one, is left alone. Such a block that is not closed, names nothing or more than one, or names what a block of
- *  its kind before it named, is `unparsed`; so is an answer with no such block that holds a note anyway (front matter
- *  outside a block), and one over ANSWER_MAX. An answer with none is `empty`. What a block says, its name included, is
- *  the checker's to judge, never the parser's. */
+ *  in order, and each ````skill <name> and ````workflow <name> block's name and text. A learning block opens with the
+ *  fence asked for (three or four backticks for a note, four for a skill or a draft) and runs to the next line that is
+ *  that fence; every shorter fence is text, and a longer one is an example, skipped whole (to the answer's end when it
+ *  never closes). An opening that reaches another opening in a fence as long or longer, or the answer's end, first is no
+ *  block: it alone is left out. A block that repeats one before it word
+ *  for word is that one. A block that names nothing or more than one, or names what a block of its kind before it named
+ *  with other words, is `unparsed`; so is an answer with no block that holds a note anyway (front matter outside a
+ *  block), and one over ANSWER_MAX. An answer with none is `empty`. What a block says, its name included, is the
+ *  checker's to judge, never the parser's. */
 export function parseReflection(answer: unknown): Reflection {
   if (typeof answer !== "string" || answer.trim() === "") return { ok: false, reason: "empty" };
   if (answer.length > ANSWER_MAX) return { ok: false, reason: "unparsed", detail: `the answer is over ${ANSWER_MAX} characters` };
   const lines = answer.replace(/\r\n?/g, "\n").split("\n");
-  const notes: { file: string; text: string }[] = [];
-  const learned: Record<string, { name: string; text: string }[]> = { [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
+  const blocks: Record<string, { name: string; text: string }[]> = { [NOTE_BLOCK]: [], [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
   for (let i = 0; i < lines.length; i++) {
-    const open = OPEN.exec(lines[i]!);
-    if (!open) continue;
-    const [, fence, info] = open as unknown as [string, string, string];
-    // A backtick fence's info string holds no backtick (CommonMark): such a line opens nothing.
-    if (fence[0] === "`" && info.includes("`")) continue;
-    const words = info.trim().split(/\s+/).filter(Boolean);
-    const kind = words[0] === NOTE_BLOCK || words[0] === SKILL_BLOCK || words[0] === WORKFLOW_BLOCK ? words[0] : undefined;
-    const close = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}[ \\t]*$`);
+    const open = learningOpen(lines[i]!);
+    if (!open) {
+      const long = LONG_OPEN.exec(lines[i]!)?.[1];
+      let end = i + 1;
+      while (long && end < lines.length && !closes(lines[end]!, long)) end++;
+      // Never closed, an example runs to the answer's end.
+      if (long) i = end;
+      continue;
+    }
     let end = i + 1;
-    while (end < lines.length && !close.test(lines[end]!)) end++;
-    if (end >= lines.length) {
-      if (kind !== undefined) return { ok: false, reason: "unparsed", detail: `a ${kind}'s block is not closed` };
-      break;
+    // Only an opening in a fence at least as long as this block's ends it: a shorter one is an example in its text.
+    while (end < lines.length && !closes(lines[end]!, open.fence) && !((learningOpen(lines[end]!)?.fence.length ?? 0) >= open.fence.length)) end++;
+    if (end >= lines.length || !closes(lines[end]!, open.fence)) {
+      i = end - 1;
+      continue;
     }
-    if (kind === NOTE_BLOCK) {
-      if (words.length !== 2) return { ok: false, reason: "unparsed", detail: `a note's block names ${words.length === 1 ? "no file" : "more than one file"}` };
-      const file = words[1]!;
-      if (notes.some((note) => note.file === file)) return { ok: false, reason: "unparsed", detail: "two of the answer's notes have one file name" };
-      notes.push({ file, text: `${lines.slice(i + 1, end).join("\n")}\n` });
-    } else if (kind !== undefined) {
-      if (words.length !== 2) return { ok: false, reason: "unparsed", detail: `a ${kind}'s block names ${words.length === 1 ? "no name" : "more than one name"}` };
-      const name = words[1]!;
-      if (learned[kind]!.some((block) => block.name === name)) return { ok: false, reason: "unparsed", detail: `two of the answer's ${kind}s have one name` };
-      learned[kind]!.push({ name, text: `${lines.slice(i + 1, end).join("\n")}\n` });
-    }
+    const what = open.kind === NOTE_BLOCK ? "file" : "name";
+    if (open.words.length !== 1) return { ok: false, reason: "unparsed", detail: `a ${open.kind}'s block names ${open.words.length ? "more than one" : "no"} ${what}` };
+    const name = open.words[0]!;
+    const text = `${lines.slice(i + 1, end).join("\n")}\n`;
+    // The same block given again word for word is that block once; another under the same name is ambiguous.
+    const given = blocks[open.kind]!.find((block) => block.name === name);
+    if (given && given.text !== text) return { ok: false, reason: "unparsed", detail: open.kind === NOTE_BLOCK ? "two of the answer's notes have one file name" : `two of the answer's ${open.kind}s have one name` };
+    if (!given) blocks[open.kind]!.push({ name, text });
     i = end;
   }
-  const skills = learned[SKILL_BLOCK]!;
-  const workflows = learned[WORKFLOW_BLOCK]!;
+  const notes = blocks[NOTE_BLOCK]!.map(({ name, text }) => ({ file: name, text }));
+  const skills = blocks[SKILL_BLOCK]!;
+  const workflows = blocks[WORKFLOW_BLOCK]!;
   if (notes.length || skills.length || workflows.length) return { ok: true, notes, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) };
   return LOOSE_NOTE.test(lines.join("\n")) ? { ok: false, reason: "unparsed", detail: `the answer holds a note outside a \`\`\`${NOTE_BLOCK} block` } : { ok: false, reason: "empty" };
 }
