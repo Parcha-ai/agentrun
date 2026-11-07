@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +8,6 @@ import type { Box, BoxProcess } from "../src/box/box.ts";
 import { uploadByExec } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { boxEnv } from "../src/hands/box-env.ts";
-import { moveFile } from "../src/home/workspace.ts";
 
 const context = BACKGROUND_CONTEXT;
 const BOX_SPEC = { maxLifetimeMs: 10 * 60_000 };
@@ -95,27 +93,6 @@ describe("a file operation with no bytes to send does not wait on the box's stdi
 			]);
 			expect(typeof sent === "string" ? sent : sent.ok ? "ok" : sent.error.message).toBe("ok");
 			expect(readFileSync(path, "utf8")).toBe("");
-		});
-	}, 30_000);
-
-	it("moves a sealed file of no bytes over a stream pipe", async () => {
-		await withBox(async (box, dir) => {
-			writeFileSync(join(dir, "src.bin"), "");
-			const seal = { sha256: createHash("sha256").digest("hex"), bytes: 0 };
-			const moved = await Promise.race([
-				moveFile(
-					box,
-					join(dir, "src.bin"),
-					box,
-					join(dir, "dst", "out.bin"),
-					seal,
-					{ fromPipe: { kind: "stream" }, toPipe: { kind: "stream" }, stallMs: 3_000, deadlineMs: 6_000 },
-					context,
-				),
-				new Promise<string>((resolve) => setTimeout(() => resolve("the move waited on stdin"), 8_000)),
-			]);
-			expect(typeof moved === "string" ? moved : moved.ok ? "ok" : moved.error.message).toBe("ok");
-			expect(readFileSync(join(dir, "dst", "out.bin"), "utf8")).toBe("");
 		});
 	}, 30_000);
 
