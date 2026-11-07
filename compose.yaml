@@ -1,0 +1,53 @@
+# AgentRun Server in a container, with Docker sandboxes, on a Linux host with Docker Engine 26 or later. In the directory
+# that holds this file, once, then every later compose command in any shell:
+#   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+#   docker compose up -d
+# Then open the link `docker compose logs agentrun` prints. From a checkout, `--build` builds the image from it
+# (packages/serve/docker/Dockerfile) in place of the published one.
+#
+# The server gets this host's Docker socket, and so does every process it starts. Whatever can reach that socket is root
+# on this host: run this only where you would give the server root. A run's box is a container beside the server's, made
+# through that socket: no socket, no network but the server's egress proxy (the hosts of AGENTRUN_BOX_ALLOW), every
+# capability dropped, the server's own uid, and of the data volume only that run's work/ and its proxy's socket.
+# The port is published on this machine's loopback only; put a reverse proxy with TLS in front of it before you publish it
+# anywhere else.
+services:
+  agentrun:
+    image: ghcr.io/parcha-ai/agentrun-server:${AGENTRUN_VERSION:-beta}
+    build:
+      context: .
+      dockerfile: packages/serve/docker/Dockerfile
+    ports:
+      - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340" # key-gate: loopback-rule this machines loopback, where the port is published
+    volumes:
+      # Everything the server keeps, on a named volume: a box mounts its run's part of it by the volume's subpath, which is
+      # the one way a server in a container gives a box the run's files.
+      - agentrun-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The socket's group, so the server (the image's node user) may use it.
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID to the group of /var/run/docker.sock, which stat -c %g /var/run/docker.sock prints}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"] # key-gate: loopback-rule the servers own loopback, its health check
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    environment:
+      AGENTRUN_BOXES: docker
+      # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
+      AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
+      AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
+      AGENTRUN_PUBLIC_URL: "${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:7340/}" # key-gate: loopback-rule the published loopback port, the printed link
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_MODEL_FAST: ${AGENT_MODEL_FAST:-}
+      AGENT_MODEL_STRONG: ${AGENT_MODEL_STRONG:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      AGENT_MODEL_BASE_URL: ${AGENT_MODEL_BASE_URL:-}
+      AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}
+    restart: unless-stopped
+    stop_grace_period: 15s
+volumes:
+  agentrun-data:

@@ -155,44 +155,39 @@ once without checking again (a key some harness reads would, with `why=key`).
 ## In a container
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
+`compose.yaml` at the repository's root is the one way to run it: the server, its data on a named volume, and the host's
+Docker socket, so each run's `bash` gets a Docker box ([in the published image](#in-the-published-image)).
 
-1. `docker run` it (below).
+1. Start it (below).
 2. Open the console and set your password.
 3. Sign in with it on any browser; the token in the log stays for scripts and the CLI.
 
 On a fresh server with no `AGENTRUN_PUBLIC_URL`, whoever reaches the console first sets the password, so set it right after
-`docker run`, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code the server
+the start, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code the server
 prints still guards it.
 
-With no checkout:
+On a Linux host with Docker Engine 26 or later, with no checkout:
 
 ```sh
-export OPENROUTER_API_KEY=...
-docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
-  -e AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 -e OPENROUTER_API_KEY \
-  ghcr.io/parcha-ai/agentrun-server:beta
-docker logs agentrun | grep Open
-```
-
-On another port, publish it there and pass the address you open, so the printed link names it:
-`-p 127.0.0.1:<port>:7340 -e AGENTRUN_PUBLIC_URL=<that address>`.
-
-The image runs runner agents only: it cannot host a sandbox's boxes yet ([in the published image](#in-the-published-image)).
-
-`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
-(trixie), with git 2.47 for `pi-git-remote`. Everything it keeps is under `/data`: the agent store, the runs and the
-token. From a checkout, with compose:
-
-```sh
+curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
-docker compose -f packages/serve/docker/compose.yaml up --build -d
-docker compose -f packages/serve/docker/compose.yaml logs agentrun
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+docker compose up -d
+docker compose logs agentrun | grep Open
 ```
+
+The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
+shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
+
+From a checkout, the same command in its root, with `--build` to build the image from it.
+`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
+(trixie), with git 2.47 for `pi-git-remote` and the Docker client. Everything it keeps is under `/data`: the agent store,
+the runs and the token.
 
 The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
-on this machine's loopback only (`127.0.0.1:7340`, or `AGENTRUN_PORT`, which the printed link follows), and
+on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
 every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
@@ -292,7 +287,7 @@ on the server. An agent says so in its [place](#place); the server says which [b
 box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
 Daytona sandbox gets;
 [the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
-end to end. The [published image](#in-the-published-image) cannot host boxes yet.
+end to end. The [published image](#in-the-published-image) hosts Docker boxes through the host's Docker socket.
 
 ### Place
 
@@ -655,13 +650,31 @@ never runs; the box's first process is a `sleep` of its lifetime.
 
 ### In the published image
 
-The published image, `ghcr.io/parcha-ai/agentrun-server`, cannot host boxes yet. It has no `docker` command and no
-Docker daemon, so capabilities and the start's `event=boxes` line say docker is
-unavailable, and a sandbox agent's runs are `409 agent_not_runnable`. Runner agents work as before. Do not mount the
-host's Docker socket into the container to get around it: whatever can reach that socket is root on the host, and a
-box's bind of `work/` names a path in the server's container, which the host's daemon does not have. For sandboxes, run
-the server from a checkout on a machine with Docker ([Sandbox in 60 seconds](#sandbox-in-60-seconds)). A box that runs
-inside the image itself (bwrap, on Linux) comes in a later release.
+The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker boxes on the Docker of the host it runs on, through
+that Docker's socket, as `compose.yaml` at the repository's root starts it ([in a container](#in-a-container)). The image
+has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives the image's `node` user the socket's group
+(`DOCKER_GID`), so the server never runs as root.
+
+- **The socket is root on the host.** Whatever can reach `/var/run/docker.sock` can start a privileged container and do
+  anything on the host: the server, and every run's process it starts, since a run makes its own box. It is the same
+  trust as a server on a host whose user is in the `docker` group. Give the server the socket only where you would give
+  it root. A box never gets it.
+- **A box is a container beside the server's.** It is made as on a Linux host (`--network none`, every capability dropped,
+  no new privileges, the server's uid, the box limits), and its only way out is the run's egress proxy, with the same
+  host list and the same address rule ([a run in a Docker box](#a-run-in-a-docker-box)).
+- **Its files.** The daemon has none of the server's paths, only what it mounted into the server's container. At its
+  start the server reads its own container's id from `/proc/self/mountinfo`, asks Docker for that container's mounts
+  (`docker inspect`), and takes the named volume that holds the data directory. A box mounts that run's `work/` from it,
+  and the run's egress proxy's directory (`<data>/box-egress/<16 hex>/`, read-only), as the volume's subpaths
+  (`--mount type=volume,...,volume-subpath=disk/agents/<key>/runs/<run>/work`), never the rest. The run's files and the box's are the same
+  files, as on a host.
+- **Any other layout** (the data directory not on a read-write named volume of the server's own container, the socket of
+  another Docker than the one that runs the server, a container whose id `/proc/self/mountinfo` does not name) makes
+  docker unavailable at the start, its reason in capabilities and the `event=box_paths` line: `run AgentRun in a
+  container with docker compose up from compose.yaml (its named data volume is how boxes reach a run's files)`. On an
+  older engine: `Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+`.
+- On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
+  proxy's directory is under `/tmp`, as before.
 
 ### Boxes
 
@@ -1807,6 +1820,10 @@ server's own origin, under a CSP that allows that origin only:
   keeps the filters. A run's page follows `GET /v2/runs/{id}/timeline` with a long poll, sends messages (an answer while
   it waits on `ask_person`), stops or cancels the run, shows its files and a workflow's graph, and has **Archive** or
   **Unarchive**.
+- **Settings → MCP servers**: add a remote MCP server (its name, address and credential: none, a bearer token, headers,
+  or **Sign in** with OAuth), **Preview** its tools and protocol, then **Save**; each saved one with its tool count and
+  its credential's state, **Refresh**, **Change** (a credential left empty keeps the saved one) and **Delete**. An
+  agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and

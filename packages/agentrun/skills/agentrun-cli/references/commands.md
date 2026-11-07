@@ -485,7 +485,7 @@ Install this CLI's skill (agentrun-cli) for Claude Code and Codex, or into a ski
 Route: none, it runs on this machine.
 
 - `--claude` (boolean, this CLI's own): into Claude Code's skills: ~/.claude/skills/agentrun-cli
-- `--codex` (boolean, this CLI's own): into Codex's skills: $CODEX_HOME/skills/agentrun-cli (default ~/.codex/skills)
+- `--codex` (boolean, this CLI's own): into ~/.agents/skills/agentrun-cli, the shared skills folder Codex reads (Cursor too)
 - `--dir DIR` (string, this CLI's own): into DIR/agentrun-cli (a project's .claude/skills or .agents/skills, say)
 
 ## stats
