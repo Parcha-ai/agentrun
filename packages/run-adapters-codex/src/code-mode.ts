@@ -41,7 +41,8 @@ export interface CodeModeDeps {
   logged: Set<string>;
   /** Drain the rollout's tail into the log. */
   synced(): Promise<void>;
-  bridge: { get(name: string): { name: string; replay: string } | undefined };
+  /** The tool bridge; `takeImages` gives a call's images once (host/process.ts), for the answer to Codex. */
+  bridge: { get(name: string): { name: string; replay: string } | undefined; takeImages?(callId: string): readonly { mimeType: string; data: string }[] | undefined };
   log(message: string, fields?: Record<string, unknown>): void;
   /** The rollout lines restored from the log. */
   lines: readonly string[];
@@ -97,6 +98,23 @@ function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>,
     ...(status ? { told: status } : {}),
     ...(state.effects.get(parkedKey(tie.callId))?.status === "completed" ? { parked: true as const } : {}),
   };
+}
+
+/** A recorded result that held images (kernelTool's `{ text, images }`) as its text and a line saying how many, which are not
+ *  shown again after the interruption; undefined for a result with none, whose repaired output stays as it is. */
+export function imagesNoted(output: unknown): string | undefined {
+  const images = (output as { images?: unknown } | null)?.images;
+  const count = Array.isArray(images) ? images.length : 0;
+  if (!count) return undefined;
+  return `${outputTextOf(output)}\n\nIt also returned ${count} image${count === 1 ? "" : "s"} (not shown again after the interruption).`;
+}
+
+/** A dynamic tool call's answer with `images` after its items, each `{ type: "inputImage", imageUrl }` with a data: URL
+ *  (Codex 0.164's DynamicToolCallOutputContentItem); an answer of any other shape, or no images, as it is. */
+export function withImages(answer: unknown, images: readonly { mimeType: string; data: string }[] | undefined): unknown {
+  const items = (answer as { contentItems?: unknown } | null)?.contentItems;
+  if (!images?.length || !Array.isArray(items)) return answer;
+  return { ...(answer as object), contentItems: [...items, ...images.map((image) => ({ type: "inputImage", imageUrl: `data:${image.mimeType};base64,${image.data}` }))] };
 }
 
 export function codeMode(deps: CodeModeDeps) {
@@ -222,6 +240,9 @@ export function codeMode(deps: CodeModeDeps) {
             // Never the unwatched-answer marker: a call tied to no known exec is journaled with none.
             journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: openTurn(ctx.state())?.since ?? -1 });
           }
+          // The harness answers with the result's text; its images follow as `inputImage` items, which Codex 0.164's
+          // dynamic tool output takes (DynamicToolCallResponse.contentItems, its app-server schema), each a data: URL.
+          return withImages(await next(req), deps.bridge.takeImages?.(callId));
         }
         return next(req);
       };
@@ -246,7 +267,11 @@ export function codeMode(deps: CodeModeDeps) {
           // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
           const cell = waitedCell(c);
           const item = items[i] as { call_id?: unknown; output?: unknown };
-          items[i] = withOutputKind(cell === undefined ? item : { ...item, output: waitStoppedText(cell) }, c);
+          // A completed call whose result held images (kernelTool records { text, images }): repairOutput gives the record
+          // as JSON, so the model would read their base64 as text. Its text and a line on them instead; they are not sent.
+          const done = state.effects.get(toolKey(c.callId));
+          const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
+          items[i] = withOutputKind(cell !== undefined ? { ...item, output: waitStoppedText(cell) } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
         const { own, loose } = listed.get(c.callId)!;
