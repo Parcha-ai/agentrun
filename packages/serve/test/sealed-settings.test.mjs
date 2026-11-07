@@ -44,7 +44,7 @@ test("a settings file that does not read is said, never written over: set and mi
   const said = [];
   const store = new SealedSettings(data, "slackish", { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES }, token: {} } }, randomBytes(32), (fields) => said.push(fields));
   assert.equal(said[0]?.condition, "trigger_settings_unreadable");
-  assert.throws(() => store.set("trg_1", "token", "a-token"), (error) => error.code === "store_unreadable");
+  assert.throws(() => store.set("trg_1", "token", "a-long-enough-token"), (error) => error.code === "store_unreadable");
   assert.throws(() => store.mint("trg_1", "secret"), (error) => error.code === "store_unreadable");
   store.remove("trg_1");
   assert.equal(await readFile(file, "utf8"), "{ not json", "byte for byte");

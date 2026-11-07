@@ -84,6 +84,9 @@ export class SealedSettings {
   set(scope: string, field: string, value: string): void {
     const spec = this.spec.fields[field];
     if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
+    // A value the list of the server's secrets would pass over (server-secrets.ts: whitespace, under 8 bytes) would be
+    // left out of every redaction: none is kept.
+    if (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
     // A verification key is kept only as the spec writes one, or every request it checks would be refused.
     if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith("whsec_")) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
