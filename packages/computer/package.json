@@ -36,7 +36,8 @@
     "build:daemon": "node scripts/build-daemon.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",
-    "test:docker": "node --test --test-timeout=600000 test/docker/*.test.mjs"
+    "test:docker": "node --test --test-timeout=900000 test/docker/*.test.mjs",
+    "conformance": "node dist/conformance/cli.js"
   },
   "repository": {
     "type": "git",

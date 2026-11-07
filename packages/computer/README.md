@@ -105,10 +105,12 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
   first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
   start is refused as `limit`.
-- The rings hold at most 256 MiB of output together (256 full rings would be 4 GiB). Past that, the daemon lets go
-  of the rings of the processes that ended first until it is back under, never a running process's ring. Such a
-  process stays listed with its exit status; a read of its streams returns no data, `dropped` counts every byte from
-  `offset` on, and `exited` is true. Running processes alone can pass the bound (32 of them with full rings).
+- The rings, of running and ended processes alike, hold at most 256 MiB of output together (256 entries' full rings
+  would be 4 GiB, the default box's memory). Past that, the daemon first lets go of the rings of the processes that
+  ended first until it is back under. Such a process stays listed with its exit status; a read of its streams returns
+  no data, `dropped` counts every byte from `offset` on, and `exited` is true. When no ended ring is left and running
+  processes still hold more, each running process's ring stops growing and keeps at most an equal share of the budget
+  (never under 64 KiB), dropping its oldest bytes; a read from an offset it dropped reports them in `dropped`.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
@@ -236,7 +238,10 @@ await docker.release(made.value, "delete");
   computer's own report (image, network, sizes, user, workdir, deadline) and held to what `check` allows (and the
   deadline to the ISO time create writes, at most 30 days away), then the whole inspect is checked as at create, and,
   when the computer runs, its daemon's hello. A computer that drifts is refused (`refused`) with every mismatch, and
-  left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone.
+  left as it is: attach did not make it, so it does not delete it. A stopped computer is checked by inspect alone. A
+  computer that passes is returned as its ref with `spec`, the spec read back (`{ image, user, network, cpus,
+  memoryMb, pids, workdir, deadline }`), so a caller sees what it attached to: `user` is `uid:gid` (`"0:0"` for a
+  computer whose spec asked for root) and `network` the policy read back. `list` keeps its own shape (`ComputerInfo`).
 - `list(labels)` runs `docker ps -a --filter label=agentrun.computer=1 --filter label=k=v ...`, then inspects the
   matches 50 at a time, reading only the fields it reports, so any number of computers is listed (a computer gone
   between the two is left out). It returns each computer's `ref`, `labels`, `deadline` (a `Date`, or `undefined` when the label is missing or is not
@@ -355,6 +360,92 @@ const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
 ```
 
+## Conformance
+
+A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
+`src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`) and
+the capabilities it needs, and uses only `ComputerProvider`, `DaemonClient` and the suite's assertion helpers.
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider docker
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--json]
+```
+
+```text
+computer conformance · docker · computerd 0.1.0-beta.30 linux/amd64
+core health    hello ping unknown-method                    ✓ 3
+core exec      argv streams exit-code cwd env timeout abort ✓ 11
+               truncation setsid-escapee unprivileged user
+...
+full exec      root-on-request user-uid                     ✓ 2
+full provider  network-switch network-switch-allow          ✓ 3 - 2
+               network-open network-allow janitor
+  - provider.network-switch-allow: the provider does not declare network:allow
+  - provider.network-allow: the provider does not declare network:allow
+core PASS 52/52 · full 5/7 · network:allow not declared
+```
+
+A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
+usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, image, daemon: {
+version, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason? }], core, undeclared, cleanup }`). A
+failure is listed under its line with what the case found.
+
+`--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
+skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 10/10 · 42 Core cases
+not run`, never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
+`--only` that names every Core case is a whole run, and can pass.
+
+What a provider module implements:
+
+- `export function createProvider()` returning a `ComputerProvider` (sync or async): `id`, `version`,
+  `capabilities()`, `check`, `create`, `attach`, `list`, `network`, `connect` and `release`, as in `src/provider.ts`.
+  `connect` hands out a connection whose daemon answers the methods in `src/protocol.ts`.
+- `export function createDriftedProvider()`, for the drift case: the same provider with a daemon that reports a version
+  other than `version`. A computer of that daemon must never be handed out: `create` refuses it (and deletes it), or
+  `connect` refuses it. Without this export the case is skipped, so Core does not pass.
+
+Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
+
+- **Core** is what every computer does: hello and ping, `exec.run` as a user other than root with no effective or
+  permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
+  `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
+  that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
+  (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
+  `network` read-back and `release`, a change to a network the provider does not declare refused with the
+  network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
+  (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
+  behind.
+- **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
+  (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
+  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
+  asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
+  capabilities.
+
+A case whose needs the provider does not declare (in `capabilities()`), or the daemon does not declare (in hello), is
+skipped with the reason and never fails. A skipped Full case is reported as not declared; a skipped Core case means
+the provider lacks something every computer must have, so Core does not pass.
+
+The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
+and network `none`. It deletes each computer a case made when the case ends, and the shared one at the end; for a
+provider with lifetime `"janitor"` it then sweeps that label, and it lists the label to show nothing is left. A case
+that runs past 3 minutes fails and its computers are deleted. Every provider call is bounded: a create or connect for
+the shared computer that does not answer within 3 minutes fails the cases that need it, a release, sweep or list
+that does not answer within a minute is named in `cleanup.errors`, and a computer or connection that arrives after
+its case ended is deleted or closed as it arrives and named in `cleanup.late`; the run waits, bounded, for every
+create a case started, a refused one included, so a late computer is deleted before the report returns. A call still
+pending when that bound (a minute) runs out is named in `cleanup.errors`, since what it makes may be left, and Core
+fails, as it does for a computer left behind. A case calls
+`t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
+expects, or the drifted provider's computer). With `--provider docker`, a `docker
+version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
+is out. Cases do not assume root: the suite assumes only that the
+computer's `HOME`, which the provider sets, is a directory its user can write, and works under
+`$HOME/agentrun-conformance-<run id>`.
+
+From code: `runConformance(provider, { image, only?, signal?, drifted?, caseTimeoutMs?, cleanupTimeoutMs? })` returns
+the report, and `formatReport(report)` the text above.
+
 ## Build
 
 ```sh
@@ -370,9 +461,12 @@ cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 ```
 
-The live tests need Docker, `debian:bookworm-slim` and `alpine:3.20` pulled, both builds, and Go on PATH (the drift
-test builds a daemon of another version). They use the daemon for Docker's own
-architecture, and remove every container they make by its exact name, pass or fail.
+The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
+them check what only Docker shows (the user, sizes, tmpfs mounts and hardening flags in `docker inspect`, the daemon
+mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
+stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`
+and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a daemon of another version). They use
+the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail.
 
 ## Acknowledgements
 

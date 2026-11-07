@@ -24,6 +24,7 @@ import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeMode
 import { statusesOf } from "./learning-routes.js";
 import { cutStrings, redacted } from "./key-refusal.js";
 import { withoutFaux } from "./model.js";
+import { servedOnly } from "./served-only.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { notKept, said, STOPPED } from "./learning-words.js";
@@ -128,7 +129,9 @@ export function withLearning(rows: readonly TimelineEvent[], learning: Learning 
     tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: detail,
     learning: { state: learning.state, reason: learning.reason, detail },
   };
-  return [...rows, row];
+  // Only the served view makes it (servedOnly): learning that starts over (seeded, reflecting) drops it, even while a
+  // live process feeds the timeline.
+  return [...rows, servedOnly(row)];
 }
 
 /** How the runs that tried to learn fared, over the runs the analytics' `from`, `to` and `agent` pick (by when they

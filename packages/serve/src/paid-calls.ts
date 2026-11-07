@@ -17,6 +17,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { BARRIER, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { paidCall } from "./cap.js";
 
 /** Parallel's published prices (https://docs.parallel.ai/getting-started/pricing, read 2026-11-03): a `fast` search
@@ -65,9 +66,22 @@ const ledgers = new AsyncLocalStorage<Ledger>();
  *  open). A request's settle (TOOL_COST) is written there: once a turn is stopped, its tool call can no longer commit
  *  (pi-durable refuses a task with a durable abort mark), though the request was sent and its charge stands. */
 let rootRecord: Ledger["record"] | undefined;
-export const settleIn = (record: Ledger["record"] | undefined): void => {
+/** The run's store, for the barrier after each hold (writeHold): set with the root's commit, once the run is open. */
+let holdStore: SyncTarget | undefined;
+export const settleIn = (record: Ledger["record"] | undefined, store: SyncTarget | undefined): void => {
   rootRecord = record;
+  holdStore = store;
 };
+
+/** A paid call's hold (TOOL_STARTED, at what the cap holds it at), written by `write` (the call's own commit), then the
+ *  run journal's barrier (pi-durable-disk barriers.ts, paidToolHold): the hold is on disk before the call is sent, so a
+ *  box loss never leaves a sent call the cap does not count. Every paid call writes its hold here: a paid request
+ *  (paidRequest), monid.run (monid.ts) and a priced MCP call (mcp-gateway.ts), so a new paid tool gets the sync with it.
+ *  A write or a sync that fails throws, and the caller sends nothing. */
+export async function writeHold(write: (kind: string, data: Record<string, string | number | null>) => Promise<void>, data: Record<string, string | number | null>): Promise<void> {
+  await write(TOOL_STARTED, data);
+  await syncNow(holdStore, BARRIER.paidToolHold);
+}
 /** A settle of `kind` written to the run's root (settleIn), when that is set; else undefined, for the caller's own commit.
  *  monid.run's settle goes here too. */
 export const settleOnRoot = (kind: string, data: Record<string, string | number | null>): Promise<void> | undefined => rootRecord?.(kind, data);
@@ -100,7 +114,7 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
   const chargeOf = (sent: Sent) => ("unmarked" in sent ? undefined : "thrown" in sent || billed(sent.response.status) ? fee.usd : 0);
   const sent = async (): Promise<Sent> => {
     try {
-      await ledger.record(TOOL_STARTED, { ...label, heldUsd: fee.usd });
+      await writeHold(ledger.record, { ...label, heldUsd: fee.usd });
     } catch (error) {
       return { unmarked: `${fee.name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` };
     }

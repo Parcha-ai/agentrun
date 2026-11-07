@@ -301,7 +301,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact; `maxTokens` its
-    // output ceiling, so a test can price a request's whole output allowance as a real model's (64,000 on Sonnet 4.5).
+    // output ceiling, so a test can price a request's whole output allowance as a real model's (64,000 on Sonnet 4.5),
+    // or run one whose ceiling bounds nothing (cap.ts noCeiling).
     const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}), ...(typeof mod.maxTokens === "number" ? { maxTokens: mod.maxTokens } : {}) })) as [{ id: string }, ...{ id: string }[]] });
     const step = (async (context: unknown, options?: { signal?: AbortSignal }, _state?: unknown, model?: { id?: string }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}), ...(model?.id ? { model: model.id } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));

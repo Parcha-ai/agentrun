@@ -19,7 +19,7 @@ test("capabilities: a container whose lifetime the janitor enforces, network non
 	const { provider } = fakeDocker();
 	assert.equal(provider.id, "docker");
 	assert.match(provider.version, /^\d+\.\d+\.\d+/);
-	assert.deepEqual(provider.capabilities(), { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"] });
+	assert.deepEqual(provider.capabilities(), { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"] });
 });
 
 test("check() refuses in words, field by field, with no docker call", () => {

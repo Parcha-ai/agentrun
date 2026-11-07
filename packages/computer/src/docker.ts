@@ -24,6 +24,7 @@ import {
 	WORK,
 } from "./drift.js";
 import type {
+	AttachedComputer,
 	CallContext,
 	ComputerCapabilities,
 	ComputerConnection,
@@ -116,7 +117,7 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	capabilities(): ComputerCapabilities {
-		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"] };
+		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"] };
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it. */
@@ -265,9 +266,10 @@ export class DockerProvider implements ComputerProvider {
 
 	/**
 	 * The drift check of a computer attach did not make: the spec it was made with, read back from its own report and
-	 * held to what check() allows, then inspect and, when it runs, hello, as at create.
+	 * held to what check() allows, then inspect and, when it runs, hello, as at create. A computer that passes is
+	 * returned with that spec.
 	 */
-	async #attached(report: DockerInspect, signal?: AbortSignal): Promise<Result<ComputerRef>> {
+	async #attached(report: DockerInspect, signal?: AbortSignal): Promise<Result<AttachedComputer>> {
 		const ref = { id: report.Id ?? "", name: nameOf(report) };
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
@@ -302,8 +304,11 @@ export class DockerProvider implements ComputerProvider {
 			await opened.value.close();
 			found.push(...helloDrift(opened.value.hello, expected));
 		}
-		if (found.length === 0) return ok(ref);
-		return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
+		if (found.length > 0) {
+			return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
+		}
+		const { image, network: read, cpus, memoryMb, pids, workdir } = spec;
+		return ok({ ...ref, spec: { image, user, network: read, cpus, memoryMb, pids, workdir, deadline: new Date(at) } });
 	}
 
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
@@ -348,7 +353,7 @@ export class DockerProvider implements ComputerProvider {
 		return ok({ client, hello: hello.value, close });
 	}
 
-	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<ComputerRef>> {
+	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
 		const given = (typeof ref === "object" && ref !== null ? ref : {}) as { id?: unknown; labels?: unknown };
 		if ((given.id === undefined) === (given.labels === undefined)) return fail("invalid", "attach takes { id } or { labels }, one of them");
 		if (given.id !== undefined) {

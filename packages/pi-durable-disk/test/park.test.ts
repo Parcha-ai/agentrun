@@ -17,8 +17,7 @@ import { busyState, drain, leaseParkTarget, recordWake, waitDeadline, watchParki
 import { openRunLease, STORE_FILE } from "../src/run.ts";
 import { openArchilStore } from "../src/store.ts";
 import { parseRunRecord, RUN_JSON, type RunRecord } from "../src/status.ts";
-import { ensureRunning } from "../src/supervise.ts";
-import { InProcessHost, JobTask, lifecycleApp, LocalDisk, newCounters, openOn, sleep, until } from "./_lifecycle.ts";
+import { JobTask, lifecycleApp, LocalDisk, newCounters, openOn, sleep, until } from "./_lifecycle.ts";
 import { ctx, localClaimDir } from "./_run-support.ts";
 
 const REF = { disk: "dsk-local", region: "local", id: "park-1" };
@@ -88,21 +87,16 @@ describe("Rivet's lifecycle cases on a claim", () => {
       assert.ok(claim.log.indexOf("run.json sleeping") >= 0 && claim.log.indexOf("run.json sleeping") < claim.log.indexOf("release"), `wake before release: ${claim.log.join(", ")}`);
       assert.equal(disk.delegations.length, 0);
 
-      // The supervisor leaves it until its wakeAt, then starts it; pi's own timer sleeps what is left of the wait.
-      let second: Awaited<ReturnType<typeof openOn>> | undefined;
-      const host = new InProcessHost(async (ref) => void (second = await openOn(disk, ref, lifecycleApp(counters, { retryMs: 1_500 }))));
-      const early = await ensureRunning(REF, host, { control: disk, now: () => parked.wakeAt! - 1 });
-      assert.equal(early.action, "sleeping");
-      const due = await ensureRunning(REF, host, { control: disk, now: () => parked.wakeAt! });
-      assert.equal(due.action === "started" && due.woke, true);
-      const settled = await (await second!.harness.submission(submission.id, ctx))!.wait(ctx);
+      // Its host starts it again (here at once, before its wakeAt); pi's own timer sleeps what is left of the wait.
+      const second = await openOn(disk, REF, lifecycleApp(counters, { retryMs: 1_500 }));
+      const settled = await (await second.harness.submission(submission.id, ctx))!.wait(ctx);
       assert.equal(settled.status, "done");
       assert.ok(Date.now() >= parked.wakeAt!, "the retried request waited for the deadline");
       assert.equal(counters.requests, 2);
-      assert.equal(second!.generation, 2);
-      const { messages } = await (await second!.harness.root(ctx)).context(ctx);
+      assert.equal(second.generation, 2);
+      const { messages } = await (await second.harness.root(ctx)).context(ctx);
       assert.deepEqual(messages.at(-1)?.role === "assistant" ? messages.at(-1)!.content : null, [{ type: "text", text: "recovered" }]);
-      await second!.release();
+      await second.release();
     } finally {
       disk.remove();
     }
@@ -185,10 +179,6 @@ describe("Rivet's lifecycle cases on a claim", () => {
       const record = runJson(disk);
       assert.equal(record.status, "sleeping");
       assert.equal(record.wakeAt, null);
-      // Idle: no timer wakes it; a request (demand) does.
-      const host = new InProcessHost(async (ref) => void (await openOn(disk, ref, lifecycleApp(counters)).then((r) => r.release())));
-      assert.equal((await ensureRunning(REF, host, { control: disk })).action, "sleeping");
-      assert.equal((await ensureRunning(REF, host, { control: disk, demand: true })).action, "started");
     } finally {
       disk.remove();
     }
@@ -274,7 +264,7 @@ describe("parking a Harness the host owns over openRunLease", () => {
     const counters = newCounters();
     const app = lifecycleApp(counters, { retryMs: 1_500 });
     try {
-      const lease = await openRunLease(REF, { mountToken: "unused", acquire: async () => disk.acquire(REF), claimDir: localClaimDir, onFenced: () => {} });
+      const lease = await openRunLease(REF, { acquire: async () => disk.acquire(REF), claimDir: localClaimDir, onFenced: () => {} });
       const store = await openArchilStore(join(lease.claim.store, STORE_FILE), "exclusive", { onFenced: (error) => void lease.fence(error) });
       await lease.checkSeal(store);
       const harness = await Harness.open(lease.observe(store.storage), { models: app.models, registry: app.registry, settings: app.settings }, ctx);
