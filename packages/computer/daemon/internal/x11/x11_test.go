@@ -1,6 +1,7 @@
 package x11_test
 
 import (
+	"encoding/binary"
 	"errors"
 	"image/color"
 	"os"
@@ -9,7 +10,10 @@ import (
 	"testing"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11/x11fake"
 )
+
+var le = binary.LittleEndian
 
 func TestParseDisplay(t *testing.T) {
 	for name, want := range map[string]x11.Address{
@@ -91,29 +95,30 @@ func TestReadAuthorityPicksThisDisplaysCookie(t *testing.T) {
 }
 
 func TestOpenSendsTheCookieAndReadsTheSetup(t *testing.T) {
-	f, conn := startFake(t, nil)
+	f, conn := x11fake.Start(t, nil)
 	c, err := x11.Open(conn, x11.Auth{Name: "MIT-MAGIC-COOKIE-1", Data: []byte("0123456789abcdef")}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	f.mu.Lock()
-	order, name, data := f.byteOrder, f.authName, string(f.authData)
-	f.mu.Unlock()
+	order, name, raw := f.Setup()
+	data := string(raw)
 	if order != 'l' || name != "MIT-MAGIC-COOKIE-1" || data != "0123456789abcdef" {
 		t.Fatalf("setup request: byte order %q, auth %q %q", order, name, data)
 	}
 	s := c.Screen()
-	if s.Root != fakeRoot || s.Width != fakeWidth || s.Height != fakeHeight || s.Depth != 24 || s.Visual != fakeVisual {
+	if s.Root != x11fake.Root || s.Width != x11fake.Width || s.Height != x11fake.Height || s.Depth != 24 || s.Visual != x11fake.Visual {
 		t.Fatalf("screen %+v", s)
 	}
-	if lo, hi := c.Keycodes(); lo != fakeMinKey || hi != fakeMaxKey {
+	if lo, hi := c.Keycodes(); lo != x11fake.MinKey || hi != x11fake.MaxKey {
 		t.Fatalf("keycodes %d-%d", lo, hi)
 	}
 }
 
 func TestARefusedSetupSaysWhyInWords(t *testing.T) {
-	_, conn := startFake(t, func(f *fakeServer) { f.setupFail = "Authorization required, but no authorization protocol specified" })
+	_, conn := x11fake.Start(t, func(f *x11fake.Server) {
+		f.SetupFail = "Authorization required, but no authorization protocol specified"
+	})
 	_, err := x11.Open(conn, x11.Auth{}, 0)
 	if err == nil || !strings.Contains(err.Error(), "Authorization required") {
 		t.Fatalf("Open: %v", err)
@@ -121,15 +126,15 @@ func TestARefusedSetupSaysWhyInWords(t *testing.T) {
 }
 
 func TestAScreenTheServerDoesNotHaveIsRefused(t *testing.T) {
-	_, conn := startFake(t, nil)
+	_, conn := x11fake.Start(t, nil)
 	if _, err := x11.Open(conn, x11.Auth{}, 1); err == nil || !strings.Contains(err.Error(), "screen 1") {
 		t.Fatalf("Open screen 1: %v", err)
 	}
 }
 
-func xtestConn(t *testing.T, configure func(*fakeServer)) (*fakeServer, *x11.Conn) {
+func xtestConn(t *testing.T, configure func(*x11fake.Server)) (*x11fake.Server, *x11.Conn) {
 	t.Helper()
-	f, conn := startFake(t, configure)
+	f, conn := x11fake.Start(t, configure)
 	c, err := x11.Open(conn, x11.Auth{}, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -155,32 +160,32 @@ func TestFakeInputIsXTESTsWireFormat(t *testing.T) {
 	if errs, err := c.Sync(); err != nil || len(errs) != 0 {
 		t.Fatalf("Sync: %v %v", errs, err)
 	}
-	var fakes []request
-	for _, r := range f.got() {
-		if r.opcode == fakeXTest && r.data == 2 {
+	var fakes []x11fake.Request
+	for _, r := range f.Got() {
+		if r.Opcode == x11fake.XTest && r.Data == 2 {
 			fakes = append(fakes, r)
 		}
 	}
 	if len(fakes) != 3 {
-		t.Fatalf("%d FakeInput requests, want 3: %+v", len(fakes), f.got())
+		t.Fatalf("%d FakeInput requests, want 3: %+v", len(fakes), f.Got())
 	}
 	for i, want := range []struct {
 		kind, detail byte
 		x, y         int16
 	}{{6, 0, 17, 23}, {4, 1, 0, 0}, {3, 38, 0, 0}} {
-		b := fakes[i].body
+		b := fakes[i].Body
 		// type, detail, 2 unused, time, root, 8 unused, rootX, rootY, 7 unused, deviceid: 32 bytes after the header.
 		if len(b) != 32 || b[0] != want.kind || b[1] != want.detail || le.Uint32(b[4:]) != 0 || int16(le.Uint16(b[20:])) != want.x || int16(le.Uint16(b[22:])) != want.y {
 			t.Errorf("FakeInput %d: % x", i, b)
 		}
-		if want.kind == 6 && le.Uint32(b[8:]) != fakeRoot {
+		if want.kind == 6 && le.Uint32(b[8:]) != x11fake.Root {
 			t.Errorf("a motion is on the root window: % x", b)
 		}
 	}
 }
 
 func TestNoXTESTIsAnErrorInWords(t *testing.T) {
-	_, conn := startFake(t, func(f *fakeServer) { f.noXTest = true })
+	_, conn := x11fake.Start(t, func(f *x11fake.Server) { f.NoXTest = true })
 	c, err := x11.Open(conn, x11.Auth{}, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -196,9 +201,9 @@ func TestNoXTESTIsAnErrorInWords(t *testing.T) {
 }
 
 func TestSyncReportsTheErrorsOfRequestsWithNoReply(t *testing.T) {
-	f, c := xtestConn(t, func(f *fakeServer) {
-		f.errorFor = func(r request) (byte, bool) {
-			return 2, r.opcode == fakeXTest && r.data == 2 && r.body[1] == 7 // BadValue for keycode 7
+	f, c := xtestConn(t, func(f *x11fake.Server) {
+		f.ErrorFor = func(r x11fake.Request) (byte, bool) {
+			return 2, r.Opcode == x11fake.XTest && r.Data == 2 && r.Body[1] == 7 // BadValue for keycode 7
 		}
 	})
 	_ = f
@@ -222,8 +227,8 @@ func TestSyncReportsTheErrorsOfRequestsWithNoReply(t *testing.T) {
 }
 
 func TestGetImageReadsZPixmapIntoRGBA(t *testing.T) {
-	_, c := xtestConn(t, func(f *fakeServer) {
-		f.image = func(x, y, w, h int) []byte {
+	_, c := xtestConn(t, func(f *x11fake.Server) {
+		f.Image = func(x, y, w, h int) []byte {
 			var out []byte
 			for row := 0; row < h; row++ {
 				for col := 0; col < w; col++ {
@@ -247,19 +252,19 @@ func TestGetImageReadsZPixmapIntoRGBA(t *testing.T) {
 }
 
 func TestQueryPointerAndRootSize(t *testing.T) {
-	_, c := xtestConn(t, func(f *fakeServer) { f.pointer = [2]int{31, 9} })
+	_, c := xtestConn(t, func(f *x11fake.Server) { f.Pointer = [2]int{31, 9} })
 	if x, y, err := c.QueryPointer(); err != nil || x != 31 || y != 9 {
 		t.Fatalf("QueryPointer = %d, %d, %v", x, y, err)
 	}
-	if w, h, err := c.RootSize(); err != nil || w != fakeWidth || h != fakeHeight {
+	if w, h, err := c.RootSize(); err != nil || w != x11fake.Width || h != x11fake.Height {
 		t.Fatalf("RootSize = %d, %d, %v", w, h, err)
 	}
 }
 
 func TestKeyboardMappingFindsKeysymsAndUnusedKeycodes(t *testing.T) {
-	keymap := make([]uint32, (fakeMaxKey-fakeMinKey+1)*2)
-	set := func(code int, syms ...uint32) { copy(keymap[(code-fakeMinKey)*2:], syms) }
-	for code := fakeMinKey; code <= fakeMaxKey; code++ {
+	keymap := make([]uint32, (x11fake.MaxKey-x11fake.MinKey+1)*2)
+	set := func(code int, syms ...uint32) { copy(keymap[(code-x11fake.MinKey)*2:], syms) }
+	for code := x11fake.MinKey; code <= x11fake.MaxKey; code++ {
 		set(code, 0x1008ff00+uint32(code), 0) // every keycode has some keysym...
 	}
 	set(38, 'a', 'A')
@@ -267,7 +272,7 @@ func TestKeyboardMappingFindsKeysymsAndUnusedKeycodes(t *testing.T) {
 	set(50, 0xffe1, 0)
 	set(200, 0, 0) // ...but these two
 	set(201, 0, 0)
-	f, c := xtestConn(t, func(f *fakeServer) { f.keymap = keymap })
+	f, c := xtestConn(t, func(f *x11fake.Server) { f.Keymap = keymap })
 	km, err := c.KeyboardMapping()
 	if err != nil {
 		t.Fatal(err)
@@ -293,19 +298,19 @@ func TestKeyboardMappingFindsKeysymsAndUnusedKeycodes(t *testing.T) {
 	if errs, err := c.Sync(); err != nil || len(errs) != 0 {
 		t.Fatal(errs, err)
 	}
-	var change *request
-	for _, r := range f.got() {
-		if r.opcode == 100 {
+	var change *x11fake.Request
+	for _, r := range f.Got() {
+		if r.Opcode == 100 {
 			change = &r
 		}
 	}
-	if change == nil || change.data != 1 || change.body[0] != 200 || change.body[1] != 2 || le.Uint32(change.body[4:]) != 0xe9 || le.Uint32(change.body[8:]) != 0xe9 {
+	if change == nil || change.Data != 1 || change.Body[0] != 200 || change.Body[1] != 2 || le.Uint32(change.Body[4:]) != 0xe9 || le.Uint32(change.Body[8:]) != 0xe9 {
 		t.Fatalf("ChangeKeyboardMapping on the wire: %+v", change)
 	}
 }
 
 func TestALostConnectionFailsEveryCallInWords(t *testing.T) {
-	_, conn := startFake(t, nil)
+	_, conn := x11fake.Start(t, nil)
 	c, err := x11.Open(conn, x11.Auth{}, 0)
 	if err != nil {
 		t.Fatal(err)
