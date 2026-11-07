@@ -33,7 +33,7 @@ describe("a browser call's charge, on its own row", () => {
   });
 
   it("a call whose result row follows it (the step a person reads is the two together) still reads the call's charge", () => {
-    const use = { ...call({ usd: 0.0018, requests: 0 }), tool_status: undefined, tool_use_id: "u1" } as TimelineRow;
+    const use = { ...call({ usd: 0.0018, requests: 0 }), tool_status: null, tool_use_id: "u1" } as TimelineRow;
     const result = { id: "r1", seq: 3, kind: "tool_result", summary: "Looked at the page structure", text: null, timestamp: "2026-11-05T20:00:01Z", tool_name: "snapshot", tool_use_id: "u1" } as TimelineRow;
     const lis = draw([use, result]);
     expect(lis).toHaveLength(1);
@@ -46,7 +46,7 @@ describe("a browser call's charge, on its own row", () => {
   });
 
   it("a charge booked later replaces the row's usage, never adds a row", () => {
-    const page = (rows: TimelineRow[], reset = false): TimelinePage => ({ run_id: "r", status: "completed", state: "idle", rows, drop: [], reset, unchanged: false, final: true, has_more: false, next_after: 9 });
+    const page = (rows: TimelineRow[], reset = false): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "r", status: "completed", state: "idle", rows, drop: [], reset, unchanged: false, final: true, has_more: false, next_after: 9 });
     const held = applyPage([], page([call({ usd: 0.0012, requests: 0 })], true));
     const after = applyPage(held, page([call({ usd: 0.0018, requests: 0 })]));
     expect(after).toHaveLength(1);
