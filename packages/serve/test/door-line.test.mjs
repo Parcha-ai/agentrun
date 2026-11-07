@@ -231,13 +231,30 @@ test("through a run whose process fails at its start and is still exiting when i
     return write.call(this, chunk, ...rest);
   };
   t.after(() => (process.stderr.write = write));
-  // Its app fails to load and closes its door, and its exit then takes half a second (faux-broken-slow-exit.mjs). Handed
-  // another nonce than its launch checks, its door fails the proof however early the proof comes: the process is still
-  // alive when it fails, and goes on its own, exit 1, soon after.
+  // Its app fails to load, says so in its log, and closes its door; its exit then takes half a second
+  // (faux-broken-slow-exit.mjs). The server's proof of its door is held until that line is in its log, so the proof
+  // comes while the process is exiting, however slow its start is; handed another nonce than its launch checks, its door
+  // fails the proof whether it still answers or not.
+  let failedAtStart = () => false;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname === "/door-proof") {
+      for (const until = Date.now() + 60_000; Date.now() < until && !failedAtStart(); ) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return real(input, init);
+  };
+  t.after(() => (globalThis.fetch = real));
   const { api, data } = await serve(t, { faux: SLOW_EXIT_BROKEN, fauxHandedNonce: "f".repeat(64) });
   assert.equal((await api("POST", "/agents", { definition: { id: "broken", name: "broken", instructions: "Answer." } })).status, 201);
   const run = await api("POST", "/agents/broken/runs", { input: { content: "Answer soon." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
+  failedAtStart = () => {
+    try {
+      return readFileSync(join(runDir(data, run.body.run_id), "process.log"), "utf8").includes("has no default export");
+    } catch {
+      return false;
+    }
+  };
   await follow(api, run.body.run_id, ["failed"]);
   const said = lines.filter((line) => line.includes(run.body.run_id)).join("");
   assert.doesNotMatch(said, /did not answer this launch's nonce|opening it again/, "never stopped as a process that did not open, nor opened again");
