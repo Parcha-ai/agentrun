@@ -9,7 +9,7 @@
 // The host's skills (`skills`) are the only skills Codex lists to the model: written into the session's CODEX_HOME at the
 // start of every drive, where Codex finds a user's skills even in a turn with no environment, and Codex's own bundled
 // skills turned off. With no shell, the model reads a skill's files with `read_skill_file`.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
@@ -25,8 +25,8 @@ import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
 import { isRolloutPath, isSessionMeta, rolloutStream, summarizeRollout, THREAD_STREAM } from "./rollout.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
-import type { AcquireMachine, SessionMachine } from "./host/process.js";
-import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { codexPolicy, withWebSearches } from "./host/policy.js";
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -197,9 +197,30 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const effort = spec.effort ?? spec.thinking;
-      // The machine the drive of the moment runs on, once one is attached: its model proxy is the session's one route.
-      let machine: SessionMachine | undefined;
-      const tracked = (acquire: AcquireMachine): AcquireMachine => async (request) => (machine = await acquire(request));
+      // The session's host port (AdapterSession.port): the host's own requests beside Codex's (a learned workflow's node)
+      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price and the
+      // session's booking, io.models), but on a listener the session holds: a drive's machine closes its proxy when the
+      // drive ends (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side
+      // keys only: Codex never holds its key, and the policy's exec watch (announce) never sees these requests. Its policy
+      // object is its own, as a side call's should be. Closed with the session, or when the host lets the session go.
+      const search = options.webSearch === "live";
+      const hostPort = await startModelProxy({
+        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const } : {}) }),
+        hooks: io.models,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: search ? withWebSearches(options.price) : options.price } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       const harnessOptions: CodexHarnessOptions = {
         tools: tools.map(kernelTool),
         builtins: false,
@@ -220,8 +241,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
         machine: {
           ...(options.standIn?.env ? { env: options.standIn.env } : {}),
-          // The machine of the drive of the moment: its proxy is the session's one model route (port, below).
-          acquire: tracked(localMachine({
+          acquire: localMachine({
             dir,
             // The host's workspace, when it names one: Codex works where the host's file tools write (io.cwd).
             ...(io.cwd ? { cwd: io.cwd } : {}),
@@ -238,7 +258,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
             },
-          })),
+          }),
         },
       };
       const harness = checked === undefined ? codexHarness(harnessOptions) : withCheckedBinary(checked, () => codexHarness(harnessOptions));
@@ -336,9 +356,11 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           closed = true;
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
+          await closeHost();
         },
-        // The session's one model route, for the host's own request beside Codex's: the attached machine's proxy.
-        port: (label: string) => (closed || !machine?.port ? undefined : machine.port(label)),
+        // The session's one model route, for the host's own request beside Codex's: the session's host port, which never
+        // restarts once closed.
+        port: (label: string) => (closed || hostClosed ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "openai-responses" as const }),
       };
     },
   };

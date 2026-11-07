@@ -8,16 +8,16 @@
 //
 // The host's skills (`skills`) are listed in the session's instructions by name and description, and the model reads a
 // skill's files with `read_skill_file`: OpenCode's own skills are off.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { OPENCODE_VERSION } from "./binary.js";
 import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.js";
-import { TOOL_PREFIX } from "./host/policy.js";
+import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
 import type { ConfineChild } from "./host/server.js";
 import { verifyOpenCode } from "./verify.js";
 
@@ -167,6 +167,27 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
       const instructions = [...spec.system, ...(skills.length ? [skillsNote(skills)] : [])].join("\n\n");
       const effort = spec.effort ?? spec.thinking;
       let control: DriveControl | undefined;
+      // The session's host port (AdapterSession.port): the host's own requests beside OpenCode's (a learned workflow's
+      // node) on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price
+      // and the session's booking, io.models), on a listener the session holds: a drive's proxy closes with its drive, and
+      // an approved call runs before any turn. Side keys only; its policy object is its own. Closed with the session.
+      const hostPort = await startModelProxy({
+        policy: openCodePolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
+        hooks: io.models as never,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: options.price } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       const harness = openCodeHarness({
         tools: tools.map(kernelTool),
         model: modelFor(spec),
@@ -287,9 +308,11 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
           closed = true;
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
+          await closeHost();
         },
-        // The session's one model route, for the host's own request beside OpenCode's: the running drive's proxy.
-        port: (label: string) => (closed || !control ? undefined : control.port(label)),
+        // The session's one model route, for the host's own request beside OpenCode's: the session's host port, which
+        // never restarts once closed.
+        port: (label: string) => (closed || hostClosed ? undefined : { url: `${hostPort.url}`, key: hostPort.sideKey(label), model: modelFor(spec), api: "openai-responses" as const }),
       };
     },
   };

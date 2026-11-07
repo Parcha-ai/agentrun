@@ -8,7 +8,7 @@
 // `beforeRequest` first, and its usage comes back through `afterRequest`. The runner alone accounts model spend.
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,12 +16,13 @@ import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession,
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
+import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
-import { CLAUDE_MCP_CLIENT, type ConfineChild, type LocalSessionMachine, localMachine } from "./host/machine.js";
+import { CLAUDE_MCP_CLIENT, type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
 import { MCP_SERVER } from "./transcript.js";
 import type { ToolServerModules } from "./host/tool-server.js";
@@ -401,8 +402,37 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)));
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
-      // The machine the CLI's drive of the moment runs on, once one is attached: its model proxy is the session's one route.
-      let machine: LocalSessionMachine | undefined;
+      // The session's host port (AdapterSession.port): the host's own requests beside the CLI's (a learned workflow's node)
+      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price, headers
+      // and the session's booking, io.models), but on a listener the session holds: a drive's proxy closes with its drive
+      // (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side keys only:
+      // the CLI never holds its key. Its policy object is its own: anything a policy keeps per instance stays apart from the
+      // drive's, as a side call's should. Closed with the session, or when the host lets the session go (io.signal).
+      const hostPort = await startModelProxy({
+        policy: anthropicPolicy({
+          model: modelFor(spec),
+          ...(options.smallModel ? { smallModel: options.smallModel } : {}),
+          tools: [],
+          ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
+          ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
+        }),
+        hooks: io.models,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: withWebSearches(options.price) } : {}),
+        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       const acquire = localMachine({
         dir,
         // The host's workspace, when it names one: the CLI works where the host's file tools write (io.cwd).
@@ -429,8 +459,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const harness = claudeCodeHarness({
         name: CLAUDE_AGENT_ID,
         sandbox: {
-          // The machine of the drive of the moment: its proxy is the session's one model route (port, below).
-          attach: async (ctx, request) => (machine = (await acquire({ ctx, ...(request.model ? { model: request.model } : {}), ...(request.deadline === undefined ? {} : { deadline: request.deadline }) })) as LocalSessionMachine),
+          attach: (ctx, request) => acquire({ ctx, ...(request.model ? { model: request.model } : {}), ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }),
           // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
           // The runner's turn cap and the host's beforeRequest bound the spend.
@@ -585,9 +614,11 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           closed = true;
           drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
+          await closeHost();
         },
-        // The session's one model route, for the host's own request beside the CLI's: the attached machine's proxy.
-        port: (label: string) => (closed || !machine ? undefined : machine.port(label)),
+        // The session's one model route, for the host's own request beside the CLI's: the session's host port, which
+        // never restarts once closed.
+        port: (label: string) => (closed || hostClosed ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "anthropic-messages" as const }),
       };
     },
   };

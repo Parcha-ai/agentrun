@@ -18,7 +18,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
-import type { SessionPort } from "@parcha/agentrun-kernel";
 import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { openCodeConfig } from "./config.js";
@@ -88,9 +87,6 @@ export interface DriveControl {
    *  end written for the turn (it stays open). Resolves true when that happened within `ms`, false when the drive must be
    *  halted instead. */
   interrupt(ms: number): Promise<boolean>;
-  /** The session's own model route for the host's request beside OpenCode's (AdapterSession.port): this drive's proxy
-   *  with a side key minted for `label`. */
-  port(label: string): SessionPort;
 }
 
 type Outcome = { status: "completed" | "interrupted" | "failed"; error?: string };
@@ -318,7 +314,6 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         if (!asked || asked.status >= 300) return false;
         return Promise.race([ended.then(() => true), sleep(ms).then(() => false)]);
       },
-      port: (label) => ({ url: proxy.url, key: proxy.sideKey(label), model: options.model, api: "openai-responses" }),
     });
 
     const onEvent = (event: { type?: string; properties?: Record<string, unknown> }) => {

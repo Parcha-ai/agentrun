@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
-import type { McpClient, SessionMcp, SessionPort } from "@parcha/agentrun-kernel";
+import type { McpClient, SessionMcp } from "@parcha/agentrun-kernel";
 import type { AcquireMachine, CacheDir, KillSignal, MachineSpawn, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { anthropicPolicy, type AnthropicPolicyOptions, withWebSearches } from "./policy.js";
@@ -158,9 +158,6 @@ export interface LocalSessionMachine extends SessionMachine {
   readonly from: Readonly<Record<string, string | undefined>>;
   /** Start a child of the session, ended with it. */
   start(options: MachineSpawn): MachineChild;
-  /** The session's own model route for the host's request beside the CLI's (AdapterSession.port): this machine's proxy
-   *  with a side key minted for `label`, the model its policy takes and the API it serves. */
-  port(label: string): SessionPort;
 }
 
 /** Whether `path` is `base` or below it. */
@@ -246,7 +243,6 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       notes: [],
       from,
       start,
-      port: (label) => ({ url: proxy.url, key: proxy.sideKey(label), model: route.models.model, api: "anthropic-messages" }),
       spawn: async (spawnOptions) => start(spawnOptions),
       // A session with its built-ins off writes no files of its own to flush.
       fsync: async () => {},
