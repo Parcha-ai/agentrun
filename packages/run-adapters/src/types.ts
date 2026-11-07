@@ -242,7 +242,7 @@ export type AdapterEvent =
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
   | { type: "request_start"; turn: number; model: string }
-  | { type: "request_end"; turn: number; usage: ModelUsage }) & { key: string; label: string; executionPath?: string };
+  | { type: "request_end"; turn: number; usage: ModelUsage; ended?: Ended }) & { key: string; label: string; executionPath?: string };
 
 export type TurnStatus = "completed" | "interrupted" | "failed";
 

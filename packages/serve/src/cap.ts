@@ -975,7 +975,9 @@ export function requestParts(overhead: (model: Model<Api>, context: Context) => 
 /** The wrap-up on pi (capModels' `wrapUp`): the run's own model (`model`, its id), that model's priced requests so far
  *  (`costs`, earlier processes' from the store, costsIn; capModels adds each one it books), whether it was told under this
  *  cap already (`sent`, wrapUpSentIn), and `record`, which writes its row (request-start.ts, CAP_WRAPUP). */
-export type WrapUp = { model: string; costs: number[]; sent: boolean; record(data: { capUsd: number; leftUsd: number; words: string }): void };
+/** The wrap-up's state on pi. `sent`: told, in an answered request, once per cap. `pending`: a request carries the note
+ *  and has not ended: no other request takes it until that one is answered (told) or not (re-armed). */
+export type WrapUp = { model: string; costs: number[]; sent: boolean; pending?: boolean; record(data: { capUsd: number; leftUsd: number; words: string }): void };
 
 /** `models`, each request limited to the output tokens what is left of `cap` after `spent` USD (and what requests in flight
  *  hold) can buy, at most what it asks for, thinking included (CLAMP on its marks when that is less), and refused when that
@@ -1025,13 +1027,13 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  (limited to what is left of the cap, when that is less than it asks for), or why the cap refuses it. `simpleCall`:
    *  through streamSimple or completeSimple, whose thinking pi-ai turns into a budget or an effort; a direct call sends
    *  its maxTokens as is. */
-  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options; context?: Context; typical?: number; least?: number };
+  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options; context?: Context; typical?: number; least?: number; told?: { capUsd: number; leftUsd: number; words: string } };
   /** `judgeOne`, and near the cap the wrap-up (wrapUpDue), once: a turn's request on the run's own model is sent with the
    *  words after everything its context holds (`context`), its bytes admitted with it. Only in this one request: pi's
    *  transcript never holds the note, and no input is queued, so the run spends nothing after the model answers. */
   const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     const judged = judgeOne(model, context, options, simpleCall, turn);
-    if (!("hold" in judged) || !wrapUp || wrapUp.sent || !turn || model.id !== wrapUp.model) return judged;
+    if (!("hold" in judged) || !wrapUp || wrapUp.sent || wrapUp.pending || !turn || model.id !== wrapUp.model) return judged;
     const spentUsd = spentNow();
     // What is left as admission counted it: what was spent, and what requests and paid calls in flight are held at.
     // Nothing priced yet: the request at its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its hold.
@@ -1042,10 +1044,21 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const again = judgeOne(model, noted, options, simpleCall, turn);
     // The note's own bytes do not fit: the request goes as it came, and the note waits for one they do.
     if (!("hold" in again)) return judged;
-    wrapUp.sent = true;
-    wrapUp.record({ capUsd: cap, leftUsd: due.leftUsd, words });
-    return { ...again, context: noted };
+    // Pending until this request ends: told (recorded) only if it ends answered, else left for the next request.
+    wrapUp.pending = true;
+    return { ...again, context: noted, told: { capUsd: cap, leftUsd: due.leftUsd, words } };
   };
+  /** Settles a note `answer` carried: told when it ended answered (not an error, not aborted), else re-armed. */
+  const settleNote = (answer: Promise<AssistantMessage>, told: { capUsd: number; leftUsd: number; words: string }) =>
+    void answer.then(
+      (message) => {
+        wrapUp!.pending = false;
+        if (message.stopReason === "error" || message.stopReason === "aborted") return;
+        wrapUp!.sent = true;
+        wrapUp!.record(told);
+      },
+      () => void (wrapUp!.pending = false),
+    );
   const judgeOne = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
@@ -1181,7 +1194,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       if ("hold" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
-        admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        const answered = admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        if (judged.told) settleNote(answered, judged.told);
         return events!;
       }
       const refused = createAssistantMessageEventStream();
