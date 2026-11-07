@@ -39,7 +39,7 @@ import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
-import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
+import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import { BOX_WORK } from "./place.js";
@@ -352,6 +352,8 @@ export class RunGate {
   /** The replay-safe pi calls the gate let through (GATE_PASSED_ENTRY), by call id: a rerun of one is a replay. */
   private readonly passed = new Set<string>();
   private durable?: DurableRun;
+  /** The run's store, for the barrier before a call that is not replay-safe: from `prime` (before the resume) or `load`. */
+  private syncTarget?: SyncTarget;
   private context?: Context;
   private coding?: readonly ToolRegistration[];
   /** The run's own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
@@ -481,6 +483,9 @@ export class RunGate {
           await commit((tx: Tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: GATE_PASSED_ENTRY, data: { callId: api.callId } }));
           gate.passed.add(api.callId);
         }
+        // pi-durable committed the call's intent before it reached execute: durable before the call is sent, so a lost
+        // box never sends it twice (a resumed call with its intent is reported interrupted, not run again).
+        if (tool.replay !== "safe" || billed) await syncNow(gate.syncTarget, BARRIER.piToolIntent);
         return tool.execute(args, api, context);
       },
     } as ToolRegistration;
@@ -492,6 +497,7 @@ export class RunGate {
    *  approved call of one runs. */
   async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[], extra: readonly ToolRegistration[] = []): Promise<void> {
     this.durable = durable;
+    this.syncTarget = durable.store;
     this.context = context;
     this.coding = coding;
     this.extra = extra;
@@ -502,7 +508,8 @@ export class RunGate {
   /** Reads what the run's store holds of the gate (the calls that wait, the answers acted on, the calls it let through)
    *  before the run resumes: its app's beforeResume hook, ahead of harness.resume(), which dispatches the calls a crash
    *  cut. Read here, not in onOpen, which a recovered call races. A workflow's run calls only this; load reads nothing more. */
-  async prime(harness: Pick<Harness, "conversation">, context: Context): Promise<void> {
+  async prime(harness: Pick<Harness, "conversation">, context: Context, syncTarget?: SyncTarget): Promise<void> {
+    if (syncTarget) this.syncTarget = syncTarget;
     const root = await harness.conversation(ROOT_CONVERSATION_ID, context);
     for (let cursor: Cursor | undefined; root; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, context);
@@ -647,7 +654,7 @@ export class RunGate {
 
   /** The run's own `approvals:` session, the journal every approved call runs through: opened once. */
   private journal(): Promise<Drive> {
-    this.drive ??= durableSessions(this.durable!.harness, this.context!)
+    this.drive ??= durableSessions(this.durable!.harness, this.context!, this.durable!.store)
       .open(`approvals:${this.where.runId}`)
       .then((writer) => openDrive({ writer, signal: this.stop.signal }))
       .catch((error: unknown) => {
