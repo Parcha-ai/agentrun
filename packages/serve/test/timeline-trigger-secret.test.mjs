@@ -13,16 +13,19 @@ const holdsPiece = (text, secret) => [...Array(Math.max(0, secret.length - 7)).k
  *  the base64 after `whsec_`, is the signing key itself. */
 const formsOf = (secret) => ({ hex: Buffer.from(secret).toString("hex"), base64: Buffer.from(secret).toString("base64"), body: secret.slice("whsec_".length) });
 
-/** A run of agent `id` whose message holds each of `forms`: everything the server shows of it, as one text. */
+/** A run of agent `id` whose message holds each of `forms`: everything the server shows of it, as one text. Every page the
+ *  Timeline's long poll answered while the run went on is in it too: a row a live update showed and a later one replaced
+ *  was shown all the same. */
 async function pasted(api, id, forms) {
   assert.equal((await api("POST", "/agents", agent(id))).status, 201);
   const content = `Keep these: ${forms.hex}, ${forms.base64} and ${forms.body}`;
   const run = await api("POST", `/agents/${id}/runs`, { input: { content } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
+  const { rows, pages } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
+  assert.ok(pages.length > 0, "the Timeline was read live at least once");
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   const listed = (await api("GET", "/runs")).body;
-  return JSON.stringify({ rows, view, listed });
+  return JSON.stringify({ rows, pages, view, listed });
 }
 
 test("a webhook trigger's secret pasted into a run's message, as hex, base64 or its bare key, is cut from every Timeline row, the run's title and its answer; after a rotation the new secret is cut the same", { timeout: 300_000 }, async (t) => {
