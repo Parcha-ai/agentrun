@@ -28,10 +28,11 @@ async function proxied(t, policy, notes = [NOTE], ticket = undefined) {
   const forwarded = [];
   const asked = [];
   const taken = [];
+  const takenWith = [];
   const hooks = {
     beforeRequest: async (request) => (asked.push(request), ticket),
     afterRequest: async () => {},
-    note: (model) => (taken.push(model), notes.shift()),
+    note: (model, request) => (taken.push(model), takenWith.push(request), notes.shift()),
   };
   const fetch = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{"usage":{}}', { status: 200, headers: { 'content-type': 'application/json' } }));
   const p = await startModelProxy({ policy, model: 'main-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch }, KEY);
@@ -42,7 +43,7 @@ async function proxied(t, policy, notes = [NOTE], ticket = undefined) {
     req.on('error', resolve);
     req.end(JSON.stringify(body));
   });
-  return { forwarded, asked, taken, send };
+  return { forwarded, asked, taken, takenWith, send };
 }
 const client = { model: 'main-model', messages: [{ role: 'user', text: 'Write the report.', cache: true }, { role: 'assistant', text: 'Reading.' }, { role: 'user', text: 'tool result' }] };
 
@@ -85,4 +86,14 @@ test('a request its host admits only without the note (ModelTicket.noteDropped) 
   assert.deepEqual([p.asked[0].noted, p.asked[0].inputTokensMaxWithoutNote], [true, plain.asked[0].inputTokensMax], 'the admission has the request measured without the note too');
   assert.ok(p.asked[0].inputTokensMax > p.asked[0].inputTokensMaxWithoutNote, 'and with it');
   assert.deepEqual(p.forwarded[0], client, 'the body forwarded is the client\'s, without the note');
+});
+
+test('the request taking the note is measured first, as its client sent it, and handed to the host: its input bound and the output it asks for and needs, which the host prices its least by', async (t) => {
+  const asks = { ...withNote, outputAsked: (body) => body.max_tokens, outputLeast: () => 10_240 };
+  const plain = await proxied(t, asks, []);
+  await plain.send({ ...client, max_tokens: 32_000 });
+  const p = await proxied(t, asks);
+  await p.send({ ...client, max_tokens: 32_000 });
+  assert.deepEqual(p.takenWith, [{ inputTokensMax: plain.asked[0].inputTokensMax, outputTokensAsked: 32_000, outputTokensLeast: 10_240 }], 'the note is asked for with the request measured without it');
+  assert.equal(p.asked[0].inputTokensMaxWithoutNote, plain.asked[0].inputTokensMax, 'the same measure the admission has');
 });

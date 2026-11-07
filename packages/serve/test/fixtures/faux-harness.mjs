@@ -228,6 +228,9 @@ export function script(spec) {
   // second is taken and admitted with nothing priced and no previous request in hand.
   const tenK = /Two requests needing 10,240 output tokens, the first booked when (\S+) exists\./.exec(text)?.[1];
   if (tenK) return [{ call: "read", args: { path: "a.txt" }, outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01, bookWhen: tenK }, { say: "Done.", outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01 }];
+  // Two requests that each need and ask 10,240 output tokens ($1.024 on OUTPUT_PRICED), a cent each: a cap under that
+  // pauses the run at its first, and a raise lets it go on in the process the raise opens.
+  if (/Make two requests needing 10,240 output tokens\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01 }, { say: "Done.", outputTokensAsked: 10_240, outputTokensLeast: 10_240, usd: 0.01 }];
   // Four requests of a growing conversation that reads the cache (grown), then the answer: request 0 writes the cache
   // (its least priced uncached), the later ones read it (their least far smaller).
   if (/Grow a cached context briefly\./.test(text)) {

@@ -305,6 +305,23 @@ test("claude-agent on the faux harness: at step 0, with no previous request in h
   assert.deepEqual(notesOf(data, runId), rows);
 });
 
+test("claude-agent on the faux harness: paused at its cap, let go and raised, the first request after the raise, in the process the raise opens, is told when it alone is due by its least: the least of the request being taken, never of one admitted in an earlier process", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  assert.equal((await api("POST", "/agents", agent("raised-least", { harness: "claude-agent", instructions: "Make two requests needing 10,240 output tokens." }))).status, 201);
+  // $0.50: under the first request's least ($1.024 at $100 a million output), so the run pauses at it, nothing spent.
+  const runId = (await api("POST", "/agents/raised-least/runs", { input: { content: "go" }, max_cost_usd: 0.5 })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.kind, "budget", "paused at its cap");
+  // Raised to $1.50: the first request after it is admitted ($1.50 left, over its least), and $1.50 is under 2 x $1.024,
+  // so it is due by its least alone (its step-0 typical, 4,096 tokens or $0.41, is not: 3 x $0.41 is under $1.50).
+  const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1.5 });
+  assert.equal(raised.status, 200, JSON.stringify(raised.body));
+  await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$1.50")], "the first request after the raise is told, in the budget's words: nothing priced, $1.50 left, under 2 x its own least ($1.024)");
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$1.50")]);
+});
+
 test("claude-agent on Sonnet 4.5 under $0.10, its process killed after the wrap-up came due at step 0 and before a request took it: the process opened again decides the words from the run's priced requests", { timeout: 180_000 }, async (t) => {
   const go = join(await scratch(t), "go");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
