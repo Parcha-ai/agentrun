@@ -293,3 +293,48 @@ test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owne
   assert.equal(JSON.parse((await owned.ws.next(5_000)).data).type, "ready");
   owned.ws.destroy();
 });
+
+/** A viewer open through the proxy with the owner's cookie `cookie`: its first frame read, so bytes flow both ways. */
+async function watching(w, handed, cookie = w.cookie) {
+  const open = await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`, { cookie });
+  assert.equal(open.status, 101);
+  open.ws.sendJson({ type: "hello", token: handed.token });
+  assert.equal(JSON.parse((await open.ws.next(5_000)).data).type, "ready");
+  assert.ok((await open.ws.until((m) => m.type === "binary", 10_000)).item, "a frame came through");
+  return open.ws;
+}
+/** The socket closes within `ms`, and nothing comes after. */
+async function closesWithin(ws, ms, what) {
+  const { item } = await ws.until((m) => m.type === "close", ms);
+  assert.equal(item?.type, "close", what);
+  assert.equal((await ws.next(300)).type, "none", "nothing comes after the close");
+}
+/** A new viewer is taken once the old one's way to the run is gone too: the run's viewer takes one at a time. */
+async function takenAgain(w, handed, cookie) {
+  const fresh = await watching(w, handed, cookie);
+  fresh.destroy();
+}
+
+test("a viewer already watching is cut off when the owner signs out everywhere: its socket and its way to the run close at once", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const ws = await watching(w, handed);
+  const out = await call(w.server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...json, origin: w.origin, cookie: w.cookie }, body: {} });
+  assert.equal(out.status, 200, out.text);
+  await closesWithin(ws, 2_000, "the viewer's socket closes at sign-out");
+  const signed = await call(w.server.port, { method: "POST", path: "/v2/auth/sign-in", headers: { ...json, origin: w.origin }, body: { password: PASSWORD } });
+  await takenAgain(w, handed, cookieOf(signed));
+});
+
+test("a viewer already watching is cut off within the re-check when another process resets the password", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const ws = await watching(w, handed);
+  // As `agentrun-serve reset-password` does from its own process: owner.json rewritten, nothing said to this server.
+  const { resetPassword } = await import("../dist/owner.js");
+  resetPassword(w.server.data);
+  // The re-check's period (LIVE_RECHECK_MS, 2 s) and a margin.
+  await closesWithin(ws, 4_000, "the viewer's socket closes after a reset in another process");
+  const made = await call(w.server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin: w.origin }, body: { password: PASSWORD } });
+  await takenAgain(w, handed, cookieOf(made));
+});
