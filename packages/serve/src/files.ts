@@ -3,7 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { agentDiskDir } from "@parcha/pi-durable-agent";
+import { dirname, join, resolve } from "node:path";
 import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
@@ -22,6 +23,16 @@ export const TOKEN_FILE = ".token";
 /** Where a running server is, for the launcher's CLI (`npx @parcha/agentrun agents list`), in the data directory: its
  *  base URL, its pid and its token's file, never the token. Written once it listens, mode 0600; removed on a clean exit. */
 export const SERVER_FILE = ".server.json";
+
+/** Removes the SERVER_FILE record at `file` only while it names process `pid`: a record another server wrote stays.
+ *  Never throws; a record it cannot read is not this process's. */
+export function removeOwnRecord(file: string, pid = process.pid): void {
+  try {
+    if ((JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown } | null)?.pid === pid) unlinkSync(file);
+  } catch {
+    // Gone already, unreadable or not this process's: nothing to remove.
+  }
+}
 /** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
 export const DOOR_TOKEN_FILE = ".door-token";
 /** A run's own door token, in its directory, made at its first launch and handed to its process alone (its
@@ -50,6 +61,12 @@ export const defaultData = (env: NodeJS.ProcessEnv = process.env): string => joi
 /** The server's own data directory, on its reading of the environment (startServe): an npx hint names it (adapters.ts
  *  npxLine). */
 export const DATA_ENV = "AGENTRUN_SERVE_DATA";
+
+/** The data directory a run's folder is in: `<data>/disk/agents/<agent>/runs/<run>` (pi-durable-agent runDirIn). */
+export const dataOfRun = (runDir: string): string => resolve(runDir, "..", "..", "..", "..", "..");
+
+/** Agent `agentId`'s folder on the disk, which holds its learning folder (learning.ts) and its runs: `<data>/disk/agents/<agent>`. */
+export const agentFolderOf = (data: string, agentId: string): string => agentDiskDir(data, agentId);
 
 export const HOMES_DIR = "homes";
 /** Paths in an agent's home that only the host reads and writes (another component owns them): the home API reads and

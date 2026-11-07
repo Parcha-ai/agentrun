@@ -158,7 +158,7 @@ export function handover(names: readonly string[], stored?: StoredKeys): Buffer 
 }
 
 /** The MCP credentials this process was handed (MCP_AUTH), by server; none when it was handed none. */
-export function mcpCredentials(): Record<string, { url: string; headers?: Record<string, string> }> {
+export function mcpCredentials(): Record<string, { url: string; headers?: Record<string, string>; unopened?: string }> {
   try {
     const parsed: unknown = JSON.parse(held.get(MCP_AUTH) ?? "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as never) : {};

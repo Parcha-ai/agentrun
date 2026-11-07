@@ -14,10 +14,14 @@ import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
-import { type McpHandler, parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
+import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
+import type { McpClient, SessionMcp } from "@parcha/agentrun-kernel";
 import type { AcquireMachine, CacheDir, KillSignal, MachineSpawn, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { anthropicPolicy, type AnthropicPolicyOptions, withWebSearches } from "./policy.js";
+
+/** Claude Code's own MCP client: it sends a call's tool use id in tools/call's `_meta["claudecode/toolUseId"]`. */
+export const CLAUDE_MCP_CLIENT: McpClient = { callIdMeta: "claudecode/toolUseId" };
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -54,8 +58,9 @@ export interface LocalMachineOptions {
     builtins?: readonly string[];
     /** Admit Anthropic's web search server tool, the one the CLI's WebSearch asks for. */
     webSearch?: boolean;
-    /** The session's remote MCP servers, served at `/mcp/<server>`, and their granted tools as the CLI names them. */
-    mcp?: { handler: McpHandler; tools: readonly string[] };
+    /** The session's remote MCP servers, which the kernel's proxy serves at `/mcp/<server>` for the CLI's own MCP client
+     *  (CLAUDE_MCP_CLIENT), and their granted tools as the CLI names them. */
+    mcp?: { session: SessionMcp; tools: readonly string[] };
     /** The input a request carrying it may read in beyond its body, for its input bound (anthropicPolicy). */
     webSearchAllowance?: number;
     /** The tokens' price; each web search a response reports is added to it (`withWebSearches`). */
@@ -197,7 +202,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       credential: async () => (await route.credential()) ?? "",
       ...(options.proxy.price ? { price: withWebSearches(options.proxy.price) } : {}),
       ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
-      ...(options.proxy.mcp ? { mcp: options.proxy.mcp.handler } : {}),
+      ...(options.proxy.mcp ? { mcp: { session: options.proxy.mcp.session, client: CLAUDE_MCP_CLIENT } } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),

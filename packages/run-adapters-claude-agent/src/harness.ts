@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search, 016-mcp-output-tokens, 017-key-refused, 019-recovery-covers, 020-mcp-servers
+// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search, 016-mcp-output-tokens, 017-key-refused, 019-recovery-covers, 020-mcp-servers, 021-tool-server-modules
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -204,10 +204,16 @@ export interface ClaudeCodeHarnessOptions {
    * model proxy (`<modelUrl>/mcp/<name>`, behind the session's key), with the
    * tools granted on each: those are allowed by name (`mcp__<name>__<tool>`)
    * and each call is recorded as a built-in's. They are set over the CLI's
-   * stdin (`setMcpServers`), never in its argv. A server that does not
-   * connect fails the turn. Default none.
+   * stdin (`setMcpServers`), never in its argv. The proxy answers the
+   * handshake: an unreachable server shows at its first call. Default none.
    */
   mcpServers?: readonly { readonly name: string; readonly tools: readonly string[] }[];
+  /**
+   * The MCP library the session's tool server is built with, as the host
+   * loaded it from where it installed the Agent SDK. Default: imported by
+   * name.
+   */
+  toolServerModules?: Parameters<typeof toolServer>[3];
   /** Provider-hosted tools the model may use; default none. `web_search` turns the CLI's WebSearch on, built-ins off or
    *  not: each call recorded as a built-in's (the session's model proxy decides what the provider may run). */
   providerTools?: readonly ProviderTool[];
@@ -575,7 +581,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           } finally {
             calls.delete(running);
           }
-        });
+        }, options.toolServerModules);
 
         const allow = (updatedInput?: Record<string, unknown>) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'allow' as const, ...(updatedInput ? { updatedInput } : {}) } });
         const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: reason } });

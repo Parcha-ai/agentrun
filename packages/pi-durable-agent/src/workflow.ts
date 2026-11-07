@@ -3,8 +3,6 @@
 // @parcha/agentrun-dsl and @parcha/agentrun-pi only inside the functions that need them, so a store with no workflow
 // revision never loads either.
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import type { GraphDiff, NodeState, WorkflowGraph } from "@parcha/agentrun-dsl/graph";
 import type { createWorkflowExtension, WorkflowCaller, WorkflowOutcome } from "@parcha/agentrun-pi/durable";
@@ -138,11 +136,12 @@ export async function startWorkflowRevision(options: RunOptions): Promise<Workfl
  * and `message`): the state, and the labels of the nodes that completed, in graph order (chains aside), then `failed at
  * <label>` for each deepest node that failed and `escalated at <label>` for the node a gate fired at; with none of
  * these, `<state> before any node completed`. A refusal before any task is `refused: <message>`. It reads the run with
- * `readWorkflowRun`, so no other connection may hold the store file exclusively: call it once the run is released.
+ * `readWorkflowRun` (with `options`, its `unlocked`), so with none no other connection may hold the store file
+ * exclusively: call it once the run is released.
  */
-export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">, outcome: Pick<WorkflowOutcome, "status"> & { code?: string; message?: string }): Promise<{ state: RunState; summary: string }> {
+export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision">, outcome: Pick<WorkflowOutcome, "status"> & { code?: string; message?: string }, options: { unlocked?: boolean } = {}): Promise<{ state: RunState; summary: string }> {
   if (outcome.status === "refused" && outcome.code !== undefined && BEFORE_ANY_TASK.has(outcome.code)) return { state: "failed", summary: `refused: ${outcome.message ?? outcome.code}` };
-  const view = await readWorkflowRun(run);
+  const view = await readWorkflowRun(run, options);
   // The nodes that completed (chains, pure sequence, aside), then each deepest node that failed (a container failed only
   // through a node in it is not named again), then the node the run escalated at.
   const inState = (state: NodeState) => view.graph.nodes.filter((node) => view.status[node.path] === state);
@@ -179,29 +178,26 @@ export async function revisionGraph(revision: { body: WorkflowBody }, parent?: {
  * come from the run's journal and its task's terminal result. Working means live: an ended run's interrupted nodes read
  * stopped; in a failed run, every node still running at the end is drawn failed; with parallel branches, that can
  * include branches that were only interrupted. A run in the driver's keyed layout (a host's `layout: "v4"`) keeps its
- * map items apart and is refused here as `format`.
+ * map items apart and is refused here as `format`. `unlocked`: the store of a run whose process may hold it under an
+ * exclusive lock (a server's run), read as agentrun-pi's unlocked reads read it: no lock, nothing made beside the store,
+ * and its write-ahead log opened only once it holds a commit.
  */
-export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision"> & { state?: RunState | "running" }): Promise<WorkflowRunView> {
-  const [{ graphNodeOf, nodeStatus, workflowGraph }, { durableDoc, readJournal }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
+export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "revision"> & { state?: RunState | "running" }, options: { unlocked?: boolean } = {}): Promise<WorkflowRunView> {
+  const [{ graphNodeOf, nodeStatus, workflowGraph }, { durableDoc, readJournal, withDurableFile }] = await Promise.all([import("@parcha/agentrun-dsl/graph"), import("@parcha/agentrun-pi/durable")]);
   const graph = workflowGraph(run.revision.body.workflow);
-  const immutable = run.state !== undefined && run.state !== "running" && !existsSync(`${run.storePath}-wal`);
+  const how = options.unlocked ? { unlocked: true } : { immutable: run.state !== undefined && run.state !== "running" && !existsSync(`${run.storePath}-wal`) };
   // The run's task holds how it ended: its id is on the run's entry, its record in pi-durable's task table. The task is
   // read before the journal, so a task found terminal means the journal read after it is final.
-  const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId, { immutable })?.task;
+  const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId, how)?.task;
   let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown; kind?: unknown; label?: unknown; summary?: unknown } } } | undefined;
   if (typeof task === "number") {
-    const db = new DatabaseSync(immutable ? `${pathToFileURL(run.storePath).href}?immutable=1` : run.storePath, { readOnly: true, timeout: 5000 });
-    try {
-      const row = db.prepare("SELECT record FROM tasks WHERE id = ?").get(task) as { record: string } | undefined;
-      const state = row && (JSON.parse(row.record) as { state?: { status?: string; outcome?: typeof ended } }).state;
-      if (state?.status === "terminal") ended = state.outcome;
-    } finally {
-      db.close();
-    }
+    const row = withDurableFile(run.storePath, (db) => db.prepare("SELECT record FROM tasks WHERE id = ?").get(task) as { record: string } | undefined, how);
+    const state = row && (JSON.parse(row.record) as { state?: { status?: string; outcome?: typeof ended } }).state;
+    if (state?.status === "terminal") ended = state.outcome;
   }
   // A completed task holds the run's result (complete or escalated); an aborted one was cancelled; any other failed.
   const result = ended?.status === "completed" ? ended.result : undefined;
-  const state = readJournal(run.storePath, run.runId, { immutable })?.state as { schema?: unknown; pin?: object } | null | undefined;
+  const state = readJournal(run.storePath, run.runId, how)?.state as { schema?: unknown; pin?: object } | null | undefined;
   if (state?.schema === "agentrun.frozen_run.v4") throw new AgentHomeError("format", "a run in the keyed layout is not read here");
   const status: Record<string, RunNodeState> = nodeStatus(graph, { pin: state?.pin ?? {}, result: result ?? null });
   const outcome = ended && (result ? stateOf(result as Pick<WorkflowOutcome, "status">) : ended.status === "aborted" ? "stopped" : "failed");

@@ -34,4 +34,5 @@ Auth: the API's routes take `Authorization: Bearer <token>`, all but `GET /v2/he
 ## Optional
 
 - [Skill for coding agents](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/skills/agentrun-serve/SKILL.md): check the server, the token, connect over MCP, create an agent, run it and answer it, step by step.
+- [CLI skill for coding agents](https://github.com/Parcha-ai/agentrun/blob/main/packages/agentrun/skills/agentrun-cli/SKILL.md): the `agentrun` CLI (`npx @parcha/agentrun skill install`) for everything the MCP tools do not cover: tool keys, triggers, webhooks, files, revisions, waiting on a run.
 - [README](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/README.md): every flag, model, tool and route.

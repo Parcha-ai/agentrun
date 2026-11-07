@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { follow, serve, withEnv } from "./support.mjs";
+import { follow, runDir, serve, withEnv } from "./support.mjs";
 import { DEFAULT_DOCKER_IMAGE, RECIPE_HASH, RECIPE_LABEL } from "../dist/box-image.js";
 
 const LIVE = process.env.AGENTRUN_SERVE_LIVE_DOCKER === "1";
@@ -43,7 +43,7 @@ const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_", "HOSTNAME"];
 
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -120,7 +120,7 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
   // network list; box-network.test.mjs).
   const listed = (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker")?.network === "allowlist";
   assert.deepEqual(record.Mounts.map((m) => [m.Type, m.Source, m.Destination, m.RW]), [
-    ["bind", join(canonical, "runs", runId, "work"), "/run/agentrun/run/work", true],
+    ["bind", join(runDir(canonical, runId), "work"), "/run/agentrun/run/work", true],
     ...(listed ? [["bind", egressDirOf(runId), "/run/agentrun/egress", false]] : []),
   ]);
   assert.equal(record.Config.User, `${process.getuid()}:${process.getgid()}`);
@@ -129,7 +129,7 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
   const at = (i) => said[i].text;
   assert.deepEqual(said.slice(0, 9).map((a) => a.error), Array(9).fill(false), JSON.stringify(said));
   assert.equal(at(3), "edited in the box");
-  const out = join(data, "runs", runId, "work", "out.txt");
+  const out = join(runDir(data, runId), "work", "out.txt");
   assert.equal(readFileSync(out, "utf8"), "hi");
   assert.equal(statSync(out).uid, process.getuid(), "a file the box made is serve's");
   assert.ok((await api("GET", `/runs/${runId}/files`)).body.files.some((f) => f.path === "out.txt"));
@@ -165,7 +165,7 @@ test("live Docker (claude-agent, codex on the faux harness): bash writes out.txt
     await follow(api, run.body.run_id, ["completed"], { deadlineMs: 180_000 });
     const said = answers(data, run.body.run_id);
     assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["bash", false]], `${harness}: ${JSON.stringify(said)}`);
-    assert.ok(existsSync(join(data, "runs", run.body.run_id, "work", "out.txt")), harness);
+    assert.ok(existsSync(join(runDir(data, run.body.run_id), "work", "out.txt")), harness);
     await noSecretIn(said[1].text, server);
   }
 });
