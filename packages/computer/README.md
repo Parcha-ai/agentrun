@@ -1175,7 +1175,7 @@ The risk that stays is one-way. From inside, the provider cannot prove that an a
 nowhere: a path that carries the request out and drops every reply reads the same as E2B's firewall. E2B says no
 packets reach the destination, and that this may change. The answered check catches any change that forwards traffic
 both ways, since the first byte back refuses network none; it does not catch a one-way leak, and nothing run from
-inside can. That is the provisional ruling (one rule for every provider, pending the owner's confirmation), and why every
+inside can. That is the rule for every provider, confirmed on 11-07, and why every
 accept is recorded in words rather than dropped.
 
 `dist/conformance/e2b-diagnose.js` (live switch
