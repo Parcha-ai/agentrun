@@ -38,7 +38,7 @@ const spent = (total: number | null, cost: number | undefined): number | null =>
 export const RUNNER_RECORDS = { request: "runner.request", response: "runner.response", turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
 
 /** What the host is asked before each paid request. A `refuse` ends the node, final. A `holdUsd` (a finite amount, 0
- *  or more) is what the host holds for the request, its cap's worst case: written on the request's record before it
+ *  or more) is what the host holds for the request, what its cap admitted it at: written on the request's record before it
  *  leaves, it is what the request counts at in the spend the host is shown when the request's own cost never comes in
  *  (a response cut short, booked at an unknown cost, or a request a crash cut off, read by a later process). Without
  *  one, such a request leaves the spend unknown. The cost booked for the request is unknown either way. */
@@ -56,20 +56,28 @@ export type BeforeRequest = (request: {
    *  them from its body (ModelRequest). */
   outputTokensAsked?: number;
   outputTokensLeast?: number;
+  /** On another model than the session's (ModelRequest.side): a client's side call. */
+  side?: true;
+  /** It carries the host's note (ModelRequest.noted), and its input measured without it (`inputTokensMaxWithoutNote`):
+   *  a host that admits it only without the note says so (Admission.withoutNote). */
+  noted?: true;
+  inputTokensMaxWithoutNote?: number;
   /** This session's paid requests admitted and not yet answered (in this process), oldest first, each with its own
-   *  `inputTokensMax` and the output limit it was admitted with (`outputTokensMax`): a budget holds each one's
-   *  worst case until it answers, since `spentUsd` counts answered requests only. Requests are admitted one at a time,
-   *  so each check sees every request admitted before it. */
+   *  `inputTokensMax`, the output limit it was admitted with (`outputTokensMax`) and what its host held for it
+   *  (`holdUsd`): a budget holds each one until it answers, since `spentUsd` counts answered requests only. Requests are
+   *  admitted one at a time, so each check sees every request admitted before it. */
   inFlight: readonly InFlight[];
 }) => void | { refuse: string } | Admission | Promise<void | { refuse: string } | Admission>;
 
-/** A request admitted and not yet answered, as a budget holds it. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number };
+/** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
+ *  one. */
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
- *  streamed, in tokens (one a byte), never more than `holdUsd`; without it, at `holdUsd`. */
-export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number };
+ *  streamed, in tokens (one a byte), never more than `holdUsd`; without it, at `holdUsd`. `withoutNote`: a request that
+ *  carries its host's note is admitted only as it was without it (the note's bytes did not fit): it goes without it. */
+export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true };
 
 export interface HarnessRunnerOptions {
   /** The run's store, through whoever owns it. */
@@ -128,6 +136,8 @@ export interface ModelPortOptions {
   /** A pause is draining the attempt: the error a new paid request is refused with, while the attempt itself goes on. A
    *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
   draining?: () => Error | undefined;
+  /** A note the host has for the session's next main-model request, taken by the call (ModelPort.note). */
+  note?: (model: string) => string | undefined;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
   stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string) => Error;
 }
@@ -218,16 +228,20 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
-  const admit = async ({ model, inputTokensMax, outputTokensAsked, outputTokensLeast }: ModelRequest): Promise<ModelTicket> => {
+  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, side, noted, inputTokensMaxWithoutNote }: ModelRequest): Promise<ModelTicket> => {
+    let inputTokensMax = measured;
     const stopped = options.stopped?.() ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
-      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }) });
+      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(side ? { side } : {}), ...(noted ? { noted, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
+    // Admitted only without the note: it goes as its client sent it, measured so.
+    const withoutNote = noted === true && !!verdict && "withoutNote" in verdict && verdict.withoutNote === true;
+    if (withoutNote) inputTokensMax = inputTokensMaxWithoutNote;
     // The output limit the host admits it with goes into its body. A limit that is no whole number of tokens above 0 (a
     // fraction, 0, a negative, NaN) can't be sent, so the request is refused before anything is written: dropping it would
     // send the request with no limit at all. Only a verdict with no limit sends the request with none.
@@ -240,7 +254,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }) } }]);
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(side ? { side } : {}) } }]);
     turns = turn;
     if (hold !== undefined) held.set(turn, hold);
     const stoppedUsd = verdict && "stoppedUsd" in verdict && typeof verdict.stoppedUsd === "function" ? verdict.stoppedUsd : undefined;
@@ -255,11 +269,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
       throw stoppedNow;
     }
-    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }) });
+    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }) });
     emit({ type: "request_start", turn, model });
-    return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }) };
+    return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
   const models: ModelPort = {
+    ...(options.note ? { note: options.note } : {}),
     beforeRequest: (request: ModelRequest) => {
       const admitted = admitting.then(() => admit(request));
       admitting = admitted.catch(() => {});

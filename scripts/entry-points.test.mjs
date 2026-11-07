@@ -29,6 +29,7 @@ const reviewed = new Map([
   ['examples/reference-demo-supervision.test.mjs', childScript],
   ['examples/reference-record.test.mjs', childScript],
   ['packages/pi-durable-agent/test/agent-store.test.mjs', childScript],
+  ['packages/serve/test/graph-lockfree.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve-store.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve.test.mjs', childScript],
   ['packages/pi-durable-disk/test/commands.test.ts', childScript],

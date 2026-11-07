@@ -76,11 +76,13 @@ test("--open opens a browser unless in CI or on a Linux with no display", () => 
  *  resolves with its base URL once its banner is out. */
 async function serve(t, args, env = {}, data = undefined) {
   const home = mkdtempSync(join(tmpdir(), "serve-defaults-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
   const child = spawn(process.execPath, [CLI, "--data", data ?? join(home, "agents"), ...args], { env: { ...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
+  // The stop first, then the removal: node:test runs a test's after-hooks in the order they were added, and the server
+  // writes into its home until it has stopped.
   t.after(() => stopChild(child, exited));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -94,12 +96,12 @@ async function serve(t, args, env = {}, data = undefined) {
 }
 
 test("with accounts off (AGENTRUN_ACCOUNTS=0), the AGENTRUN_PUBLIC_URL name is served on loopback as with them on, and another name is still refused", { timeout: 120_000 }, async (t) => {
-  const free = createServer();
-  await new Promise((resolve) => free.listen(0, "127.0.0.1", resolve));
-  const port = free.address().port;
-  await new Promise((resolve) => free.close(resolve));
-  const { out } = await serve(t, ["--port", String(port)], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
+  // Port 0: the server's own listen picks the port, so no other process can take it between a pick and the listen. The
+  // banner's first line names the local address; AGENTRUN_BASE_URL names the public one.
+  const { out } = await serve(t, ["--port", "0"], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
   assert.match(out, /^Open https:\/\/agentrun\.example\.com\//m, out);
+  const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)?.[1]);
+  assert.ok(port > 0, `the banner names the local port: ${out}`);
   const { request } = await import("node:http");
   const status = (name) =>
     new Promise((resolve, reject) => {

@@ -383,6 +383,11 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
   return {
     id: "opencode",
     routes: OPENCODE_RESPONSES_ROUTES,
+    // The spend cap's wrap-up note, as on Codex's route (the Responses API): one developer message after OpenCode's input.
+    addNote(body, text) {
+      const input = Array.isArray(body.input) ? body.input : [];
+      return { ...body, input: [...input, { type: "message", role: "developer", content: [{ type: "input_text", text }] }] };
+    },
     keyOf(headers: IncomingHttpHeaders) {
       const auth = String(headers.authorization ?? "");
       return auth.startsWith("Bearer ") ? auth.slice(7) : "";

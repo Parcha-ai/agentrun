@@ -61,7 +61,7 @@ export const MAX_MOUNTS = 8;
 export type ParsedMount = { readonly source: string; readonly target: string; readonly readOnly: boolean };
 
 /** What is wrong with a mount's path, or `undefined`. Normal form makes two names for one place impossible. */
-function mountPathProblem(path: unknown): string | undefined {
+export function mountPathProblem(path: unknown): string | undefined {
 	if (typeof path !== "string" || !path.startsWith("/")) return "is not an absolute path";
 	const segments = path.slice(1).split("/");
 	if (segments.includes("..")) return "has a .. segment";
