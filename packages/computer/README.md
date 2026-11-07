@@ -212,7 +212,7 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG, its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
@@ -496,9 +496,10 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
   on a phone. `health.kind-consistent` checks the kind, os and daemon pair, that hello's kind and groups are the
   provider's, and that kind's Core groups are declared; `provider.check-refuses` also asks `check` for
-  `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (the PNG decodes, its IHDR size is
-  `width` x `height`, `scale` is above 0, a region shot has the region's size, and on a desktop the fixture's four
-  colors are where it paints them), `input.click-lands` (a single and a double click show in the fixture's log at their
+  `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (every pixel of the PNG decodes, its
+  IHDR size is `width` x `height`, `scale` is above 0, a region shot decodes and has the region's size, and on a
+  desktop the fixture's four colors are where it paints them; the suite reads 8-bit, non-interlaced PNGs of at most
+  16384 pixels a side and 2^25 pixels, and inflates no more than their IHDR gives), `input.click-lands` (a single and a double click show in the fixture's log at their
   point, with their count), `input.type-text` (`Hello, agentrun! 123` arrives exactly),
   `input.key-table-refuses-unknown` (a batch whose second action names `Hyper_Q` gives `done` 0, `failed.index` 1,
   kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (click, move off the screen, click: `done`
