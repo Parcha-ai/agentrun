@@ -175,7 +175,7 @@ describe("AgentPage", () => {
     await until(() => latest().textContent!.includes("Completed"));
     // Seven rows, five steps now (each tool once, the cost so far at the end): all shown, as on the run page.
     expect(latest().querySelectorAll("ol > li")).toHaveLength(5);
-    expect(latest().textContent).not.toContain("earlier steps");
+    expect(latest().textContent).not.toContain("earlier step");
     expect(latest().textContent).toContain(done.page.rows[6].summary);
     expect(latest().textContent).not.toContain("Steps appear as the agent takes them.");
     expect(row().textContent).toContain("Completed");

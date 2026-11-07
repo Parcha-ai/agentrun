@@ -92,7 +92,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
 }
 
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
- *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
+ *  a question once; repeated failures once): newest last, older steps folded behind "1 earlier step" or "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
 export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string }) {
   const [all, setAll] = useState(false);
@@ -104,7 +104,7 @@ export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]
     <div>
       {hidden > 0 && (
         <button type="button" className="caps mb-1 ml-10 flex items-center gap-1 py-2 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setAll(true)}>
-          <ChevronRight className="size-3" aria-hidden /> {hidden} earlier steps
+          <ChevronRight className="size-3" aria-hidden /> {hidden} earlier {hidden === 1 ? "step" : "steps"}
         </button>
       )}
       <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} />)}</ol>
