@@ -16,7 +16,7 @@ import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { git } from "./learn-support.mjs";
-import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, call, cookieOf, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
@@ -131,3 +131,60 @@ for (const harness of ["claude-agent", "codex"]) {
     });
   }
 }
+
+// A process that dies while the approved call's node is in flight (its request at the provider, unanswered): the next
+// process never runs the node again (learned_workflow is replay "never": its call is answered interrupted from its
+// journal), the node's request is booked once, and the run ends on that answer rather than waiting on it.
+test("on claude-agent's real adapter, a learned call allowed and then cut off with its process while its node's request is in flight is never run again: the provider saw the node once, its request is booked once, and the run ends", { timeout: 300_000 }, async (t) => {
+  let nodeSeen = 0;
+  const fake = await fakeAnthropic({
+    reply: (r) => {
+      // The node's request: seen, then held unanswered until the process that sent it is gone.
+      if (r.tools.includes("submit")) {
+        nodeSeen += 1;
+        return new Promise(() => {});
+      }
+      const asked = r.tools.includes(`mcp__hands__${LEARNED_WORKFLOW_TOOL}`) && !r.messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "tool_result"));
+      return asked ? { tool: { name: `mcp__hands__${LEARNED_WORKFLOW_TOOL}`, input: INPUT } } : { text: "Done." };
+    },
+  });
+  t.after(() => fake.close());
+  withEnv(t, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, MODEL_VARS);
+  const ask = "Use the learned workflow answer.";
+  const first = await serve(t, { learning: "on", faux: undefined, accounts: true, openSetup: true });
+  const allowOn = await owner(first, true);
+  const id = "real-claude-agent-cut";
+  assert.equal((await first.api("POST", "/agents", agent(id, { learning: true, harness: "claude-agent", instructions: ask, tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }))).status, 201);
+  await folderWith(first.data, id);
+  const started = await first.api("POST", `/agents/${id}/runs`, { input: { content: ask } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(first.api, runId, ["input_required", "completed", "failed"], { deadlineMs: 150_000 });
+  const view = (await first.api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", LEARNED_WORKFLOW_TOOL], JSON.stringify(view));
+  assert.equal((await allowOn(runId, view.pending.id)).status, 204);
+  // The approved call runs: its node's request reaches the provider, which holds it.
+  for (const deadline = Date.now() + 60_000; nodeSeen === 0; await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, "the node's request reached the provider");
+  // Its process goes, as a crash or a lost box would take it, with the node's request in flight.
+  const { holder } = runRecordOf(first.data, runId);
+  assert.ok(holder?.pid, JSON.stringify(holder));
+  process.kill(holder.pid, "SIGKILL");
+  await first.close();
+  const second = await serve(t, { learning: "on", faux: undefined, accounts: true, data: first.data });
+  const { rows } = await follow(second.api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
+  const ended = (await second.api("GET", `/runs/${runId}`)).body;
+  assert.ok(["completed", "failed"].includes(ended.status), `the run ends, never waiting on the cut node: ${JSON.stringify([ended.status, ended.pending])}`);
+  assert.equal(nodeSeen, 1, "the node's request reached the provider once: never run again");
+  const node = entries(first.data, runId, ["runner.request"]).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL);
+  assert.equal(node.length, 1, `its node's one request, on the session's records: ${JSON.stringify(node)}`);
+  const booked = entries(first.data, runId, ["runner.turn"]).filter((entry) => entry.turn === node[0].turn);
+  assert.equal(booked.length, 1, `booked once: ${JSON.stringify(booked)}`);
+  // Booked once, cut: its cost unknown (never $0), as the next process books a request its process died holding.
+  assert.deepEqual(booked.map((entry) => [entry.usd, entry.cut]), [[null, true]], "booked once, cut at an unknown cost");
+  const marks = entries(first.data, runId, ["agentrun.request_started", "adapter.request"]).filter((entry) => entry.request === node[0].turn);
+  assert.deepEqual(marks.map((entry) => [entry.kind, entry.host]), [["agentrun.request_started", LEARNED_WORKFLOW_TOOL], ["adapter.request", LEARNED_WORKFLOW_TOOL]], `one start mark and one cost entry: ${JSON.stringify(marks)}`);
+  // The gate's resume answers the call from its journal: interrupted, never its node's output.
+  const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
+  assert.equal(resumed?.summary, "AgentRun: learned_workflow ran once you allowed it, and failed", JSON.stringify(resumed));
+  assert.match(resumed.text, /Its result:\ninterrupted: the process running it stopped before it reported an outcome/, resumed.text);
+});
