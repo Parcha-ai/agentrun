@@ -234,14 +234,14 @@ func TestOnTheFakeAShotThatPanicsLetsTheDisplayGo(t *testing.T) {
 	}
 }
 
-// While one screen.shot holds the display (the server is slow to answer its GetImage), an input.actions or another
+// While one input.actions holds the display (the server is slow to answer its round trip), another input.actions or a
 // screen.shot waits for it no longer than its own context, and answers aborted.
 func TestOnTheFakeWaitingForTheDisplayEndsWithTheContext(t *testing.T) {
 	reached, resume := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	_, act, shot := onFakeDisplay(t, func(f *x11fake.Server) {
 		f.Hold = func(r x11fake.Request) {
-			if r.Opcode == 73 {
+			if r.Opcode == 43 { // the batch's round trip, GetInputFocus
 				once.Do(func() { close(reached) })
 				<-resume
 			}
@@ -251,15 +251,15 @@ func TestOnTheFakeWaitingForTheDisplayEndsWithTheContext(t *testing.T) {
 	t.Cleanup(func() { release.Do(func() { close(resume) }) })
 	held := make(chan error, 1)
 	go func() {
-		_, err := shot(context.Background())
+		_, err := act(context.Background(), map[string]any{"type": "move", "at": []int{1, 1}})
 		held <- err
 	}()
 	select {
 	case <-reached:
 	case err := <-held:
-		t.Fatalf("the first shot ended before the fake held it: %v", err)
+		t.Fatalf("the first batch ended before the fake held it: %v", err)
 	case <-time.After(patience):
-		t.Fatal("the fake never got the first shot's GetImage")
+		t.Fatal("the fake never got the first batch's round trip")
 	}
 	aborted := func(what string, err error) {
 		t.Helper()
@@ -281,7 +281,7 @@ func TestOnTheFakeWaitingForTheDisplayEndsWithTheContext(t *testing.T) {
 	aborted("screen.shot", err)
 	release.Do(func() { close(resume) })
 	if err := <-held; err != nil {
-		t.Fatalf("the first shot: %v", err)
+		t.Fatalf("the first batch: %v", err)
 	}
 }
 
