@@ -483,3 +483,11 @@ test("process.list passes a daemon whose pages hold one process each", async () 
 	const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("process.list") });
 	assert.equal(statuses(report)["process.list"], "pass", reasons(report)["process.list"]);
 });
+
+test("files.list passes a daemon whose pages hold one entry each", async () => {
+	for (const filesPage of [1, 100]) {
+		const fake = fakeComputers({ filesPage });
+		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("files.list") });
+		assert.equal(statuses(report)["files.list"], "pass", `pages of ${filesPage}: ${reasons(report)["files.list"]}`);
+	}
+});

@@ -3,6 +3,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DaemonClient } from "../../client.js";
 import { pullTar, pullTarStream, pushTar, readFile, writeFile } from "../../files.js";
+import { type FileEntry, MAX_LIST_ENTRIES } from "../../protocol.js";
 import { describeEntry, type TarEntry, tarOf, untar } from "../tar.js";
 import type { Capability, Case, CaseContext } from "../types.js";
 import { b64, decode, delay } from "./util.js";
@@ -15,6 +16,20 @@ const sorted = (entries: TarEntry[]) =>
 		.filter((entry) => !["", ".", "./"].includes(entry.name))
 		.map(describeEntry)
 		.sort();
+
+/**
+ * Every entry files.list gives for path, following its pages: a daemon may end a page early, and the next starts at the
+ * offset of the entries so far. A page that is truncated yet empty, or more pages than entries, fails the case.
+ */
+async function listAll(t: CaseContext, path: string, depth: number) {
+	const entries: FileEntry[] = [];
+	for (let pages = 1; ; pages++) {
+		const page = await t.call("files.list", { path, depth, offset: entries.length });
+		entries.push(...page.entries);
+		if (!page.truncated) return entries;
+		if (page.entries.length === 0 || pages > MAX_LIST_ENTRIES) throw new Error(`files.list of ${path} at offset ${entries.length}: a truncated page with no entries, or no last page`);
+	}
+}
 
 /** A tree of more than 8 MiB, pushed once per run and shared by the cases that pull and push it. */
 async function bigTree(t: CaseContext): Promise<string> {
@@ -106,21 +121,20 @@ export const filesCases: Case[] = [
 		await t.call("files.write", { path: `${dir}/a.txt`, data: b64("alpha\n") });
 		await t.call("files.mkdir", { path: `${dir}/sub` });
 		await t.call("files.write", { path: `${dir}/sub/b.txt`, data: b64("beta\n") });
-		const one = await t.call("files.list", { path: dir });
+		const one = await listAll(t, dir, 1);
 		t.deepEqual(
-			one.entries.map((e) => [e.path, e.type]),
+			one.map((e) => [e.path, e.type]),
 			[
 				[`${dir}/a.txt`, "file"],
 				[`${dir}/sub`, "dir"],
 			],
-			"files.list at depth 1",
+			"files.list at depth 1, every page",
 		);
-		t.equal(one.truncated, false, "truncated");
-		const two = await t.call("files.list", { path: dir, depth: 2 });
+		const two = await listAll(t, dir, 2);
 		t.deepEqual(
-			two.entries.map((e) => e.path),
+			two.map((e) => e.path),
 			[`${dir}/a.txt`, `${dir}/sub`, `${dir}/sub/b.txt`],
-			"files.list at depth 2, a directory before what it holds",
+			"files.list at depth 2, every page, a directory before what it holds",
 		);
 	}),
 	files("mkdir", async (t) => {
