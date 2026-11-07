@@ -134,6 +134,12 @@ func stopGuard(g *Guarded) error {
 
 // killGuard sends SIGKILL to every descendant of the guard and then to the guard, and waits for the guard to be reaped.
 func killGuard(g *Guarded) error {
+	// Once the guard was reaped its pid is free and may already belong to another process: signal nothing.
+	select {
+	case <-g.Done():
+		return nil
+	default:
+	}
 	pid := g.guard.Process.Pid
 	for _, d := range proctree.Descendants(pid) {
 		_ = syscall.Kill(d, syscall.SIGKILL)
