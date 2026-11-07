@@ -127,9 +127,12 @@ test("login: a config file it cannot write is said plainly, exit 4, with nothing
 test("api --header keeps a header of any name it can send, constructor among them, and refuses __proto__, which fetch would drop", async (t) => {
   const { env } = scratch(t);
   const server = await listener(t, (request, res) => res.writeHead(200, { "content-type": "application/json" }).end("{}"));
-  const refused = await cli(env, ["api", "GET", "/health", "--header", "__proto__: one", "--base-url", server.base]);
-  assert.equal(refused.code, 2, refused.err);
-  assert.match(refused.err, /--header cannot send a header named __proto__/);
+  // In any case and with any space around it: header names are matched in lower case, as they are sent.
+  for (const header of ["__proto__: one", "__PROTO__: one", " __Proto__ : one"]) {
+    const refused = await cli(env, ["api", "GET", "/health", "--header", header, "--base-url", server.base]);
+    assert.equal(refused.code, 2, `${header}: ${refused.err}`);
+    assert.match(refused.err, /--header cannot send a header named __proto__/);
+  }
   assert.equal(server.requests.length, 0, "nothing sent");
   const sent = await cli(env, ["api", "GET", "/health", "--header", "constructor: two", "--header", "x-plain: three", "--base-url", server.base]);
   assert.equal(sent.code, 0, sent.err);

@@ -349,7 +349,7 @@ async function api(argv, env, io) {
     if (at <= 0 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) throw usageError("--header takes 'NAME: VALUE'.");
     if (["authorization", "cookie"].includes(name.toLowerCase())) throw usageError(`--header cannot set ${name}: the token is never a flag.`);
     // Node's fetch keeps its headers in a plain object and drops this one unsent: refused, so it is never lost unsaid.
-    if (name === "__proto__") throw usageError("--header cannot send a header named __proto__: Node's fetch drops it.");
+    if (name.trim().toLowerCase() === "__proto__") throw usageError("--header cannot send a header named __proto__: Node's fetch drops it.");
     checkHeader(name, line.slice(at + 1).trim());
     headers[name.toLowerCase()] = line.slice(at + 1).trim();
   }
