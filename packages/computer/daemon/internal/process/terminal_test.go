@@ -45,6 +45,25 @@ func dropTerminal(args []string) int {
 	return 0
 }
 
+// staleForegroundCommand runs this test binary as a program that hands its terminal to a child in a group of its own,
+// then reaps that child. The terminal keeps naming the child's group as its foreground group, a group no process is in
+// now, whose id the kernel may hand to a process in another session. It says the group, then sleeps until a signal ends
+// it.
+const staleForegroundCommand = "stale-foreground"
+
+func staleForeground() int {
+	child := exec.Command("/bin/true")
+	child.Stdin = os.Stdin
+	child.SysProcAttr = &syscall.SysProcAttr{Foreground: true, Ctty: 0}
+	if err := child.Run(); err != nil {
+		fmt.Println("cannot run a job in the foreground:", err)
+		return 1
+	}
+	fmt.Printf("stale=%d\n", child.Process.Pid)
+	time.Sleep(time.Hour)
+	return 0
+}
+
 func typeLine(t *testing.T, tbl *process.Table, id, line string) {
 	t.Helper()
 	if _, err := tbl.Write(context.Background(), process.WriteParams{ID: id, Data: []byte(line)}); err != nil {
@@ -212,5 +231,32 @@ func TestINTIsRefusedWhenTheTerminalsForegroundGroupIsInAnotherSession(t *testin
 	}
 	if state, ok := stateOf(sleep); !ok || state == "Z" {
 		t.Fatalf("the other session's sleep %d was signalled: state %q", sleep, state)
+	}
+}
+
+// The terminal's foreground group can end between the daemon's check that it is in the program's session and the
+// guard's signal, and its id go to a group in another session. The guard checks again: a group with no process in the
+// program's session is not signalled, and the reply says INT was not sent. Here the group has no process left at all,
+// so its id is free for any session to take.
+func TestINTIsNotSentWhenTheForegroundGroupHasNoProcessLeftInTheProgramsSession(t *testing.T) {
+	tbl := table(t, process.Options{})
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := start(t, tbl, process.StartParams{Argv: []string{self, staleForegroundCommand}, Pty: &process.Size{Cols: 80, Rows: 24}})
+	offset := int64(0)
+	group := pidAfter(t, tbl, p.ID, &offset, "stale")
+	reaped(t, group)
+	res, err := tbl.Signal(process.SignalParams{ID: p.ID, Signal: "INT"})
+	if err != nil {
+		t.Fatalf("INT with a foreground group that has ended: %v", err)
+	}
+	note, _ := reply(t, res)["note"].(string)
+	if !strings.Contains(note, strconv.Itoa(group)) || !strings.Contains(note, "INT was not sent") {
+		t.Fatalf("the reply to INT with a foreground group that has ended: %v", reply(t, res))
+	}
+	if res, err := tbl.Wait(context.Background(), process.WaitParams{ID: p.ID, TimeoutMs: ms(0)}); err != nil || !res.Running {
+		t.Fatalf("the program after an INT that was not sent: %+v, %v", res, err)
 	}
 }
