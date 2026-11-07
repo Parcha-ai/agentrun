@@ -175,6 +175,9 @@ func heldOf(ctx context.Context) *held {
 	return rpc.Local(ctx, heldKey{}, func() io.Closer { return &held{} }).(*held)
 }
 
+// duringShot is nil outside tests: it runs while screen.shot holds the display, so a test can make it fail there.
+var duringShot func()
+
 func (d *Display) shot(ctx context.Context, raw json.RawMessage) (any, error) {
 	var params shotParams
 	if err := strict(raw, &params); err != nil {
@@ -187,6 +190,9 @@ func (d *Display) shot(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	img, cursor, err := capture(c, params.Region)
+	if duringShot != nil {
+		duringShot()
+	}
 	d.use.Unlock()
 	if err != nil {
 		return nil, d.gone(c, err)

@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -156,4 +158,199 @@ func TestOnTheFakeACancelStopsALongTypeMidAction(t *testing.T) {
 
 func TestOnTheFakeACancelStopsALongScrollMidAction(t *testing.T) {
 	cancelledMidAction(t, map[string]any{"type": "scroll", "dx": 10000, "dy": -10000, "unit": "clicks"}, 40000)
+}
+
+// shotOn is screen.shot on the display, called directly with the context it is given.
+func shotOn(d *desktop.Display) func(ctx context.Context) (any, error) {
+	handle := d.Handlers()["screen.shot"]
+	return func(ctx context.Context) (any, error) { return handle(ctx, json.RawMessage(`{}`)) }
+}
+
+// gray is the fake's image: every pixel mid-gray.
+func gray(x, y, w, h int) []byte {
+	out := make([]byte, w*h*4)
+	for i := range out {
+		out[i] = 0x80
+	}
+	return out
+}
+
+// onFakeDisplay serves the fake as a display and returns it, with input.actions and screen.shot on it.
+func onFakeDisplay(t *testing.T, configure func(*x11fake.Server)) (*desktop.Display, func(ctx context.Context, actions ...map[string]any) (any, error), func(ctx context.Context) (any, error)) {
+	t.Helper()
+	t.Setenv("XAUTHORITY", "")
+	_, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.Image = gray
+		if configure != nil {
+			configure(f)
+		}
+	})
+	d := desktop.New(name)
+	t.Cleanup(d.Close)
+	handle := d.Handlers()["input.actions"]
+	return d, func(ctx context.Context, actions ...map[string]any) (any, error) {
+		raw, _ := json.Marshal(map[string]any{"actions": actions})
+		return handle(ctx, raw)
+	}, shotOn(d)
+}
+
+// within runs f, and fails the test when it has not returned within bound.
+func within(t *testing.T, bound time.Duration, what string, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f()
+	}()
+	select {
+	case <-done:
+	case <-time.After(bound):
+		t.Fatalf("%s did not return within %v", what, bound)
+	}
+}
+
+// A screen.shot that panics while it holds the display (the rpc layer recovers a handler's panic) lets the display go:
+// the next input.actions runs.
+func TestOnTheFakeAShotThatPanicsLetsTheDisplayGo(t *testing.T) {
+	_, act, shot := onFakeDisplay(t, nil)
+	defer desktop.SetDuringShotForTest(func() { panic("a shot failed") })()
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the shot did not panic")
+			}
+		}()
+		_, _ = shot(context.Background())
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var got any
+	var err error
+	within(t, 10*time.Second, "input.actions after a shot panicked", func() {
+		got, err = act(ctx, map[string]any{"type": "move", "at": []int{5, 5}})
+	})
+	if r, ok := got.(desktop.ActionsResult); err != nil || !ok || r.Done != 1 || r.Failed != nil {
+		t.Fatalf("input.actions after a shot panicked: %+v, %v; want done 1", got, err)
+	}
+}
+
+// While one screen.shot holds the display (the server is slow to answer its GetImage), an input.actions or another
+// screen.shot waits for it no longer than its own context, and answers aborted.
+func TestOnTheFakeWaitingForTheDisplayEndsWithTheContext(t *testing.T) {
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	_, act, shot := onFakeDisplay(t, func(f *x11fake.Server) {
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == 73 {
+				once.Do(func() { close(reached) })
+				<-resume
+			}
+		}
+	})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(resume) }) })
+	held := make(chan error, 1)
+	go func() {
+		_, err := shot(context.Background())
+		held <- err
+	}()
+	select {
+	case <-reached:
+	case err := <-held:
+		t.Fatalf("the first shot ended before the fake held it: %v", err)
+	case <-time.After(patience):
+		t.Fatal("the fake never got the first shot's GetImage")
+	}
+	aborted := func(what string, err error) {
+		t.Helper()
+		var e *rpc.Error
+		if !errors.As(err, &e) || e.Kind != rpc.KindAborted {
+			t.Errorf("%s while the display is held: %v; want aborted", what, err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var err error
+	within(t, 10*time.Second, "input.actions with a 2 s context", func() {
+		_, err = act(ctx, map[string]any{"type": "move", "at": []int{5, 5}})
+	})
+	aborted("input.actions", err)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	within(t, 10*time.Second, "screen.shot with a 2 s context", func() { _, err = shot(ctx2) })
+	aborted("screen.shot", err)
+	release.Do(func() { close(resume) })
+	if err := <-held; err != nil {
+		t.Fatalf("the first shot: %v", err)
+	}
+}
+
+// fifo makes a FIFO in a fresh directory. Its cleanup opens the FIFO's other end and closes it, so a reader still
+// blocked opening it is let go when the test ends.
+func fifo(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "Xauthority")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = syscall.Close(fd)
+		}
+	})
+	return path
+}
+
+// A FIFO at $XAUTHORITY hangs neither hello's look at the display nor Close: the display is refused, in words, at once.
+func TestOnTheFakeAFIFOAsTheXauthorityFileHangsNothing(t *testing.T) {
+	_, name := x11fake.Listen(t, nil)
+	t.Setenv("XAUTHORITY", fifo(t))
+	d := desktop.New(name)
+	var groups []string
+	within(t, 10*time.Second, "Groups", func() { groups = d.Groups() })
+	if len(groups) != 0 {
+		t.Errorf("groups %v with a FIFO as the Xauthority file", groups)
+	}
+	var err error
+	within(t, 10*time.Second, "screen.shot", func() { _, err = shotOn(d)(context.Background()) })
+	if err == nil || !strings.Contains(err.Error(), "Xauthority") {
+		t.Errorf("screen.shot with a FIFO as the Xauthority file: %v; want unsupported, naming the Xauthority file", err)
+	}
+	within(t, 10*time.Second, "Close", d.Close)
+}
+
+// Close does not wait for a dial in flight (here, a server slow to answer the connection setup), and the connection
+// that dial makes afterwards is closed, not kept.
+func TestOnTheFakeCloseDoesNotWaitForADial(t *testing.T) {
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var once, release sync.Once
+	_, name := x11fake.Listen(t, func(f *x11fake.Server) {
+		f.SetupHold = func() {
+			once.Do(func() { close(reached) })
+			<-resume
+		}
+	})
+	t.Cleanup(func() { release.Do(func() { close(resume) }) })
+	t.Setenv("XAUTHORITY", "")
+	d := desktop.New(name)
+	looked := make(chan []string, 1)
+	go func() { looked <- d.Groups() }()
+	select {
+	case <-reached:
+	case <-time.After(patience):
+		t.Fatal("the fake never got the connection setup")
+	}
+	within(t, 3*time.Second, "Close during a dial", d.Close)
+	release.Do(func() { close(resume) })
+	select {
+	case groups := <-looked:
+		if len(groups) != 0 {
+			t.Errorf("a dial that finished after Close declared %v", groups)
+		}
+	case <-time.After(patience):
+		t.Fatal("the dial never ended")
+	}
+	if _, err := shotOn(d)(context.Background()); err == nil {
+		t.Error("screen.shot after Close succeeded")
+	}
 }

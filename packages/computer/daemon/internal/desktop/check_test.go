@@ -96,6 +96,14 @@ func TestCheckOnX11RefusesWhatX11CannotDo(t *testing.T) {
 		t.Fatalf("repeat 100: %+v", f)
 	}
 	refused(t, `[{"type":"scroll","dy":10001,"unit":"clicks"}]`, x11Groups, 0, rpc.KindLimit)
+	// As checkActions orders it: a key's group before its repeat, so a key on a computer without input.keys is
+	// unsupported whatever its repeat; and a repeat that is a safe integer is a shape checkActions accepts, so one past
+	// MAX_KEY_REPEAT is limit however large, and one past 2^53 - 1 is invalid.
+	refused(t, `[{"type":"key","keys":["a"],"repeat":101}]`, []string{"screen", "input.pointer"}, 0, rpc.KindUnsupported)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":1e10}]`, x11Groups, 0, rpc.KindLimit)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":9007199254740991}]`, x11Groups, 0, rpc.KindLimit)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":9007199254740992}]`, x11Groups, 0, rpc.KindInvalid)
+	refused(t, `[{"type":"key","keys":["a"],"repeat":2.5}]`, x11Groups, 0, rpc.KindInvalid)
 	refused(t, `[{"type":"wait","ms":-1}]`, x11Groups, 0, rpc.KindInvalid)
 	for _, ok := range []string{
 		`[{"type":"type","text":"line one\nline two\ttabbed, 日本語 and € too"}]`,
