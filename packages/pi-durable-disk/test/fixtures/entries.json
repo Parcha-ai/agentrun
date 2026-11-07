@@ -280,6 +280,7 @@
       "Confinement",
       "LABEL_FLEET",
       "LABEL_RUN",
+      "NORMAL_PRECONDITIONS",
       "RUN_JSON",
       "RUN_STATUS_TABLE",
       "STORES",

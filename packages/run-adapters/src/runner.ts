@@ -271,8 +271,25 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
       throw stoppedNow;
     }
+    // The host's start mark, awaited before the request leaves (its handler commits and syncs it). One it refuses is
+    // booked as a stop is, withdrawn at $0, and the request never joins the open ones, which a ticketless answer reads.
+    try {
+      await emit({ type: "request_start", turn, model });
+    } catch (error) {
+      answered.add(turn);
+      await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
+      throw error;
+    }
+    // A stop that came while the mark was made: the request has not left either. Booked withdrawn as above, and its end
+    // told to the host, whose mark has it started: at $0, so the host never reads it cut at an unknown price.
+    const stoppedLate = options.stopped?.();
+    if (stoppedLate) {
+      answered.add(turn);
+      await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
+      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: 0 } });
+      throw stoppedLate;
+    }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }) });
-    await emit({ type: "request_start", turn, model });
     return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
   };
   const models: ModelPort = {

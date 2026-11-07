@@ -1193,12 +1193,14 @@ class Run implements DurableRun {
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
     if (!this.#lease.fenced && (this.#released || this.#releasing)) throw new RunError("RUN_RELEASED", `run ${this.ref.id} is released`);
     // What the run committed is durable before a status says where it stands: under a host's epoch the status is a
-    // commit of the store, synced after it; otherwise it is run.json, written after the sync.
-    if (this.#lease.epoch === undefined) await syncNow(this.#store!, BARRIER.runStatus);
+    // commit of the store, synced after it; otherwise it is run.json, written after the sync. A fenced run's store takes
+    // no write, and its barrier would refuse the `failed` the lease still records: a fenced run syncs nothing.
+    const sync = () => (this.#lease.fenced ? Promise.resolve() : syncNow(this.#store!, BARRIER.runStatus));
+    if (this.#lease.epoch === undefined) await sync();
     await this.#lease.setStatus(status, detail, options);
     if (this.#lease.epoch !== undefined) {
       await this.#keepStatus(this.#lease.record);
-      await syncNow(this.#store!, BARRIER.runStatus);
+      await sync();
     }
   }
 
