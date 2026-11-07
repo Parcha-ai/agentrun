@@ -16,6 +16,9 @@ export interface Exchange {
   deadline?: number;
   /** The body carried a secret: a refusal keeps only its code. */
   secret?: boolean;
+  /** The success's body is left to the caller, unread (a stream, a download asked for as a Response); else it is read
+   *  whole inside the exchange, so a body cut midway is tried again or refused as any dropped connection is. */
+  streamed?: boolean;
 }
 
 /** Thrown by `send` once an exchange's deadline passed. */
@@ -24,6 +27,9 @@ export const LATE = Symbol("late");
 // A header value fetch takes: no line break or other control character, nothing outside Latin-1.
 export const BAD_HEADER = /[\0-\x08\x0a-\x1f\x7f]|[^\0-\xff]/;
 const BACKOFF_MS = 500;
+/** The longest Retry-After waited out: past it a GET is not tried again (the call fails rather than hang), and a
+ *  stream's reconnect waits this long. */
+export const MAX_RETRY_AFTER_MS = 60_000;
 const MAX_BACKOFF_MS = 30_000;
 
 /** A count of milliseconds as timers take it: a whole number, at least 1 (AbortSignal.timeout throws on a fraction). */

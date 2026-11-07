@@ -4,7 +4,7 @@
 // slashes), and one that would read as another route is refused before anything is sent. Only a GET, or a request that
 // carries an Idempotency-Key, is tried again. A secret body's values are cut from the answer to it.
 import { AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage, type ServerError } from "./errors.js";
-import { BAD_HEADER, backoff, LATE, pause, segmentOf, wholeMs, type Exchange } from "./http.js";
+import { BAD_HEADER, backoff, LATE, MAX_RETRY_AFTER_MS, pause, segmentOf, wholeMs, type Exchange } from "./http.js";
 import { followRun, waitRun, type FollowOptions, type WaitOptions } from "./live.js";
 import { OPERATIONS, resources, type Resources, type Run, type TimelinePage } from "./operations.generated.js";
 import { scrubberOf, secretsOf } from "./scrub.js";
@@ -26,8 +26,6 @@ export interface ClientOptions {
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/i;
 const RETRIABLE = new Set([429, 500, 502, 503, 504]);
 const REDIRECT = new Set([301, 302, 303, 307, 308]);
-// A Retry-After above this is no retry: the call fails now rather than hang.
-const MAX_RETRY_AFTER_MS = 60_000;
 const MAX_HOPS = 5;
 
 /** A failure's code, never its message: a fetch error's message can quote a header. */
@@ -139,8 +137,10 @@ export class AgentRun {
     const response = await this.#send({
       method: op.method, path: url.slice(this.baseUrl.length), route, headers, body: sent, signal: options?.signal, timeoutMs: options?.timeoutMs,
       retryable: op.method === "GET" || headers["Idempotency-Key"] !== undefined, secret: secretOp !== undefined,
+      streamed: op.answer === "bytes" && options?.stream === true,
     });
-    return readAnswer(op, route, response, options?.stream === true, secretOp ? scrubberOf(secrets) : undefined);
+    const answer = await readAnswer(op, route, response, options?.stream === true, secretOp ? scrubberOf(secrets) : undefined);
+    return op.tagged ? { body: answer, etag: response.headers.get("etag") } : answer;
   }
 
   /** One request to the server with the key: tried again when it may be, its redirects followed only within the base
@@ -156,6 +156,7 @@ export class AgentRun {
       try {
         response = await this.#follow(x, signal);
         this.#reached = true;
+        if (response.ok && !x.streamed) response = await whole(response);
       } catch (error) {
         if (x.signal?.aborted) throw x.signal.reason;
         if (error instanceof AgentRunError) throw error;
@@ -197,6 +198,13 @@ export class AgentRun {
   }
 }
 
+/** `response` with its body read whole: a body cut midway throws here, inside the exchange's rules. */
+async function whole(response: Response): Promise<Response> {
+  const bytes = await response.arrayBuffer();
+  const empty = response.status === 204 || response.status === 205 || response.status === 304;
+  return new Response(empty ? null : bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 /** The secret operation `method` on `url` reaches, its path normalized as fetch normalizes it: the route at the end of
  *  the path, whatever part of it the base URL holds. */
 function secretAt(method: string, url: string): Operation | undefined {
@@ -219,7 +227,8 @@ async function refusal(x: Exchange, response: Response, apiKey: string): Promise
   if (x.secret) error = code ? { code } : undefined;
   if (response.status === 401 || response.status === 403) return new AgentRunAuthError("refused", `The server refused the API key for ${x.route}: ${response.status}${code ? ` ${code}` : ""}.`, { status: response.status, code, error });
   if (response.status === 501) return new AgentRunUnsupported(x.route, response.status, code, error);
-  return new AgentRunRefused(x.route, response.status, code, error);
+  const wait = retryAfterOf(response);
+  return new AgentRunRefused(x.route, response.status, code, error, undefined, wait > 0 ? wait : undefined);
 }
 
 const badAnswer = (route: string, status: number, what: string) => new AgentRunRefused(route, status, "bad_answer", undefined, `The server's answer to ${route} is not ${what}.`);

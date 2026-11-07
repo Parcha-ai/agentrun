@@ -26,8 +26,9 @@ export function scrubberOf(secrets: readonly string[]): <T>(value: T) => T {
   return <T>(node: T) => (forms.length ? (value(node) as T) : node);
 }
 
-/** The string values of a secret body, but for its public fields (full paths such as `auth.type`): the secrets to cut. A
- *  value under a map or a list is never public, whatever its key. A body that is not JSON is one secret whole. */
+/** The string values of a secret body, but for its public fields (full paths such as `auth.type`, or `scopes.[]` for
+ *  each item of a list, as the CLI reads them): the secrets to cut. A value under a map is never public, whatever its
+ *  key. A body that is not JSON is one secret whole. */
 export function secretsOf(body: string, publicFields: readonly string[]): string[] {
   let value: unknown;
   try {
@@ -41,7 +42,7 @@ export function secretsOf(body: string, publicFields: readonly string[]): string
     if (typeof node === "string") {
       if (!open.has(JSON.stringify(path))) found.push(node);
     } else if (node && typeof node === "object") {
-      for (const [key, child] of Object.entries(node)) walk(child, Array.isArray(node) ? [...path, "*"] : [...path, key]);
+      for (const [key, child] of Object.entries(node)) walk(child, Array.isArray(node) ? [...path, "[]"] : [...path, key]);
     }
   };
   walk(value, []);

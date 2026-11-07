@@ -17,7 +17,7 @@ export async function consumer(): Promise<void> {
   }
   const bytes: Uint8Array = await client.runs.readFile(run.run_id, "notes.md");
   const response: Response = await client.runs.readFile(run.run_id, "notes.md", undefined, { stream: true });
-  const note: string = await client.learning.write("notes", "policies.md", "# Policies\n", { "If-None-Match": "*" });
+  const note: string = (await client.learning.write("notes", "policies.md", "# Policies\n", { "If-None-Match": "*" })).body;
   await client.files.upload("f1", new Uint8Array([1, 2]), { contentType: "image/png" });
   try {
     await client.agents.get("notes");

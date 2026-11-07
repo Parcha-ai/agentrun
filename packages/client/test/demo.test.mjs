@@ -77,4 +77,14 @@ test("demo: create an agent, start a capped run and wait, list runs, answer a qu
   const whole = await client.runs.timeline(followed.run_id);
   // By id: a row upserted later (the run's usage) keeps the place it first came in here.
   assert.deepEqual(Object.fromEntries(rows), Object.fromEntries(whole.rows.map((row) => [row.id, row])), "the followed rows are the timeline's");
+
+  // A learning note read with its version, and written over with that version as If-Match.
+  assert.equal((await client.agents.create({ definition: { ...AGENT.definition, id: "learner", learning: true } })).agent_id, "learner");
+  const note = "---\nname: policies\ndescription: Where the policies are.\n---\nLook in policies/.\n";
+  await client.learning.write("learner", "policies.md", note, { "If-None-Match": "*" }, { contentType: "text/markdown" });
+  const read = await client.learning.read("learner", "policies.md");
+  assert.equal(read.body, note);
+  assert.match(read.etag, /^"[0-9a-f]+"$/);
+  const written = await client.learning.write("learner", "policies.md", note.replace("policies/", "docs/policies/"), { "If-Match": read.etag }, { contentType: "text/markdown" });
+  assert.notEqual(written.etag, read.etag, "the write answers the note's new version");
 });

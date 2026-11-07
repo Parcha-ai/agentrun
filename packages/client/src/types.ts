@@ -19,6 +19,12 @@ export interface DownloadOptions<S extends boolean = false> extends RequestOptio
   stream?: S;
 }
 
+/** An answer and its version, the response's ETag: a later write's If-Match. */
+export interface Tagged<T> {
+  body: T;
+  etag: string | null;
+}
+
 /** A body sent as it is, not as JSON. */
 export type RawBody = Uint8Array | ArrayBuffer | Blob | string;
 
@@ -40,6 +46,8 @@ export interface Operation {
   readonly secret: boolean;
   /** A secret body's string fields that are no secret, by their full path. */
   readonly publicFields: readonly string[];
+  /** The answer carries an ETag: it comes back as `{ body, etag }`. */
+  readonly tagged: boolean;
 }
 
 /** How a generated method sends its operation. */

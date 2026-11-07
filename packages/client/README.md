@@ -26,7 +26,8 @@ the CLI's job (`npx @parcha/agentrun`), not this package's. Other options: `time
 
 Methods are grouped as the CLI's commands are: `agents create` is `client.agents.create(body)`, `runs start AGENT` is
 `client.runs.start(agentId, body)`. Path parameters come first, then the body, then query and header parameters as one
-object, then `{ signal, timeoutMs }`.
+object, then `{ signal, timeoutMs }`. An operation whose answer carries an ETag (`agents.get`, `learning.read`) resolves
+to `{ body, etag }`: pass `etag` as the next write's `If-Match`.
 
 ## Examples
 
@@ -59,6 +60,8 @@ const response = await client.runs.readFile(done.run_id, "notes.md", undefined, 
 ```
 
 `runs.follow` reads the route's event stream and resumes a dropped connection with `Last-Event-ID`, so no page comes twice.
+Only the server's silence counts as a dropped connection (`idleMs`, default 45000), never the time your loop spends on a
+page.
 
 ## Errors
 
