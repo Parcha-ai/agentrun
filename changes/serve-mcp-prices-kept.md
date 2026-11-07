@@ -6,3 +6,5 @@ A `PUT /v2/settings/mcp-servers/{name}` that names no `prices` keeps the saved o
 - On a harness other than pi, a tool call that ends, or is refused unsent, before its request's cost is booked is shown above its result, never below it.
 - A loopback MCP server's authorization server may use endpoints only on that server's own loopback host, never another loopback address or this server's own port: a development-only exception, as the README says.
 - The refresh step's test wait and the OpenCode, Codex and Claude CLI stand-ins run only under node --test (`NODE_TEST_CONTEXT`), never on `NODE_ENV=test` alone.
+- A run's start no longer waits up to 30 s on a sign-in server that doesn't answer its token refresh: each try waits at most 4 s, two tries, and the call is then refused unsent, saying to try again.
+- A call to an MCP server that can't be reached reads "The MCP server <name> could not be reached at <origin> (<reason>); nothing was sent.", never the MCP SDK's own words.
