@@ -47,6 +47,10 @@ export function script(spec) {
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
   const given = spec.tools.find((tool) => tool.name === "learned_workflow");
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name), ...(given ? { learned: { description: given.description, inputSchema: given.inputSchema } } : {}) })}\n`);
+  // The spend cap's wrap-up due once a $0.40 request whose answer runs the learned workflow <name> on <question> is booked:
+  // the workflow's node request comes next on the session's model, then the harness's own closing answer.
+  const wrapAround = /Wrap up around the learned workflow (\S+) on (.+?)\./.exec(text);
+  if (wrapAround) return [{ call: "learned_workflow", args: { name: wrapAround[1], input: { question: wrapAround[2] } }, usd: 0.4 }, { say: "Done.", usd: 0.01 }];
   // Three requests of a growing conversation (grown), the second's answer calling the learned workflow <name> on
   // <question> when the line names one: the harness's third request comes after the workflow's node request.
   const thrice = /Grow three requests(?:, the second running the learned workflow (\S+) on (.+?))?\./.exec(text);

@@ -300,3 +300,21 @@ test("R10 (guard) the harness's next request after a node request on the same mo
   assert.equal(a.length >= 3 && b.length >= 3, true, JSON.stringify({ a, b }));
   assert.ok(Math.abs(a[2] - b[2]) < 1e-9, `the third request held as it is with no node before it: ${b[2]} against ${a[2]}`);
 });
+
+test("R11 a learned node's request is a side call of the session (#1831): its runner.request says side, so the wrap-up's typical cost never counts it, and it never takes nor carries the wrap-up's note, which the harness's own next request takes", { timeout: 120_000 }, async (t) => {
+  const gw = await startFauxGateway({ call: submitsAnswer });
+  t.after(() => gw.close());
+  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: "0,100,0,0" }, MODEL_VARS);
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  // A $1 cap: the harness's $0.40 request leaves $0.60, under three times its typical $0.40, so the note is due for the
+  // session's next request on its model, which the node's request would be if a side call could take it.
+  const { runId, rows, view } = await ran(api, data, "wrap-node", "codex", { fields: { max_cost_usd: 1 }, ask: "Wrap up around the learned workflow answer on What is six times seven." });
+  assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
+  const node = labelled(data, runId);
+  assert.deepEqual(node.map((entry) => entry.side), [true], `a side call on its record: ${JSON.stringify(node)}`);
+  const sent = gw.requests.filter((r) => r.method === "POST");
+  assert.equal(sent.length, 1, "the node's one request");
+  assert.doesNotMatch(JSON.stringify(sent[0].body), /run's budget/, "the node's request carries no wrap-up note");
+  const notes = entries(data, runId, ["faux.note"]);
+  assert.equal(notes.length, 1, `the harness's own next request took the note: ${JSON.stringify(notes)}; ${view.status}`);
+});
