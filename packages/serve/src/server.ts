@@ -2061,17 +2061,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "getRunBrowser": {
         const run = await needRun(id);
-        // Whether the run has a browser at all: its kept plane's (a run from before the plane names none, and is Browserbase's
-        // where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
+        // The run's open viewer first: its process holds the keys it started with, so a key deleted here since (the server's
+        // keys now) never hides a browser that runs. Only the run's live process serves its view: a file one that is gone
+        // left behind names none, whatever answers its port. The newest session whose viewer answers: an older one still open
+        // is the next, one that went quiet none.
+        let live: LiveHandover | undefined;
+        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
+        if (live) return send(res, 200, { state: "live", viewer: viewerLink(run.id, live) }, { "cache-control": "no-store" });
+        // None open: whether the run has a browser at all, its kept plane's (a run from before the plane names none, and is
+        // Browserbase's where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
         const granted = run.tooling?.tools.map(capabilityOf).includes("browser") === true;
         const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
         const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
-        // Only the run's live process serves its view: a file one that is gone left behind names none, whatever answers its port.
-        // The newest session whose viewer answers: an older one still open is the next, one that went quiet none.
-        let live: LiveHandover | undefined;
-        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
-        return send(res, 200, live ? { state: "live", viewer: viewerLink(run.id, live) } : { state: "none" }, { "cache-control": "no-store" });
+        return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
         const run = await needRun(id);
