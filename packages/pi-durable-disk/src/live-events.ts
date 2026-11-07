@@ -111,10 +111,17 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
     for (const kind of DOCS) {
       const token = FOLLOWED[kind];
       const attached = await harness.observeDoc(token as never, conversationId, {
+        // pi 1.5 detaches a document observer whose advance throws, for good, and the stream would go on with this
+        // document stale, silently: a change it cannot follow ends the stream failed instead, as a commit's does.
         advance: (call: { kind: string; value?: JsonObject; ops?: readonly Op[] }) => {
-          if (call.kind !== "value") return;
-          docs.now[kind] = call.value;
-          if (kind === "pi.live") for (const op of call.ops ?? []) docs.liveOps.push([op[0], ["docs", kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
+          try {
+            if (call.kind !== "value") return;
+            docs.now[kind] = call.value;
+            if (kind === "pi.live") for (const op of call.ops ?? []) docs.liveOps.push([op[0], ["docs", kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
+          } catch {
+            detachAll();
+            endIt({ reason: "failed" });
+          }
         },
         end: () => undefined,
       } as never, context) as Observation<JsonObject> | undefined;

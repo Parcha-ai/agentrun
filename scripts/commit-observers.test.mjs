@@ -16,6 +16,7 @@ export const ACCEPTED = [
   { at: "packages/pi-durable-disk/src/park.ts:209", keeps: "resolves", why: "parking's recheck: queues a check, never throws" },
   { at: "packages/pi-durable-disk/src/park.ts:242", keeps: "resolves", why: "drain's wake: resolves the promise its loop waits on" },
   { at: "packages/pi-durable-disk/src/live-events.ts:92", keeps: "catches", why: "the watchEvents adapter: a commit it cannot translate ends the stream, failed" },
+  { at: "packages/pi-durable-disk/src/live-events.ts:113", keeps: "catches", why: "the adapter's followed documents: a change it cannot follow ends the stream, failed" },
   { at: "packages/pi/src/durable/recording.ts:275", keeps: "catches", why: "the recording maps and queues; a failure is the stop's to report" },
   { at: "packages/serve/src/browser-cost.ts:175", keeps: "catches", why: "a charge it fails to count, or an end before the run's close, makes the run's spend unknown (spent null)" },
 ];
@@ -35,12 +36,13 @@ function sources() {
   return out;
 }
 
-/** Every `.observeCommits(` call (pi's Session method; a local function of that name is not one), as `file:line`, with
- *  its source from the call to the parenthesis that closes it. */
+/** Every `.observeCommits(` and `.observeDoc(` call (pi's Session methods, both detaching an observer whose advance
+ *  throws; a local function of that name is not one), as `file:line`, with its source from the call to the parenthesis
+ *  that closes it. */
 function sites() {
   return sources().flatMap((file) => {
     const text = readFileSync(file, "utf8");
-    return [...text.matchAll(/\.observeCommits\(/g)].map((match) => {
+    return [...text.matchAll(/\.(?:observeCommits|observeDoc)\(/g)].map((match) => {
       const line = text.slice(0, match.index).split("\n").length;
       let depth = 0;
       let end = match.index + match[0].length - 1;
