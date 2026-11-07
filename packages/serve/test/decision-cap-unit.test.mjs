@@ -31,7 +31,7 @@ test("OpenRouter's catalog down for a moment mid-run: the price is read again an
   let down = 1;
   const openrouter = { id: "openrouter", priceOf: async () => { if (down-- > 0) throw new Error("catalog 503"); return PRICE; } };
   const { seen, waits } = fakeWaits();
-  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined });
+  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
   const judge = capped.before(async () => "answered", () => false);
   assert.deepEqual([await outcome(judge, params()), seen.stops], [["sent", "answered"], []]);
 });
@@ -42,7 +42,7 @@ test("OpenRouter's catalog down for good mid-run: the decision fails unsent as a
   let reads = 0;
   const openrouter = { id: "openrouter", priceOf: async () => { reads += 1; throw new Error("catalog 503"); } };
   const { seen, waits } = fakeWaits();
-  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined });
+  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
   const judge = capped.before(async () => "answered", () => false);
   assert.deepEqual([await outcome(judge, params()), seen.stops], [["threw", "DecisionProviderError", "connection"], []]);
   assert.equal(reads, decisionCap.CATALOG_TRIES, "read again before it fails");
@@ -55,7 +55,7 @@ test("a decision an earlier process asked and never saw answered holds nothing a
   useSpend({ cap: 0.0005, spent: () => 0, add: () => undefined, wait: async (refusal) => (waited.push(refusal.words), false) });
   const parallel = { id: "parallel" };
   const { waits } = fakeWaits();
-  const capped = cappedDecisions({ providers: { providers: { parallel }, default: "parallel" }, waits, mode: "expected", book: async () => undefined });
+  const capped = cappedDecisions({ providers: { providers: { parallel }, default: "parallel" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
   const driver = (status) => ({ routeDecision: () => undefined, decisionRequests: () => ({ "d-1": { status } }) });
   const asked = (status) => (request) => decisionCap.askedBefore?.(driver(status), request) ?? false;
   const requested = await outcome(capped.before(async () => "escalated", asked("requested")), params({ provider: "parallel", model: undefined }));
@@ -92,4 +92,21 @@ test("a map's items wait for a raise at paths of their own: holding item 0 leave
   assert.ok(waits.held(one) >= before + 300, `item 1's clock runs on after item 0's wait ended: ${before} then ${waits.held(one)}`);
   second.abort();
   await held1;
+});
+
+test("a decision's hold is kept in the run's store before its request can be sent, and one that sent nothing is booked at $0, so no later process counts its hold", async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  const seen = [];
+  const { waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected",
+    book: async (data) => void seen.push(["book", data.decision, data.usd]), keep: async (data) => void seen.push(["keep", data.decision, data.usd]) });
+  const judge = capped.before(async () => (seen.push(["send"]), "escalated"), () => false);
+  assert.deepEqual(await outcome(judge, params({ provider: "parallel", model: undefined })), ["sent", "escalated"]);
+  assert.deepEqual(seen, [["keep", "d-1", 0.001], ["send"], ["book", "d-1", 0]]);
+  // A hold that cannot be kept sends nothing.
+  const refused = cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected", book: async () => undefined, keep: async () => { throw new Error("disk full"); } });
+  let sent = 0;
+  assert.deepEqual(await outcome(refused.before(async () => ((sent += 1), "answered"), () => false), params({ provider: "parallel", model: undefined })), ["threw", "DecisionProviderError", "connection"]);
+  assert.equal(sent, 0);
 });

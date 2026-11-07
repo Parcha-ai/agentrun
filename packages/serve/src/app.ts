@@ -19,7 +19,7 @@ import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { BUDGET_HOLD_ENV, BUDGET_HOLD_MS, budgetWaits, type StepAt } from "./budget.js";
-import { capBefore, capModels, capModeOf, capOf, costsIn, type CapRefusal, capRefusals, DECISION_COST, decisionSpentIn, runSpendNow, spentIn, wrapUpSentIn } from "./cap.js";
+import { capBefore, capModels, capModeOf, capOf, costsIn, type CapRefusal, capRefusals, DECISION_COST, DECISION_HOLD, decisionSpentIn, runSpendNow, spentIn, wrapUpSentIn } from "./cap.js";
 import { askedBefore, cappedDecisions } from "./decision-cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
@@ -351,6 +351,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const capped = waits && decisionProviders ? cappedDecisions({
     providers: decisionProviders, waits, mode,
     book: async (data) => void (opened && (await rootRecordOf(opened.harness)(DECISION_COST, data))),
+    keep: async (data) => {
+      if (!opened) throw new Error("the run's store is not open");
+      await rootRecordOf(opened.harness)(DECISION_HOLD, data);
+    },
   }) : undefined;
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. Its
    *  input and output go to the node log, and its paid requests are booked under the node's own call (its execution

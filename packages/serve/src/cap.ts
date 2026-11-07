@@ -530,23 +530,38 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
  *  or its hold when it said none. The run's shown cost reads its decisions from their receipts; this is the cap's own
  *  reading, kept so a later process counts each decision as this one did. costOf counts none, so nothing counts twice. */
 export const DECISION_COST = "agentrun.decision_cost";
+/** A decision request's hold, kept before it is sent (decision-cap.ts): with no DECISION_COST after it, its process died
+ *  while it was out, and it counts at this figure. */
+export const DECISION_HOLD = "agentrun.decision_hold";
 
 /** What a workflow run's decisions cost, in its store: what the next process adds to spentIn's reading. Per decision
- *  (its id), the larger of what the cap booked for it (DECISION_COST entries, at its charge or its hold) and what its
- *  receipts say it cost (the costs the timeline's decision rows sum): a process that died after its answer's receipt and
- *  before its booking, or whose booking was lost, still counts what it was charged. A booking with no decision id is
- *  counted as it is. */
+ *  (its id), the larger of what the cap booked for it (DECISION_COST entries, at its charge or its hold; with each hold
+ *  kept before a send that no booking followed, DECISION_HOLD, at that hold: its process died while it was out) and what
+ *  its receipts say it cost (the costs the timeline's decision rows sum): a process that died after its answer's receipt
+ *  and before its booking, or whose booking was lost, still counts what it was charged, and one that died with the
+ *  request out counts its hold, never $0. A booking with no decision id is counted as it is. */
 export function decisionSpentIn(storeFile: string): number {
   const booked = new Map<string, number>();
+  /** Each decision's holds kept and not yet followed by a booking, in order. */
+  const open = new Map<string, number[]>();
   let loose = 0;
   for (const entry of entriesIn(storeFile)) {
-    if (entry.kind !== DECISION_COST) continue;
+    if (entry.kind !== DECISION_COST && entry.kind !== DECISION_HOLD) continue;
     const data = entry.data as { usd?: unknown; decision?: unknown } | undefined;
     const usd = figureOf(data?.usd);
+    const id = typeof data?.decision === "string" ? data.decision : undefined;
+    if (entry.kind === DECISION_HOLD) {
+      if (id !== undefined && usd !== undefined) open.set(id, [...(open.get(id) ?? []), usd]);
+      continue;
+    }
+    // A booking ends its decision's oldest hold still open, whatever it charged ($0 for nothing sent).
+    if (id !== undefined) open.get(id)?.shift();
     if (usd === undefined || !(usd > 0)) continue;
-    if (typeof data?.decision === "string") booked.set(data.decision, (booked.get(data.decision) ?? 0) + usd);
+    if (id !== undefined) booked.set(id, (booked.get(id) ?? 0) + usd);
     else loose += usd;
   }
+  // A hold no booking ended: its request was out when its process died, and counts at its hold.
+  for (const [id, holds] of open) for (const usd of holds) if (usd > 0) booked.set(id, (booked.get(id) ?? 0) + usd);
   const receipted = new Map<string, number>();
   let receipts: Array<Record<string, unknown>> = [];
   // Receipts that cannot be read leave the bookings alone to say it.
