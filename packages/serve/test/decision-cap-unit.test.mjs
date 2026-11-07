@@ -200,3 +200,27 @@ test("concurrent waits and a raise too small for one of them: the step refused a
   await again;
   assert.deepEqual({ cap_usd: mark?.cap_usd, words: mark?.words }, { cap_usd: 0.15, words: refusedAt(0.15).words }, "the pause is at the cap that refused it last: a let-go run is not opened again by the raise it already has (finishRaise reads the mark's cap)");
 });
+
+test("after a raise too small for one of the waits, finishRaise opens nothing on the raise the run already has, and a raise that covers every wait takes the pause's mark away", { timeout: 30_000 }, async (t) => {
+  const { raiseFinishes } = await import("../dist/budget.js");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "no-reopen-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const spend = { cap: 0.12, spent: () => 0, add: () => undefined, raise: (usd) => void (spend.cap = usd) };
+  const waits = budgetWaits(root, spend, { holdMs: 60_000, letGo: () => undefined });
+  const refusedAt = (cap) => ({ words: `Not sent: the next step does not fit the $${cap} cap. Raise the cap to continue.`, room: true, capUsd: cap });
+  const a = waits.wait(refusedAt(0.12), undefined, { label: "each", path: "/root/steps/0/items/0/body" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const b = waits.wait(refusedAt(0.12), undefined, { label: "each", path: "/root/steps/0/items/1/body" });
+  writeRaisedCap(root, 0.15);
+  assert.equal(await a, true);
+  const again = waits.wait(refusedAt(0.15), undefined, { label: "each", path: "/root/steps/0/items/0/body" });
+  assert.equal(await b, true);
+  // The run let go here, its serve.json at the $0.15 it was raised to: finishRaise reads the mark, and opens nothing.
+  assert.deepEqual([raiseFinishes(0.15, budgetPausedIn(root)), raiseFinishes(0.12, budgetPausedIn(root))], [false, false], "no reopen at the raise the run already has, nor under it");
+  // The next raise, above $0.15, would open it.
+  assert.equal(raiseFinishes(1, budgetPausedIn(root)), true);
+  // A raise that covers the one wait left takes the mark away: nothing paused, nothing to finish.
+  writeRaisedCap(root, 1);
+  assert.equal(await again, true);
+  assert.deepEqual([budgetPausedIn(root), raiseFinishes(1, budgetPausedIn(root))], [undefined, false], "the mark is gone once every wait is covered");
+});

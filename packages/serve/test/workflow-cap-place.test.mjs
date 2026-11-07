@@ -6,7 +6,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { agent, flowAgent, follow, letGo, runRecordOf, serve, withEnv } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { agent, client, flowAgent, follow, letGo, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];
@@ -63,4 +64,54 @@ test("a raise of a paused workflow whose process was let go, on a server whose o
   await follow(api, busy.body.run_id, ["completed"], { deadlineMs: 60_000 });
   await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   assert.equal((await view(api, runId)).status, "completed", "opened once the place freed, under the raised cap");
+});
+
+/** A server of one place at `data` (maxRuns 1): a capped `twoNodes` run paused and let go, then the place taken by a run
+ *  that answers once `gate` exists, then the raise, which leaves the paused run waiting for a place. */
+async function waitingForPlace(api, data, id, gate) {
+  assert.equal((await api("POST", "/agents", flowAgent(id, twoNodes()))).status, 201);
+  const { run_id: runId } = (await api("POST", `/agents/${id}/runs`, { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  assert.equal((await view(api, runId)).pending?.kind, "budget");
+  await letGo(data, runId);
+  assert.equal((await api("POST", "/agents", agent(`busy-${id}`))).status, 201);
+  const busy = await api("POST", `/agents/busy-${id}/runs`, { input: { content: `Answer once ${gate} exists.` } });
+  assert.equal(busy.status, 202, JSON.stringify(busy.body));
+  assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
+  for (const end = Date.now() + 5_000; (await view(api, runId)).status !== "queued"; await sleep(100)) assert.ok(Date.now() < end, "waits for a place, queued");
+  return { runId, busyId: busy.body.run_id };
+}
+
+test("a run waiting for a place is still waiting after the server restarts: its pause's mark on disk, the next server finishes the raise once a place frees", { timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const data = join(await scratch(t), "agents");
+  const gate = join(data, "free");
+  const first = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s", maxRuns: 1 });
+  const { runId, busyId } = await waitingForPlace(client(first.baseUrl, first.token), data, "restarted", gate);
+  await first.close();
+  const second = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s", maxRuns: 1 });
+  t.after(() => second.close());
+  const api = client(second.baseUrl, second.token);
+  // The busy run comes back too and may take the one place first: either way the raised run is never lost.
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 90_000 });
+  await follow(api, runId, ENDED, { deadlineMs: 90_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.error, run.cost?.cap_usd], ["completed", null, 1], JSON.stringify(run));
+});
+
+test("a run waiting for a place that is cancelled ends cancelled, and the place freeing opens nothing", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
+  const gate = join(data, "free");
+  const { runId, busyId } = await waitingForPlace(api, data, "dropped", gate);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(api, runId, ENDED, { deadlineMs: 30_000 });
+  assert.equal((await view(api, runId)).status, "cancelled");
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
+  // Given time to be tried again for the freed place (every second), nothing opens it.
+  await sleep(3_000);
+  const pid = runRecordOf(data, runId).holder?.pid;
+  assert.deepEqual([(await view(api, runId)).status, Number.isInteger(pid) && pid !== process.pid && processAlive(pid)], ["cancelled", false]);
 });

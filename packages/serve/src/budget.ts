@@ -72,6 +72,9 @@ export const capStoppedIn = (root: string): CapStopped | undefined => {
 export const writeRaisedCap = (root: string, usd: number): void => writeWhole(join(root, CAP_RAISED), { max_cost_usd: usd });
 /** The pause's mark taken away: a raise sent its run on, here when no process waits at it (it was let go). */
 export const clearBudgetPause = (root: string): void => rmSync(join(root, BUDGET_PAUSE), { force: true });
+/** Whether a raise to `capUsd` finishes the pause `mark` names (the server's finishRaise opens a let-go run again on it):
+ *  only a cap above the one still refused. No mark, or a cap at or under it, opens nothing. */
+export const raiseFinishes = (capUsd: number, mark: BudgetMark | undefined): boolean => mark !== undefined && capUsd > mark.cap_usd + CAP_TOLERANCE;
 
 /** The raised cap the run at `root` was given, if any. */
 const raisedIn = (root: string): number | undefined => {
@@ -139,7 +142,11 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
       const path = at?.path ?? undefined;
       const mine = path === undefined ? undefined : held.get(path) ?? held.set(path, { total: 0 }).get(path)!;
       if (mine && mine.from === undefined) mine.from = Date.now();
-      if (!existsSync(join(root, BUDGET_PAUSE))) {
+      // The pause names the cap still refused: written by the first wait, and again by one refused under a raise that did
+      // not cover it, so an older cap's mark never reads as a raise still to finish (the server's finishRaise) nor shows
+      // a refusal that no longer holds. A raise that covers every wait takes it away (below).
+      const kept = budgetPausedIn(root);
+      if (!kept || kept.cap_usd + CAP_TOLERANCE < refusal.capUsd) {
         const f = refusal.figures;
         writeWhole(join(root, BUDGET_PAUSE), {
           words: refusal.words, cap_usd: refusal.capUsd,

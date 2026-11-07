@@ -43,7 +43,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapMode, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
-import { BUDGET_PAUSE, budgetPausedIn, capStoppedIn, clearBudgetPause, writeRaisedCap } from "./budget.js";
+import { BUDGET_PAUSE, budgetPausedIn, capStoppedIn, clearBudgetPause, raiseFinishes, writeRaisedCap } from "./budget.js";
 import { durationMs } from "./print.js";
 import { capabilityOf, handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
@@ -93,6 +93,8 @@ const PROCESS_LOG = "process.log";
 const READY_TIMEOUT_MS = 45_000;
 /** How long a launched process whose door failed its proof has to exit on its own before it is stopped. */
 const DOOR_EXIT_WAIT_MS = 2_000;
+/** How often a raised workflow run waiting for a place to open again in tries again (finishRaise, waitForPlace). */
+const PLACE_RETRY_MS = 1_000;
 /** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
  *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
@@ -417,6 +419,10 @@ export type Run = {
   installing?: Promise<boolean>;
   /** It shows the install's row (its words, since `at`) while it waits for an install that runs. */
   installRow?: { at: string; words: string };
+  /** A raised workflow run whose process the pause let go, waiting for a place under the server's limits before it opens
+   *  again (finishRaise): its words, since `at`, shown as a row; queued meanwhile. Its pause's mark stays until it opens,
+   *  so a restart finishes the raise the same way. */
+  placeWait?: { at: string; words: string };
   /** It waits for its harness's install before a launch (harnessReady): takePlace counts it as holding a place until
    *  that launch, so nothing takes its place meanwhile. A cancel or an end lets the place go. */
   waitsInstall?: boolean;
@@ -746,6 +752,8 @@ const workflowBudgetPending = (run: Run): Pending | undefined => {
   return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: mark.at, node: mark.node };
 };
 /** The row a run shows while its harness installs for it (harness-install.ts), since `at`. */
+/** The row a raised workflow run shows while it waits for a place to open again in (finishRaise), since `at`. */
+export const placeRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "server:waiting-place", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 export const installRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 
 /** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
@@ -949,6 +957,8 @@ export function statusOf(run: Run): { status: Status; state: State } {
   // A paused workflow run finishes what it has in flight and starts nothing new until it is resumed (pause.ts). A held run
   // read without its directory (a view built for a count) has no mark to read.
   // One paused at its cap waits for a raise (budget.ts): input_required and waiting, with or without its process.
+  // Raised, it waits for a place to open again in (finishRaise): queued, as a run not yet started is.
+  if (run.kind === "workflow" && run.placeWait && !run.cancel) return { status: "queued", state: "working" };
   if (run.kind === "workflow") return budgetWaiting(run) ? { status: "input_required", state: "waiting" } : run.dir && pausedIn(run.dir) ? { status: "paused", state: "idle" } : { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
   if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
@@ -1176,6 +1186,10 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** Raised workflow runs waiting for a place to open again in (finishRaise), tried again every PLACE_RETRY_MS. */
+  private placeWaiters = new Set<Run>();
+  private placeRetry: NodeJS.Timeout | undefined;
+  private placeRetrying = false;
   /** Set once `close` is done: the store is closed, so nothing settles after it. */
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
@@ -1586,7 +1600,9 @@ export class Runs {
     const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served);
     // While its harness installs, the run says so (a phase row of the server's, gone once it is installed).
     const installing = run.installRow ? [...rows, installRow(run.installRow)] : rows;
-    const view = withLearning(installing, run.meta.learning, this.learning.shown());
+    // While a raised run waits for a place to open again in, it says so (gone once it opens).
+    const placing = run.placeWait ? [...installing, placeRow(run.placeWait)] : installing;
+    const view = withLearning(placing, run.meta.learning, this.learning.shown());
     // Every row only this view makes, remembered by id, so the live path's keep never holds one once it is no longer made.
     servedOnlyIds(view, (run.madeHere ??= new Set()));
     if (run.log.sync(view, run.keep)) run.updatedAt = new Date().toISOString();
@@ -3569,7 +3585,7 @@ export class Runs {
     const mark = run.kind === "workflow" && run.dir ? budgetPausedIn(run.dir) : undefined;
     if (cap === undefined || run.outcome || run.cancel) return false;
     if (run.meta.cap_raised?.length) writeRaisedCap(run.dir, cap);
-    if (!mark || !(cap > mark.cap_usd + CAP_TOLERANCE)) return false;
+    if (!raiseFinishes(cap, mark)) return false;
     if (this.live(run)) return false;
     // One finish at a time per run: a settle under way decides the run's next process (it may be reading the run as gone
     // and launching), so a raise meanwhile leaves the launch to it and finishes again once it is through. Never two.
@@ -3577,11 +3593,67 @@ export class Runs {
       void run.settling?.then(() => this.finishRaise(run)).catch(() => undefined);
       return true;
     }
-    clearBudgetPause(run.dir);
-    await this.pinNeeds(run);
-    await this.pinSignIn(run);
-    this.launch(run);
+    // A place under the server's limits first (max_concurrent_runs, the memory its harness takes), as every start takes
+    // one (takePlace): the pause let its place go. With none free the run waits for one, queued, its pause's mark kept,
+    // and opens once one frees (waitForPlace): never a process past the limits, never the raise refused or lost.
+    let release: () => void;
+    try {
+      release = await this.takePlace(run.harness);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "rate_limited") throw error;
+      this.waitForPlace(run, cap);
+      return true;
+    }
+    try {
+      // Read again: the place may have been waited for, and the run ended, cancelled, opened or finished meanwhile.
+      if (run.outcome || run.cancel || this.live(run) || !budgetPausedIn(run.dir)) return true;
+      this.placeWaiters.delete(run);
+      run.placeWait = undefined;
+      clearBudgetPause(run.dir);
+      await this.pinNeeds(run);
+      await this.pinSignIn(run);
+      this.launch(run);
+      this.show(run);
+      this.refresh(run);
+    } finally {
+      // Launched, it holds its place as a live run.
+      release();
+    }
     return true;
+  }
+
+  /** A raised run that found no place: queued, saying it waits for one, and tried again every PLACE_RETRY_MS until it
+   *  opens (finishRaise), ends or is cancelled. */
+  private waitForPlace(run: Run, cap: number): void {
+    run.placeWait ??= { at: new Date().toISOString(), words: `The cap was raised to ${money(cap)}. The run opens again once this server has a free place for it: it is at its limit of runs at once, or of memory for them.` };
+    this.placeWaiters.add(run);
+    this.show(run);
+    this.refresh(run);
+    this.placeRetry ??= setInterval(() => void this.retryPlaces(), PLACE_RETRY_MS).unref();
+  }
+
+  private async retryPlaces(): Promise<void> {
+    if (this.placeRetrying) return;
+    this.placeRetrying = true;
+    try {
+      for (const run of [...this.placeWaiters]) {
+        if (this.closing) break;
+        if (run.outcome || run.cancel || run.finishing) {
+          this.placeWaiters.delete(run);
+          run.placeWait = undefined;
+          this.show(run);
+          this.refresh(run);
+          continue;
+        }
+        await this.finishRaise(run).catch((error: Error) => warn(run.id, `its raise is not finished yet: ${error.message}`));
+      }
+    } finally {
+      this.placeRetrying = false;
+      if (!this.placeWaiters.size || this.closing) {
+        clearInterval(this.placeRetry);
+        this.placeRetry = undefined;
+      }
+    }
   }
 
   /** Sends a raised run its pause's follow-up, under its id (the door takes one id once), at the run's cap now: as a
