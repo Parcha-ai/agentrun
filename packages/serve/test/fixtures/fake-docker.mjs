@@ -18,7 +18,9 @@
 // one of RUNTIMES, as that runtime's daemon does, each field of `--format` filled in from its own `docker info` (quoted
 // from each runtime's own pasted output: see RUNTIMES).
 // Named volumes (`volume create`, `inspect`, `rm`) are directories under /tmp (volumeDir), their options and labels noted in
-// `volumes.jsonl`; a `--mount type=volume` maps its target there. A container may have a `--name`, which `inspect`, `logs`
+// `volumes.jsonl`; a `--mount type=volume` maps its target there. A `--mount type=volume` with a `volume-subpath`, or of
+// a volume `volumes.json` in the state directory names, is the directory that file names for it, and the subpath below it.
+// A container may have a `--name`, which `inspect`, `logs`
 // and `rm` take as well as its id (a second with a taken name is refused, as Docker refuses it). The proxy container (label
 // `agentrun.egress`) is RUN here: its `node` command, its mounts mapped, in a process group of its own, its output its
 // `docker logs`, with `--import $FAKE_DOCKER_EGRESS_PRELOAD` when that is set (the tests' fake network); `rm` kills it.
@@ -107,6 +109,8 @@ const held = (mark, failMark, then) => {
 
 switch (args[0]) {
   case "version":
+    // The probe's `{{.Server.Version}}`; `{{.Server.APIVersion}}` as Docker Engine 27 gives it, or as `docker-api` there says.
+    if (args.some((arg) => arg.includes("APIVersion"))) done(existsSync(join(state, "docker-api")) ? readFileSync(join(state, "docker-api"), "utf8") : "1.47\n");
     done("27.0.0-fake\n");
     break;
   case "info": {
@@ -171,9 +175,19 @@ switch (args[0]) {
       } else if (args[i] === "--env") container.env.push(args[++i]);
       else if (args[i] === "--mount") {
         const fields = Object.fromEntries(value.split(",").map((part) => [part.split("=")[0], part.slice(part.indexOf("=") + 1)]));
-        // As Docker does, a volume a mount names that is not there is made, with Docker's defaults and no label.
-        if (fields.type === "volume" && !existsSync(volumeDir(fields.source))) mkdirSync(volumeDir(fields.source), { recursive: true });
-        container.mounts.push({ source: fields.type === "volume" ? volumeDir(fields.source) : fields.source, target: fields.target, type: fields.type });
+        // A named volume `volumes.json` in the state directory names, or a mount of a volume's subpath, is the directory that
+        // file gives its name, and its subpath below it; one it does not name fails the run, as Docker's subpath that does
+        // not exist would. Any other volume a mount names that is not there is made, as Docker does, with Docker's
+        // defaults and no label.
+        const named = existsSync(join(state, "volumes.json")) ? JSON.parse(readFileSync(join(state, "volumes.json"), "utf8")) : {};
+        if (fields.type === "volume" && (named[fields.source] || fields["volume-subpath"] !== undefined)) {
+          const at = named[fields.source] && join(named[fields.source], fields["volume-subpath"] ?? "");
+          if (!at || !existsSync(at)) fail(`docker: Error response from daemon: cannot access path ${fields["volume-subpath"] ?? ""} of volume ${fields.source}`, 125);
+          container.mounts.push({ source: at, target: fields.target, type: "volume", volume: fields.source });
+        } else {
+          if (fields.type === "volume" && !existsSync(volumeDir(fields.source))) mkdirSync(volumeDir(fields.source), { recursive: true });
+          container.mounts.push({ source: fields.type === "volume" ? volumeDir(fields.source) : fields.source, target: fields.target, type: fields.type });
+        }
         i++;
       } else if (args[i] === "--name") container.Name = args[++i]; else if (args[i] === "--workdir") container.workdir = args[++i];
       else if (args[i] === "--network") container.HostConfig.NetworkMode = args[++i];
@@ -187,7 +201,7 @@ switch (args[0]) {
     const image = args[args.indexOf("--entrypoint") + 2];
     note("made.jsonl", { id: container.Id, image, pulledInRun: !hasImage(image) });
     if (!hasImage(image) && image.startsWith("agentrun-box:")) fail(`Unable to find image '${image}' locally\ndocker: Error response from daemon: pull access denied for agentrun-box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied.\nSee 'docker run --help'.`, 125);
-    container.Mounts = container.mounts.map((mount) => ({ Type: mount.type ?? "bind", Source: mount.source, Destination: mount.target, RW: true }));
+    container.Mounts = container.mounts.map((mount) => ({ Type: mount.type ?? "bind", ...(mount.volume ? { Name: mount.volume } : {}), Source: mount.source, Destination: mount.target, RW: true }));
     if (container.Name && read(container.Name)) fail(`docker: Error response from daemon: Conflict. The container name "/${container.Name}" is already in use.`, 125);
     if ("agentrun.egress" in container.Config.Labels) {
       // The proxy container: its command run here, its paths mapped through its mounts (longest target first).
@@ -246,9 +260,11 @@ switch (args[0]) {
   case "inspect": {
     const container = read(args.at(-1));
     if (!container) fail(`Error: No such object: ${args.at(-1)}`);
-    // `--format {{.State.Running}}` gives that; `--format {{json .}}` the object; without it Docker answers a list.
+    // `--format {{.State.Running}}` gives that; `--format {{json .}}` the object, `{{json .Mounts}}` its mounts; without it
+    // Docker answers a list.
     if (args.includes("{{.State.Running}}")) done(`${container.State.Running}\n`);
-    done(`${JSON.stringify(args.includes("--format") ? container : [container])}\n`);
+    const format = args[args.indexOf("--format") + 1];
+    done(`${JSON.stringify(format === "{{json .Mounts}}" ? container.Mounts ?? [] : args.includes("--format") ? container : [container])}\n`);
     break;
   }
   case "rm": {

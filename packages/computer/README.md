@@ -6,18 +6,18 @@ The open platform's computer protocol. A computer is anything an agent can run c
 full VM, a machine. The protocol has two layers:
 
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
-  JSON-RPC 2.0 on stdin and stdout, one JSON object per line, so it works in a computer with no network.
+  JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
   inside. It never runs commands itself: the daemon does. This package has the first one, for Docker.
 
 ## What it does today
 
-The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods and `tar.*`; hello's capabilities are
-`["exec", "files"]`.
+The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*` and the `process.*` methods; hello's
+capabilities are `["exec", "files", "processes"]`.
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","arch":"arm64","capabilities":["exec","files"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","arch":"arm64","capabilities":["exec","files","processes"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
@@ -27,6 +27,8 @@ The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods and `tar.*
   the guard starts the program in a process group of its own. Whatever the program starts stays under the guard, even
   a child that calls `setsid` or double-forks, since the kernel hands an orphan to its nearest subreaper. When the
   program ends, the guard kills and reaps every process left under it, then reports the program's exit code or signal.
+  A signal is named without `SIG`, here and in `process.wait` and `process.list`: `"TERM"`, `"KILL"` (a signal with no
+  name is its number, `"63"`).
   On timeout, or when the call is cancelled with `$/cancelRequest {id}`, the guard sends SIGTERM to the group and
   every process under it, then SIGKILL 2 s later. A timeout is a result with `timedOut: true`; a cancel is an
   `aborted` error. Nothing a run starts outlives it.
@@ -37,9 +39,72 @@ The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods and `tar.*
 - `user` is a name or `uid[:gid]`. A daemon without CAP_SETUID and CAP_SETGID cannot switch users and answers `denied`.
   A Docker computer drops every capability, so there a command runs as the daemon's own user.
 - Requests run at once; replies may come in any order. A line over 1 MiB gets an error reply and the connection goes
-  on. When the input ends, what still runs is cancelled.
+  on. When the input ends, what still runs on that connection is cancelled: an `exec.run`, never a process.
 - Errors are `{code, message, data: {kind}}`, with kind `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`,
   `unsupported`, `exists`, `not_dir` or `is_dir`.
+
+### Init, the socket and the bridge
+
+- `computerd init --deadline <time>` is the computer's first process. It listens on a unix socket,
+  `/run/agentrun/computerd.sock` (or `AGENTRUN_COMPUTERD_SOCKET`); the socket is 0600, so only the daemon's user can
+  connect. Init does not make the socket's directory, since a non-root init cannot write under `/run`: the provider
+  gives it, the daemon's user's alone (mode 0700). Init exits 1, saying why, when the directory is missing, is not the
+  user's alone, or is not writable by it.
+  Every connection is served by the same daemon with one process table, which is how a process outlives the call and
+  the connection that started it. A socket left by an init that is gone is replaced; a live one is refused.
+- `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
+  started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
+  it never serves on its own.
+- Init is a child subreaper (PID 1 in Docker is one anyway) and reaps every orphan. It also sweeps, on each SIGCHLD and
+  once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
+  kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by
+  something run with `docker exec`, outside the daemon, is ended the same way.
+- On SIGTERM or SIGINT (`docker stop`), and at its deadline, init first stops taking new programs: from then on
+  `process.start` and `exec.run` are refused as `unsupported` ("the computer is shutting down"). It waits (up to 3 s)
+  for the starts already under way to start their program, then sends SIGTERM to every guard, each of which ends its
+  program's group and descendants with SIGKILL 2 s later; whatever is still under init 5 s after the SIGTERM is killed,
+  and init exits 0. So every program that started gets SIGTERM before any SIGKILL. Connections stay open until init
+  exits, so reads, waits and lists still answer. One shutdown serves all three.
+- A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
+
+### Processes
+
+A process is a program started under its own guard, as `exec.run`'s are, that keeps running after its call returns.
+Its whole tree ends when the program ends or is signalled to its end. Ids are `p1`, `p2`, ...; data is base64.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
+| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
+| `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
+| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group; to a process that has ended it does nothing |
+| `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
+| `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
+| `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
+
+- Each stream keeps its last 8 MiB in a ring. Offsets count bytes since the process started; `nextOffset` is where the
+  next read starts. A read below the ring's start begins at its start, and `dropped` says how many bytes were lost; an
+  offset past the end is `invalid`. `exited` is true once the process has ended and nothing is left past `nextOffset`.
+- `waitMs` (at most 30 000) makes a read wait, when nothing past `offset` has come yet, until bytes come, the process
+  ends, or the time is up. So a client follows a process with one call in flight and no busy loop.
+- A process whose guard was killed reports the guard's end.
+- A listing holds at most 64 KiB of each argv, in JSON. A longer one is listed by its first arguments that fit, with
+  `argvClipped` set; the caller that started it has the whole of it.
+- With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
+  as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
+  for the end of input, or signal `HUP`.
+- Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
+  a `timeout` error that says how much was written. A cancelled write, waiting for its turn or writing, is `aborted`.
+- The guard keeps no copy of a program's stdin, stdout or stderr pipes once the program runs. So when the program, and
+  everything it started, have closed stdin (`exec 0<&-`), a write fails at once as `invalid`, while the program runs
+  on. A terminal is kept open by the guard until the program ends.
+- The table holds at most 256 processes, running or ended. A start into a full table drops the process that ended
+  first (its output with it) once the new program runs; a start that is refused drops nothing. When all 256 run, the
+  start is refused as `limit`.
+
+`src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
+until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
+which pages `process.list` and returns every process.
 
 ### Files
 
@@ -128,19 +193,21 @@ await docker.release(made.value, "delete");
   `--security-opt no-new-privileges`, `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
   CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
   the same; 1024 pids), and the daemon bind-mounted read-only at `/opt/agentrun/computerd` as
-  the entrypoint, `computerd init --deadline <time>`, which is PID 1 and reaps orphans. The label
-  `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it sends SIGTERM to
-  every process in the computer, waits up to 2 s, and exits 0, which stops the container. Init refuses to start with no
-  deadline. Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running
+  the entrypoint, `computerd init --deadline <time>`, which is PID 1, holds every process and reaps orphans. The label
+  `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it ends every
+  process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline. Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running
   after its start is removed.
 - **A computer runs as a non-root user by default; root must be asked for in the spec.** `user` is a uid or uid:gid
   in numbers (a name is refused: the image may not have it; a uid alone is its own gid). The spec's `user` wins, then
   the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process is root. The provider
   option refuses root; only a spec's `user: "0"` runs a computer as root, and that root has no capability either.
+- `/run/agentrun`, init's socket directory, is a tmpfs owned by the computer's user, mode 700, with `noexec`, `nosuid`
+  and `nodev`.
 - `/work` is the computer's home (`HOME=/work`) and its workdir unless the spec names one: a tmpfs owned by the
   computer's user, mode 700, the one place a non-root user can surely write. It is memory: what it holds counts against
   the memory limit, and it does not survive a stop. Storage that lasts is the agent disk's job, not this package's.
-- `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio` and says hello.
+- `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
+  Each `connect` is a connection of its own; processes are shared by all of them.
 - `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
 
 Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
@@ -169,10 +236,14 @@ architecture, and remove every container they make by its exact name, pass or fa
 ## Acknowledgements
 
 The daemon copies code, with credit, from two Apache-2.0 projects. NOTICE names them; UPSTREAM.json records each copied
-file, the commit, and what changed.
+file, the commit, and what changed. It has no Go dependency outside the standard library: the terminal is opened with
+its own ioctls (pty(7)) rather than with github.com/creack/pty.
 
 - [E2B infra](https://github.com/e2b-dev/infra), envd: the user, credential and environment setup of a process; a
   file's entry info and the listing to a depth.
 - [Kubernetes agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), sandboxd: the exit status and the
   bounded output of a run with limits; filesystem errors, mkdir, move and remove, and tar extraction confined to its
-  directory.
+  directory; the process registry, and a process's stdin, signal and terminal resize.
+- E2B envd also gives the signal names, the process list and the terminal's read loop.
+- [Rivet sandbox-agent](https://github.com/rivet-dev/sandbox-agent)'s process runtime (Rust; no code copied) is the
+  design reference for a bounded log per process, the process snapshot in a list, and reads that wait for output.

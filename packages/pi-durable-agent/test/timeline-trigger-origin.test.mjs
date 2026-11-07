@@ -72,3 +72,22 @@ test("isMessageRow counts a trigger's row and the server's, and never the server
   ];
   assert.deepEqual(rows.filter(isMessageRow).map((row) => row.id), ["e1", "e2", "e3"]);
 });
+
+test("a trigger's row names its trigger as fields, {id, source, owner}, so a client labels it by source without reading its text; a server's row and a person's have none", () => {
+  const entries = [
+    user("A new event came in.", 0, { data: { origin: WEBHOOK } }),
+    assistant([{ type: "text", text: "Seen." }]),
+    custom(MESSAGE_ORIGIN, { origin: SCHEDULE, text: "Check the queue." }),
+    user("Check the queue."),
+    assistant([{ type: "text", text: "Checked." }]),
+    user("The cap was raised to $5; continue the task.", 0, { data: { origin: { kind: "server", reason: "cap_raised" } } }),
+    user("Thanks."),
+  ];
+  const rows = timelineOf(entries);
+  assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => [r.summary, r.trigger]), [
+    ["Trigger trg_1: A new event came in.", { id: "trg_1", source: "webhook", owner: false }],
+    ["Trigger trg_2: Check the queue.", { id: "trg_2", source: "schedule", owner: true }],
+  ]);
+  for (const row of rows.filter((r) => r.origin !== "trigger")) assert.equal(row.trigger, undefined, `no trigger on ${row.kind} ${row.summary}`);
+  assert.ok(rows.some((r) => r.origin === "server") && rows.some((r) => r.kind === "user_message"), "a server's row and a person's are there to check");
+});

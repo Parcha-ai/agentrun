@@ -259,7 +259,7 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     // Its row is the server's (#1656's origin, as a raised cap's follow-up), and reads as the approval's outcome: what
     // ran, or what was refused.
     assert.equal(resume.origin, "server", `${at}: the server's row`);
-    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it" : "AgentRun: web_fetch was refused: you declined it", at);
+    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it" : `AgentRun: web_fetch was refused: you declined it: ${note}`, at);
     // The model's message keeps the call's id (pi echoes its first line below); what a person reads on the row is the
     // outcome and the result or refusal, with no call id and no "[tool approval]" head.
     const head = `[tool approval] This answers your web_fetch call ${run.callId} (arguments {"url":"http://public.example/"}), which waited for a person's approval; it is not a new message from them.`;

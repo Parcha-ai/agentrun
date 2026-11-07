@@ -15,6 +15,8 @@ const BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 const RETRIABLE = new Set([502, 503, 504]);
 const IDLE_MS = 45_000; // three of the stream's 15 s keepalives missed: the connection is gone
+/** The longest one request of a wait may take: a long poll's wait and the silence that means its connection is gone. */
+export const REQUEST_MS = MAX_WAIT_MS + IDLE_MS;
 
 /** The flags these add to a generated command (by its operationId), and their help lines. */
 export const FLAGS = {
@@ -42,9 +44,23 @@ export const WAIT = {
 
 /** An error for `client.unreachable` that names what happened by its code alone. */
 const failure = (code) => Object.assign(new Error(code), { cause: { code } });
-/** A count of milliseconds as timers take it: a whole number, at least 1 (AbortSignal.timeout throws on a fraction). */
-const wholeMs = (ms) => Math.max(1, Math.ceil(ms));
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, wholeMs(ms)));
+/** The longest a Node timer waits: one asked for longer fires after 1 ms (TimeoutOverflowWarning). */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+/** A count of milliseconds as timers and AbortSignal.timeout take it: a whole number (a fraction throws), at least 1,
+ *  at most MAX_TIMER_MS. A wait longer than that is cut into timers this long by the loop that waits, so it keeps its
+ *  length: every timer and abort here goes through this. */
+export const timerMs = (ms) => Math.min(MAX_TIMER_MS, Math.max(1, Math.ceil(ms)));
+/** A JSON object: not null, not a list. */
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+/** `text`'s JSON as `{ value }`, or undefined when it holds none. */
+const jsonOf = (text) => {
+  try {
+    return { value: JSON.parse(text) };
+  } catch {
+    return undefined;
+  }
+};
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, timerMs(ms)));
 /** The wait before try `tries + 1`: the client's own delay, doubling up to its cap, and never under the server's `retry`
  *  (`floor`), which may be above that cap. */
 export const backoff = (tries, floor = 0) => Math.max(floor, Math.min(MAX_BACKOFF_MS, BACKOFF_MS * 2 ** (tries - 1)));
@@ -63,7 +79,7 @@ async function getJson(client, path, reached, deadline) {
     let bytes;
     try {
       // A long poll answers within its wait_ms: one silent well past it is a connection gone.
-      response = await client.fetch(path, { signal: AbortSignal.timeout(wholeMs(Math.min(MAX_WAIT_MS + IDLE_MS, left))) });
+      response = await client.fetch(path, { signal: AbortSignal.timeout(timerMs(Math.min(REQUEST_MS, left))) });
       bytes = Buffer.from(await response.arrayBuffer());
       reached.yes = true;
     } catch (error) {
@@ -93,7 +109,7 @@ function settle(client, run, id) {
   const go = `then \`agentrun runs wait ${id}\``;
   const why = run.status === "paused" ? `is paused: resume it with \`agentrun runs resume ${id}\``
     : run.pending?.kind === "question" ? `asked a question: answer it with \`agentrun runs message ${id} --content TEXT\``
-    : run.pending?.kind === "budget" ? `stopped at its spend cap: raise the cap`
+    : run.pending?.kind === "budget" ? `stopped at its spend cap: raise it with \`agentrun runs raise-cap ${id} --max-cost-usd ${Number.isFinite(run.pending.suggested_cap_usd) ? run.pending.suggested_cap_usd : "N"}\``
     : run.pending?.kind ? `waits on a person (${run.pending.kind})`
     : `was stopped by a person: send it a message with \`agentrun runs message ${id} --content TEXT\``;
   client.io.stderr.write(`Run ${id} ${why}, ${go}.\n`);
@@ -106,7 +122,7 @@ function settle(client, run, id) {
  *  prints the run as it is (read once more, briefly; else as last read, if it was) and exits 1, the run going on. */
 export async function waitRun(client, runId, timeoutMs) {
   const id = encodeURIComponent(runId);
-  const deadline = timeoutMs === undefined ? Infinity : Date.now() + wholeMs(timeoutMs);
+  const deadline = timeoutMs === undefined ? Infinity : Date.now() + Math.ceil(timeoutMs);
   const reached = { yes: false };
   let after = 0;
   let last;
@@ -115,7 +131,7 @@ export async function waitRun(client, runId, timeoutMs) {
     if (run.code !== undefined) return run.code;
     const seen = run.value ?? last;
     if (seen !== undefined) client.print(seen);
-    client.io.stderr.write(`Run ${runId} is still ${seen?.status ?? "going"} after ${wholeMs(timeoutMs) / 1000} s; it goes on: wait again with \`agentrun runs wait ${runId}\`.\n`);
+    client.io.stderr.write(`Run ${runId} is still ${seen?.status ?? "going"} after ${Math.ceil(timeoutMs) / 1000} s; it goes on: wait again with \`agentrun runs wait ${runId}\`.\n`);
     return 1;
   };
   for (let first = true; ; first = false) {
@@ -206,15 +222,21 @@ export async function followTimeline(client, path, headers = {}) {
       }
       for await (const { event, data, id, retry } of events(response.body, heard)) {
         if (retry !== undefined) retryMs = retry;
+        // An event that is not JSON is the server's bad answer, not a connection gone: said, exit 1, not tried again.
+        const json = event === "rows" || event === "end" ? jsonOf(data) : undefined;
+        if ((event === "rows" || event === "end") && !isObject(json?.value)) {
+          client.io.stderr.write(`The server's timeline stream sent ${event === "end" ? "an" : "a"} ${event} event that is not a JSON object.\n`);
+          return 1;
+        }
         if (event === "rows") {
-          const page = JSON.parse(data);
+          const page = json.value;
           client.io.stdout.write(`${JSON.stringify(page)}\n`);
           status = page.status;
           progress = true;
         }
         if (id !== undefined) last = id;
         if (event === "end") {
-          if (JSON.parse(data).reason === "terminal") return EXIT[status] ?? 1;
+          if (json.value?.reason === "terminal") return EXIT[status] ?? 1;
           reconnect = true;
           break;
         }
