@@ -22,17 +22,13 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
 )
 
-// own is where each listener of these tests listens: this machine's own IPv4 loopback, any free port, so no test
-// reaches past this machine.
-var own = net.JoinHostPort(net.IPv4(127, 0, 0, 1).String(), "0")
-
 // short bounds a diagnosis against this machine's own listeners.
 var short = probe.Bounds{Connect: time.Second, Read: time.Second, Whole: 5 * time.Second, MaxRead: 4096}
 
 // tcpServer accepts every connection and hands it to serve, then closes it; it ends with the test.
 func tcpServer(t *testing.T, serve func(net.Conn)) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", own)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +62,7 @@ func silent(t *testing.T) string {
 // closedTCP is a TCP port nothing listens on any more.
 func closedTCP(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", own)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +121,7 @@ var serverHello = []byte{0x16, 0x03, 0x03, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00}
 // udpServer answers each datagram with what answer makes of it (nothing when it gives nil); it ends with the test.
 func udpServer(t *testing.T, answer func([]byte) []byte) string {
 	t.Helper()
-	conn, err := net.ListenPacket("udp", own)
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +144,7 @@ func udpServer(t *testing.T, answer func([]byte) []byte) string {
 // closedUDP is a UDP port nothing listens on any more.
 func closedUDP(t *testing.T) string {
 	t.Helper()
-	conn, err := net.ListenPacket("udp", own)
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +210,7 @@ func TestDiagnoseTLSIsAnsweredByARealTLSServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := tls.Listen("tcp", own, &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})
 	if err != nil {
 		t.Fatal(err)
 	}
