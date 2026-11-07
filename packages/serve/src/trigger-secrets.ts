@@ -97,9 +97,10 @@ export class TriggerSecrets {
     delete this.secrets[triggerId];
   }
 
-  /** Every secret held, for the redaction of what is shown. */
+  /** Every secret held, for the redaction of what is shown: each whole, and its body, the base64 after `whsec_`, which is
+   *  the signing key itself (hookRefusal decodes it) and which the `whsec_` shape alone never matches. */
   values(): string[] {
-    return Object.values(this.secrets);
+    return Object.values(this.secrets).flatMap((secret) => [secret, secret.slice("whsec_".length)]);
   }
 
   private write(sealed: Record<string, string>): void {

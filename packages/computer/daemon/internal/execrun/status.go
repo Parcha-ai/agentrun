@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 // From kubernetes-sigs/agent-sandbox@bfc8505 packages/sandboxd/pkg/server/process.go (exitStatus). Changed for the
-// open platform: a signal is reported by name instead of 128+n. Its process-tree kill is not used: the run's guard
+// open platform: a signal is reported by its name without SIG ("TERM") instead of 128+n. Its process-tree kill is not used: the run's guard
 // (guard.go) ends every descendant.
 
 package execrun
@@ -24,7 +24,7 @@ import (
 	"syscall"
 )
 
-// exitStatus is the exit code, or the name of the signal that ended the process.
+// exitStatus is the exit code, or the name of the signal that ended the process, without SIG.
 func exitStatus(state *os.ProcessState) (*int, string) {
 	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 		return nil, signalName(ws.Signal())
@@ -34,16 +34,16 @@ func exitStatus(state *os.ProcessState) (*int, string) {
 }
 
 var signalNames = map[syscall.Signal]string{
-	syscall.SIGHUP: "SIGHUP", syscall.SIGINT: "SIGINT", syscall.SIGQUIT: "SIGQUIT", syscall.SIGILL: "SIGILL",
-	syscall.SIGTRAP: "SIGTRAP", syscall.SIGABRT: "SIGABRT", syscall.SIGBUS: "SIGBUS", syscall.SIGFPE: "SIGFPE",
-	syscall.SIGKILL: "SIGKILL", syscall.SIGUSR1: "SIGUSR1", syscall.SIGSEGV: "SIGSEGV", syscall.SIGUSR2: "SIGUSR2",
-	syscall.SIGPIPE: "SIGPIPE", syscall.SIGALRM: "SIGALRM", syscall.SIGTERM: "SIGTERM", syscall.SIGXCPU: "SIGXCPU",
-	syscall.SIGXFSZ: "SIGXFSZ", syscall.SIGSYS: "SIGSYS",
+	syscall.SIGHUP: "HUP", syscall.SIGINT: "INT", syscall.SIGQUIT: "QUIT", syscall.SIGILL: "ILL",
+	syscall.SIGTRAP: "TRAP", syscall.SIGABRT: "ABRT", syscall.SIGBUS: "BUS", syscall.SIGFPE: "FPE",
+	syscall.SIGKILL: "KILL", syscall.SIGUSR1: "USR1", syscall.SIGSEGV: "SEGV", syscall.SIGUSR2: "USR2",
+	syscall.SIGPIPE: "PIPE", syscall.SIGALRM: "ALRM", syscall.SIGTERM: "TERM", syscall.SIGXCPU: "XCPU",
+	syscall.SIGXFSZ: "XFSZ", syscall.SIGSYS: "SYS",
 }
 
 func signalName(sig syscall.Signal) string {
 	if name, ok := signalNames[sig]; ok {
 		return name
 	}
-	return "SIG" + strconv.Itoa(int(sig))
+	return strconv.Itoa(int(sig))
 }
