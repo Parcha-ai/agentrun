@@ -397,9 +397,14 @@ export interface ScreenReadResult {
 
 /** The most actions one input.actions batch holds. */
 export const MAX_ACTIONS = 100;
-/** The most wait and hold one batch asks for, summed (Anthropic's 300 s cap). */
+/**
+ * The most time one batch asks for, summed over every action that names a duration: wait, hold, long_press, swipe and
+ * pinch (Anthropic's 300 s cap).
+ */
 export const MAX_BATCH_WAIT_MS = 300_000;
-/** The one canonical key table. The daemon's Go table mirrors it, and a test keeps them equal. */
+/** The most times one key action presses its keys. */
+export const MAX_KEY_REPEAT = 100;
+/** The one canonical key table. */
 export const KEYS = [
 	"enter", "tab", "space", "backspace", "delete", "escape", "insert",
 	"up", "down", "left", "right", "home", "end", "pageup", "pagedown",

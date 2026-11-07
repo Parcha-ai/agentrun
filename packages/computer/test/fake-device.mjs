@@ -66,7 +66,7 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * `maxLifetimeMs`, `chunk` (bytes a screen.shot or screen.read gives), and `broken`, one of: no-cap, screen-size,
  * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
  * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
- * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready.
+ * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready, screen-huge-size, screen-endless.
  */
 /**
  * The clock the fake devices and the group tests' runs share: it reads the wall clock plus whatever its sleeps skipped,
@@ -215,10 +215,13 @@ export function fakeDevices({
 				const bytes = bad ? undecodable(w, h, broken) : png(w, h, (px, py) => screenColor(x + px, y + py));
 				c.shot = { id: `s${++next}`, bytes };
 				const first = bytes.subarray(0, chunk);
+				// Broken: screen-huge-size says the shot is 1 TiB; screen-endless says 1 MiB and never gives eof.
+				if (broken === "screen-huge-size" || broken === "screen-endless") return ok({ id: c.shot.id, size: broken === "screen-huge-size" ? 2 ** 40 : 2 ** 20, data: first.toString("base64"), eof: false, width: w, height: h, scale: 1 });
 				return ok({ id: c.shot.id, size: bytes.length, data: first.toString("base64"), eof: first.length >= bytes.length, width: broken === "screen-size" ? w + 1 : w, height: h, scale: 1 });
 			},
 			"screen.read": ({ id, offset }) => {
 				if (c.shot?.id !== id) return fail("not_found", `no shot ${id}`);
+				if (broken === "screen-endless") return ok({ data: Buffer.alloc(64 * 1024).toString("base64"), eof: false });
 				const data = c.shot.bytes.subarray(offset, offset + chunk);
 				return ok({ data: data.toString("base64"), eof: offset + data.length >= c.shot.bytes.length });
 			},
