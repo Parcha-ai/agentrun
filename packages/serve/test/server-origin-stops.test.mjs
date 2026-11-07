@@ -20,6 +20,6 @@ test("a stop right after a message the server wrote is a stop at that message: t
 
 test("a stop after an approval a person's message declined names that message's own place, a number", () => {
   const declined = { kind: "server", reason: "approval_declined", said: "No, not that one." };
-  const mark = stopMark(timelineOf([user(1, "Fetch the page."), user(3, "[tool approval] This answers your fetch_page call call_1.", declined)]));
+  const mark = stopMark(timelineOf([user(1, "Fetch the page."), user(3, "[tool approval] This answers your web_fetch call call_1.", declined)]));
   assert.equal(mark.stopped_at, "0:3", "the declined message's place, never a row id that reads as no number");
 });

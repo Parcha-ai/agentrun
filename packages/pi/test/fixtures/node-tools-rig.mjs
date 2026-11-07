@@ -38,7 +38,7 @@ export const STAGEHAND = [
   tool('screenshot', 'Capture a screenshot of the active page.', { type: 'object', additionalProperties: false, properties: { type: { type: 'string', enum: ['png', 'jpeg'] }, fullPage: { type: 'boolean' } } }),
   tool('browser_read', 'Read the active page.', { type: 'object', additionalProperties: false, properties: { what: { type: 'string', enum: ['markdown', 'text', 'html', 'url', 'title'] } } }),
 ];
-const fetchPage = tool('fetch_page', 'Fetch one web page as text.', { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' } } });
+const fetchPage = tool('read_page', 'Fetch one web page as text.', { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' } } });
 const answer = tool('answer', 'Give the final answer, once.');
 /** The host's tools: the root agent is offered them all; a workflow names the ones a node uses. */
 export const HOST_TOOLS = [...STAGEHAND, fetchPage, answer];
@@ -47,7 +47,7 @@ export const learning = defineExtension({ name: 'host.learn', tools: [tool('lear
 
 const SUMMARY = { type: 'object', additionalProperties: false, required: ['business'], properties: { business: { type: 'string' } } };
 /** The tools the node names: three of the four Stagehand-shaped tools and the fetch, not the screenshot or the answer. */
-export const NODE_TOOLS = ['snapshot', 'run', 'browser_read', 'fetch_page'];
+export const NODE_TOOLS = ['snapshot', 'run', 'browser_read', 'read_page'];
 export const WORKFLOW = {
   v: 2, name: 'read-site',
   schemas: {
