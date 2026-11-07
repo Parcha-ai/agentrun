@@ -725,9 +725,11 @@ export class Triggers {
     return trigger;
   }
 
+  /** A trigger as the API answers it: its fields (openapi.ts TRIGGER), named one by one. A stored field outside them (an
+   *  earlier build's, as run_now_kept was, or the history) is never answered, whatever triggers.json holds. */
   private view(trigger: Trigger) {
-    const { firings, kept_firings: _, ...rest } = trigger;
-    return { ...rest, last_run_id: trigger.last_run_id ?? null, last_firing: firings.length ? firingView(firings.at(-1)!) : null };
+    const { id, name, enabled, source, target, catchup_window_s, failures_in_a_row, disabled, next_at, created_at, updated_at, firings } = trigger;
+    return { id, name, enabled, source, target, catchup_window_s, failures_in_a_row, disabled, next_at, last_run_id: trigger.last_run_id ?? null, created_at, updated_at, last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 
   // ---- what each source's adapter says ----------------------------------------------------------------------------------

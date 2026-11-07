@@ -414,7 +414,7 @@ test("a webhook event's firing is driven in its trigger's turn: a tick while its
   await until(() => triggers.firings(hook.id).firings[0].status === "sent", "sent once the run is idle");
 });
 
-test("triggers.json is read in this build's shape alone: a trigger missing a field an earlier build left out makes the file unreadable, and run_now_kept is not read", async (t) => {
+test("triggers.json is read in this build's shape alone: a trigger missing a field an earlier build left out makes the file unreadable, and run_now_kept is not read, nor shown: a stored field outside the contract reaches no GET, list or PATCH", async (t) => {
   // A trigger with no failures_in_a_row, catchup_window_s or disabled: the file does not read, and nothing fires.
   for (const field of ["failures_in_a_row", "catchup_window_s", "disabled"]) {
     const first = await engine(t, {});
@@ -434,8 +434,15 @@ test("triggers.json is read in this build's shape alone: a trigger missing a fie
   const file = join(first.data, "triggers.json");
   const kept = JSON.parse(await readFile(file, "utf8"));
   kept.triggers[0].run_now_kept = [{ key: firingKey("manual", made.id, "press-1"), by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "started", at: "2026-06-01T00:00:00.000Z", run_id: "run-old" }];
+  kept.triggers[0].left_by_another_build = "not in the contract";
   await writeFile(file, `${JSON.stringify(kept)}\n`);
   const next = await engine(t, {}, { data: first.data });
+  // Shown by the trigger's fields alone (openapi.ts TRIGGER): neither stored field, wherever a trigger is answered.
+  const shown = { get: next.triggers.get(made.id), list: next.triggers.list().triggers.find((one) => one.id === made.id), patch: await next.triggers.update(made.id, { name: "renamed" }) };
+  for (const [where, view] of Object.entries(shown)) {
+    assert.ok(view, `${where}: the trigger`);
+    for (const field of ["run_now_kept", "left_by_another_build", "firings", "kept_firings"]) assert.equal(field in view, false, `${where}: no ${field}: ${JSON.stringify(view)}`);
+  }
   const fired = await next.triggers.fire(made.id, "press-1");
   assert.equal(fired.created, true, `a new firing, not the old one: ${JSON.stringify(fired)}`);
 });
