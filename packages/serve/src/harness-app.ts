@@ -67,6 +67,14 @@ export function rootWriteDelayMs(env: NodeJS.ProcessEnv = process.env): number {
   const ms = Number(env[ROOT_WRITE_DELAY_ENV]);
   return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
 }
+/** For tests only: the Nth paid request of a harness run (counting from 1) whose start mark fails to commit, once, as on
+ *  a store that refused the write; only under a test runner (node --test's NODE_TEST_CONTEXT). */
+export const START_MARK_FAIL_ENV = "AGENTRUN_SERVE_TEST_START_MARK_FAIL_AT";
+export function startMarkFailAt(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  if (!env.NODE_TEST_CONTEXT) return undefined;
+  const n = Number(env[START_MARK_FAIL_ENV]);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
 /** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
 export { MESSAGE, MESSAGE_END } from "./turn-end.js";
 /** A turn's end on the root (turn-end.ts): the message it took, the session's own outcome (`completed`, `interrupted`,
@@ -419,6 +427,9 @@ export function adapterRun(
 
   // A test's seam (ROOT_WRITE_DELAY_ENV): each root write waits first, as on a store slow to write. None outside a test runner.
   const slowWrites = rootWriteDelayMs();
+  // A test's seam (START_MARK_FAIL_ENV): the Nth paid request's start mark fails to commit, once. None outside a test runner.
+  const failMarkAt = startMarkFailAt();
+  let marks = 0;
   const commit = <T>(change: (tx: Tx) => Promise<T>) => (slowWrites ? new Promise<void>((resolve) => setTimeout(resolve, slowWrites)).then(() => run!.harness.commit(change, context)) : run!.harness.commit(change, context));
 
   /** A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
@@ -559,7 +570,11 @@ export function adapterRun(
       // ends without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
       // The runner awaits this before the request is sent, and the mark is synced first, so a lost box never loses the
       // mark of a request that went. A mark that fails refuses the request.
-      return later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }) } }))))
+      const failMark = failMarkAt !== undefined && ++marks === failMarkAt;
+      return later(async () => {
+        if (failMark) throw new Error("the store refused the start mark (a test's seam)");
+        await commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }) } })));
+      })
         .then(() => syncNow(run?.store, BARRIER.sideRequestStarted));
     } else {
       open.delete(event.turn);

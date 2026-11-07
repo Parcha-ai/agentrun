@@ -142,6 +142,9 @@ export function script(spec) {
   // answer (<how>: an error status, our stop after it streamed, a lost connection); the client sends it again, answered.
   const carrierUnanswered = /Wrap up with the carrier unanswered \((status|stopped|lost)\)\./.exec(text)?.[1];
   if (carrierUnanswered) return [{ unanswered: carrierUnanswered, inputTokensMax: 1_000 }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that its host refuses (its
+  // start mark fails, under the tests' START_MARK_FAIL_ENV); the client sends another, answered.
+  if (/Wrap up with the carrier refused\./.test(text)) return [{ say: "First.", inputTokensMax: 1_000, usd: 0.01, onRefused: "next" }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
   // A turn whose one request (1,000 input tokens, due at step 0 under a small cap) carries the note and is answered; then
   // a follow-up turn whose request (1,500 input tokens) is due by its least.
   if (/Wrap up, then a follow-up due by its least\./.test(text)) return [{ end: true, inputTokensMax: 1_000, usd: 0.01 }, { say: "Second.", inputTokensMax: 1_500, usd: 0.01 }];

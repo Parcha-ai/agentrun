@@ -404,6 +404,22 @@ const inputPricedRun = async (t, id, instructions, cap) => {
   return { api, data, runId };
 };
 
+test("claude-agent on the faux harness: a noted request whose start mark fails to commit is not told, and the next request carries the note", { timeout: 180_000 }, async (t) => {
+  // The first paid request's start mark fails to commit (the tests' START_MARK_FAIL_ENV): the request is refused, never sent.
+  withEnv(t, { AGENTRUN_SERVE_TEST_START_MARK_FAIL_AT: "1" });
+  const { api, data, runId } = await inputPricedRun(t, "mark-failed", "Wrap up with the carrier refused.", 0.29);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  const rows = (await rowsOf(api, runId)).map((row) => row.text);
+  await letGo(data, runId);
+  // The refused request filed no note (its admission threw), so the one note on record is the next request's.
+  const carried = noteRequests(data, runId);
+  assert.deepEqual(carried.map(([request]) => request), [0], "the note offered again: the next request carries it");
+  // Worded by what is left as the cap counts it: the refused request, which never left, holds nothing ($0.29 of $0.29;
+  // a hold it kept would leave about $0.18, its 1,000 tokens and the note's 84 bytes at $100 a million).
+  assert.equal(carried[0][1], WRAP_UP_FIRST("$0.29"), "no hold remains from the request whose start mark failed");
+  assert.deepEqual(rows, [WRAP_UP_FIRST("$0.29")], "one row, told by the request that was answered");
+});
+
 for (const how of ["status", "stopped"]) {
   test(`claude-agent on the faux harness: a request carrying the note that the provider does not answer (${how === "status" ? "an error status before any event" : "stopped after it streamed"}) is not told: the request sent again carries it, and one row says so, in its words`, { timeout: 180_000 }, async (t) => {
     const { api, data, runId } = await inputPricedRun(t, `unanswered-${how}`, `Wrap up with the carrier unanswered (${how}).`, 0.29);

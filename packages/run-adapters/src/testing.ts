@@ -49,7 +49,9 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
  *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). `resultWhen`: a call's
  *  result is told (its tool_end) only once this file exists, as a harness still recording it would. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string }; resultWhen?: string };
+/** `onRefused: "next"`: a request its host refuses (its admission throws) is not the turn's end: the client goes on to its
+ *  next action, as a CLI whose request the proxy refused sends another. */
+export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string }; resultWhen?: string };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -197,7 +199,15 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             }
             // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
             const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) };
-            const ticket = await io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            const admit = () => io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            let ticket: Awaited<ReturnType<typeof admit>>;
+            try {
+              ticket = await admit();
+            } catch (error) {
+              if (!("onRefused" in action && action.onRefused === "next")) throw error;
+              cursor += 1;
+              continue;
+            }
             if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
