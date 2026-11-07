@@ -22,8 +22,9 @@ const formsOf = (secret) => ({ hex: Buffer.from(secret).toString("hex"), base64:
 async function pasted(t, api, id, forms) {
   assert.equal((await api("POST", "/agents", agent(id))).status, 201);
   const go = join(await scratch(t), `go-${id}`);
-  // The secrets first, so the run's title (its message's first 80 characters) holds them too; the hold after them.
-  const content = `Keep these: ${forms.hex}, ${forms.base64} and ${forms.body}. Hold the answer until ${go}.`;
+  // The secrets first, so the run's title (its message's first 80 characters) holds them too; the hold after them. The
+  // faux model's answer, once let go, echoes the message, so the answer carries them as well.
+  const content = `Keep these: ${forms.hex}, ${forms.base64} and ${forms.body}. Hold, then echo, until ${go}.`;
   const run = await api("POST", `/agents/${id}/runs`, { input: { content } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
@@ -32,6 +33,7 @@ async function pasted(t, api, id, forms) {
   await writeFile(go, "");
   const done = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(JSON.stringify(view), /On Keep these: .*: done\./, "the answer echoes the message, so it is checked with it");
   const listed = (await api("GET", "/runs")).body;
   return JSON.stringify({ rows: done.rows, pages: [...live.pages, ...done.pages], view, listed });
 }
