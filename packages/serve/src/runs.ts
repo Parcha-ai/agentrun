@@ -1155,6 +1155,10 @@ export class Runs {
   /** Every run's graph as served, part by part (servedGraph): one LRU by bytes across runs (graph-served.ts PartCache). */
   private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
+  /** The runs this process is starting, from the store's row until the run is held (start): its serve.json and its seed
+   *  copy are written in between. A read of one waits for its start and never loads it from disk, where it would look
+   *  like a run a stopped server left mid-copy. Null once a start failed. */
+  private readonly startingRuns = new Map<string, Promise<Run | null>>();
   /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
   private remoteAllow: readonly string[] | "none" | undefined;
   private readonly clock = new ChangeClock();
@@ -1224,6 +1228,9 @@ export class Runs {
   async get(id: string): Promise<Run | null> {
     const known = this.runs.get(id);
     if (known) return known;
+    // One this process is starting is its start's Run once held; a start that failed leaves its row, read as any.
+    const starting = await this.startingRuns.get(id);
+    if (starting) return starting;
     const row = await this.options.agents.request(() => this.store.readRun(id));
     return row ? this.adopt(row) : null;
   }
@@ -1232,6 +1239,9 @@ export class Runs {
   private adopt(row: RunRow): Promise<Run> {
     const known = this.runs.get(row.id);
     if (known) return Promise.resolve(known);
+    // One this process is starting is never read from disk (startingRuns): its start holds it.
+    const starting = this.startingRuns.get(row.id);
+    if (starting) return starting.then((run) => run ?? this.adopt(row));
     let pending = this.adopting.get(row.id);
     if (!pending) {
       pending = this.load(row).finally(() => this.adopting.delete(row.id));
@@ -1279,8 +1289,9 @@ export class Runs {
     // A turn's origin a server before this one set is not known to be the turn running now: it goes.
     await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
-    // follow-up (learning-run.ts onLoad).
-    if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
+    // follow-up (learning-run.ts onLoad). Only for a run an earlier server started: one this process starts is held
+    // by its start until its learning is saved (startingRuns), never taken for a stopped server's.
+    if (stored && row.startedAt < this.bootedAt) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
     if (damaged) run.damaged = true;
@@ -3314,36 +3325,48 @@ export class Runs {
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id, ...(options.origin ? { origin: options.origin } : {}) })).catch((error) => storeError(error, "revision"));
     // Only another writer of the store gets here first under the same origin: its run is the one asked for, set up by it.
     if (started.existing) return (await this.get(started.runId))!;
-    const at = new Date().toISOString();
-    const meta: RunMeta = {
-      // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
-      title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
-      created_at: at,
-      input: options.input,
-      place: options.place,
-      ...(options.effort ? { effort: options.effort } : {}),
-      ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
-      ...(options.capMode !== undefined ? { cap_mode: options.capMode } : {}),
-      ...(options.trigger ? { trigger: options.trigger } : {}),
-      ...(options.from ? { input_origin: options.from } : {}),
-      ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
-    };
-    // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
-    // next one relaunches with its first message.
-    await this.setUp(started.runId, started.dir, meta);
-    if (pin) {
-      // Then its seed copied and pinned, and its learning saved once the copy is whole or gone. A server that goes down
-      // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad).
-      meta.learning = await pin(started, at);
+    // Held as starting until the run is: a read in between waits for it (get, adopt) and never loads it from disk.
+    let started_!: (run: Run | null) => void;
+    this.startingRuns.set(started.runId, new Promise((resolve) => (started_ = resolve)));
+    let held: Run | null = null;
+    try {
+      const at = new Date().toISOString();
+      const meta: RunMeta = {
+        // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
+        title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
+        created_at: at,
+        input: options.input,
+        place: options.place,
+        ...(options.effort ? { effort: options.effort } : {}),
+        ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+        ...(options.capMode !== undefined ? { cap_mode: options.capMode } : {}),
+        ...(options.trigger ? { trigger: options.trigger } : {}),
+        ...(options.from ? { input_origin: options.from } : {}),
+        ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
+      };
+      // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
+      // next one relaunches with its first message.
       await this.setUp(started.runId, started.dir, meta);
+      if (pin) {
+        // Then its seed copied and pinned, and its learning saved once the copy is whole or gone. A server that goes down
+        // during the copy leaves none saved, and the next one takes the copy back (learning-run.ts onLoad).
+        meta.learning = await pin(started, at);
+        await this.setUp(started.runId, started.dir, meta);
+      }
+      const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
+      // Before the run is known here, so nothing launches it first.
+      await this.pinNeeds(run, revision);
+      const refreshing = this.mcpFresh(run);
+      if (refreshing) await refreshing;
+      await this.pinSignIn(run);
+      this.runs.set(run.id, run);
+      held = run;
+    } finally {
+      this.startingRuns.delete(started.runId);
+      started_(held);
     }
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
-    // Before the run is known here, so nothing launches it first.
-    await this.pinNeeds(run, revision);
-    const refreshing = this.mcpFresh(run);
-    if (refreshing) await refreshing;
-    await this.pinSignIn(run);
-    this.runs.set(run.id, run);
+    const run = held!;
+    const meta = run.meta;
     // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
     this.show(run);
     void this.learning.onSaved(run, meta.learning);
