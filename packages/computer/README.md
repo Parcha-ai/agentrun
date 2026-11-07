@@ -772,6 +772,7 @@ Daytona's container class runs code as root, and the open runner runs it privile
 
 | Capability | Declared | Why |
 | --- | --- | --- |
+| `kind` | `linux` | a Linux shell with computerd: exec, files and processes |
 | `lifetime` | `vendor` | `ttlMinutes` destroys the sandbox in any state once it elapses; set to the lifetime in whole minutes, rounded up. Init also ends every process at the deadline itself. |
 | `network` | `none`, `open`, `allow` | `networkBlockAll`, neither, or one allow list; each read back from the sandbox |
 | `allow.domains` | at most 100, ports 80 and 443 | the domain list is enforced on web traffic by Daytona's egress proxy, which re-signs TLS |
@@ -779,7 +780,9 @@ Daytona's container class runs code as root, and the open runner runs it privile
 | `allow.mixed` | `false` | the two lists and block-all are mutually exclusive |
 | `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot, and is read back |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
-| `daemon` | `exec`, `files`, `processes` | the daemon's own, checked against its hello |
+| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is a session command it runs (below): deleting the session ends init, not the sandbox |
+| `groups` | `exec`, `files`, `processes` | the daemon's own, checked against its hello's `groups`, as is its `kind` |
+| `maxLifetimeMs` | 30 days | the cap `check` gives, through the shared `checkLifetime`; Daytona's TTL is whole minutes and documents no cap of its own |
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
 | `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |

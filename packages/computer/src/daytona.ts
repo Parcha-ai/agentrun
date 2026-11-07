@@ -9,18 +9,19 @@ import { PassThrough, Writable } from "node:stream";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, SOCKET_DIR, WORK } from "./drift.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	checkLifetime,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
 
@@ -469,12 +470,13 @@ interface DaemonExpected {
 	uid: string;
 	gid: string;
 	arch: string;
-	capabilities: ComputerCapabilities["daemon"];
+	kind: ComputerCapabilities["kind"];
+	groups: ComputerCapabilities["groups"];
 }
 
 /** What the daemon reports of itself, read back through it: hello, its credentials, its working directory and binary. */
 async function daemonDrift(connection: ComputerConnection, expected: DaemonExpected, timeoutMs: number, signal?: AbortSignal): Promise<Result<string[]>> {
-	const found = helloDrift(connection.hello, { version: VERSION, capabilities: expected.capabilities, arch: expected.arch });
+	const found = helloDrift(connection.hello, { version: VERSION, kind: expected.kind, groups: expected.groups, arch: expected.arch });
 	const bounded = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs));
 	const status = await connection.client.call("files.read", { path: "/proc/self/status" }, { signal: bounded() });
 	if (!status.ok) return fail(status.error.code === "aborted" && !signal?.aborted ? "timeout" : status.error.code, `reading the daemon's /proc/self/status: ${status.error.message}`);
@@ -669,14 +671,22 @@ export class DaytonaProvider implements ComputerProvider {
 		this.#webSocket = webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike);
 	}
 
+	/**
+	 * daemon child: Daytona's toolbox daemon is the sandbox's first process, and init is a command it runs in a session
+	 * (#prepare), so deleting that session ends init and leaves the sandbox. maxLifetimeMs is the 30 days check() has
+	 * always given; Daytona's TTL is in whole minutes and documents no cap of its own.
+	 */
 	capabilities(): ComputerCapabilities {
 		return {
+			kind: "linux",
 			lifetime: "vendor",
 			network: ["none", "open", "allow"],
 			allow: { domains: { max: MAX_DOMAINS, ports: DOMAIN_PORTS }, cidrs: { max: MAX_CIDRS, ports: "any" }, mixed: false },
 			isolation: this.#class === "linux-vm" ? "vm" : "container",
 			os: "linux",
-			daemon: ["exec", "files", "processes"],
+			daemon: "child",
+			groups: ["exec", "files", "processes"],
+			maxLifetimeMs: MAX_LIFETIME_MS,
 			release: ["stop", "delete"],
 			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
 			stopDeletes: this.#autoDelete === 0,
@@ -690,9 +700,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const { image, lifetimeMs, network, labels } = given;
 		if (typeof image !== "string" || image.trim() === "") refuse("image", `an image is required: the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot`);
 		else if (/[\0-\x1f]/.test(image)) refuse("image", "a snapshot name has no control characters");
-		if (!isWhole(lifetimeMs) || lifetimeMs <= 0) {
-			refuse("lifetimeMs", "lifetimeMs is required: a whole number of milliseconds above 0, after which Daytona deletes the computer");
-		} else if (lifetimeMs > MAX_LIFETIME_MS) refuse("lifetimeMs", `lifetimeMs is at most 30 days (${MAX_LIFETIME_MS} ms); ask for a new computer after that`);
+		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
 		if (typeof network === "object" && network !== null && "allow" in network) {
 			const lists = allowOf((network as { allow: unknown }).allow);
 			if (typeof lists === "string") refuse("network", lists);
@@ -813,7 +821,8 @@ export class DaytonaProvider implements ComputerProvider {
 	}
 
 	#daemonExpected(): DaemonExpected {
-		return { uid: this.#uid, gid: this.#gid, arch: this.#arch, capabilities: this.capabilities().daemon };
+		const { kind, groups } = this.capabilities();
+		return { uid: this.#uid, gid: this.#gid, arch: this.#arch, kind, groups };
 	}
 
 	async #waitStarted(made: Sandbox, signal?: AbortSignal): Promise<Result<Sandbox>> {
@@ -980,7 +989,8 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!toolbox.ok) return toolbox;
 		const opened = await this.#open(found.value, toolbox.value);
 		if (!opened.ok) return opened;
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, capabilities: this.capabilities().daemon, arch: this.#arch });
+		const { kind, groups } = this.capabilities();
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.#arch });
 		if (drifted.length === 0) return opened;
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drifted.join("; ")}`);
@@ -1042,6 +1052,7 @@ export class DaytonaProvider implements ComputerProvider {
 		);
 		let user = `${this.#uid}:${this.#gid}`;
 		let workdir: string | undefined;
+		let kind: AttachedComputer["spec"]["kind"];
 		if (sb.state === "started") {
 			const toolbox = await this.#toolbox(sb, signal);
 			if (!toolbox.ok) return toolbox;
@@ -1052,6 +1063,7 @@ export class DaytonaProvider implements ComputerProvider {
 			if (!daemonFound.ok) return daemonFound;
 			found.push(...daemonFound.value);
 			workdir = WORK;
+			kind = opened.value.hello.kind;
 		}
 		if (found.length > 0) return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		return ok({
@@ -1065,6 +1077,7 @@ export class DaytonaProvider implements ComputerProvider {
 				...(isWhole(sb.memory) ? { memoryMb: sb.memory * 1024 } : {}),
 				...(workdir === undefined ? {} : { workdir }),
 				...(deadline === undefined ? {} : { deadline }),
+				...(kind === undefined ? {} : { kind }),
 			},
 		});
 	}
