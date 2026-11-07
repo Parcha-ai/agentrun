@@ -181,9 +181,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic" && revision.body.harness && entry?.facts) {
     const harness = revision.body.harness;
     const facts = entry.facts;
-    // A harness that loads the skills its adapter takes itself (its entry's skillCheck: claude-agent's Skill tool) keeps
-    // in its prompt only the ones it would refuse; any other's prompt names each skill and its file when the run reads
-    // its files (it reads the SKILL.md when it fits), else keeps every skill whole (skills.ts).
+    // A harness that loads the skills its adapter takes itself (its entry's skillCheck: claude-agent's Skill tool, codex's
+    // and opencode's skill lists) keeps in its prompt only the ones it would refuse; any other's prompt (a test's stand-in)
+    // names each skill and its file when the run reads its files (it reads the SKILL.md when it fits), else keeps every
+    // skill whole (skills.ts).
     const check = await entry.skillCheck?.();
     const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is

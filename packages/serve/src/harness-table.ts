@@ -159,13 +159,16 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
 const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   [DEFAULT_HARNESS]: PI,
   [claudeFacts.id]: adapterEntry(claudeFacts, async (env, needs) => (await import("./adapters.js")).claudeOf(env, needs), {
-    skillCheck: async () => (await import("./adapters.js")).claudeSkillCheck(),
+    skillCheck: async () => (await import("./adapters.js")).packageSkillCheck(() => import("@parcha/agentrun-harness-claude")),
     pins: async () => (await import("./adapters.js")).claudePins(),
   }),
   [codexFacts.id]: adapterEntry(codexFacts, async (env, needs) => (await import("./adapters.js")).codexOf(env, needs), {
+    skillCheck: async () => (await import("./adapters.js")).packageSkillCheck(() => import("@parcha/agentrun-harness-codex")),
     pins: async () => (await import("./adapters.js")).codexPins(),
   }),
-  [openCodeFacts.id]: adapterEntry(openCodeFacts, async (env, needs) => (await import("./adapters.js")).opencodeOf(env, needs)),
+  [openCodeFacts.id]: adapterEntry(openCodeFacts, async (env, needs) => (await import("./adapters.js")).opencodeOf(env, needs), {
+    skillCheck: async () => (await import("./adapters.js")).packageSkillCheck(() => import("./harness-opencode/index.js")),
+  }),
 } as Record<HarnessId, HarnessEntry>);
 
 const loaded = new Map<string, Readonly<Record<string, HarnessEntry>>>();

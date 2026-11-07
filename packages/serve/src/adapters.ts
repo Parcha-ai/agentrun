@@ -17,6 +17,7 @@ import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
 import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
+import { servedSkill } from "./learn/skills.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
@@ -176,8 +177,8 @@ type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite:
 /** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
 export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>) => { command: string; args: string[] };
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
- *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, which its own check took:
- *  skills.ts). */
+ *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
+ *  which its own check took: skills.ts). */
 export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string> };
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
@@ -247,12 +248,14 @@ export async function harnessInstalled(harness: HarnessEntry, env: NodeJS.Proces
   return !harness.installs || !harness.pins || harness.installs.lacking(installDirOf(dataOf(env), harness.id), await harness.pins()) === undefined;
 }
 
-/** The claude-agent adapter's own check of the skills it would load (its skillProblems), from `load` (a test gives its
- *  own): what it refuses stays in the run's prompt (skills.ts), so claudeOf never hands it a skill it throws on. None
- *  where the package has no such check: every skill stays inlined. */
-export async function claudeSkillCheck(load: () => Promise<unknown> = loadClaude): Promise<SkillCheck | undefined> {
-  const claude = (await load()) as { skillProblems?: unknown } | undefined;
-  return typeof claude?.skillProblems === "function" ? (claude.skillProblems as SkillCheck) : undefined;
+/** An adapter package's own check of the skills its adapter would load (its `skillProblems`), from `load`, the package
+ *  (each harness's table entry names its own: claude-agent's Skill tool; codex's, which lists them from its session's
+ *  CODEX_HOME/skills; opencode's, whose instructions name them): what it refuses stays in the run's prompt (skills.ts),
+ *  so its adapter is never handed a skill it throws on. None where the package has no such check: every skill stays
+ *  inlined. */
+export async function packageSkillCheck(load: () => Promise<unknown>): Promise<SkillCheck | undefined> {
+  const pkg = (await load()) as { skillProblems?: unknown } | undefined;
+  return typeof pkg?.skillProblems === "function" ? (pkg.skillProblems as SkillCheck) : undefined;
 }
 
 /** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native, by its own search
@@ -334,7 +337,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   // whole (AGENT_MODEL_GATEWAY_IDS says whether it is provider-qualified), OpenAI's model id, which chooseModel has
   // already taken out of "openai/<id>", or OpenRouter's whole slug.
   const provider = providerFor(codexFacts.wire, env, needs.model, codexFacts.id);
-  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...(nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
+  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...(nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
 }
 
 /** opencode's adapter, from `load` (this server's own, src/harness-opencode; a test gives its own). Its model goes where
@@ -356,7 +359,11 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // harness.
   // The id as the provider's endpoint names it (providerFor, as codexOf takes it): OpenRouter's is the whole slug.
   const provider = providerFor(openCodeFacts.wire, env, needs.model, openCodeFacts.id);
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
+  // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
+  // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
+  const skills = needs.skills?.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 /** `harness`'s adapter for a run, as its entry in the harness table builds it (harness-table.ts). */

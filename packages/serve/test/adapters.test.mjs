@@ -182,12 +182,14 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
   assert.deepEqual(given.slice(1).map((options) => "skills" in options), [false, false], "none: no option, so the adapter keeps its Skill tool off");
 });
 
-test("claude-agent's check of skills is the adapter's own skillProblems; none where it has no check of its own (the package is a dependency of serve, so it is never missing)", async () => {
-  const { claudeSkillCheck } = await import("../dist/adapters.js");
-  const real = await import("@parcha/agentrun-harness-claude");
-  assert.equal(await claudeSkillCheck(async () => real), real.skillProblems, "the adapter's own function, not a copy");
-  assert.equal(await claudeSkillCheck(), real.skillProblems, "by default, the package installed beside serve");
-  assert.equal(await claudeSkillCheck(async () => ({ ...real, skillProblems: undefined })), undefined, "an adapter with no check of its own: none");
+test("each adapter harness's check of skills is its own package's skillProblems, by its table entry (packageSkillCheck); none where a package has no check of its own (each package is a dependency of serve, so it is never missing)", async () => {
+  const [{ packageSkillCheck }, { builtinHarness }, claude, codex, opencode] = await Promise.all([import("../dist/adapters.js"), import("../dist/harness-table.js"), import("@parcha/agentrun-harness-claude"), import("@parcha/agentrun-harness-codex"), import("../dist/harness-opencode/index.js")]);
+  for (const [id, pkg] of [["claude-agent", claude], ["codex", codex], ["opencode", opencode]]) {
+    assert.equal(typeof pkg.skillProblems, "function", `${id}'s package has a check of its own`);
+    assert.equal(await builtinHarness(id).skillCheck(), pkg.skillProblems, `${id}'s entry: its own package's function, not a copy`);
+  }
+  assert.equal(builtinHarness("pi").skillCheck, undefined, "pi loads no skills itself: its prompt keeps them");
+  assert.equal(await packageSkillCheck(async () => ({ ...claude, skillProblems: undefined })), undefined, "a package with no check of its own: none");
 });
 
 const SERVE = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;

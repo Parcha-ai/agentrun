@@ -10,7 +10,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, sy
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { claudeSkillCheck } from "../dist/adapters.js";
+import { builtinHarness } from "../dist/harness-table.js";
 import { agentFolderOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
 import * as learning from "../dist/learning.js";
@@ -93,7 +93,7 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   const revision = { "cite/SKILL.md": CITE, "cite/reference/data.md": filler(900 * KIB) };
   const { runDir, work } = await runWith(t, revision);
   const pin = await pinSeed(runDir, work, seed, { ...PLAIN, own: Object.keys(revision) });
-  const check = await claudeSkillCheck();
+  const check = await builtinHarness("claude-agent").skillCheck();
   assert.ok(check, "the installed claude-agent adapter's own check");
   const learned = await withLearned(runDir, work, "Answer.", Object.keys(revision));
   const { system, native } = await systemOf(learned.instructions, learned.skills, work, check);

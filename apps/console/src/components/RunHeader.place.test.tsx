@@ -5,9 +5,9 @@ import { RunHeader } from "./RunHeader";
 import type { Run } from "@/lib/v2";
 
 // Where a run ran, as its start resolved it (Run.place).
-const run = (place?: unknown): Run => ({
+const run = (place?: unknown): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "r1", agent_id: "boxed", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Q",
-  created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: null, archived_at: null, ...(place ? { place } : {}),
+  created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...(place ? { place } : {}),
 } as Run);
 const html = (r: Run) => renderToStaticMarkup(createElement(RunHeader, { run: r, agentName: "Boxed" }));
 
