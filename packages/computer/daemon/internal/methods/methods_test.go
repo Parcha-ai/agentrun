@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -73,8 +74,29 @@ func TestHello(t *testing.T) {
 	if r.Error != nil || json.Unmarshal(r.Result, &hello) != nil {
 		t.Fatalf("hello failed: %+v", r)
 	}
-	if hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Arch != runtime.GOARCH || strings.Join(hello.Capabilities, ",") != "exec,files,processes" {
+	if hello.Version != "0.0.0-test" || hello.OS != "linux" || hello.Kind != "linux" || hello.Arch != runtime.GOARCH || strings.Join(hello.Groups, ",") != "exec,files,processes" {
 		t.Fatalf("hello %+v", hello)
+	}
+	// The protocol's hello has exactly these fields: capabilities is now groups, and kind is new.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(r.Result, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "arch,groups,kind,os,version" {
+		t.Fatalf("hello's fields %v", names)
+	}
+}
+
+func TestDeadlineExtendIsNotAnsweredYet(t *testing.T) {
+	// deadline.extend is typed in protocol.ts; init answers it from the X11 shim's PR on. Until then it is unsupported.
+	r := call(t, `{"jsonrpc":"2.0","id":1,"method":"deadline.extend","params":{"at":"2030-01-01T00:00:00.000Z"}}`)
+	if r.Error == nil || r.Error.Code != -32601 {
+		t.Fatalf("deadline.extend %+v", r)
 	}
 }
 

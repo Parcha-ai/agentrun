@@ -13,5 +13,6 @@ export function serialWriter(writer: SessionWriter): SessionWriter {
     chain = run.catch(() => undefined);
     return run;
   };
-  return { key: writer.key, read: () => next(() => writer.read()), append: (records) => next(() => writer.append(records)) };
+  // The barrier goes on the same chain: it syncs what the appends before it wrote.
+  return { key: writer.key, read: () => next(() => writer.read()), append: (records) => next(() => writer.append(records)), sync: () => next(() => writer.sync()) };
 }

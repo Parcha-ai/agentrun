@@ -42,7 +42,7 @@ interface Layout {
   env(options?: ArchilEnvOptions, cwd?: string): NodeExecutionEnv;
 }
 
-/** A run directory the way the claim lays it out (run.json, owner.lock, store/, work/, tmp/), plus a directory outside the claim, and links an agent could make. */
+/** A run directory the way the claim lays it out (store/, commands/, work/, tmp/), plus a directory outside the claim, and links an agent could make. */
 async function withLayout<T>(use: (layout: Layout) => Promise<T>): Promise<T> {
   const base = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "pda-confine-"));
   const work = join(base, "work");
@@ -50,9 +50,9 @@ async function withLayout<T>(use: (layout: Layout) => Promise<T>): Promise<T> {
   const elsewhere = join(base, "..", `${base.split("/").pop()}-elsewhere`);
   const sqlite = join(store, "run.sqlite");
   try {
-    for (const dir of [work, store, join(base, "tmp"), elsewhere, join(work, "real-dir"), join(work, "sub")]) await mkdir(dir, { recursive: true });
+    for (const dir of [work, store, join(base, "tmp"), join(base, "commands"), elsewhere, join(work, "real-dir"), join(work, "sub")]) await mkdir(dir, { recursive: true });
     await writeFile(sqlite, SQLITE);
-    await writeFile(join(base, "run.json"), '{"status":"running"}');
+    await writeFile(join(base, "commands", "1-1.json"), '{"status":"running"}');
     await writeFile(join(base, "owner.lock"), "");
     await writeFile(join(elsewhere, "secret.txt"), "SECRET");
     await writeFile(join(work, "real.txt"), "inside");
@@ -162,7 +162,7 @@ describe("every escape is refused by every operation, and nothing outside work/ 
         "dangling",
         "sub/../../store/run.sqlite",
         `file://${sqlite}`,
-        "../run.json",
+        "../commands/1-1.json",
         "../owner.lock",
         "../../etc/passwd",
         "/etc/passwd",
@@ -196,7 +196,7 @@ describe("every escape is refused by every operation, and nothing outside work/ 
         `link-root${sqlite}`,
         "sub/../../store/run.sqlite",
         `file://${sqlite}`,
-        "../run.json",
+        "../commands/1-1.json",
         "../store",
         "/etc",
       ];
@@ -250,7 +250,7 @@ describe("every escape is refused by every operation, and nothing outside work/ 
         ["../store/run.sqlite", "stolen.sqlite", "../store/run.sqlite"],
         [layout.sqlite, "stolen.sqlite", layout.sqlite],
         ["link-dir/run.sqlite", "stolen.sqlite", "link-dir/run.sqlite"],
-        ["../run.json", "run.json", "../run.json"],
+        ["../commands/1-1.json", "1-1.json", "../commands/1-1.json"],
       ];
       for (const [source, destination, named] of cases) {
         refused(await env.renameFile(source, destination, context), named);
@@ -364,7 +364,7 @@ describe("what stays allowed", () => {
       getOrThrow(await env.remove("link-root", undefined, context));
       assert.equal(existsSync(join(layout.work, "link-dir")), false);
       assert.equal(await readFile(layout.sqlite, "utf8"), SQLITE);
-      assert.ok(existsSync(join(layout.base, "run.json")));
+      assert.ok(existsSync(join(layout.base, "commands", "1-1.json")));
       // Replacing a symlink as a rename destination replaces the link, not what it points at.
       await writeFile(join(layout.work, "new.txt"), "n");
       getOrThrow(await env.renameFile("new.txt", "link-abs", context));
@@ -916,7 +916,7 @@ describe("through a pi Harness with a scripted model", () => {
       const calls: Array<[string, JsonObject]> = [
         ["write", { path: "../store/run.sqlite", content: "PWNED" }],
         ["write", { path: layout.sqlite, content: "PWNED" }],
-        ["edit", { path: "../run.json", edits: [{ oldText: "running", newText: "done" }] }],
+        ["edit", { path: "../commands/1-1.json", edits: [{ oldText: "running", newText: "done" }] }],
         ["read", { path: "../owner.lock" }],
         ["read", { path: "link-dir/run.sqlite" }],
         ["write", { path: "link-root/etc/pda-escape", content: "x" }],
@@ -949,7 +949,7 @@ describe("through a pi Harness with a scripted model", () => {
         await harness.close(context);
       }
       assert.equal(await readFile(layout.sqlite, "utf8"), SQLITE);
-      assert.equal(await readFile(join(layout.base, "run.json"), "utf8"), '{"status":"running"}');
+      assert.equal(await readFile(join(layout.base, "commands", "1-1.json"), "utf8"), '{"status":"running"}');
       assert.equal(existsSync("/etc/pda-escape"), false);
       assert.equal(await readFile(join(layout.work, "ok.txt"), "utf8"), "fine");
     });

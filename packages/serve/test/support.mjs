@@ -178,9 +178,14 @@ export async function serve(t, { harnesses: asked, ...options } = {}) {
   const data = options.data ?? join(dir, "agents");
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
+  // Under a fake docker (fixtures/fake-docker.mjs), a box command that asked for sudo fails the test: the stand-in refused
+  // it, and noted it here.
+  const dockerState = process.env.FAKE_DOCKER_STATE;
   t.after(async () => {
     await server.close();
+    const sudo = dockerState ? (await import("./fixtures/sudo-stand-in.mjs")).sudoStandIn(dockerState).calls() : [];
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
+    if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
   return { ...server, data, api: client(server.baseUrl, server.token) };
 }
@@ -271,7 +276,7 @@ export function storeRun(data, runId) {
 
 /** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
  *  the epoch it ran under as `generation`), and its holder from the run's row (the process's `pid`, its door as
- *  `serve`); `{}` when there is neither yet. What run.json once held, read from where it is now. */
+ *  `serve`); `{}` when there is neither yet. */
 export function runRecordOf(data, runId) {
   let claim;
   try {

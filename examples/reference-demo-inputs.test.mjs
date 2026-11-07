@@ -14,6 +14,7 @@ import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
 import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
+import { readLocalRunStatus } from '@parcha/pi-durable-disk';
 
 test('a kill of kind box is written as a box kill, and the process\'s box is taken away with it', { timeout: 300_000 }, async (t) => {
   const { result, recording } = await run(t, { boxes: { kind: 'local', runIn: true }, kills: [{ point: 'event workflow.judge.answered', why: 'the machine goes with the process', kind: 'box' }] }, ['--kill', '--json']);
@@ -186,10 +187,10 @@ test('a directory a run already used keeps its identity: a demo whose name diffe
   const dir = join(tmp, 'run');
   const first = await run(t, {}, ['--json', '--dir', dir]);
   assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
-  const saved = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run;
+  const saved = (await readLocalRunStatus(dir)).run;
   assert.match(saved, /^reference/, 'the run is named for its demo (and an invocation)');
   // The same directory again, by a demo of another name (a directory saved before the run was named for its demo): it is not refused, and stays what it was.
   const again = await run(t, { name: 'another-demo' }, ['--json', '--dir', dir]);
   assert.equal(again.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(again.result.processes.at(-1)));
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, saved, 'resumed under the saved name');
+  assert.equal((await readLocalRunStatus(dir)).run, saved, 'resumed under the saved name');
 });

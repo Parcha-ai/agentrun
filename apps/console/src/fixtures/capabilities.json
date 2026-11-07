@@ -88,20 +88,8 @@
         ]
       },
       {
-        "name": "fetch_page",
-        "summary": "Fetch one public web page: { ok, url, status, title, text, links }; a private or local address, or a scheme other than http(s), is refused.",
-        "nodes": true,
-        "calls": true,
-        "available": true,
-        "harnesses": [
-          "pi",
-          "claude-agent",
-          "codex"
-        ]
-      },
-      {
         "name": "web_fetch",
-        "summary": "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched as fetch_page fetches it: fetch_page's Page plus via, \"parallel\" or \"direct\"; a URL fetch_page refuses is refused, never sent to Parallel.",
+        "summary": "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched through the guarded direct fetch: its Page plus via, \"parallel\" or \"direct\"; a URL the guarded fetch refuses is refused, never sent to Parallel.",
         "nodes": true,
         "calls": true,
         "available": true,

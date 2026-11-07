@@ -33,11 +33,11 @@ test("pi: a run whose cap cannot buy its next request's least pauses, the reques
   assert.equal(run.pending.spent_usd, 0);
   assert.ok(Math.abs(run.pending.needs_usd - 1_024 * 100 / 1e6) < 1e-12, `the least: ${run.pending.needs_usd}`);
   assert.ok(!Number.isNaN(Date.parse(run.pending.at)), run.pending.at);
-  // Its last rows but the usage line: the refusal, then the pause.
-  const shown = rows.filter((row) => row.kind !== "usage" && row.kind !== "phase");
+  // Its last rows but the usage line: the refusal's pause row, then the waiting row.
+  const shown = rows.filter((row) => row.kind !== "usage" && (row.kind !== "phase" || row.paused === true));
   const last = shown.at(-1);
   assert.deepEqual([last.kind, last.summary, last.text], ["waiting", "Waiting for you to raise the cap", "Waiting for you to raise the cap"], JSON.stringify(last));
-  assert.equal(shown.at(-2).kind, "error", "after the refusal's own row");
+  assert.deepEqual([shown.at(-2).kind, shown.at(-2).summary, shown.at(-2).paused], ["phase", "Paused at the run's cap", true], "after the refusal's own row");
   assert.equal(run.cost.usd, 0, "nothing was sent");
 });
 

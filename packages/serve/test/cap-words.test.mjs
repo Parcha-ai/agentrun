@@ -1,6 +1,6 @@
 // A run paused at its cap says so in words a first-time user reads: the next step, what it needs, the cap, and the cap to
 // raise to, to continue, what it spent in cents. No model's name, no "request". Its refusal's row on the timeline is a
-// pause (`paused: true`), never a failure's red row, and its waiting row says only that it waits for a raise.
+// pause (a `phase` row, `paused: true`), never a failure's red row, and its waiting row says only that it waits for a raise.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { capBefore, paidCall, useSpend } from "../dist/cap.js";
@@ -20,9 +20,9 @@ for (const harness of ["pi", "codex"]) {
     const { run_id } = (await api("POST", `/agents/${id}/runs`, { input: { content: "Write one.md" }, max_cost_usd: 0.05 })).body;
     const { rows } = await follow(api, run_id, SETTLED);
     const { pending } = (await api("GET", `/runs/${run_id}`)).body;
-    const refusal = rows.findLast((row) => row.kind === "error");
-    // The words, and the refusal's row marked a pause: both pinned at once.
-    assert.deepEqual([pending?.said, refusal?.kind, refusal?.paused], ["Not sent: the next step needs at least $0.11, and this run's cap is $0.05. Raise the cap to at least $0.11 to continue.", "error", true], JSON.stringify([pending, refusal]));
+    const refusal = rows.findLast((row) => row.paused === true);
+    // The words, and the refusal's row a pause in its own short words: both pinned at once.
+    assert.deepEqual([pending?.said, refusal?.kind, refusal?.summary, rows.some((row) => row.kind === "error")], ["Not sent: the next step needs at least $0.11, and this run's cap is $0.05. Raise the cap to at least $0.11 to continue.", "phase", "Paused at the run's cap", false], JSON.stringify([pending, refusal]));
   });
 }
 
@@ -36,7 +36,7 @@ test("a budget pause's waiting row reads \"Waiting for you to raise the cap\", a
   const waiting = rows.findLast((row) => row.kind === "waiting");
   assert.deepEqual([waiting?.summary, waiting?.text, pending?.said?.startsWith("Not sent: ")], ["Waiting for you to raise the cap", "Waiting for you to raise the cap", true], JSON.stringify([waiting, pending]));
   // The marker is the refusal's alone: the waiting row, made from the refusal's row, is no refusal (#1768 review).
-  const refusal = rows.findLast((row) => row.kind === "error");
+  const refusal = rows.findLast((row) => row.kind === "phase" && row.summary === "Paused at the run's cap");
   assert.deepEqual([refusal?.paused, Object.hasOwn(waiting ?? {}, "paused")], [true, false], JSON.stringify([refusal, waiting]));
 });
 

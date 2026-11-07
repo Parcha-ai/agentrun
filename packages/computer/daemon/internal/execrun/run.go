@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"syscall"
 	"time"
 
@@ -132,7 +133,8 @@ func stopGuard(g *Guarded) error {
 	return killGuard(g)
 }
 
-// killGuard sends SIGKILL to every descendant of the guard and then to the guard, and waits for the guard to be reaped.
+// killGuard sends SIGKILL to every descendant of the guard and then to the guard, waits for the guard to be reaped, and
+// then for every descendant it sent SIGKILL to have ended.
 func killGuard(g *Guarded) error {
 	// Once the guard was reaped its pid is free and may already belong to another process: signal nothing.
 	select {
@@ -141,15 +143,46 @@ func killGuard(g *Guarded) error {
 	default:
 	}
 	pid := g.guard.Process.Pid
+	killed := map[int]uint64{}
 	for _, d := range proctree.Descendants(pid) {
-		_ = syscall.Kill(d, syscall.SIGKILL)
+		if started, ok := proctree.Started(d); ok {
+			killed[d] = started
+		}
+		if killDescendant != nil {
+			killDescendant(d)
+		} else {
+			_ = syscall.Kill(d, syscall.SIGKILL)
+		}
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	select {
 	case <-g.Done():
-		return nil
 	case <-time.After(cleanupTimeout):
 		return fmt.Errorf("the guard, process %d, did not end %v after SIGKILL", pid, cleanupTimeout)
+	}
+	return awaitEnded(killed)
+}
+
+// awaitEnded waits until no process in killed (each pid with its start time) still runs, polling with a short backoff.
+// SIGKILL lands asynchronously, so one sent it may run on for a moment. A zombie has ended: its new parent reaps it.
+// Any still running descendantsTimeout on are named in the error.
+func awaitEnded(killed map[int]uint64) error {
+	deadline := time.Now().Add(descendantsTimeout)
+	for pause := time.Millisecond; ; pause = min(2*pause, 50*time.Millisecond) {
+		var running []int
+		for pid, started := range killed {
+			if proctree.Running(pid, started) {
+				running = append(running, pid)
+			}
+		}
+		if len(running) == 0 {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			slices.Sort(running)
+			return fmt.Errorf("processes %v under the guard still run %v after SIGKILL", running, descendantsTimeout)
+		}
+		time.Sleep(min(pause, time.Until(deadline)))
 	}
 }
 
@@ -158,6 +191,12 @@ const guardSlack = 3 * time.Second
 
 // cleanupTimeout bounds the wait for a guard after SIGKILL.
 const cleanupTimeout = 10 * time.Second
+
+// descendantsTimeout bounds the wait for the guard's descendants after SIGKILL. A test shortens it.
+var descendantsTimeout = cleanupTimeout
+
+// killDescendant is nil outside tests: killGuard calls it in place of sending SIGKILL to a descendant.
+var killDescendant func(pid int)
 
 // drain waits for both streams to reach end of file. A pipe still held open (only if the guard itself was killed) is
 // closed on this side after drainGrace, and what was read so far is kept.

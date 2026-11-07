@@ -28,7 +28,7 @@ const analytics: Analytics = {
   by_harness_effort: [{ harness: "codex", effort: "high", ...g(22, 19, 3, 22, 1_480_000, 0.902) }, { harness: "codex", effort: "medium", ...g(14, 12, 2, 14, 610_000, 0.311) }, { harness: "pi", effort: null, ...g(31, 24, 5, 28, 1_090_000, 0.4251, 3) }, { harness: "workflow", effort: null, ...g(11, 9, 1, 7, 232_000, null, 4) }],
   by_day: days,
   by_source: [{ source: "live", ...g(66, 54, 10, 59, 2_900_000, 1.6381, 4) }, { source: "codex", ...g(12, 10, 1, 12, 512_000, null, 3) }],
-  tools: [{ tool: "fetch_page", label: "Fetch web pages", calls: 412, errors: 31 }, { tool: "bash", label: "Run commands", calls: 280, errors: 4 }, { tool: "read", label: "Read files", calls: 190, errors: 0 }, { tool: "pdf_pages", label: "Read PDF pages", calls: 44, errors: 6 }, { tool: "write", label: "Write files", calls: 37, errors: 1 }],
+  tools: [{ tool: "web_fetch", label: "Read web pages", calls: 412, errors: 31 }, { tool: "bash", label: "Run commands", calls: 280, errors: 4 }, { tool: "read", label: "Read files", calls: 190, errors: 0 }, { tool: "pdf_pages", label: "Read PDF pages", calls: 44, errors: 6 }, { tool: "write", label: "Write files", calls: 37, errors: 1 }],
 };
 /** No runs in the range: the analytics as they read then. */
 const quiet: Analytics = { ...analytics, totals: { ...g(0, 0, 0, 0, 0, null), input: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0, unmetered: 0 }, time: { ended_runs: 0, wall_ms: 0, active_runs: 0, active_ms: 0 }, by_harness_effort: [], by_day: [], by_source: [], tools: [] };

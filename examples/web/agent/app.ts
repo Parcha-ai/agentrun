@@ -26,7 +26,8 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import type { ModelThinkingLevel, TSchema } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool, wrapTool, type ConversationId, type Harness, type JsonObject, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type BrowserProvider, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
 import { createBrowserExtension, createWebExtension } from "@parcha/pi-browser/durable";

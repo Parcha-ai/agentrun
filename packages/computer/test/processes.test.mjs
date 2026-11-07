@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { DaemonClient, listProcesses, MAX_CHUNK_BYTES, MAX_PROCESSES, MAX_READ_WAIT_MS, PROCESS_RING_BYTES, readAll } from "../dist/index.js";
+import { DaemonClient, listProcesses, MAX_CHUNK_BYTES, MAX_PROCESSES, MAX_READ_WAIT_MS, PROCESS_RETAINED_BYTES, PROCESS_RING_BYTES, readAll } from "../dist/index.js";
 
 /** A fake daemon: `answer(request, daemon)` handles each request the client writes; every request is kept in `seen`. */
 function fake(answer) {
@@ -33,6 +33,7 @@ const b64 = (text) => Buffer.from(text).toString("base64");
 
 test("the protocol's process bounds", () => {
 	assert.equal(PROCESS_RING_BYTES, 8 * 1024 * 1024);
+	assert.equal(PROCESS_RETAINED_BYTES, 256 * 1024 * 1024);
 	assert.equal(MAX_PROCESSES, 256);
 	assert.equal(MAX_READ_WAIT_MS, 30_000);
 });

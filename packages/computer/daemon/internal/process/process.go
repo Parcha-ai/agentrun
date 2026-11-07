@@ -6,6 +6,12 @@ const (
 	RingBytes = 8 << 20
 	// MaxEntries is how many processes the table holds, running or ended.
 	MaxEntries = 256
+	// RetainedBytes is how much output the table's rings, live and ended, hold together: 256 MiB, where 256 entries'
+	// full rings would be 4 GiB. Past it, the rings of the processes that ended first are let go, then the live rings
+	// are limited to an equal share of it.
+	RetainedBytes = 256 << 20
+	// RingFloorBytes is the least a live ring is limited to: 256 entries' two rings at the floor are 32 MiB.
+	RingFloorBytes = 64 << 10
 	// MaxRead is the most bytes one process.read returns: in base64, it fits a line.
 	MaxRead = 512 << 10
 	// MaxWaitMs bounds a read's long poll.
@@ -16,6 +22,8 @@ const (
 type Options struct {
 	RingBytes  int
 	MaxEntries int
+	// RetainedBytes bounds the output every ring in the table, live or ended, holds together.
+	RetainedBytes int64
 }
 
 type Size struct {
@@ -61,6 +69,13 @@ type WriteParams struct {
 type SignalParams struct {
 	ID     string `json:"id"`
 	Signal string `json:"signal"`
+}
+
+// SignalResult is empty but for INT on a terminal with no foreground group, which went to the program's own group, and
+// INT on a terminal whose foreground group had no process left in the program's session when the guard came to signal
+// it, which was not sent.
+type SignalResult struct {
+	Note string `json:"note,omitempty"`
 }
 
 type ResizeParams struct {
