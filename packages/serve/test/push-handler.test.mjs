@@ -31,6 +31,15 @@ const ping = {
     key: "signing",
     headers: headersRefusal,
     verify,
+    // A sender's URL check: a challenge is echoed, after the request's check, never before it.
+    handshake(_headers, body) {
+      try {
+        const doc = JSON.parse(body.toString("utf8"));
+        return typeof doc.challenge === "string" ? { status: 200, body: { challenge: doc.challenge } } : undefined;
+      } catch {
+        return undefined;
+      }
+    },
     parse(_headers, body) {
       try {
         const doc = JSON.parse(body.toString("utf8"));
@@ -55,7 +64,7 @@ async function post(baseUrl, path, body, { secret, headers } = {}) {
   const at = Math.floor(Date.now() / 1000);
   const signed = headers ?? { "webhook-id": id, "webhook-timestamp": String(at), "webhook-signature": new Webhook(secret).sign(id, new Date(at * 1000), body) };
   const res = await fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", ...signed }, body });
-  return { status: res.status, body: await res.json().catch(() => null) };
+  return { status: res.status, headers: Object.fromEntries(res.headers), body: await res.json().catch(() => null) };
 }
 
 async function pingServer(t) {
@@ -114,7 +123,8 @@ test("an unknown trigger, or one that is off, on a trigger's own hook path is th
   const unknown = await post(server.baseUrl, "/hooks/trg_000000000000000000000000", "{}", { secret: made.body.secret });
   assert.equal((await api("PATCH", `/triggers/${made.body.id}`, { enabled: false })).status, 200);
   const off = await post(server.baseUrl, `/hooks/${made.body.id}`, "{}", { secret: made.body.secret });
-  const strip = (answer) => ({ status: answer.status, error: { ...answer.body.error, request_id: undefined } });
+  // All of the answer but what differs by request: its time and its request id.
+  const strip = (answer) => ({ status: answer.status, headers: { ...answer.headers, date: undefined, "x-request-id": undefined }, error: { ...answer.body.error, request_id: undefined } });
   assert.deepEqual([strip(unknown), strip(off)], [strip(bad), strip(bad)], "the same 401, body and all");
   assert.equal(bad.status, 401);
   const nobody = await post(server.baseUrl, "/hooks/ping", JSON.stringify({ events: [{ id: "evt-3", channel: "nobody-listens", text: "hi" }] }), { secret: pingSecret });
@@ -190,4 +200,13 @@ test("a hook body over its source's cap is 413 at once, its socket closed, never
   assert.match(declared, /^HTTP\/1\.1 413 /, declared);
   const streamed = await ask("transfer-encoding: chunked\r\n", `${(8192).toString(16)}\r\n${"x".repeat(8192)}\r\n`);
   assert.match(streamed, /^HTTP\/1\.1 413 /, streamed);
+});
+
+test("a source's handshake answers only a request that passed its check: an unsigned challenge is the one 401, a signed one is echoed", { timeout: 60_000 }, async (t) => {
+  const { server, secret } = await pingServer(t);
+  const challenge = JSON.stringify({ challenge: "c-123" });
+  const unsigned = await post(server.baseUrl, "/hooks/ping", challenge, { headers: { "webhook-id": "msg_c", "webhook-timestamp": String(Math.floor(Date.now() / 1000)), "webhook-signature": "v1,AAAA" } });
+  assert.deepEqual([unsigned.status, unsigned.body?.error?.code], [401, "unauthenticated"], "never answered before the check");
+  const signed = await post(server.baseUrl, "/hooks/ping", challenge, { secret });
+  assert.deepEqual([signed.status, signed.body], [200, { challenge: "c-123" }]);
 });
