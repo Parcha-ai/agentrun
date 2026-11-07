@@ -136,7 +136,7 @@ export function fakeDevices({
 		const methods = {
 			hello: () => ok({ version: "1.0.0", os, kind, arch: "amd64", groups, ...hello }),
 			ping: () => ok({}),
-			"exec.run": ({ argv }) => ok({ exitCode: 0, stdout: Buffer.from(argv[0] === "env" ? "PATH=/usr/bin:/bin\nHOME=/home/fake\n" : `${argv.slice(1).join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false }),
+			"exec.run": ({ argv }) => ok({ exitCode: 0, stdout: Buffer.from(argv[0] === "env" ? "PATH=/usr/bin:/bin\nHOME=/fake\n" : `${argv.slice(1).join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false }),
 			"files.mkdir": () => ok({}),
 			"files.write": ({ path, data, offset }) => {
 				const bytes = Buffer.from(data, "base64");
