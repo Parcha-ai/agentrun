@@ -432,8 +432,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           attach: (ctx, request) => acquire({ ctx, ...(request.model ? { model: request.model } : {}), ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }),
           // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
-          // The runner's turn cap and the host's beforeRequest bound the spend.
-          budget: { turnUsd: Infinity, sessionUsd: Infinity },
         },
         tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
         builtins: false,

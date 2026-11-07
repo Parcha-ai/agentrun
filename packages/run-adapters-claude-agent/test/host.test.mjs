@@ -16,7 +16,7 @@ import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 import { childEnv, confined, launchCommand, localMachine } from '../dist/host/machine.js';
 import { PARENT_WATCH_SHIM, parentWatched, SETPRIV } from '@parcha/agentrun-kernel/host';
 import { CLAUDE_BETAS, withWebSearches } from '../dist/host/policy.js';
-import { gatewayHandler, isBrandedMachine, journalLedger, ModelSteps, settleAbandonedModelSteps } from '../dist/host/process.js';
+import { gatewayHandler, isBrandedMachine } from '../dist/host/process.js';
 import { isResumeDir, spawnProblem } from '../dist/spawn.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-host-'));
@@ -333,17 +333,14 @@ test("a child's environment is the allowlist and what the harness names: no host
   }
 });
 
-test("upstream's model steps and journal ledger record nothing: the runner alone accounts model spend", async () => {
-  const ledger = journalLedger({ append: () => { throw new Error('the ledger wrote to the journal'); } });
-  ledger.turn('t1');
-  ledger.add(1.5, { method: 'POST', path: '/v1/messages' });
-  assert.deepEqual(ledger.spent(), { turnUsd: 0, sessionUsd: 0 });
-  const ctx = new Proxy({}, { get: () => { throw new Error('a model step touched the drive'); } });
-  const steps = new ModelSteps(ctx);
-  steps.request();
-  await steps.settleAbandoned();
-  await steps.close();
-  await settleAbandonedModelSteps(ctx);
+test("the harness keeps no spend path of its own: no dollar caps, journal ledger or model-step trace (the runner alone accounts model spend, and the host's cap is the only one)", async () => {
+  const gone = ['journalLedger', 'JournalLedger', 'ModelSteps', 'settleAbandonedModelSteps', 'GatewayCap', 'spendCapped', 'onCap', 'turnUsd', 'sessionUsd'];
+  const exported = Object.keys(await import('../dist/host/process.js'));
+  assert.deepEqual(gone.filter((name) => exported.includes(name)), [], 'none is exported by the harness\'s process layer');
+  for (const file of ['src/harness.ts', 'src/host/process.ts', 'src/adapter.ts']) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    assert.deepEqual(gone.filter((name) => new RegExp(`\\b${name}\\b`).test(source)), [], `${file} names none of them`);
+  }
 });
 
 test("a refusal never carries the request's content: a canary in every field and header is in no answer, report or error", async () => {
