@@ -14,6 +14,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const definition = { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] };
 const RUN = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null };
 let calc: { agent_id: string; kind: string; revision: string; revisions: number; archived_at: null; definition: typeof definition };
+// The agent a Create made, once the server has answered it.
+let made: { agent_id: string; kind: string; revision: string; revisions: number; archived_at: null; definition: typeof definition } | null;
 let asked: string[];
 let answer: boolean;
 let confirms: string[];
@@ -26,7 +28,7 @@ let release: () => void;
 
 beforeEach(() => {
   calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition } };
-  asked = []; confirms = []; answer = false; hold = null; capsTools = []; capsPlaces = undefined;
+  asked = []; confirms = []; answer = false; hold = null; capsTools = []; capsPlaces = undefined; made = null;
   vi.stubGlobal("confirm", (message: string) => { confirms.push(message); return answer; });
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
@@ -37,8 +39,15 @@ beforeEach(() => {
     if (path === "/v2/agents" && method === "POST") {
       const body = JSON.parse(String(init!.body)) as { definition: typeof definition };
       if (hold) await hold;
-      return json(201, { agent_id: "made", kind: "agentic", revision: "m1", revisions: 1, archived_at: null, definition: body.definition });
+      made = { agent_id: "made", kind: "agentic", revision: "m1", revisions: 1, archived_at: null, definition: body.definition };
+      return json(201, made);
     }
+    if (path === "/v2/agents/made/definition" && method === "PUT" && made) {
+      const body = JSON.parse(String(init!.body)) as { definition: Partial<typeof definition> };
+      made = { ...made, revision: "m2", revisions: 2, definition: { ...made.definition, ...body.definition } };
+      return new Response(JSON.stringify(made), { status: 200, headers: { "content-type": "application/json", etag: '"m2"' } });
+    }
+    if (path === "/v2/agents/made" && made) return new Response(JSON.stringify(made), { status: 200, headers: { "content-type": "application/json", etag: `"${made.revision}"` } });
     if (path === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
     if (path === "/v2/runs/r1") return json(200, RUN);
     if (path === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: [], complete: true, truncated: false });
@@ -333,5 +342,26 @@ describe("App, an edit made while Create is under way", () => {
     expect(confirms).toEqual([LEAVE]);
     await page.wait(() => location.hash === "#/agents/new", "still the form");
     expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+
+  it("after Cancel, the next save goes to the agent the Create made, never a second Create", async () => {
+    hold = new Promise<void>((r) => { release = r; });
+    const page = await open("#/agents/new");
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    await page.type(page.host.querySelector("#agent-name"), "Made");
+    await page.type(page.instructions(), "Answer.");
+    await act(async () => { page.button(/^Create$/)!.click(); });
+    await page.wait(() => asked.includes("POST /v2/agents"), "the Create is under way");
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await act(async () => { release(); });
+    await page.settle(); await page.settle();
+    await page.wait(() => location.hash === "#/agents/new", "Cancel kept the form");
+    // The form's button again: it saves the kept edit to the agent made, then opens its page, asking nothing more.
+    await page.click(page.button(/^(Create|Save revision)$/));
+    await page.wait(() => location.hash === "#/agents/made", "on the made agent's page");
+    expect(asked.filter((a) => a === "POST /v2/agents")).toHaveLength(1);
+    expect(asked).toContain("PUT /v2/agents/made/definition");
+    expect(made?.definition.instructions).toBe("Answer, then check the sum.");
+    expect(confirms).toEqual([LEAVE]);
   });
 });
