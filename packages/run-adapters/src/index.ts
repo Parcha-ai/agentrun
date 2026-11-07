@@ -2,7 +2,7 @@ export { createHarnessRunner, modelPortFor, SUBMIT_TOOL, RUNNER_RECORDS } from "
 export type { Admission, BeforeRequest, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions } from "./runner.js";
 export { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool } from "./delegate.js";
 export type { DelegateAgent, DelegateEvent, DelegateOptions } from "./delegate.js";
-export { HarnessRunError, SessionFenced } from "./errors.js";
+export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 export { toolSchemaProblems } from "./schema-check.js";
 export { READ_SKILL_FILE, readSkillFileTool, SKILL_BYTES, skillProblems } from "./skill-files.js";
 export type { HostSkill, SkillFileList } from "./skill-files.js";

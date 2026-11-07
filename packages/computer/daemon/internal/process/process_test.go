@@ -27,6 +27,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) >= 2 && os.Args[1] == dropTerminalCommand {
 		os.Exit(dropTerminal(os.Args[2:]))
 	}
+	if len(os.Args) == 2 && os.Args[1] == staleForegroundCommand {
+		os.Exit(staleForeground())
+	}
 	os.Exit(m.Run())
 }
 
