@@ -71,16 +71,46 @@ test("a run's end due while another connection holds the agent store: the server
   assert.equal(last.status, "completed", JSON.stringify(last));
 });
 
-test("a create while the agent store is held for 1 s waits, then answers 201; the server answers within 200 ms meanwhile", async (t) => {
+/** `busy` settles once the server's next store createAgent has met SQLite's busy: that create is then waiting on the store. */
+async function createMeetsBusy(t) {
+  const probe = await scratch(t);
+  const store = openStore(probe);
+  const proto = Object.getPrototypeOf(store);
+  store.close();
+  const createAgent = proto.createAgent;
+  t.after(() => void (proto.createAgent = createAgent));
+  let met;
+  const busy = new Promise((resolve) => (met = resolve));
+  proto.createAgent = function (...args) {
+    try {
+      return createAgent.apply(this, args);
+    } catch (error) {
+      if ([5, 6].includes(Number(error?.errcode) & 0xff)) met();
+      throw error;
+    }
+  };
+  return { busy };
+}
+
+test("a create while the agent store is held waits for it; GET /capabilities answers while the create still waits, and the create answers 201 once the store is free", async (t) => {
   const { data, port, token } = await serve(t);
   const release = hold(t, data);
+  const { busy } = await createMeetsBusy(t);
+  // What the create has answered so far: nothing, while it waits on the store.
+  let createAnswered = null;
   const created = timed(port, token, "POST", "/agents", agent("patient"));
-  const slowest = await slowestWhile(port, token, sleep(1_000));
+  created.then((answer) => (createAnswered = answer.status), () => (createAnswered = "an error"));
+  // The create reaches the held store, or answers before it does: then the test fails at once, saying so, never waits on a
+  // store the create did not reach.
+  const first = await Promise.race([busy.then(() => "busy"), created.then((answer) => answer, (error) => ({ status: "an error", body: String(error) }))]);
+  assert.ok(first === "busy", `the create answered before it reached the store: ${first.status} ${JSON.stringify(first.body)}`);
+  // By order, not by a clock: the create waits on the store the test holds, and capabilities answers before it does.
+  const capabilities = await timed(port, token, "GET", "/capabilities");
+  assert.equal(createAnswered, null, `the create answered ${createAnswered} before GET /capabilities answered ${capabilities.status}: capabilities waited on the store`);
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
   release();
   const answer = await created;
   assert.equal(answer.status, 201, JSON.stringify(answer.body));
-  assert.ok(answer.took >= 900, `it waited for the store: ${answer.took} ms`);
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the create waited`);
 });
 
 test("a create while the agent store is held for 3 s answers 409 home_busy at about 2 s, retryable", async (t) => {
