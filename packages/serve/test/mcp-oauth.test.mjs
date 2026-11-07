@@ -656,9 +656,10 @@ test("the refresh step's test-only wait has no effect outside a test runner, and
   // A server's environment: the variable set by mistake, no test runner.
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500" }), 0);
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "production" }), 0);
-  // Under a test runner (node --test sets NODE_TEST_CONTEXT; NODE_ENV=test, as the stand-ins' guards read it).
+  // NODE_ENV=test alone is no test runner: a production server can carry it.
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "test" }), 0);
+  // Under a test runner (node --test sets NODE_TEST_CONTEXT).
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_TEST_CONTEXT: "child-v8" }), 500);
-  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "test" }), 500);
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "600000", NODE_TEST_CONTEXT: "child-v8" }), 1_000, "capped");
   for (const stray of [undefined, "", "soon", "-5"]) assert.equal(refreshDelayMs({ ...(stray === undefined ? {} : { [REFRESH_DELAY_ENV]: stray }), NODE_TEST_CONTEXT: "child-v8" }), 0, String(stray));
 });
@@ -797,4 +798,40 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
     assert.match(error.message, /its authorization server's endpoint https:\/\/mcp\.example\.test\/\S+ could not be reached \(DNS lookup timed out\)\.$/);
     return true;
   });
+});
+
+/** A loopback service on `host` that counts what reaches it; undefined where this machine can't listen there. */
+async function targetOn(t, host) {
+  const hits = [];
+  const http = createServer((req, res) => (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const listening = await new Promise((resolve) => http.once("error", () => resolve(false)).listen(0, host, () => resolve(true)));
+  if (!listening) return undefined;
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  return { origin: `http://${host.includes(":") ? `[${host}]` : host}:${http.address().port}`, port: http.address().port, hits };
+}
+
+test("a loopback MCP server's authorization server may use only the MCP server's own loopback host, and never this server's own port: another loopback address, or this server's port, is refused and hears nothing", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  // This server's own address: a service on its port stands for it.
+  const own = await targetOn(t, "127.0.0.1");
+  const elsewhere = [await targetOn(t, "127.0.0.2"), await targetOn(t, "::1")].filter(Boolean);
+  for (const at of [own, ...elsewhere]) {
+    for (const [what, metadata] of [["token endpoint", { token_endpoint: `${at.origin}/x` }], ["registration endpoint", { registration_endpoint: `${at.origin}/x` }]]) {
+      const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+      t.after(() => mcp.close());
+      const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+      store.attach(own.origin);
+      await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), `${what} at ${at.origin}`);
+    }
+    assert.deepEqual(at.hits, [], `${at.origin} heard nothing`);
+  }
+  assert.ok(elsewhere.length >= 1, "at least one other loopback address to try");
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+  // The MCP server's own loopback host, on another port (its authorization server's), still signs in: the repo's fake.
+  const { mcp } = await fakes(t);
+  const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+  store.attach(own.origin);
+  assert.match((await store.oauthStart("docs", { url: mcp.url })).authorization_url, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
 });
