@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { directionProblems } from './check-direction.mjs';
+import { directionProblems, withoutComments } from './check-direction.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = await mkdtemp(join(tmpdir(), 'agentrun-direction-'));
@@ -94,4 +94,14 @@ test('a workspace with no layer, or a layer naming no workspace, fails', async (
   assert.deepEqual(problems, ['packages/new has no layer: add it to LAYERS in scripts/check-direction.mjs']);
   const gone = await directionProblems(await workspace(), { layers: { ...layers, subsystem: ['packages/s', 'packages/gone'] }, may, exceptions: [] });
   assert.deepEqual(gone, ['LAYERS names packages/gone, which is not a workspace: delete it']);
+});
+
+test('comments are not edges: a commented-out import, or a comment quoting a package, does not count', async () => {
+  assert.deepEqual(await check({ 'packages/k/src/a.ts': "// import { serve } from '@x/v';\n/* import '@x/v';\n   still a comment */\nconst url = 'https://example.org//a';\n" }), []);
+  const kept = await check({ 'packages/k/src/a.ts': "import '@x/v'; // a trailing note\n" });
+  assert.equal(kept.length, 1, kept.join('; '));
+  assert.match(kept[0], /^packages\/k\/src\/a\.ts:1: /);
+  const reason = ['why', 'the fix'];
+  assert.deepEqual(await check({ 'packages/k/src/a.ts': "import { serve } from '@x/v';\n// import { other } from '@x/v';\n" }, [['packages/k/src/a.ts', 'packages/v', 1, ...reason]]), []);
+  assert.equal(withoutComments("a // b\n'c // d'"), "a     \n'c // d'");
 });

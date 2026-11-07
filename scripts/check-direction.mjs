@@ -4,7 +4,7 @@
 // package and talks to the server through its API alone. An edge is a manifest dependency, or a quoted string in source
 // that names a workspace package (an import, export-from, import(), require, import.meta.resolve, or a constant passed to
 // one) or a relative path that lands in another package, or, in a surface, the name of one of the server's own data files.
-// Tests, fixtures, vendor and dist are not read, and neither is devDependencies (build and test time only) nor backtick text (it
+// Tests, fixtures, vendor, dist and comments are not read, and neither is devDependencies (build and test time only) nor backtick text (it
 // is prose far more often than an import). Today's wrong edges are EXCEPTIONS, each with its count, reason and fix:
 // a new wrong edge fails, and so does an exception that no longer occurs in full, so the table only shrinks.
 // `node scripts/check-direction.mjs` exits non-zero with the problems (`--list` prints every wrong edge, excepted or not);
@@ -115,6 +115,33 @@ async function serverFiles(root, layers) {
   return names;
 }
 
+/** `text` with every line comment and block comment blanked to spaces (newlines kept, so line numbers hold); strings
+ *  and template text are kept whole, so a `//` inside a quoted URL stays. A commented-out import is not an edge. */
+export function withoutComments(text) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (quote) {
+      out += c;
+      if (c === '\\') { out += next ?? ''; i += 1; }
+      else if (c === quote || (c === '\n' && quote !== '`')) quote = null;
+      continue;
+    }
+    if (c === '/' && (next === '/' || next === '*')) {
+      const end = next === '/' ? text.indexOf('\n', i) : text.indexOf('*/', i + 2);
+      const stop = end === -1 ? text.length : next === '/' ? end : end + 2;
+      out += text.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop - 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') quote = c;
+    out += c;
+  }
+  return out;
+}
+
 const lineOf = (text, index) => text.slice(0, index).split('\n').length;
 
 /** Every edge from one workspace to another: { file, line, from, to, via }. */
@@ -133,7 +160,7 @@ export async function edges(root, layers = LAYERS) {
       }
     }
     for (const file of await sourceFiles(join(root, dir))) {
-      const text = await readFile(file, 'utf8');
+      const text = withoutComments(await readFile(file, 'utf8'));
       const rel = posix(relative(root, file));
       // A quoted run with no space or quote in it: a module specifier, a path or a file name. Prose apostrophes pair
       // across spaces, so they never match.
