@@ -34,9 +34,9 @@ if (unknown.length || (baseAt >= 0 && !baseRef)) fail(`usage: node scripts/test-
 // Seconds measured on a clean run, for the order of a first run only; a run's own times replace them.
 const SEED = {
   '@parcha/agentrun-serve': 260, '@parcha/agentrun-dsl': 172, '@parcha/pi-transport': 121, '@parcha/pi-browser': 83,
-  '@parcha/agentrun-harness-codex': 76, '@parcha/pi-agent-learn': 75, '@parcha/agentrun-pi': 52,
+  '@parcha/agentrun-harness-codex': 76, '@parcha/agentrun-pi': 52,
   '@parcha/agentrun-harness-claude': 33, '@parcha/pi-durable-disk': 31,
-  '@parcha/pi-git-remote': 25, '@parcha/pi-durable-agent': 10.5, '@parcha/agentrun-jev': 6, '@parcha/agentrun-kernel': 3,
+  '@parcha/pi-durable-agent': 10.5, '@parcha/agentrun-jev': 6, '@parcha/agentrun-kernel': 3,
   '@parcha/agentrun-decisions': 3,
 };
 const TIMES = join(root, 'node_modules', '.cache', 'agentrun-test-times.json');

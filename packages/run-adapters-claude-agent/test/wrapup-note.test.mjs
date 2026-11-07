@@ -3,7 +3,7 @@
 // block it was on and the cached prefix ends where it did.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { anthropicPolicy } from '../dist/host/policy.js';
+import { anthropicAnswers, anthropicPolicy } from '../dist/host/policy.js';
 
 const policy = anthropicPolicy({ model: 'claude-main', smallModel: 'claude-small', tools: ['lookup'] });
 const NOTE = 'About $0.07 left of this run\'s budget: finish now with your answer.';
@@ -55,7 +55,8 @@ test('through the proxy, a turn\'s first request ([user, system]) is admitted at
   const fetchUp = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{}', { headers: { 'content-type': 'application/json' } }));
   const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, log: () => {}, fetch: fetchUp }, 'session-key');
   t.after(() => proxy.close());
-  const start = { model: 'claude-main', max_tokens: 32_000, messages: [{ role: 'user', content: 'Write the report.' }, { role: 'system', content: [{ type: 'text', text: 'The current date is 2026-11-07.' }] }] };
+  // As the real CLI sends a turn's first request in a session with a tool: the session's tool offered, its system message last.
+  const start = { model: 'claude-main', max_tokens: 32_000, tools: [{ name: 'mcp__hands__lookup', description: 'Look up a thing.', input_schema: { type: 'object', properties: {} } }], messages: [{ role: 'user', content: 'Write the report.' }, { role: 'system', content: [{ type: 'text', text: 'The current date is 2026-11-07.' }] }] };
   const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(start) });
   await res.text();
   assert.equal(res.status, 200);
@@ -63,4 +64,70 @@ test('through the proxy, a turn\'s first request ([user, system]) is admitted at
   const [request] = asked;
   assert.equal(request.noted, true, 'admitted as carrying the note');
   assert.ok(request.inputTokensMax - request.inputTokensMaxWithoutNote >= Buffer.byteLength(`<system-reminder>${NOTE}</system-reminder>`, 'utf8'), `its bound counts the note's bytes: ${request.inputTokensMax} vs ${request.inputTokensMaxWithoutNote} without it`);
+});
+
+test('a title or summary call on the session\'s own model (no small model set, so the CLI sends it on the main one) takes no note: only the turn\'s answer request, which offers the session\'s tools, takes it', async (t) => {
+  const { startModelProxy } = await import('@parcha/agentrun-kernel/host');
+  const own = anthropicPolicy({ model: 'claude-main', tools: ['lookup'] });
+  const forwarded = [];
+  const notes = [NOTE];
+  const hooks = { beforeRequest: async () => {}, afterRequest: async () => {}, note: () => notes.shift() };
+  const fetchUp = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{}', { headers: { 'content-type': 'application/json' } }));
+  const proxy = await startModelProxy({ policy: own, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, log: () => {}, fetch: fetchUp }, 'session-key');
+  t.after(() => proxy.close());
+  const post = async (sent) => {
+    const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(sent) });
+    await res.text();
+    return res.status;
+  };
+  // The CLI's title call: the session's model, a short prompt, no tools.
+  const title = { model: 'claude-main', max_tokens: 512, messages: [{ role: 'user', content: [{ type: 'text', text: 'Write a 5-10 word title for this conversation.' }] }] };
+  const turn = { ...body(), max_tokens: 32_000, tools: [{ name: 'mcp__hands__lookup', description: 'Look up a thing.', input_schema: { type: 'object', properties: {} } }] };
+  assert.deepEqual([await post(title), await post(turn)], [200, 200], 'both forwarded');
+  const carries = (sent) => JSON.stringify(sent.messages.findLast((message) => message.role === 'user').content).includes(NOTE);
+  assert.deepEqual(forwarded.map(carries), [false, true], 'the title call goes as the CLI sent it; the turn\'s request carries the note');
+});
+
+test('a session with no tools is never left untold: with nothing to tell its requests apart, its turn request, which offers no tools, takes the note', async (t) => {
+  const { startModelProxy } = await import('@parcha/agentrun-kernel/host');
+  const bare = anthropicPolicy({ model: 'claude-main', tools: [] });
+  const turn = { model: 'claude-main', max_tokens: 32_000, messages: [{ role: 'user', content: [{ type: 'text', text: 'Write the report.' }] }] };
+  assert.equal(bare.answers?.(turn), true, 'no session tools: every request counts as the turn\'s');
+  const forwarded = [];
+  const notes = [NOTE];
+  const hooks = { beforeRequest: async () => {}, afterRequest: async () => {}, note: () => notes.shift() };
+  const fetchUp = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{}', { headers: { 'content-type': 'application/json' } }));
+  const proxy = await startModelProxy({ policy: bare, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, log: () => {}, fetch: fetchUp }, 'session-key');
+  t.after(() => proxy.close());
+  const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(turn) });
+  await res.text();
+  assert.equal(res.status, 200);
+  assert.equal(JSON.stringify(forwarded[0]?.messages.at(-1).content).includes(NOTE), true, 'the turn\'s request carries the note');
+});
+
+test('a session whose only tools are a remote MCP server\'s tells its requests apart by them: a body offering one is the turn\'s, a body offering none is not', () => {
+  const options = { tools: [], mcpTools: ['mcp__docs__search'] };
+  assert.equal(anthropicAnswers({ tools: [{ name: 'mcp__docs__search', input_schema: { type: 'object' } }] }, options), true, 'a body offering the remote tool is the turn\'s');
+  assert.equal(anthropicAnswers({ messages: [] }, options), false, 'a body offering no tool is a side call');
+});
+
+test('a session whose only tools are a remote MCP server\'s: its title call takes no note, and the turn\'s request, which offers the remote tool, takes it', async (t) => {
+  const { startModelProxy } = await import('@parcha/agentrun-kernel/host');
+  const remote = anthropicPolicy({ model: 'claude-main', tools: [], mcpTools: ['mcp__docs__search'] });
+  const forwarded = [];
+  const notes = [NOTE];
+  const hooks = { beforeRequest: async () => {}, afterRequest: async () => {}, note: () => notes.shift() };
+  const fetchUp = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{}', { headers: { 'content-type': 'application/json' } }));
+  const proxy = await startModelProxy({ policy: remote, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, log: () => {}, fetch: fetchUp }, 'session-key');
+  t.after(() => proxy.close());
+  const post = async (sent) => {
+    const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(sent) });
+    await res.text();
+    return res.status;
+  };
+  const title = { model: 'claude-main', max_tokens: 512, messages: [{ role: 'user', content: [{ type: 'text', text: 'Write a 5-10 word title for this conversation.' }] }] };
+  const turn = { model: 'claude-main', max_tokens: 32_000, tools: [{ name: 'mcp__docs__search', description: 'Search the docs.', input_schema: { type: 'object', properties: {} } }], messages: [{ role: 'user', content: [{ type: 'text', text: 'Find the install steps.' }] }] };
+  assert.deepEqual([await post(title), await post(turn)], [200, 200], 'both forwarded');
+  const carries = (sent) => JSON.stringify(sent.messages.findLast((message) => message.role === 'user').content).includes(NOTE);
+  assert.deepEqual(forwarded.map(carries), [false, true], 'the title call goes as the CLI sent it; the turn\'s request carries the note');
 });

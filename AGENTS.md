@@ -14,7 +14,7 @@ and delivery.
 ## Layout
 
 Each package's README is its API reference. Packages with no dependency on the others:
-`pi-durable-disk`, `pi-browser`, `pi-transport`, `pi-git-remote`.
+`pi-durable-disk`, `pi-browser`, `pi-transport`.
 
 | Path | What an agent must know |
 | --- | --- |
@@ -25,8 +25,6 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/pi-transport` | Vitest on source; its biome `lint` and Docker suite (`test:live:docker`) run in the `transport-docker` CI job |
 | `packages/pi-durable-agent` | Agent home; subpaths `./timeline`, `./export`, `./workflow`, `./serve`; bin `pi-durable-agent`. Only `./workflow` loads `dsl` and `pi`, lazily |
 | `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
-| `packages/pi-git-remote` | No repository hook, filter or driver ever runs; https credentials reach git only on fd 3. Tests need git 2.40+ and `openssl` |
-| `packages/pi-agent-learn` | Learning agent on `pi-git-remote`; locks `agent.json` and `AGENTS.md`, so `examples/agent-learn/agent/AGENTS.md` is runtime content. Tests need git 2.40+ |
 | `packages/decisions` | Held. Third-party decision models as `DecisionProvider`s (the seam and its conformance suite, `./testing`, are in `dsl`): `parallelProvider` for Parallel Decisions, key `PARALLEL_API_KEY` by name. A paid request is never re-sent unasked; a failure after sending is `outcome_unknown` and escalates as an interrupted decision. Tests use a fake fetch; `test/parallel.live.test.mjs` runs only with the key. Depends on `dsl` alone |
 | `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code from vercel-labs/durable-harness is tracked in `vendor/durable-harness/UPSTREAM.json`; never hand-edit `vendor/durable-harness/upstream/`. `scripts/port-durable-harness.mjs` regenerates the copies from those pristine files, the named patches and the import table under `vendor/durable-harness/port/`; `npm run verify:port` (`--check`) fails on any byte it does not make. The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
 | `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ models `Receipts.tla` and `Door.tla` (see Models of recovery) |

@@ -66,7 +66,6 @@ const bare = new Map([
   ['scripts/is-main.mjs', 'reads it, and where Node has none refuses the command'],
   ['scripts/is-main.test.mjs', 'names it in comments and checks that this runtime sets it'],
   ['scripts/check-node.mjs', 'names it in a comment, on why it refuses Node 23 and 24.0-24.1'],
-  ['examples/agent-learn/demo.mjs', copiedOut],
   ['examples/decision-demos/build.mjs', copiedOut],
   ['examples/research-eval.mjs', copiedOut],
   ['examples/research-live.mjs', copiedOut],
