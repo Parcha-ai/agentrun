@@ -804,3 +804,9 @@ test("files.list passes a daemon whose pages hold one entry each", async () => {
 		assert.equal(statuses(report)["files.list"], "pass", `pages of ${filesPage}: ${reasons(report)["files.list"]}`);
 	}
 });
+
+test("the provider cases compare a computer by its id and name, so a create that also returns notes still passes", async () => {
+	const notes = ["network: none; accepted with no answer (no bytes came back): 1.1.1.1:443"];
+	const report = await runConformance(fakeComputers({ notes }).provider, { image: IMAGE, cases: byId("provider.attach", "provider.list", "provider.janitor") });
+	assert.deepEqual(statuses(report), { "provider.attach": "pass", "provider.list": "pass", "provider.janitor": "pass" }, JSON.stringify(reasons(report)));
+});
