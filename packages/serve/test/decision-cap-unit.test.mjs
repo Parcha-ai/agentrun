@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { budgetWaits, CapStop } from "../dist/budget.js";
+import { budgetPausedIn, budgetWaits, CapStop, writeRaisedCap } from "../dist/budget.js";
 import { useSpend } from "../dist/cap.js";
 import * as decisionCap from "../dist/decision-cap.js";
 
@@ -176,4 +176,27 @@ test("mid-run, OpenRouter's catalog answering 200 with no list of models is a ca
   const { seen, waits } = fakeWaits();
   const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
   assert.deepEqual([await outcome(capped.before(async () => "answered", () => false), params()), seen.stops], [["threw", "DecisionProviderError", "connection"], []]);
+});
+
+test("concurrent waits and a raise too small for one of them: the step refused again under the raised cap leaves the pause's mark at that cap and its words, never the old cap's", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "stale-mark-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const spend = { cap: 0.12, spent: () => 0, add: () => undefined, raise: (usd) => void (spend.cap = usd) };
+  const waits = budgetWaits(root, spend, { holdMs: 60_000, letGo: () => undefined });
+  const refusedAt = (cap) => ({ words: `Not sent: the next step does not fit the $${cap} cap. Raise the cap to continue.`, room: true, capUsd: cap });
+  const stop = new AbortController();
+  // Two items of a map waiting at the $0.12 cap, their polls apart.
+  const a = waits.wait(refusedAt(0.12), stop.signal, { label: "each", path: "/root/steps/0/items/0/body" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const b = waits.wait(refusedAt(0.12), stop.signal, { label: "each", path: "/root/steps/0/items/1/body" });
+  assert.equal(budgetPausedIn(root)?.cap_usd, 0.12);
+  writeRaisedCap(root, 0.15);
+  assert.equal(await a, true);
+  // a's step, judged again under $0.15, is refused again (the raise was not enough) and waits, before b has seen the raise.
+  const again = waits.wait(refusedAt(0.15), stop.signal, { label: "each", path: "/root/steps/0/items/0/body" });
+  assert.equal(await b, true);
+  const mark = budgetPausedIn(root);
+  stop.abort();
+  await again;
+  assert.deepEqual({ cap_usd: mark?.cap_usd, words: mark?.words }, { cap_usd: 0.15, words: refusedAt(0.15).words }, "the pause is at the cap that refused it last: a let-go run is not opened again by the raise it already has (finishRaise reads the mark's cap)");
 });
