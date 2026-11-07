@@ -149,15 +149,18 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   /** Applies each browser charge `harness` commits, and each change of pi-browser's inventory (the document of kind
    *  `inventory`), once the commit is in: the charges first, so a release billed and ended in one commit is billed from
    *  its reserve before it goes. */
-  function watch(harness: Pick<Session, "subscribeCommits">, inventory = "browser.inventory"): void {
-    harness.subscribeCommits((publication) => {
-      for (const change of publication.changes) {
-        const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
-        if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
-      }
-      for (const change of publication.changes) {
-        if (change.type === "document" && change.record.kind === inventory && change.value) tracked(((change.value as { rows?: Record<string, Row> }).rows) ?? {});
-      }
+  function watch(harness: Pick<Session, "observeCommits">, inventory = "browser.inventory"): void {
+    harness.observeCommits({
+      advance: (publication) => {
+        for (const change of publication.changes) {
+          const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
+          if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
+        }
+        for (const change of publication.changes) {
+          if (change.type === "document" && change.kind === "change" && change.record.kind === inventory) tracked(((change.value as { rows?: Record<string, Row> }).rows) ?? {});
+        }
+      },
+      end: () => undefined,
     });
   }
 

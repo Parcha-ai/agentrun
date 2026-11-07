@@ -6,8 +6,9 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
-import { paidHolds, useSpend } from "../dist/cap.js";
+import { paidCall, paidHolds, useSpend } from "../dist/cap.js";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const START = "https://example.test/start";
@@ -264,7 +265,7 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   const releases = [];
   const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
   let listener;
-  spend.watch({ subscribeCommits: (fn) => (listener = fn) });
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
   const docs = { Inventory: "inventory", Sessions: "sessions" };
   const store = (final) => ({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString(), ...(final ? { final: true } : {}) } }] }) });
   // A session whose final charge landed before `kept` read it: nothing to hold, and nothing would ever drop the hold.
@@ -289,6 +290,87 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   assert.ok(Math.abs(held[0] - 0.077) < 1e-6, `spent and held as the call runs: ${held[0]}`);
   for (const figure of [...held, spent + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
   assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "after its charge the session holds one stretch again");
+});
+
+// ---- pi 1.5's commit observers detach on a throw (observeCommits) ----
+
+/** pi 1.5's observeCommits as the Session runs it: an `advance` that throws is reported, the observer is detached and
+ *  ended `listener_error`, and it hears no later commit (pi-durable types.d.ts, Session.observeCommits). */
+function piObserver() {
+  const state = { detached: false, observer: undefined };
+  return {
+    state,
+    harness: { observeCommits: (observer) => ((state.observer = observer), { detach: () => void (state.detached = true) }) },
+    publish(changes) {
+      if (state.detached) return;
+      try {
+        state.observer.advance({ seq: 1, changes }, undefined);
+      } catch (error) {
+        state.detached = true;
+        state.observer.end({ kind: "listener_error", error });
+      }
+    },
+    end: (end) => state.observer.end(end),
+  };
+}
+/** A browser charge's commit, as onCharge books it. */
+const chargeOf = (tag, usd) => [{ type: "entry", value: { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: null, usd, seconds: 60, tag, conversation: 1, at: new Date(T0).toISOString(), final: false } } }];
+/** A run's spend whose count fails `failures` times, then adds; an unknown figure (null) makes it unknown for good. */
+function countingSpend(cap, failures = 0) {
+  const spend = { spent: 0, adds: [] };
+  useSpend({ cap, spent: () => spend.spent, add: (usd) => {
+    spend.adds.push(usd);
+    if (failures-- > 0) throw new Error("the count failed");
+    spend.spent = spend.spent === null || usd === null ? null : spend.spent + usd;
+  } });
+  return spend;
+}
+/** The cap's refusal of a spend no one knows (cap-unknown.test.mjs). */
+const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
+
+test("a browser charge the process fails to count (pi 1.5 detaches an observer that throws): the observer stays attached, a later charge still reaches the count, and the run's spend reads unknown, logged once: never silently uncounted", (t) => {
+  t.after(() => useSpend(undefined));
+  const spend = countingSpend(5, 1);
+  const lines = [];
+  const pi = piObserver();
+  browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line)).watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  pi.publish(chargeOf("ar-1", 0.02));
+  assert.equal(pi.state.detached, false, "the observer stays attached");
+  assert.ok(spend.adds.includes(0.02), `the later charge still reaches the count: ${JSON.stringify(spend.adds)}`);
+  assert.equal(spend.spent, null, "the run's spend reads unknown, never the later charge alone");
+  assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
+});
+
+test("on a capped run, a browser charge the process failed to count refuses the run's next paid call as unknown spend, in the cap's own words", async (t) => {
+  t.after(() => useSpend(undefined));
+  countingSpend(5, 1);
+  const pi = piObserver();
+  browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  let sent = 0;
+  const answer = await paidCall("a paid call", async () => (sent += 1), () => 0, { usd: 0.001, basis: "a test's" });
+  assert.match(answer.refused ?? "", UNKNOWN, JSON.stringify(answer));
+  assert.equal(sent, 0, "not sent");
+});
+
+test("an observer pi ends before the run's own end (listener_error, failed) leaves the run's browser spend unknown, never silently uncounted", (t) => {
+  t.after(() => useSpend(undefined));
+  for (const end of [{ kind: "listener_error", error: new Error("a listener threw") }, { kind: "failed", error: new Error("the Session failed") }]) {
+    const spend = countingSpend(5);
+    const pi = piObserver();
+    browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
+    pi.publish(chargeOf("ar-1", 0.01));
+    pi.end(end);
+    assert.equal(spend.spent, null, `${end.kind}: unknown`);
+  }
+  // The Session's own close ends it `ended`: what was counted stands.
+  const closed = countingSpend(5);
+  const pi = piObserver();
+  browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
+  pi.publish(chargeOf("ar-1", 0.01));
+  pi.end({ kind: "ended" });
+  assert.equal(closed.spent, 0.01, "a normal end keeps the count");
 });
 
 // Last of this process's runs: its first process's reserve stays in this process's holds (a real one would be gone).
