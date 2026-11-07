@@ -8,6 +8,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
+import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { ROUTES } from "../dist/server.js";
 import { call, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
@@ -173,7 +174,7 @@ test(`a message a run already took (${harness}), its firing left due by a restar
   const read = (await second.api("GET", `/runs/${run.run_id}`)).body;
   assert.equal(read.status, "completed", "not opened again");
   const { rows } = await follow(second.api, run.run_id, ["completed"]);
-  assert.equal(rows.filter((row) => row.kind === "user_message").length, 2, "the message once");
+  assert.equal(rows.filter(isMessageRow).length, 2, "the message once");
 });
 
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -194,7 +195,7 @@ async function refusedWhileBusy(api, baseUrl, go) {
   }
 }
 
-const userMessages = (rows) => rows.filter((row) => row.kind === "user_message").length;
+const userMessages = (rows) => rows.filter(isMessageRow).length;
 
 // A harness's door (claude-agent here; codex and opencode take the same door) refuses a firing's message while a turn
 // works. The refusal is not the request's outcome: the retry after the turn ends reaches the run.

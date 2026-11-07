@@ -12,11 +12,12 @@ full VM, a machine. The protocol has two layers:
 
 ## What it does today
 
-The daemon answers `hello`, `ping` and `exec.run`.
+The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods and `tar.*`; hello's capabilities are
+`["exec", "files"]`.
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","arch":"arm64","capabilities":["exec"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","arch":"arm64","capabilities":["exec","files"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
@@ -37,10 +38,72 @@ The daemon answers `hello`, `ping` and `exec.run`.
   A Docker computer drops every capability, so there a command runs as the daemon's own user.
 - Requests run at once; replies may come in any order. A line over 1 MiB gets an error reply and the connection goes
   on. When the input ends, what still runs is cancelled.
-- Errors are `{code, message, data: {kind}}`, with kind `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`
-  or `unsupported`.
+- Errors are `{code, message, data: {kind}}`, with kind `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`,
+  `unsupported`, `exists`, `not_dir` or `is_dir`.
 
-`src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go.
+### Files
+
+Every path is absolute, and the daemon cleans it; a relative path is `invalid`. Files are read and written as the
+daemon's user, and data is base64. In a Docker computer that is the computer's user, non-root by default, so it writes
+in `/work` (its home) and `/tmp`; the image's root-owned directories are `denied`.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `files.read` | `path, offset?, length?` | `{data, eof, size}`: at most 512 KiB a call; a larger `length` is `limit` |
+| `files.write` | `path, data, offset?, append?, mode?, parents?` | `{size}`: replaces the file unless `offset` or `append`; makes it if missing (through a dangling symlink too); `mode` is set when given (a new file gets 0644); `parents` makes missing directories |
+| `files.stat` | `path, follow?` | `{type, size, mode, mtimeMs, uid, gid, target?}`: `type` is `file`, `dir`, `symlink` or `other`; a symlink is reported as one unless `follow` |
+| `files.list` | `path, depth?, offset?` | `{entries, truncated}`: entries carry the stat fields and `path`, in walk order (by name, a directory before its contents); `depth` 1 (default) to 16; symlinks are listed, never entered; at most 1000 entries (and 768 KiB) a reply: when `truncated`, list again with `offset` plus the entries read |
+| `files.mkdir` | `path, parents?, mode?` | `{}`: mode 0755 unless given; a directory already there is `exists`, or fine with `parents` |
+| `files.move` | `from, to, overwrite?` | `{}`: a rename; without `overwrite` it never replaces what is at `to` (`exists`), checked in the same step as the rename (renameat2 with RENAME_NOREPLACE; a file is linked and unlinked where that is missing, a directory refused); across filesystems is `unsupported` |
+| `files.remove` | `path, recursive?` | `{}`: a directory with entries is `is_dir` unless `recursive`; a symlink is removed, never followed; `/` is `denied` |
+
+Tar archives move whole trees without holding an archive in memory, and no line passes 1 MiB:
+
+- `tar.pull.begin {path}` returns `{id}` for the tar of a file (one entry, its name) or a directory (entries relative
+  to it); `tar.pull.read {id, maxBytes?}` returns `{data, eof}`, the next `maxBytes` (default and most 512 KiB) of the
+  archive, fewer only at its end; `tar.pull.end {id}` returns `{}`, stops the pull and frees it, and may be sent
+  again. The daemon writes the archive only as it is read, so a pull holds at most one read's bytes. Symlinks are
+  archived as links; sockets, devices and pipes are left out. A connection has at most 8 pulls open, and those still
+  open when it ends are ended with it.
+- `tar.push.begin {path}` makes the directory if missing and returns `{id}`; `tar.push.write {id, data}` hands it the
+  next bytes (send each after the last one's reply), and extraction runs as they come; `tar.push.end {id}` returns
+  `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a directory keeps
+  owner access until the archive ends, then gets its mode, deepest first, whether the push made it or found it. An
+  entry that is absolute, has a `..` part, or has a symlink or a file on its way is `denied`, and ends the push;
+  entries before it stay. A symlink at an entry's own name is replaced, never followed. A file is written beside its
+  target and renamed into place, so a failed or abandoned push leaves no half file. Hard links, devices and pipes are
+  `invalid`. A connection has at most 8 pushes open, and those still open when it ends are ended with it.
+
+`src/files.ts` has the helpers that go past one call: `readFile(client, path)`, `writeFile(client, path, bytes)` (a
+`mode` is set with the last chunk, so a read-only file over 512 KiB can be written),
+`pushTar(client, dir, bytes | AsyncIterable<Uint8Array>)`, `pullTar(client, path)` (the archive's bytes) and
+`pullTarStream(client, path, {signal})` (`{chunks, done}`: one `tar.pull.read` each time the loop asks for a chunk,
+and how the pull ended). Every call is a request and its reply: a slow reader holds back only its own pull, so
+`pushTar(client, dir, pullTarStream(client, path).chunks)` copies a tree on one connection. A push or pull that began
+is always ended, whether it finished, failed, was left or was aborted. `pushTar` owns its source: unless the source is
+read to its end, the push calls its `return()` however it ends, so a pull piped into a push that fails is ended too.
+
+### Security
+
+- A push confines every write to its directory at the moment of the write, even while other pushes, or programs in
+  the computer running as another user, change the tree under it. The daemon opens the directory once and reaches
+  each entry from that descriptor one name at a time, never following a symlink (`openat` with `O_NOFOLLOW`, `mkdirat`,
+  `renameat`, `symlinkat`, `fchmod` on a descriptor). No path is checked and then used by name, so a directory swapped
+  for a symlink between two steps refuses the entry instead of redirecting it.
+- `files.write`, `files.mkdir`, `files.move` and `files.remove` act on the absolute path the caller chose and make no
+  promise to confine it: they resolve it by name, as any program in the computer would, and follow a symlink on the
+  way. The daemon does not confine them: the container is the only boundary. A provider that runs the daemon as root
+  and programs as a lesser user must confine these calls first. A caller that needs a write held inside one directory
+  against a concurrent actor pushes a tar into that directory.
+- `files.read`, `files.write` and a pull open a file first and then check what they opened (`fstat` on the
+  descriptor), never a path checked and then opened by name. The open carries `O_NONBLOCK`, so a FIFO or a device,
+  there from the start or swapped in by another program, never makes it wait: `files.read` and `files.write` refuse
+  it as `invalid` (a directory is `is_dir`), and a pull leaves it out. A pull opens each file with `O_NOFOLLOW` and
+  writes its tar header from that descriptor's `fstat`, so the header matches the bytes it reads; a file that became
+  a symlink is left out too.
+
+`src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
+params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
 
 ## Docker
 
@@ -108,6 +171,8 @@ architecture, and remove every container they make by its exact name, pass or fa
 The daemon copies code, with credit, from two Apache-2.0 projects. NOTICE names them; UPSTREAM.json records each copied
 file, the commit, and what changed.
 
-- [E2B infra](https://github.com/e2b-dev/infra), envd: the user, credential and environment setup of a process.
+- [E2B infra](https://github.com/e2b-dev/infra), envd: the user, credential and environment setup of a process; a
+  file's entry info and the listing to a depth.
 - [Kubernetes agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), sandboxd: the exit status and the
-  bounded output of a run with limits.
+  bounded output of a run with limits; filesystem errors, mkdir, move and remove, and tar extraction confined to its
+  directory.

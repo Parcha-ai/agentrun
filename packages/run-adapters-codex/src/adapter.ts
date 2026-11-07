@@ -76,6 +76,9 @@ export interface CodexAdapterOptions {
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** For tests: a command that speaks app-server's protocol instead of Codex (needs AGENTRUN_CODEX_STANDIN=1 under a test runner). */
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
+  /** The Codex binary to run, as the host installed it (its path, and its platform package's version): checked against
+   *  the pins as one found here is. Default: found beside this package (findCodex). */
+  binary?: { path: string; packageVersion?: string };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
 }
@@ -95,7 +98,9 @@ export function kernelTool(tool: HostTool): KernelTool {
     async execute(input, io) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
       const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      const result = await tool.call(input, { callId, signal: io.signal });
+      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
+      const attempt = Number(/#(\d+)$/.exec(io.stepId ?? "")?.[1] ?? 0);
+      const result = await tool.call(input, { callId, signal: io.signal, attempt });
       // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
       if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
@@ -145,7 +150,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   const seed = skills.length ? skillsSeed(skills) : undefined;
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
-  const checked = options.standIn ? undefined : verifyCodex().path;
+  const checked = options.standIn ? undefined : verifyCodex(options.binary).path;
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;

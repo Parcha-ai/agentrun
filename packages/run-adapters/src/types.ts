@@ -50,7 +50,7 @@ export interface HostTool {
    *  for a person's approval, so it did not run, and the text says it waits. `sessionDir` is the runner's own,
    *  when it has one: a tool that runs a node of its own (the delegate) gives its child a private directory the same
    *  way, by the child's key. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -133,6 +133,12 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
+  /** On another model than the session's: a client's side call (a title, a summary), never its turn's own. */
+  side?: true;
+  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+   *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
+  noted?: true;
+  inputTokensMaxWithoutNote?: number;
 }
 
 /** What a paid request cost, once it completed. */
@@ -176,6 +182,9 @@ export interface ModelPort {
   afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
+  /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). */
+  note?(model: string): string | undefined;
 }
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
@@ -184,6 +193,9 @@ export interface ModelTicket {
   /** The most output tokens, thinking included, the request may be sent with: what is left of its host's spend cap can
    *  buy. The session's model proxy writes it into the body; absent, the request goes as asked. */
   outputTokensMax?: number;
+  /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
+   *  request goes as its client sent it, and the note waits for another request. */
+  noteDropped?: true;
 }
 
 /** What the host lends a session. */

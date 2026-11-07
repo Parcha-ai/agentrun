@@ -1,14 +1,16 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { claudeAgentExecutable } from "@parcha/agentrun-harness-claude";
+import { codexTarget } from "../../run-adapters-codex/dist/binary.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -21,9 +23,9 @@ export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathna
 // set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
 // setting over a fake docker (docker-by-default.test.mjs).
 process.env.AGENTRUN_BOXES = "none";
-// No test reaches npm's registry: a server whose data holds no Claude Code would install it on first use (claude-sdk.ts)
-// from the registry npm is configured for. A test that installs names its own fake (claude-first-use.test.mjs); any other
-// such install fails at once on this closed port rather than downloading Claude Code.
+// No test reaches npm's registry: a server whose data holds no Claude Code or Codex would install it on first use
+// (harness-install.ts) from the registry npm is configured for. A test that installs names its own fake (fake-npm.mjs);
+// any other such install fails at once on this closed port rather than downloading a CLI.
 for (const name of ["npm_config_registry", "NPM_CONFIG_REGISTRY"]) process.env[name] = "http://127.0.0.1:9/";
 // And gives up there at once: no retry with npm's backoff, a short timeout, so a test can never wait on such an install.
 for (const [name, value] of [["fetch_retries", "0"], ["fetch_timeout", "5000"]]) for (const spelling of [`npm_config_${name}`, `NPM_CONFIG_${name.toUpperCase()}`]) process.env[spelling] = value;
@@ -37,11 +39,17 @@ export function jsonLines(file) {
   return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-export async function scratch(t) {
+/** Scratch directories, removed once this file's tests are done. node:test runs a test's after-hooks in the order they
+ *  were added, so a removal added as a directory is made would run before the stop of a server or child started in it
+ *  afterwards, while that process still writes there (ENOTEMPTY). At the file's end every test's stops have run. */
+const scratchDirs = new Set();
+// Added as this module loads, so it is the file's own hook (one added inside a test would be that test's).
+after(() => Promise.all([...scratchDirs].map((dir) => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })))));
+
+export async function scratch(_t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY). Writable first: a first use
-  // leaves Claude Code read-only (claude-sdk.ts).
-  t.after(() => writableTree(dir).then(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
+  // Writable first, when it goes: a first use leaves its harness read-only (harness-install.ts).
+  scratchDirs.add(dir);
   return dir;
 }
 
@@ -111,45 +119,64 @@ export async function builtConsole(t) {
   return root;
 }
 
-/** The packages a first use installs into `<data>/harnesses` (claude-sdk.ts), linked there from this repository's own
- *  (the Claude Agent SDK, a dev dependency, its CLI's platform package and the MCP library), so a server on `data` runs
- *  claude-agent as one whose Claude Code is installed, with no npm. `cli`: the file its platform package holds as the
- *  CLI instead (one off its pins, or a path where nothing is). Nothing when the pinned CLI is not here. */
-export async function linkClaudeSdk(data, { cli } = {}) {
-  const pinned = claudeAgentExecutable();
-  if (!pinned) return;
+/** The packages the first-use installs put into `<data>/harnesses/<harness>` (harness-install.ts), linked there from this
+ *  repository's own (the Claude Agent SDK, a dev dependency, with its CLI's platform package and the MCP library; Codex's
+ *  launcher with this platform's binary package), so a server on `data` runs claude-agent and codex as one where both are
+ *  installed, with no npm. `cli`: the file Claude's platform package holds as its CLI instead (one off its pins, or a
+ *  path where nothing is); `codexBin`, the same for Codex's binary; `codex: false` leaves Codex out. A harness whose pinned
+ *  CLI is not here is left out. */
+export async function linkHarnesses(data, { cli, codex = true, codexBin } = {}) {
   const from = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
-  const to = join(data, "harnesses", "node_modules");
-  const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
   const link = (target, path) => symlink(target, path).catch((error) => (error.code === "EEXIST" ? undefined : Promise.reject(error)));
-  for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
-    await mkdir(dirname(join(to, name)), { recursive: true });
-    await link(join(from, name), join(to, name));
+  const pinned = claudeAgentExecutable();
+  if (pinned) {
+    const to = join(data, "harnesses", "claude-agent", "node_modules");
+    const platform = `@anthropic-ai/${basename(dirname(pinned))}`;
+    for (const name of ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", ...(cli ? [] : [platform])]) {
+      await mkdir(dirname(join(to, name)), { recursive: true });
+      await link(join(from, name), join(to, name));
+    }
+    if (cli) {
+      // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
+      await mkdir(join(to, platform), { recursive: true });
+      await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+      if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
+    }
   }
-  if (cli) {
-    // Its own file in the tree, as an install would leave it (one that is not there is a tree without its CLI).
-    await mkdir(join(to, platform), { recursive: true });
-    await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
-    if (existsSync(cli)) await copyFile(cli, join(to, platform, basename(pinned)));
+  const target = codexTarget();
+  if (codex && target && existsSync(join(from, "@openai", `codex-${target.pkg}`))) {
+    const to = join(data, "harnesses", "codex", "node_modules");
+    const platform = `@openai/codex-${target.pkg}`;
+    for (const name of ["@openai/codex", ...(codexBin ? [] : [platform])]) {
+      await mkdir(dirname(join(to, name)), { recursive: true });
+      await link(join(from, name), join(to, name));
+    }
+    if (codexBin) {
+      // Its own file in the tree, as an install would leave it (one that is not there is a tree without its binary).
+      const bin = join(to, platform, "vendor", target.target, "bin");
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(to, platform, "package.json"), readFileSync(join(from, platform, "package.json")));
+      if (existsSync(codexBin)) await copyFile(codexBin, join(bin, "codex"));
+    }
   }
 }
 
-/** A data directory for test `t` holding Claude Code as a first use installs it (linkClaudeSdk), for a test that makes
- *  claude-agent's adapter itself (adapters.ts claudeOf, which loads the SDK from the data its env names). */
-export async function claudeData(t) {
+/** A data directory for test `t` holding Claude Code and Codex as the first-use installs put them (linkHarnesses), for a
+ *  test that makes an adapter itself (adapters.ts claudeOf, codexOf, which load from the data their env names). */
+export async function harnessData(t) {
   const data = await scratch(t);
-  await linkClaudeSdk(data);
+  await linkHarnesses(data);
   return data;
 }
 
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
- *  data holds Claude Code as a first use installs it (linkClaudeSdk; `claudeSdk: { cli }` with that CLI); `claudeSdk`
- *  says so for any server, `false` for none. */
-export async function serve(t, { claudeSdk: asked, ...options } = {}) {
-  const claudeSdk = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
+ *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
+ *  them); `harnesses` says so for any server, `false` for none. */
+export async function serve(t, { harnesses: asked, ...options } = {}) {
+  const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
-  if (claudeSdk) await linkClaudeSdk(data, claudeSdk === true ? {} : claudeSdk);
+  if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", ...options });
   t.after(async () => {
     await server.close();
@@ -452,4 +479,27 @@ export function runIds(data) {
 export function runsFolders(data) {
   const agents = join(data, "disk", "agents");
   return (existsSync(agents) ? readdirSync(agents) : []).map((agent) => join(agents, agent, "runs")).filter((folder) => existsSync(folder));
+}
+
+/** What a faux process noted in `file` as JSON (a held process's pid and where it held): null while the file does not
+ *  exist, and while its JSON is not all in (an empty or partial read: a note being written), so a poll goes on. The faux
+ *  processes write each note whole (writeWhole); this is the test's side of the same race. `read`: how the file is read
+ *  (a test's stub). */
+export async function jsonIn(file, read = (path) => readFile(path, "utf8")) {
+  const text = await read(file).catch(() => null);
+  if (text === null || !text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** `file`'s JSON once a faux process has noted it (jsonIn), polled every 50 ms; fails saying `reaching` after `ms`. */
+export async function writtenJson(file, reaching, { ms = 55_000, read } = {}) {
+  for (const end = Date.now() + ms; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    const value = await jsonIn(file, read);
+    if (value !== null) return value;
+    assert.ok(Date.now() < end, reaching);
+  }
 }

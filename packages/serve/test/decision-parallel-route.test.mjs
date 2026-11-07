@@ -120,3 +120,34 @@ test("with neither key, a node naming parallel saves with a warning naming both,
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"] } });
 });
+
+/** A faux OpenRouter whose answer also cites hostile pages: a javascript: link, a credentialed URL, an HTML title and a
+ *  1 MB passage. */
+async function hostileRouter(t) {
+  const dir = await scratch(t);
+  const module = join(dir, "faux-openrouter-hostile.mjs");
+  await writeFile(module, [
+    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
+    `const cite = (url, title, content) => ({ type: "url_citation", url_citation: { url, title, content } });`,
+    `export default async (url, init = {}) => {`,
+    `  const answered = await faux(url, init);`,
+    `  const body = await answered.json();`,
+    `  body.annotations = [...(body.annotations ?? []), cite("javascript:alert(document.cookie)", "Click", "x"), cite(["https://user", "pw@evil.example/"].join(":"), "Creds", "y"), cite("https://ok.example/html", "<img src=x onerror=alert(1)>", "e".repeat(1024 * 1024))];`,
+    `  return new Response(JSON.stringify(body), { status: answered.status, headers: { "content-type": "application/json" } });`,
+    `};`,
+  ].join("\n"));
+  return module;
+}
+
+test("hostile citations on the OpenRouter route: a javascript: or credentialed URL is dropped, an HTML title stays text, a 1 MB passage is cut", async (t) => {
+  withEnv(t, { OPENROUTER_API_KEY: ROUTER_KEY, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
+  const { api, data } = await serve(t, { fauxOpenrouter: await hostileRouter(t), fauxParallel: FAUX_PARALLEL });
+  const { runId } = await runParallel(t, api);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(run.status, "completed", JSON.stringify(run.error));
+  const [receipt] = durableDecisions(join(runDir(data, runId), "store", "run.sqlite"));
+  assert.deepEqual(receipt.evidence.map((e) => e.url), ["https://registry.example.test/widgets", "https://ok.example/html"], "only http(s) without credentials");
+  const html = receipt.evidence[1];
+  assert.equal(html.title, "<img src=x onerror=alert(1)>", "the title is literal text");
+  assert.ok(html.excerpts[0].length <= 4096 && html.excerpts[0].endsWith("…"), `the passage is cut: ${html.excerpts[0].length}`);
+});
