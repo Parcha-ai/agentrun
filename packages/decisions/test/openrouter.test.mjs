@@ -261,7 +261,7 @@ test("through judgeFromProviders, a node's timeoutMs that cuts the image check i
   assert.deepEqual(posts, [], 'nothing was sent');
 });
 
-test("priceOf: a Decisions model's price as the public catalog lists it, read with the catalog; null for a model it lists no price for", async () => {
+test("priceOf: a Decisions model's price as the public catalog lists it, read with the catalog; null for a model it does not list", async () => {
   const { default: faux } = await import("../dist/testing/faux-system-one.js");
   const seen = [];
   const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: (url, init) => (seen.push(new URL(String(url)).pathname), faux(url, init)) });

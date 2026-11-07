@@ -1221,8 +1221,12 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
-  /** Raised workflow runs waiting for a place to open again in (finishRaise), tried again every PLACE_RETRY_MS. */
+  /** Raised workflow runs waiting for a place to open again in (finishRaise), tried again every PLACE_RETRY_MS, oldest
+   *  first: each has a place kept for it (placesKept), which no newer start takes. */
   private placeWaiters = new Set<Run>();
+  /** The waiters whose raise has taken its place and is launching (finishRaise): counted in `starting`, so never counted
+   *  again as a place kept for them. */
+  private placeTaking = new Set<Run>();
   private placeRetry: NodeJS.Timeout | undefined;
   private placeRetrying = false;
   /** Set once `close` is done: the store is closed, so nothing settles after it. */
@@ -3367,8 +3371,12 @@ export class Runs {
    *  cancelled) still holds its place until its process exits; a start that needs that place waits for it, up to that
    *  process's drain and kill, never refused for a place already being given back. A harness whose one run is more than
    *  the whole memory for runs is refused at once, never a 429 (capabilities say so too). From the read of what is held
-   *  to the reservation nothing awaits, so two starts at once never both take the last of it. */
-  private async takePlace(harness: string): Promise<() => void> {
+   *  to the reservation nothing awaits, so two starts at once never both take the last of it.
+   *  A raised run waiting for a place (finishRaise) has one kept for it, oldest first: the count and the memory of its
+   *  harness. Every other start counts the waiters' places as held, and a waiter (`waiter`) counts those ahead of it, so a
+   *  place that frees goes to the run that waited, never a newer start. A waiter for a large harness so holds back a
+   *  smaller start that would fit beside it: the price of never starving it. */
+  private async takePlace(harness: string, waiter?: Run): Promise<() => void> {
     const { memory, options: { maxRuns: max } } = this;
     const need = runMibOf(harness);
     const never = neverFits(harness, memory);
@@ -3378,15 +3386,28 @@ export class Runs {
       // cancelled or ends.
       // So does one that waits for its harness's install (waitsInstall), until that launch, a cancel or its end.
       const holding = [...this.runs.values()].filter((run) => this.live(run) || ((run.claimWait === true || run.waitsInstall === true) && !run.cancel && !run.outcome && !run.finishing));
-      const counted = max === undefined || holding.length + this.starting < max;
+      const kept = this.placesKept(waiter);
+      const keptMib = kept.reduce((sum, run) => sum + runMibOf(run.harness), 0);
+      const running = holding.length + this.starting;
+      const counted = max === undefined || running + kept.length < max;
       const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib);
       // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).
-      const fits = held === 0 || held + need <= runsMemoryMib(memory);
+      const fitsIn = (mib: number) => mib === 0 || mib + need <= runsMemoryMib(memory);
+      const fits = fitsIn(held + keptMib);
       if (counted && fits) break;
-      const leaving = holding.some((run) => run.outcome || run.finishing || run.cancel);
-      if (!leaving || Date.now() > deadline) {
-        if (!counted) throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
-        throw new ApiError("rate_limited", memoryFull(harness, memory, held), { retry_after_ms: 5_000, details: { max_concurrent_runs: max ?? null, harness, needs_mb: need, free_mb: Math.max(0, runsMemoryMib(memory) - held) } }, { "retry-after": "5" });
+      // A run on its way out gives its place back: worth the wait only when more are leaving than places are kept, as the
+      // first ones freed go to the runs that waited for them.
+      const leaving = holding.filter((run) => run.outcome || run.finishing || run.cancel);
+      if (leaving.length <= kept.length || Date.now() > deadline) {
+        const keptFor = kept.length ? { kept_for_raised: kept.length } : {};
+        // Refused only for the places kept (a place being given back counted free): it says so.
+        const leavingMib = leaving.reduce((sum, run) => sum + runMibOf(run.harness), 0);
+        if (kept.length && (max === undefined || running - leaving.length < max) && fitsIn(held - leavingMib)) {
+          const words = kept.length === 1 ? "free place is kept for a run whose cap was raised and that waits" : `free places are kept for ${kept.length} runs whose caps were raised and that wait`;
+          throw new ApiError("rate_limited", `This server's ${words} to open again; start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max ?? null, ...keptFor } }, { "retry-after": "5" });
+        }
+        if (!counted) throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max, ...keptFor } }, { "retry-after": "5" });
+        throw new ApiError("rate_limited", memoryFull(harness, memory, held + keptMib), { retry_after_ms: 5_000, details: { max_concurrent_runs: max ?? null, harness, needs_mb: need, free_mb: Math.max(0, runsMemoryMib(memory) - held - keptMib), ...keptFor } }, { "retry-after": "5" });
       }
     }
     this.starting++;
@@ -3697,10 +3718,11 @@ export class Runs {
     }
     // A place under the server's limits first (max_concurrent_runs, the memory its harness takes), as every start takes
     // one (takePlace): the pause let its place go. With none free the run waits for one, queued, its pause's mark kept,
-    // and opens once one frees (waitForPlace): never a process past the limits, never the raise refused or lost.
+    // and opens once one frees (waitForPlace): never a process past the limits, never the raise refused or lost. Queued, it
+    // counts only the waiters ahead of it, and every newer start counts its place as kept.
     let release: () => void;
     try {
-      release = await this.takePlace(run.harness);
+      release = await this.takePlace(run.harness, run);
     } catch (error) {
       if (error instanceof ApiError && error.code === "rate_limited") {
         this.waitForPlace(run, cap);
@@ -3710,6 +3732,8 @@ export class Runs {
       this.leavePlaceQueue(run);
       throw error;
     }
+    // Its place taken, it is counted in `starting` until its launch, never also as a place kept for it.
+    this.placeTaking.add(run);
     try {
       // Read again: the place may have been waited for, and the run ended, cancelled, opened or finished meanwhile, or the
       // server begun to close (its mark stays, for the next server's settle to finish the raise).
@@ -3734,6 +3758,7 @@ export class Runs {
       this.refresh(run);
     } finally {
       // Launched, it holds its place as a live run.
+      this.placeTaking.delete(run);
       release();
     }
     return true;
@@ -3761,7 +3786,19 @@ export class Runs {
     return true;
   }
 
-  /** `run` off the queue for a place: what it reserved is free, and it shows no wait for one. */
+  /** The raised runs waiting for a place whose places a start by `waiter` leaves alone: every one still waiting for any
+   *  other start, and the ones queued ahead of it for a waiter (oldest first). One whose raise has taken its place
+   *  (placeTaking) is counted in `starting` instead. */
+  private placesKept(waiter: Run | undefined): Run[] {
+    const ahead: Run[] = [];
+    for (const run of this.placeWaiters) {
+      if (run === waiter) break;
+      if (!this.placeTaking.has(run) && !run.cancel && !run.outcome && !run.finishing && !this.live(run)) ahead.push(run);
+    }
+    return ahead;
+  }
+
+  /** `run` off the queue for a place: the place kept for it is free, and it shows no wait for one. */
   private leavePlaceQueue(run: Run): void {
     const queued = this.placeWaiters.delete(run) || run.placeWait !== undefined;
     run.placeWait = undefined;

@@ -51,8 +51,9 @@ export interface ExperimentalInputs { experimental: { inputs: readonly DecisionC
  *  per request and per image, and the most output its top provider gives one request (null when it names none). */
 export type DecisionModelPrice = { promptUsd: number; completionUsd: number; requestUsd: number; imageUsd: number; maxCompletionTokens: number | null };
 /** What the provider adds for a host that keeps a spend cap: `priceOf(model)`, the model's catalog price, read once
- *  with the catalog; null when the catalog lists no price for it. A catalog that cannot be read (no answer in 10 s, an
- *  answer not 2xx, one that does not parse or lists no models) throws CatalogUnreadable, never a price or null, and is read again next time. */
+ *  with the catalog; null when the catalog does not list it. A catalog that cannot be read (no answer in 10 s, an
+ *  answer not 2xx, one that does not parse, lists no models or an empty list), or that lists the model with no price it
+ *  can be read for, throws CatalogUnreadable, never a price or null, and is read again next time. */
 export interface PricedModels { priceOf(model: string): Promise<DecisionModelPrice | null> }
 /** OpenRouter's catalog could not be read, so no model's price is known from it now. */
 export class CatalogUnreadable extends Error {
@@ -177,25 +178,30 @@ function priceOfEntry(entry: Record<string, unknown>): DecisionModelPrice | null
   const most = isRecord(entry.top_provider) ? entry.top_provider.max_completion_tokens : undefined;
   return { promptUsd: prompt, completionUsd: completion, requestUsd: request, imageUsd: image, maxCompletionTokens: isCount(most) && most > 0 ? most : null };
 }
-type Catalog = { images: Set<string>; prices: Map<string, DecisionModelPrice> };
-/** The public catalog's Decisions models, read once: the image-capable ones and each one's price; null when it cannot
- *  be read (and read again next time). */
-function catalogReader(fetcher: typeof fetch, root: string): () => Promise<Catalog | null> {
+type Catalog = { images: Set<string>; prices: Map<string, DecisionModelPrice>; unpriced: Set<string> };
+/** The public catalog's Decisions models, read once: the image-capable ones, each one's price, and the ones it lists
+ *  with no price it can be read for; null when it cannot be read (and read again next time). `forget` drops what was
+ *  read, so the next call reads it again. */
+function catalogReader(fetcher: typeof fetch, root: string): { read: () => Promise<Catalog | null>; forget: () => void } {
   let read: Promise<Catalog | null> | undefined;
-  return () => (read ??= (async () => {
-    try {
-      const response = await fetcher(`${root}/v1/models?output_modalities=decisions`, { signal: AbortSignal.timeout(10_000) });
-      if (!response.ok) return null;
-      const body: unknown = await response.json();
-      // An answer with no list of models is no catalog: unreadable (not kept, read again next time), never an empty one
-      // that would leave every model unpriced.
-      if (!isRecord(body) || !Array.isArray(body.data)) return null;
-      const models = body.data.filter(isRecord);
-      const images = new Set(models.filter((m) => isRecord(m.architecture) && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.includes("image")).map((m) => String(m.id)));
-      const prices = new Map(models.flatMap((m) => { const price = priceOfEntry(m); return price ? [[String(m.id), price] as const] : []; }));
-      return { images, prices };
-    } catch { return null; }
-  })().then((catalog) => { if (catalog === null) read = undefined; return catalog; }));
+  return {
+    forget: () => void (read = undefined),
+    read: () => (read ??= (async () => {
+      try {
+        const response = await fetcher(`${root}/v1/models?output_modalities=decisions`, { signal: AbortSignal.timeout(10_000) });
+        if (!response.ok) return null;
+        const body: unknown = await response.json();
+        // An answer with no list of models, or an empty one, is no catalog: unreadable (not kept, read again next time),
+        // never one that would leave every model unpriced.
+        if (!isRecord(body) || !Array.isArray(body.data) || body.data.length === 0) return null;
+        const models = body.data.filter(isRecord);
+        const images = new Set(models.filter((m) => isRecord(m.architecture) && Array.isArray(m.architecture.input_modalities) && m.architecture.input_modalities.includes("image")).map((m) => String(m.id)));
+        const prices = new Map(models.flatMap((m) => { const price = priceOfEntry(m); return price ? [[String(m.id), price] as const] : []; }));
+        const unpriced = new Set(models.map((m) => String(m.id)).filter((id) => !prices.has(id)));
+        return { images, prices, unpriced };
+      } catch { return null; }
+    })().then((catalog) => { if (catalog === null) read = undefined; return catalog; })),
+  };
 }
 
 export function openrouterProvider(options: OpenRouterOptions = {}): DecisionProvider & ExperimentalInputs & PricedModels {
@@ -210,7 +216,7 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
   const root = (options.baseURL ?? BASE_URL).replace(/\/+$/, "");
   const url = `${root}/v1/systemone`;
   const fetcher = options.fetch ?? fetch;
-  const catalog = catalogReader(fetcher, root);
+  const { read: catalog, forget } = catalogReader(fetcher, root);
   const takesImages = options.takesImages ?? (async (model: string) => (await catalog())?.images.has(model) ?? true);
   return {
     id: "openrouter", needs: [KEY_VARIABLE], capabilities,
@@ -218,6 +224,12 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
     priceOf: async (model: string) => {
       const read = await catalog();
       if (!read) throw new CatalogUnreadable();
+      // Listed with no price it can be read for: unreadable for this model (read again next time), never a model the
+      // catalog does not price, which a cap stops on.
+      if (read.unpriced.has(model)) {
+        forget();
+        throw new CatalogUnreadable();
+      }
       return read.prices.get(model) ?? null;
     },
     experimental: { inputs: ["image"], note: "Images to OpenRouter's Decisions models go as base64 JSON assets, an alpha OpenRouter feature; for other models each token is a whole top-level state value, sent as an item of an array state." },

@@ -257,7 +257,11 @@ apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each 
 (`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
 the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
 memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails
-with why if it was working, and a message to it is `409 agent_not_runnable`.
+with why if it was working, and a message to it is `409 agent_not_runnable`. A workflow whose cap was raised after its
+process was let go waits for a place when there is none (`queued`), and the place that frees is kept for it, oldest
+first: a newer start meanwhile is `429 rate_limited`, "This server's free place is kept for a run whose cap was raised
+and that waits to open again", with `details.kept_for_raised`. A kept place holds the count and its run's harness's
+memory, so a waiting run on a large harness holds back a smaller start that would fit beside it.
 
 A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
 counts only its own runs, and a run could be relaunched twice).

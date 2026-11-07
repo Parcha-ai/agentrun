@@ -1,6 +1,6 @@
 // A box lost once a browser session is created at its vendor, on a run's store at NORMAL (pi-durable-disk barriers.ts,
 // browserSessionOpen): the session's creating record (its tag, pi-browser's) and the run's own record of its open
-// (browser-cost.ts BROWSER_SESSION_OPEN, with the call's hold) are synced before the vendor is asked. A preloaded shim
+// (browser-cost.ts BROWSER_SESSION_OPEN) are synced before the vendor is asked. A preloaded shim
 // (pi-durable-disk's test/fixtures/fsync-snapshot) keeps each store file as it stood at its last sync; once the run's
 // process is killed, those copies replace the files, which is what a lost box leaves. The next process finds the record,
 // and its reconcile releases the vendor's session by the tag: no billed session is left that nothing names.

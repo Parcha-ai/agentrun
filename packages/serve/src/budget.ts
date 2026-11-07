@@ -84,8 +84,9 @@ const raisedIn = (root: string): number | undefined => {
 
 /** The run's waits for a raise, in its process: `spend` is the run's spend (cap.ts), `holdMs` how long a pause keeps the
  *  process, `letGo` what lets it go. `step` counts the steps in flight (app.ts wraps each node, call and decision
- *  with it), a step run inside another (a model node's verification decision) as part of that one; a pause lets the
- *  process go only when every one of them is waiting, a step whose nested decision waits counting as waiting. */
+ *  with it, by its execution path), a step at the path of one in flight (a model node's verification decision, at its
+ *  node's path) as part of that one; a pause lets the process go only when every one of them is waiting, a step whose
+ *  nested decision waits counting as waiting. */
 export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOLD_MS, letGo }: { holdMs?: number; letGo: () => void }) {
   let waiting = 0;
   /** The steps in flight that run on their own (a node, a call, a decision), not inside another step: a step run inside
@@ -93,6 +94,10 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
   let active = 0;
   /** The outermost step each piece of work runs in. */
   const outermost = new AsyncLocalStorage<symbol>();
+  /** The outermost steps in flight by their execution path: a step at one of these paths (a model node's verify
+   *  decision, at its node's path) is that step's work, whatever async context it runs in. pi-durable runs it from its
+   *  scheduler's drain, in the context of whatever kicked the drain: none, or a map sibling's. */
+  const byPath = new Map<string, symbol>();
   /** The outermost steps with a wait for a raise under way (a nested decision's wait counts for its outer step), each
    *  once whatever number of its waits: the process lets go only once every step in flight is one of these. */
   const waitingSteps = new Map<symbol, number>();
@@ -110,15 +115,23 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
     return spend.cap > capUsd + CAP_TOLERANCE;
   };
   return {
-    /** `fn`, counted as a step in flight while it runs, unless it runs inside another step (its work, counted there). */
-    step<P, R>(fn: (params: P) => Promise<R>): (params: P) => Promise<R> {
+    /** `fn`, counted as a step in flight while it runs, unless it is another step's work (counted there): a step at the
+     *  execution path of one in flight (`pathOf`, from its params) is that one's; with no path, one run inside another's
+     *  async context is. */
+    step<P, R>(fn: (params: P) => Promise<R>, pathOf: (params: P) => string | null | undefined = () => undefined): (params: P) => Promise<R> {
       return async (params) => {
-        if (outermost.getStore() !== undefined) return fn(params);
+        const path = pathOf(params) ?? undefined;
+        const owner = path === undefined ? undefined : byPath.get(path);
+        if (owner !== undefined) return outermost.run(owner, () => fn(params));
+        if (path === undefined && outermost.getStore() !== undefined) return fn(params);
+        const mine = Symbol("step");
         active += 1;
+        if (path !== undefined) byPath.set(path, mine);
         try {
-          return await outermost.run(Symbol("step"), () => fn(params));
+          return await outermost.run(mine, () => fn(params));
         } finally {
           active -= 1;
+          if (path !== undefined && byPath.get(path) === mine) byPath.delete(path);
         }
       };
     },
@@ -134,28 +147,31 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
     async wait(refusal: CapRefusal, signal?: AbortSignal, at?: StepAt): Promise<boolean> {
       if (raisedAbove(refusal.capUsd)) return true;
       if (cancelled() || signal?.aborted) return false;
+      // The step this wait holds: the step in flight at its path, else its outermost step's (a wait outside any step
+      // stands for itself).
+      const path = at?.path ?? undefined;
+      const step = (path === undefined ? undefined : byPath.get(path)) ?? outermost.getStore() ?? Symbol("wait");
+      const mine = path === undefined ? undefined : held.get(path) ?? held.set(path, { total: 0 }).get(path)!;
+      let raised = false;
+      // Counted as waiting from here, and taken back in `finally` whatever ends the wait, a mark that cannot be written
+      // included: a wait that threw never stays counted, so no later pause lets the process go beside a step at work.
       waiting += 1;
-      // The step this wait holds: its outermost step's (a wait outside any step stands for itself).
-      const step = outermost.getStore() ?? Symbol("wait");
       waitingSteps.set(step, (waitingSteps.get(step) ?? 0) + 1);
       since ??= Date.now();
-      const path = at?.path ?? undefined;
-      const mine = path === undefined ? undefined : held.get(path) ?? held.set(path, { total: 0 }).get(path)!;
       if (mine && mine.from === undefined) mine.from = Date.now();
-      // The pause names the cap still refused: written by the first wait, and again by one refused under a raise that did
-      // not cover it, so an older cap's mark never reads as a raise still to finish (the server's finishRaise) nor shows
-      // a refusal that no longer holds. A raise that covers every wait takes it away (below).
-      const kept = budgetPausedIn(root);
-      if (!kept || kept.cap_usd + CAP_TOLERANCE < refusal.capUsd) {
-        const f = refusal.figures;
-        writeWhole(join(root, BUDGET_PAUSE), {
-          words: refusal.words, cap_usd: refusal.capUsd,
-          ...(f ? { spent_usd: f.spentUsd, needs_usd: f.needsUsd, least_cap_usd: f.leastCapUsd, ...(f.boundUsd !== undefined ? { bound_usd: f.boundUsd } : {}) } : {}),
-          node: at?.label ?? null, path: at?.path ?? null, at: new Date().toISOString(),
-        } satisfies BudgetMark);
-      }
-      let raised = false;
       try {
+        // The pause names the cap still refused: written by the first wait, and again by one refused under a raise that
+        // did not cover it, so an older cap's mark never reads as a raise still to finish (the server's finishRaise) nor
+        // shows a refusal that no longer holds. A raise that covers every wait takes it away (below).
+        const kept = budgetPausedIn(root);
+        if (!kept || kept.cap_usd + CAP_TOLERANCE < refusal.capUsd) {
+          const f = refusal.figures;
+          writeWhole(join(root, BUDGET_PAUSE), {
+            words: refusal.words, cap_usd: refusal.capUsd,
+            ...(f ? { spent_usd: f.spentUsd, needs_usd: f.needsUsd, least_cap_usd: f.leastCapUsd, ...(f.boundUsd !== undefined ? { bound_usd: f.boundUsd } : {}) } : {}),
+            node: at?.label ?? null, path: at?.path ?? null, at: new Date().toISOString(),
+          } satisfies BudgetMark);
+        }
         for (;;) {
           if (raisedAbove(refusal.capUsd)) return (raised = true);
           if (cancelled() || signal?.aborted) return false;

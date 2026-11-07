@@ -336,7 +336,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   /** `fn`, a step of the run (a node, a call, a decision) named by its params, counted in flight for the pause's let-go. */
   const stepped = <F,>(fn: F, model = false): F => {
     if (!fn) return fn;
-    const counted = waits ? waits.step(fn as never) : (fn as (params: unknown) => Promise<unknown>);
+    // By its execution path: a model node's verify decision runs at its node's path, from pi-durable's scheduler drain,
+    // whose async context is not the node's; its path says it is the node's work.
+    const counted = waits ? waits.step(fn as never, (params: { executionPath?: string } | undefined) => params?.executionPath ?? null) : (fn as (params: unknown) => Promise<unknown>);
     return (async (params: { label?: string; node?: { label?: string }; executionPath?: string }) => {
       const at = { label: String(params?.label ?? params?.node?.label ?? ""), path: params?.executionPath ?? null };
       if (model) running.add(at);

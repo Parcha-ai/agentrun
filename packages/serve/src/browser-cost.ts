@@ -30,9 +30,9 @@ import { runJournal } from "./paid-calls.js";
 import { forModel } from "./result.js";
 
 /** The run journal's record of a browser session about to be created at its provider: its tag (pi-browser's, which a
- *  reconcile finds the vendor's session by), its conversation and the hold its call keeps for it (`held_usd`, null with
- *  no cap). Written with pi-browser's own `creating` record and synced (barriers.ts browserSessionOpen) before the vendor
- *  is asked, so a box loss never leaves a session billed that no record in the store names. */
+ *  reconcile finds the vendor's session by), its conversation and its provider. Written with pi-browser's own `creating`
+ *  record and synced (barriers.ts browserSessionOpen) before the vendor is asked, so a box loss never leaves a session
+ *  billed that no record in the store names. */
 export const BROWSER_SESSION_OPEN = "agentrun.browser_session_open";
 
 /** List prices by pi-browser provider name (`provider.name`): Browserbase's (pi-browser's LIST_PRICES), $0.12 an hour with
@@ -191,8 +191,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  `creating` record, and the journal synced (barriers.ts browserSessionOpen) before the vendor's session is created.
    *  A sync that fails throws, and pi-browser creates nothing. */
   const opening: BeforeCreate = async (open) => {
-    const hold = [...calls.values()].find((c) => c.cid === open.conversationId)?.hold;
-    const data = { tag: open.tag, conversation: open.conversationId, provider, held_usd: hold ? hold.usd : null };
+    const data = { tag: open.tag, conversation: open.conversationId, provider };
     await open.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_SESSION_OPEN, data })));
     await syncNow(runJournal(), BARRIER.browserSessionOpen);
   };
