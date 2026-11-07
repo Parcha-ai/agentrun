@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -321,5 +322,85 @@ func TestALostConnectionFailsEveryCallInWords(t *testing.T) {
 	}
 	if c.Err() == nil || !errors.Is(c.Err(), x11.ErrClosed) {
 		t.Fatalf("Err() = %v", c.Err())
+	}
+}
+
+// A display on another host never gets this host's cookie: ReadAuthority reads a Local or wildcard entry only for a
+// display in this computer (a unix socket, or TCP to a loopback address), and Dial refuses any other display before
+// it sends anything.
+func TestALocalCookieNeverGoesToAnotherHost(t *testing.T) {
+	cookie := []byte("0123456789abcdef")
+	path := authority(t,
+		[5]any{256, "box", "0", "MIT-MAGIC-COOKIE-1", cookie},
+		[5]any{65535, "", "0", "MIT-MAGIC-COOKIE-1", cookie},
+	)
+	for _, host := range []string{"x.test", "box"} {
+		if auth, ok, err := x11.ReadAuthority(path, x11.Address{Host: host, Number: 0}, "box"); ok || err != nil || len(auth.Data) != 0 {
+			t.Errorf("DISPLAY %s:0 got this host's cookie: %+v, %v, %v", host, auth, ok, err)
+		}
+	}
+	for _, host := range []string{"", "unix", "127.0.0.1", "::1"} {
+		if auth, ok, err := x11.ReadAuthority(path, x11.Address{Host: host, Number: 0}, "box"); !ok || err != nil || string(auth.Data) != string(cookie) {
+			t.Errorf("DISPLAY %s:0 is this host's display, and has its cookie: %+v, %v, %v", host, auth, ok, err)
+		}
+	}
+	t.Setenv("XAUTHORITY", path)
+	if c, err := x11.Dial("x.test:0"); err == nil {
+		_ = c.Close()
+		t.Error("Dial(x.test:0) connected")
+	} else if !strings.Contains(err.Error(), "only a display in this computer") {
+		t.Errorf("Dial(x.test:0): %v does not say a display elsewhere is refused", err)
+	}
+}
+
+// totalAlloc is how many bytes the process has allocated so far.
+func totalAlloc() uint64 {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.TotalAlloc
+}
+
+// A reply or GenericEvent whose 32-bit length is past what this client reads is refused in words, and the connection
+// closed, before anything is allocated for it: the largest a server may send is the most data any request asks for.
+func TestAnAnnouncedLengthIsBoundedBeforeAnythingIsAllocated(t *testing.T) {
+	for name, head := range map[string]func(seq uint16) []byte{
+		"a reply": func(seq uint16) []byte {
+			out := []byte{1, 1}
+			out = le.AppendUint16(out, seq)
+			return append(le.AppendUint32(out, 0xffffffff), make([]byte, 24)...)
+		},
+		"a GenericEvent": func(seq uint16) []byte {
+			out := []byte{35, 131}
+			out = le.AppendUint16(out, seq)
+			return append(le.AppendUint32(out, 0xffffffff), make([]byte, 24)...)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, conn := x11fake.Start(t, func(f *x11fake.Server) {
+				f.Misbehave = func(r x11fake.Request) []byte {
+					if r.Opcode == 43 { // the Sync's GetInputFocus
+						return head(r.Seq)
+					}
+					return nil
+				}
+			})
+			c, err := x11.Open(conn, x11.Auth{}, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			before := totalAlloc()
+			_, err = c.Sync()
+			grew := totalAlloc() - before
+			if err == nil || !strings.Contains(err.Error(), "over the") {
+				t.Errorf("Sync on a server announcing 16 GiB: %v; want a refusal of the length in words", err)
+			}
+			if !errors.Is(c.Err(), x11.ErrClosed) {
+				t.Errorf("the connection is still open: %v", c.Err())
+			}
+			if grew > 64<<20 {
+				t.Errorf("the client allocated %d bytes for a length the server only announced", grew)
+			}
+		})
 	}
 }
