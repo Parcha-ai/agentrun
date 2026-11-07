@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { DaytonaProvider } from "../dist/index.js";
+import { checkLifetime, DaytonaProvider, kindRefusals } from "../dist/index.js";
 import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };
@@ -69,20 +69,26 @@ const of = (fake, method, path) => fake.requests.filter((r) => r.method === meth
 const deleted = (fake) => of(fake, "DELETE", /^\/api\/sandbox\/[^/]+$/);
 const created = (fake) => of(fake, "POST", "/api/sandbox");
 
-test("capabilities: a vendor lifetime, network none, open and allow with the ports each list opens, a container, linux, the daemon's three, and stop and delete", () => {
+test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none, open and allow with the ports each list opens, a container, exec, files and processes, and stop and delete", () => {
 	const { provider, fake } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
+		kind: "linux",
 		lifetime: "vendor",
 		network: ["none", "open", "allow"],
 		allow: { domains: { max: 100, ports: [80, 443] }, cidrs: { max: 10, ports: "any" }, mixed: false },
 		isolation: "container",
 		os: "linux",
-		daemon: ["exec", "files", "processes"],
+		daemon: "child",
+		groups: ["exec", "files", "processes"],
+		maxLifetimeMs: 30 * 24 * 3600 * 1000,
 		release: ["stop", "delete"],
 		stopDeletes: false,
 	});
+	assert.deepEqual(kindRefusals(provider.capabilities()), []);
+	assert.equal(provider.extend, undefined, "no extend()");
+	assert.equal(provider.stream, undefined, "no stream()");
 	assert.equal(setup({}, { sandboxClass: "linux-vm" }).provider.capabilities().isolation, "vm");
 	assert.equal(setup({}, { autoDeleteMinutes: 0 }).provider.capabilities().stopDeletes, true, "autoDeleteMinutes 0: Daytona deletes a sandbox as it stops");
 	assert.equal(setup({}, { autoDeleteMinutes: 30 }).provider.capabilities().stopDeletes, false, "a stopped computer is kept for 30 minutes");
@@ -109,7 +115,11 @@ test("check() refuses in words, field by field, before any request", () => {
 	const words = (spec) => provider.check(spec).map((r) => r.message).join("; ");
 	assert.deepEqual(refused({ ...SPEC, image: "" }), ["image"]);
 	assert.deepEqual(refused({ ...SPEC, image: undefined }), ["image"]);
-	for (const lifetimeMs of [undefined, 0, -1, 1.5, "600000", 30 * 24 * 3600 * 1000 + 1]) assert.deepEqual(refused({ ...SPEC, lifetimeMs }), ["lifetimeMs"], String(lifetimeMs));
+	for (const lifetimeMs of [undefined, 0, -1, 1.5, "600000", 30 * 24 * 3600 * 1000 + 1]) {
+		assert.deepEqual(provider.check({ ...SPEC, lifetimeMs }), checkLifetime(lifetimeMs, provider.capabilities()), `${String(lifetimeMs)}: the shared rule, in its words`);
+		assert.deepEqual(refused({ ...SPEC, lifetimeMs }), ["lifetimeMs"], String(lifetimeMs));
+	}
+	assert.match(words({ ...SPEC, lifetimeMs: 30 * 24 * 3600 * 1000 + 1 }), /at most 30 days \(2592000000 ms\)/);
 	assert.deepEqual(refused({ ...SPEC, network: "wifi" }), ["network"]);
 	assert.match(words({ ...SPEC, network: { allow: [] } }), /at least one/);
 	assert.match(words({ ...SPEC, network: { allow: ["example.com", "208.80.154.232/32"] } }), /never both/);
@@ -462,7 +472,9 @@ const DRIFT = [
 	["a GPU", { readBack: () => ({ gpu: 1 }) }, /gpu: declared 0, read back 1/],
 	["a daemon of another version", { hello: { version: "9.9.9" } }, new RegExp(`hello: the daemon reports version 9\\.9\\.9, expected ${VERSION.replaceAll(".", "\\.")}`)],
 	["a daemon of another arch", { hello: { arch: "arm64" } }, /hello: the daemon reports arch arm64, expected the host's amd64/],
-	["a daemon that lacks a capability", { hello: { capabilities: ["exec", "files"] } }, /capabilities lack processes/],
+	["a daemon that lacks a group", { hello: { groups: ["exec", "files"] } }, /groups lack processes/],
+	["a daemon that offers a group more", { hello: { groups: ["exec", "files", "processes", "screen"] } }, /offers groups screen/],
+	["a daemon of another kind", { hello: { kind: "desktop" } }, /hello: the daemon reports kind desktop, expected linux/],
 	["a daemon run as root", { status: statusText({ uid: 0 }) }, /daemon user: declared uid 1000, read back "0\\t0\\t0\\t0"/],
 	["a daemon in root's group", { status: statusText({ gid: 0 }) }, /daemon group: declared gid 1000/],
 	["a daemon with capabilities", { status: statusText({ capEff: "000001ffffffffff" }) }, /daemon CapEff: declared no capabilities, read back "000001ffffffffff"/],
@@ -586,7 +598,7 @@ test("attach() by id, by name and by labels returns the spec read back, with the
 	for (const ref of [{ id: made.value.id }, { id: made.value.name }, { labels: { team: "a" } }]) {
 		const attached = await provider.attach(ref);
 		assert.equal(attached.ok, true, `${JSON.stringify(ref)}: ${JSON.stringify(attached)}`);
-		assert.deepEqual(attached.value, { ...made.value, spec: { image: SPEC.image, snapshot: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline) } });
+		assert.deepEqual(attached.value, { ...made.value, spec: { image: SPEC.image, snapshot: SPEC.image, user: "1000:1000", network: "none", cpus: 1, memoryMb: 1024, workdir: "/work", deadline: new Date(deadline), kind: "linux" } });
 	}
 	const missing = await provider.attach({ id: "nothing-by-this-id" });
 	assert.equal(missing.error.code, "not_found");

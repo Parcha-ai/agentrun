@@ -216,7 +216,7 @@ export function fakeDaytona(initial = {}) {
 		if (typeof request.id !== "number") return undefined;
 		const reply = (body) => `${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`;
 		const { method, params = {} } = request;
-		if (method === "hello") return reply({ result: { version: VERSION, os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"], ...(knobs.hello ?? {}) } });
+		if (method === "hello") return reply({ result: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"], ...(knobs.hello ?? {}) } });
 		if (method === "ping") return reply({ result: {} });
 		if (method === "files.read" && params.path === "/proc/self/status") {
 			const text = knobs.status ?? statusText();
