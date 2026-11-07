@@ -207,15 +207,13 @@ export function adapterRun(
   // keeps it to once per cap across processes. Both are decided as the proxy takes the note into a request, with what is
   // left then, and the row is written, and the note counted sent, only once that request is admitted carrying it
   // (`noted`), as pi's judge does: nothing is recorded for a note no request carried.
-  // `costs`: the session's own model's priced requests, side calls left out. `due`: an admission found the wrap-up due
-  // with nothing priced yet (step 0: that request at its input and a typical answer standing in for a typical one), which
-  // the proxy measures only after it has placed a note: the next request takes it, in step 0's words as pi says them,
-  // while nothing is priced yet. The first priced cost clears it: from then on only the measured typical decides. In
-  // memory only, as nothing was told: a process opened again reads the costs, and words the note by them. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
+  // `costs`: the session's own model's priced requests, side calls left out; a process opened again reads them back.
+  // With none, step 0: the request taking the note is judged on itself, its input and a typical answer (CapGuard.typicalUsd),
+  // as pi's judge does, and told in that request. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
   // once admitted, held while the turn it is told in has its person's (or the server's) message still to be written
   // (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
   type WrapRow = { key: string; capUsd: number; leftUsd: number; words: string };
-  const wrap: { costs: number[]; sent: boolean; due: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, due: false, entryDue: false };
+  const wrap: { costs: number[]; sent: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, entryDue: false };
   /** The note for the request the model proxy is placing it in (ModelPort.note), when the wrap-up is due: what is left
    *  of the cap as admission counts it now (`spentUsd`: what the run spent; what its requests and paid calls in flight
    *  are held at) under three times the session's own model's typical request, or an earlier admission found it due. */
@@ -223,17 +221,17 @@ export function adapterRun(
     wrap.taken = undefined;
     if (budgetUsd === undefined || wrap.sent || spentUsd === null) return undefined;
     const held = inFlight.total() + paidHolds();
-    // Due by the measured typical (none until a cost is priced) or by the least of the request taking the note, room for
-    // about one more: priced as its admission will price it (CapGuard.leastUsd), its own bound and asks as its client sent
-    // them, after the previous request on its model when there is one (the cache), else uncached. Nothing kept in memory,
-    // so a process opened again judges its first request so too.
+    // The request taking the note, priced as its admission will price it: its own bound and asks as its client sent them,
+    // after the previous request on its model when there is one (the cache), else uncached. Nothing kept in memory, so a
+    // process opened again judges its first request so too.
     const before = model ? previous.get(model) : undefined;
-    const nextLeast = request ? cap?.leastUsd?.({ ...request, ...(before ? { previous: before } : {}) }) : undefined;
-    const due = wrapUpDue(budgetUsd, spentUsd, held, wrap.costs.length > 0 ? typicalCost(wrap.costs, 0) : 0, nextLeast);
-    // The step-0 latch speaks only while nothing is priced: from the first priced cost, the measured typical decides.
-    const latched = wrap.due && wrap.costs.length === 0;
-    if (!due && !latched) return undefined;
-    const leftUsd = due?.leftUsd ?? budgetUsd - spentUsd - held;
+    const asked = request ? { ...request, ...(before ? { previous: before } : {}) } : undefined;
+    // Due by the typical (the measured one once a cost is priced; before that, step 0, this request's own input and a
+    // typical answer, as pi's judge does) or by this request's least, room for about one more.
+    const typical = wrap.costs.length > 0 ? typicalCost(wrap.costs, 0) : asked ? cap?.typicalUsd?.(asked) : undefined;
+    const due = wrapUpDue(budgetUsd, spentUsd, held, typical ?? 0, asked ? cap?.leastUsd?.(asked) : undefined);
+    if (!due) return undefined;
+    const leftUsd = due.leftUsd;
     // Worded by what was priced as it is taken: the budget's words with nothing priced, else "finish now".
     wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd, wrap.costs.length === 0) };
     return wrap.taken.words;
@@ -282,15 +280,6 @@ export function adapterRun(
     // credential between the two) leaves it for that request.
     const data = noted && !withoutNote && !side ? wrap.taken : undefined;
     if (noted) wrap.taken = undefined;
-    // None priced yet: this request at its input and a typical answer is the typical one, and what is left as its admission counts it
-    // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
-    // next request. Never a side call's: the note is for the session's own model.
-    if (!data && !side && budgetUsd !== undefined && !wrap.sent && wrap.costs.length === 0) {
-      const spentNow = plus(plus(request.spentUsd, charged), sideSpend());
-      const held = request.inFlight.reduce((sum, r) => sum + (r.holdUsd ?? 0), paidHolds());
-      // Its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its whole output allowance.
-      if (spentNow !== null && wrapUpDue(budgetUsd, spentNow, held, answer.typicalUsd ?? answer.holdUsd)) wrap.due = true;
-    }
     if (data && !wrap.sent) {
       wrap.sent = true;
       if (wrap.entryDue) wrap.row = data;
@@ -459,14 +448,9 @@ export function adapterRun(
       // or it was cut: nothing cached to count on).
       const sent = sentOf.get(event.turn);
       sentOf.delete(event.turn);
-      // A priced request of the session's own model: the wrap-up's typical cost counts it, and from the first one that
-      // typical alone says when the wrap-up is due: the latch an admission set with nothing priced (`due`, on a request's
-      // estimate) goes, so a run whose requests cost a cent is never told to finish on its first request's estimate.
+      // A priced request of the session's own model: the wrap-up's typical cost counts it (step 0 ends with the first).
       const priced = pricedUsd(event.usage.usd);
-      if (sent && !sent.side && priced !== undefined) {
-        wrap.costs.push(priced);
-        wrap.due = false;
-      }
+      if (sent && !sent.side && priced !== undefined) wrap.costs.push(priced);
       const last = sent && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
       if (sent) last ? previous.set(sent.model, last) : previous.delete(sent.model);
       costed.push({ request: event.turn, usage: event.usage });

@@ -238,22 +238,23 @@ test("claude-agent on Sonnet 4.5 under $1, five cent requests: no wrap-up (a pin
   assert.deepEqual(notesOf(data, runId), []);
 });
 
-test("claude-agent on Sonnet 4.5 under $0.08, the next request taking its note before the first request's cost came in: due at step 0, and told in the budget's words", { timeout: 120_000 }, async (t) => {
+test("claude-agent on Sonnet 4.5 under $0.11, the next request taking its note before the first request's cost came in: judged at step 0 on itself, and told in the budget's words", { timeout: 120_000 }, async (t) => {
   const booked = join(await scratch(t), "booked");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
   const { api, data } = await serve(t, { faux: sonnet, fauxHarness: FAUX_HARNESS });
   assert.equal((await api("POST", "/agents", agent("s45-late", { harness: "claude-agent", instructions: `Claude Code on a small cap, its first cost booked when ${booked} exists.` }))).status, 201);
-  const runId = (await api("POST", "/agents/s45-late/runs", { input: { content: "Say hi." }, max_cost_usd: 0.08 })).body.run_id;
-  // Request 1 (1,024 tokens asked, held at $0.03) is answered; its cost is not in when request 2 ($0.05 left) is admitted,
-  // so nothing is priced as request 2 takes the note: the step-0 latch speaks. Then request 1's cost comes in.
+  const runId = (await api("POST", "/agents/s45-late/runs", { input: { content: "Say hi." }, max_cost_usd: 0.11 })).body.run_id;
+  // Request 1 asks 1,024 tokens: its step-0 figure, $0.03, is under a third of $0.11, so it takes no note. It is answered,
+  // and held at $0.03 until its cost comes in, which is not yet when request 2 takes the note: nothing priced, $0.08 left,
+  // under 3 x request 2's own step-0 figure ($0.077). Then request 1's cost comes in.
   for (const end = Date.now() + 60_000; (await rowsOf(api, runId)).length === 0; await new Promise((resolve) => setTimeout(resolve, 50))) {
     if (Date.now() > end) assert.fail(`the note was told within 60 s: ${JSON.stringify((await api("GET", `/runs/${runId}`)).body).slice(0, 1500)}`);
   }
   await writeFile(booked, "");
   await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
-  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$0.05")]);
+  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$0.08")]);
   await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$0.05")]);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$0.08")]);
 });
 
 test("claude-agent on Sonnet 4.5 under $0.10, a $0.04 first request: the measured typical makes it due, and request 2 is told to finish (a guard)", { timeout: 120_000 }, async (t) => {
@@ -263,12 +264,12 @@ test("claude-agent on Sonnet 4.5 under $0.10, a $0.04 first request: the measure
   assert.deepEqual(notesOf(data, runId), [WRAP_UP("$0.06")]);
 });
 
-test("claude-agent on Sonnet 4.5 under $0.10, its process killed after its first cent request and opened again: the costs read back hold the measured typical, nothing latches on a request's estimate, and no wrap-up is told", { timeout: 180_000 }, async (t) => {
+test("claude-agent on Sonnet 4.5 under $0.25, its process killed after its first cent request and opened again: the costs read back hold the measured typical, and no wrap-up is told", { timeout: 180_000 }, async (t) => {
   const go = join(await scratch(t), "go");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
   const { api, data } = await serve(t, { faux: sonnet, fauxHarness: FAUX_HARNESS });
   assert.equal((await api("POST", "/agents", agent("s45-cents-restart", { harness: "claude-agent", instructions: `Claude Code makes five cent calls across a restart at ${go}.` }))).status, 201);
-  const runId = (await api("POST", "/agents/s45-cents-restart/runs", { input: { content: "Say hi." }, max_cost_usd: 0.1 })).body.run_id;
+  const runId = (await api("POST", "/agents/s45-cents-restart/runs", { input: { content: "Say hi." }, max_cost_usd: 0.25 })).body.run_id;
   for (const end = Date.now() + 60_000; !existsSync(`${go}.held`); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the turn reached its hold");
   await writeFile(go, "");
   process.kill(runRecordOf(data, runId).holder.pid, "SIGKILL");
@@ -288,21 +289,6 @@ test("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that each ne
   assert.match(rows[0].text, /^About \$0\.\d\d left of this run's budget: finish now with your answer\.$/);
   await letGo(data, runId);
   assert.deepEqual(notesOf(data, runId), [rows[0].text]);
-});
-
-test("claude-agent on the faux harness: the next request's least is priced as its admission will price it, reading the cache: a first request that wrote the cache ($0.21 least uncached) never makes the second, whose least reads it (about $0.03), due", { timeout: 180_000 }, async (t) => {
-  const sonnet = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: sonnet });
-  assert.equal((await api("POST", "/agents", agent("cached-least", { harness: "claude-agent", instructions: "Grow a cached context briefly." }))).status, 201);
-  // $0.35: after request 0 ($0.053) about $0.30 is left, over 3 x $0.053 and over 2 x the cached least of the next request,
-  // but under 2 x request 0's own least, priced with nothing cached.
-  const runId = (await api("POST", "/agents/cached-least/runs", { input: { content: "go" }, max_cost_usd: 0.35 })).body.run_id;
-  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
-  const run = (await api("GET", `/runs/${runId}`)).body;
-  assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
-  assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [], "no row: about $0.26 is left at the end, far over 2 x a cached request's least");
-  await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [], "and no note in any request");
 });
 
 test("claude-agent on the faux harness: at step 0, with no previous request in hand, the next request's least is priced uncached, and it alone makes the wrap-up due, in the budget's words (a pin)", { timeout: 180_000 }, async (t) => {

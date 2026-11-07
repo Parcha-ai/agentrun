@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { grown } from "./fixtures/faux-harness.mjs";
+import { wrapUpWords } from "../dist/cap.js";
 import { agent, follow, letGo, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -109,9 +110,7 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
   // less than request 2's input uncached (a new process has no previous request in hand), so the run pauses there.
   const plain = expectedInput(1) + CEILING * 10 / 1e6;
   const cap = grown(0).usd + plain + 0.1;
-  // No wrap-up for request 1: request 0 is priced ($0.053) when request 1 takes the note, so the measured typical and
-  // request 1's least read from the cache decide, and $0.279 left is over 3 x $0.053 and over 2 x that least (at most
-  // $0.025). Its body carries no note, so it is held at `plain`.
+  // No wrap-up for request 1 (request 0 carried step 0's, below): its body carries no note, so it is held at `plain`.
   const held = plain;
   const runId = await started("restart", `Grow a cached context, cut at request 1 until ${go}.`, cap);
   for (let i = 0; usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows)?.requests !== 2; i++) {
@@ -126,7 +125,10 @@ test("claude-agent: a restart mid-request reads the request in flight at the exp
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.pending?.kind], ["input_required", "budget"], JSON.stringify(run));
   await letGo(data, runId);
-  assert.deepEqual(records(runId, "faux.note").map((r) => r.data.text), [], "request 1 carried no note: at its take $0.279 was left, over 3 x the typical $0.053 ($0.159) and over 2 x the cached least of at most $0.025 ($0.051)");
+  // Step 0 is judged on request 0 itself (pi's rule): its input uncached and a 4,096-token answer, $0.24, is over a third
+  // of the cap, so request 0 carries the note. Request 1, with request 0 priced, is not due: $0.279 left is over 3 x the
+  // typical $0.053 and over 2 x its least read from the cache (at most $0.025).
+  assert.deepEqual(records(runId, "faux.note").map((r) => r.data.text), [wrapUpWords(cap, true)], "request 0 carried step 0's note; request 1 none");
   const holds = records(runId, "runner.request").map((r) => r.data.heldUsd);
   assert.ok(Math.abs(holds[1] - held) < 1e-9, `the cut request's record holds its expected figure: ${JSON.stringify(holds)} vs ${held}`);
   assert.ok(Math.abs(run.pending.spent_usd - (grown(0).usd + held)) < 1e-6, `after the restart the spend reads the same: ${run.pending.spent_usd}`);

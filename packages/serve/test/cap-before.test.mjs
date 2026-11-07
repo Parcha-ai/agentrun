@@ -116,4 +116,8 @@ test("a request's least (CapGuard.leastUsd, the wrap-up's other trigger) is the 
   assert.equal(cap.leastUsd({ ...ask, previous }), refusedAt({ ...ask, previous }), "with a previous request: the least is the refusal's figure again");
   assert.ok(cap.leastUsd({ ...ask, previous }) < cap.leastUsd(ask) / 3, `read from the cache, far less: ${cap.leastUsd({ ...ask, previous })} vs ${cap.leastUsd(ask)}`);
   assert.equal(cap.leastUsd({ outputTokensAsked: 16_384 }), undefined, "an input that could not be measured has no least");
+  // Its step-0 figure (CapGuard.typicalUsd) by the same pricing: its input and 4,096 tokens of output, at most what it asks.
+  assert.ok(Math.abs(cap.typicalUsd(ask) - (20_000 * 2.5 + 4_096 * 10) / 1e6) < 1e-12, `step 0: ${cap.typicalUsd(ask)}`);
+  assert.ok(Math.abs(cap.typicalUsd({ ...ask, outputTokensAsked: 1_024 }) - cap.leastUsd({ ...ask, outputTokensAsked: 1_024 })) < 1e-12, "asking 1,024 tokens: its step-0 figure is its least");
+  assert.ok(cap.typicalUsd({ ...ask, previous }) < cap.typicalUsd(ask), "read from the cache, less");
 });

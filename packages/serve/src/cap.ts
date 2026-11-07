@@ -891,6 +891,10 @@ export interface CapGuard {
    *  refuses it below, priced by the same code: the wrap-up's other trigger reads it for the next request (wrapUpDue).
    *  Undefined for an input that cannot be measured, and on a guard that refuses everything. */
   leastUsd?(request: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">): number | undefined;
+  /** A request's step-0 figure (its input and WRAP_UP_STEP0_ANSWER_TOKENS of output, at most what it asks, under
+   *  `previous`), priced by the same code: the wrap-up's typical cost while nothing is priced, judged on the request taking
+   *  the note itself, as pi's judge does (wrapUpDue). Undefined for an input that cannot be measured. */
+  typicalUsd?(request: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">): number | undefined;
 }
 /** A request this guard admitted: the most output it may be sent with (none for a model whose output is free and has no
  *  ceiling), what it is held at (`holdUsd`: its expected cost at that output, its worst case under strict), which the
@@ -898,9 +902,7 @@ export interface CapGuard {
  *  (`boundUsd`, BOUND_USD), and what it counts at if its client stops it part way having streamed that many tokens (one a
  *  byte): its input and those tokens plus STOP_ALLOWANCE_TOKENS of output, at most its output limit, never more than its
  *  hold. */
-/** `typicalUsd`: the request at its input and WRAP_UP_STEP0_ANSWER_TOKENS of output (at most what it asked), the wrap-up's
- *  typical cost while nothing is priced. */
-export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number; typicalUsd?: number };
+export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number };
 export type GuardRequest = {
   spentUsd: number | null;
   /** The requests in flight, each held at what it was admitted at (`holdUsd`), else at its worst case at the output limit
@@ -928,17 +930,24 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
   if (output === undefined) return { beforeRequest: () => ({ refuse: noCeiling(cap) }) };
   const price = priceOf((await import("@earendil-works/pi-ai")).calculateCost, model);
   const held = (request: GuardRequest["inFlight"][number]) => request.holdUsd ?? price({ cached: 0, fresh: request.inputTokensMax! }, request.outputTokensMax ?? output);
-  /** A request priced by the one rule (requestPrice): its cost at an output, and the output it asks and needs at least. */
+  /** A request priced by the one rule (requestPrice): its cost at an output, and the output it asks, needs at least, and
+   *  is typically answered in at step 0 (WRAP_UP_STEP0_ANSWER_TOKENS, at most what it asks). */
   const pricedOf = ({ inputTokensMax, outputTokensAsked, outputTokensLeast, previous }: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">) => {
     const priced = requestPrice(price, inputTokensMax!, previous, now(), mode);
     const asked = Math.min(outputTokensAsked ?? output, output);
-    return { priced, asked, least: Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked) };
+    return { priced, asked, least: Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked), step0: Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked) };
   };
+  const measured = (request: { inputTokensMax?: number }) => typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax);
   return {
     leastUsd(request) {
-      if (typeof request.inputTokensMax !== "number" || !Number.isFinite(request.inputTokensMax)) return undefined;
+      if (!measured(request)) return undefined;
       const { priced, least } = pricedOf(request);
       return priced.cost(output === 0 ? 0 : least);
+    },
+    typicalUsd(request) {
+      if (!measured(request)) return undefined;
+      const { priced, step0 } = pricedOf(request);
+      return priced.cost(output === 0 ? 0 : step0);
     },
     beforeRequest({ spentUsd, inFlight, inputTokensMax, outputTokensAsked, outputTokensLeast, previous }) {
       if (spentUsd === null) return { refuse: unknownSpend(cap) };
@@ -951,12 +960,11 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const cost = priced.cost;
       const bound = (tokens: number) => Math.max(0, priced.worst(tokens) - cost(tokens));
       const boundOf = (tokens: number) => (bound(tokens) > 0 ? { boundUsd: bound(tokens) } : {});
-      const admitted = (limit: number, typicalUsd = cost(limit)): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit), typicalUsd });
+      const admitted = (limit: number): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit) });
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
       if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? admitted(0) : { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(0))), ...boundOf(0) };
-      const typical = cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked));
       const most = mostOutput(cost, least, asked, left);
-      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most, typical);
+      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most);
     },
   };
 }
