@@ -51,8 +51,15 @@ export type DrivingGate = {
   epoch?(): number;
   /** The take-over viewer is connected (true) or gone (false): while held with no viewer, the hold ends after the away window. */
   setPresent?(on: boolean): void;
-  /** Resolves once nobody holds the browser (at once when nobody does); rejects with `signal`'s reason when it aborts first. */
+  /** Resolves once nobody holds the browser and the person's last command has settled (at once when neither); rejects with `signal`'s reason when
+   *  it aborts first. */
   untilFree?(signal?: AbortSignal): Promise<void>;
+  /** One command of the person's (an input, a nav, a dialog answer) starts on the browser: `done` when it returns, whatever it did. A hold that ends
+   *  while one runs (handed back, the ask answered, the cap, idle, away) wakes no model call until it returns, or until `settleMs` passes: past
+   *  that the command is let go, `live()` false from then on, and a command of several steps (Back reads the history, then moves) checks it before each. */
+  command?(): { live(): boolean; done(): void };
+  /** True from a hold's end until the person's last command has settled (or was let go): no model call starts meanwhile. */
+  settling?(): boolean;
   /** The session was released: listeners dropped, the gate forgotten, no viewer. */
   end(): void;
 };
@@ -74,6 +81,8 @@ export type DrivingOptions = {
   holdIdleMs?: number;
   /** A person's hold ends after its viewer has been gone this long. Default 2 minutes. */
   holdAwayMs?: number;
+  /** After a hold ends, model calls wait at most this long for the person's command still running to return; past it the command is let go. Default 10 s. */
+  settleMs?: number;
   /** For tests: the timer functions. */
   timers?: Timers;
 };
@@ -93,12 +102,16 @@ class Gate implements DrivingGate {
   private hold: { onEnd?: (why: HoldEnd, message?: string) => void; onStart?: () => void; pending: boolean; idle: unknown; away: unknown } | null = null;
   private epoch_ = 0;
   private present_ = false;
+  /** The person's commands running on the browser now. */
+  private readonly commands = new Set<object>();
+  /** Set from a hold's end while a command of the person's still runs: the bound's timer. Model calls wait until it clears. */
+  private settling_: { timer: unknown } | null = null;
   /** Model calls waiting for the hold to end. */
   private readonly waiters = new Set<() => void>();
   private readonly listeners = new Set<(state: DriveState) => void>();
-  constructor(private readonly timers: Timers, private readonly idleMs: number, private readonly forget: (gate: Gate) => void, private readonly holdIdleMs = 15 * 60_000, private readonly holdAwayMs = 2 * 60_000) {}
+  constructor(private readonly timers: Timers, private readonly idleMs: number, private readonly forget: (gate: Gate) => void, private readonly holdIdleMs = 15 * 60_000, private readonly holdAwayMs = 2 * 60_000, private readonly settleMs = 10_000) {}
 
-  state(): DriveState { return this.hold && !this.hold.pending ? "person" : this.model_ > 0 ? "agent" : this.person || this.hold ? "person" : "idle"; }
+  state(): DriveState { return this.hold && !this.hold.pending ? "person" : this.model_ > 0 ? "agent" : this.person || this.hold || this.settling_ ? "person" : "idle"; }
 
   /** Viewer input: discarded (never queued) while the model acts, so a keystroke is not replayed into a page the model has since moved. While the
    *  person holds the browser it is always theirs: a model call that was in flight at the take acts no more (the epoch moved). */
@@ -111,6 +124,8 @@ class Gate implements DrivingGate {
       this.drove_ = true;
       return "driving";
     }
+    // Handed back, the person's last command still settling: it is theirs, and it starts no new driving window.
+    if (this.settling_) return "driving";
     if (this.model_ > 0) return "agent_acting";
     const before = this.state();
     this.person = true;
@@ -122,7 +137,7 @@ class Gate implements DrivingGate {
   }
 
   model(): { release(): void; drove: boolean } | "person_driving" {
-    if (this.person || this.hold) return PERSON_DRIVING;
+    if (this.person || this.hold || this.settling_) return PERSON_DRIVING;
     const drove = this.drove_;
     const before = this.state();
     this.model_ += 1;
@@ -190,8 +205,23 @@ class Gate implements DrivingGate {
     if (!on) this.settle();
   }
 
+  command(): { live(): boolean; done(): void } {
+    const mark = {};
+    this.commands.add(mark);
+    return {
+      live: () => this.commands.has(mark),
+      done: () => {
+        if (!this.commands.delete(mark)) return;
+        if (this.settling_ && this.commands.size === 0) this.settled();
+        else this.settle();
+      },
+    };
+  }
+
+  settling(): boolean { return this.settling_ !== null; }
+
   untilFree(signal?: AbortSignal): Promise<void> {
-    if (!this.hold) return Promise.resolve();
+    if (!this.hold && !this.settling_) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
       const abort = (): void => { this.waiters.delete(done); reject(signal?.reason ?? new Error("aborted")); this.settle(); };
       const done = (): void => { signal?.removeEventListener("abort", abort); resolve(); };
@@ -203,6 +233,8 @@ class Gate implements DrivingGate {
 
   end(): void {
     this.endHold("released");
+    this.commands.clear();
+    this.settled();
     if (this.idle !== undefined) this.timers.clear(this.idle);
     this.idle = undefined;
     this.person = false;
@@ -224,12 +256,28 @@ class Gate implements DrivingGate {
     this.person = false;
     if (this.idle !== undefined) this.timers.clear(this.idle);
     this.idle = undefined;
-    const waiting = [...this.waiters];
-    this.waiters.clear();
-    for (const wake of waiting) wake();
+    // A command of the person's still running (a Back between reading the history and moving, a navigation under way) would move the page under
+    // the agent's next call: the waiting calls go on once it returns, or once the bound passes and it is let go.
+    if (this.commands.size > 0 && why !== "released") {
+      if (this.settling_) this.timers.clear(this.settling_.timer);
+      this.settling_ = { timer: this.timers.set(() => { this.commands.clear(); this.settled(); }, this.settleMs) };
+    } else this.wake();
     this.announce(this.state());
     try { hold.onEnd?.(why, message); } catch { /* a host's listener that throws cannot keep the hold */ }
     this.settle();
+  }
+
+  /** The person's last command has returned, or was let go: the waiting model calls go on. */
+  private settled(): void {
+    if (this.settling_) { this.timers.clear(this.settling_.timer); this.settling_ = null; this.announce(this.state()); }
+    this.wake();
+    this.settle();
+  }
+
+  private wake(): void {
+    const waiting = [...this.waiters];
+    this.waiters.clear();
+    for (const wake of waiting) wake();
   }
 
   private stopDriving(): void {
@@ -243,7 +291,7 @@ class Gate implements DrivingGate {
   /** A gate that no call, person, viewer or listener holds is dropped from the registry, so a long-running host does not keep one per session it ever ran: whoever asks again gets an
    *  identical one. A gate in use stays the same object. */
   private settle(): void {
-    if (this.model_ === 0 && !this.person && !this.drove_ && !this.viewing_ && !this.hold && !this.present_ && this.waiters.size === 0 && this.listeners.size === 0) this.forget(this);
+    if (this.model_ === 0 && !this.person && !this.drove_ && !this.viewing_ && !this.hold && !this.present_ && !this.settling_ && this.commands.size === 0 && this.waiters.size === 0 && this.listeners.size === 0) this.forget(this);
   }
 
   private announce(state: DriveState): void {
@@ -257,11 +305,12 @@ export function createDrivingGates(options: DrivingOptions = {}): DrivingGates {
   const timers = options.timers ?? NODE_TIMERS;
   const holdIdleMs = options.holdIdleMs ?? 15 * 60_000;
   const holdAwayMs = options.holdAwayMs ?? 2 * 60_000;
+  const settleMs = options.settleMs ?? 10_000;
   const byTag = new Map<string, Gate>();
   return (tag) => {
     let gate = byTag.get(tag);
     if (!gate) {
-      const made: Gate = new Gate(timers, idleMs, (ended) => { if (byTag.get(tag) === ended) byTag.delete(tag); }, holdIdleMs, holdAwayMs);
+      const made: Gate = new Gate(timers, idleMs, (ended) => { if (byTag.get(tag) === ended) byTag.delete(tag); }, holdIdleMs, holdAwayMs, settleMs);
       byTag.set(tag, made);
       gate = made;
     }
@@ -317,6 +366,8 @@ export function rearmWhenLeft(gate: DrivingGate, alive: () => boolean, rearm: ()
 
 /** Whether `gate`'s person hold is live (their input taken): false for a gate without holds. */
 export const isHolding = (gate: DrivingGate): boolean => typeof gate.holding === "function" ? gate.holding() : isHeld(gate);
+/** Whether `gate`'s hold has ended with the person's last command still settling: false for a gate without holds. */
+export const isSettling = (gate: DrivingGate): boolean => typeof gate.settling === "function" && gate.settling();
 /** Whether `gate` is held for a person now: false for a gate without holds (a registry that predates them). */
 export const isHeld = (gate: DrivingGate): boolean => typeof gate.held === "function" && gate.held();
 /** `gate`'s epoch: 0, unmoving, for a gate without holds. */

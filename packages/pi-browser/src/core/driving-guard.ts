@@ -1,5 +1,5 @@
 import { BrowserFailureError, FenceRefusal, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
-import { drivingGates, epochOf, isHeld, personDrivingFailure, PERSON_DRIVING, type DrivingGate, type DrivingGates } from "./driving.js";
+import { drivingGates, epochOf, isHeld, isSettling, personDrivingFailure, PERSON_DRIVING, type DrivingGate, type DrivingGates } from "./driving.js";
 import { asPartial, browserFailure, classifyBrowserError, PARTIAL } from "./failures.js";
 import type { ToolCall, ToolImpl } from "./tools.js";
 
@@ -90,7 +90,8 @@ export function drivingGuard<D extends BrowserDriver, A = unknown>(impl: ToolImp
       let waited = false;
       for (;;) {
         const gate = gates(tag);
-        if (isHeld(gate)) {
+        // Held, or handed back with the person's last command still settling: the call waits for both.
+        if (isHeld(gate) || isSettling(gate)) {
           waited = true;
           try { await gate.untilFree?.(call?.signal); } catch { throw STOPPED_WAITING(); }
           continue;

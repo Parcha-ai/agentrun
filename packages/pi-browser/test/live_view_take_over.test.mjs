@@ -408,6 +408,67 @@ test("take-over viewer: input that waited behind a slow command while the browse
   assert.ok(await until(() => sent.length === 2));
 });
 
+/** A take-over viewer whose Back runs in two steps (the history read, then the move) with the move held until `unblock`, and an agent call waiting for the hand-back. */
+async function backInFlight(t, tag, gates) {
+  const log = [];
+  let unblock;
+  const blocked = new Promise((resolve) => { unblock = resolve; });
+  const stream = () => ({ input: async () => {}, dialog: async () => {}, close() {}, nav: async (m, live) => {
+    log.push("history");
+    await blocked;
+    if (live && !live()) { log.push("fenced"); return; }
+    log.push("navigated");
+  } });
+  const host = createLiveView({ hostOrigin: "'self'", stream, viewer: VIEWER, gates, takeOver: { take: async () => ({ end() {} }) } });
+  t.after(() => host.close());
+  const view = await host.open(tag, "ws://127.0.0.1:9/x");
+  const u = new URL(view.fullscreen);
+  const c = await connect(`ws://${u.host}${u.pathname}/ws`, { origin: u.origin });
+  c.ws.sendJson({ type: "hello", token: new URLSearchParams(u.hash.slice(1)).get("t") });
+  await c.ws.next();
+  const nextOf = async (type) => JSON.parse((await c.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === type)).item?.data ?? "null");
+  c.ws.sendJson({ type: "take" });
+  assert.deepEqual(await nextOf("hold"), { type: "hold", held: true });
+  c.ws.sendJson({ type: "nav", action: "back" });
+  assert.ok(await until(() => log.length === 1));
+  const port = { session: async () => ({ tag, driver: { close: async () => {} }, notice: null }), relaunch: async () => ({ tag }), release: async () => ({ released: true, sessionId: null }) };
+  const running = drivingGuard(async (_a, p) => { await p.session(); log.push("agent"); return { content: [{ type: "text", text: "ran" }] }; }, gates)({}, port, {});
+  await wait(50);
+  assert.deepEqual(log, ["history"], "the agent's call waits while the person holds the browser");
+  c.ws.sendJson({ type: "give" });
+  assert.deepEqual(await nextOf("hold"), { type: "hold", held: false, reason: "given" });
+  return { log, unblock, running };
+}
+
+test("take-over viewer: hand back while the person's Back is still running: the agent's call starts only once the navigation is done, never while the page moves under it", async (t) => {
+  const tag = "ar-run-to-30-1";
+  const gates = createDrivingGates();
+  const b = await backInFlight(t, tag, gates);
+  await wait(100);
+  assert.deepEqual(b.log, ["history"], "handed back, but the person's last command still runs: the agent waits for it");
+  b.unblock();
+  await b.running;
+  assert.deepEqual(b.log, ["history", "navigated", "agent"]);
+  assert.equal(gates(tag).state(), "idle");
+});
+
+test("take-over viewer: a person's command that hangs past the hand-back's bound no longer holds the agent: the agent goes on, and the command, when it comes back, acts no more", async (t) => {
+  const tag = "ar-run-to-31-1";
+  const clock = fakeClock();
+  const gates = createDrivingGates({ timers: clock.timers, settleMs: 5_000 });
+  const b = await backInFlight(t, tag, gates);
+  await wait(50);
+  clock.tick(4_999);
+  await wait(50);
+  assert.deepEqual(b.log, ["history"], "within the bound the agent still waits");
+  clock.tick(1);
+  await b.running;
+  assert.deepEqual(b.log, ["history", "agent"], "past the bound the agent goes on");
+  b.unblock();
+  assert.ok(await until(() => b.log.length === 3));
+  assert.deepEqual(b.log, ["history", "agent", "fenced"], "the hung command's next step never reaches the page");
+});
+
 test("take-over viewer: a take whose hold cannot start (the browser held already when the host answered) is refused to the viewer, and the host's take is cancelled, never ended", async (t) => {
   const tag = "ar-run-to-16-1";
   const gates = createDrivingGates();

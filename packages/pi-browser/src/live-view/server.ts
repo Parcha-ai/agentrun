@@ -253,12 +253,15 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       // The person's turn must not lapse while their own command runs (a navigation can take seconds, the window is 3 s): it is renewed until the command returns.
       const keep = setInterval(() => { viewer.gate.input(); }, KEEP_DRIVING_MS);
       keep.unref();
+      // The gate knows the command runs: a hand-back meanwhile wakes the agent only once it returns (or is let go, `live` false from then on).
+      const command = viewer.gate.command?.();
+      const live = (): boolean => command?.live() ?? true;
       try {
-        if (message.type === "nav") await viewer.stream.nav(message);
+        if (message.type === "nav") await viewer.stream.nav(message, live);
         else if (message.type === "dialog") await viewer.stream.dialog(message);
         else await viewer.stream.input(message);
       } catch (error) { send(viewer.conn, { type: "held", reason: (error as { reason?: unknown })?.reason === "bad_message" ? "bad_message" : "no_page" }); }
-      finally { clearInterval(keep); viewer.queued -= 1; }
+      finally { clearInterval(keep); command?.done(); viewer.queued -= 1; }
     });
   };
 

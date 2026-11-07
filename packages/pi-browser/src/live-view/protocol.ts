@@ -96,7 +96,8 @@ export type StreamHandlers = {
 };
 export type Stream = {
   input(message: InputMessage): Promise<void>;
-  nav(message: NavMessage): Promise<void>;
+  /** `live` is false once the command was let go (handed back, and the agent's call went on): a nav of several steps checks it before each. */
+  nav(message: NavMessage, live?: () => boolean): Promise<void>;
   dialog(answer: DialogAnswer): Promise<void>;
   close(): void;
 };
