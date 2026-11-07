@@ -2263,9 +2263,10 @@ Near its cap, a run's model is told once to finish: when what is left (the cap l
 in flight are held at) is under three times the run's typical request, the next request of the run's own model carries
 "About $X left of this run's budget: finish now with your answer." at its end, and the Timeline shows it as the server's
 row ("AgentRun: About $X left …"). The typical request is the median of the run's own model's priced requests after the
-first (the first writes the cache), else that one, else the next request's expected cost; side calls on another model
-and paid tools count in what is left, never in the typical request. Told before the run's own model has a priced request
-(a small cap on a pricey model can be due at its first), the words say the budget instead: "This run's budget is about
+first (the first writes the cache), else that one, else, while nothing is priced, the next request at its input and a
+4,096-token answer (never its whole output allowance: a $1 run on Sonnet 4.5 is not told at its start); side calls on
+another model and paid tools count in what is left, never in the typical request. Told while nothing is priced (a small
+cap, due at the run's first request), the words say the budget instead, on every harness: "This run's budget is about
 $X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
