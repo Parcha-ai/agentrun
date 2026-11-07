@@ -599,7 +599,7 @@ test("a docker CLI that never answers `docker version` fails the docker run in b
 		writeFileSync(join(dir, "docker"), "#!/bin/sh\nexec sleep 600\n");
 		chmodSync(join(dir, "docker"), 0o755);
 		const script = `import { main } from ${JSON.stringify(pathToFileURL(CLI).href)};
-process.exitCode = await main(["--provider", "docker"], { dockerTimeoutMs: 500 });`;
+process.exitCode = await main(["--provider", "docker"], { providerOptions: { timeoutMs: 500 } });`;
 		const { code, signal, stderr } = await new Promise((resolve) => {
 			execFile(
 				process.execPath,

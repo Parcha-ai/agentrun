@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import {
 	COMPUTER_LABEL,
@@ -49,6 +50,53 @@ export interface DockerProviderOptions {
 	 *  its spec asks. */
 	user?: string;
 }
+
+/** The environment fromEnv reads, by name. */
+export const ENV = {
+	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
+	daemon: "COMPUTER_DOCKER_DAEMON",
+	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
+	user: "COMPUTER_DOCKER_USER",
+} as const;
+
+export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
+	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */
+	timeoutMs?: number;
+}
+
+/**
+ * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
+ * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
+ */
+export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerFromEnvOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+			if (!error) return resolve(stdout.trim());
+			const killed = error.killed === true && error.signal === "SIGKILL";
+			const why = killed ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (stderr.trim() || error.message).split("\n")[0];
+			reject(new Error(`cannot ask Docker its architecture (${docker} version): ${why}`));
+		});
+	});
+}
+
+/**
+ * A DockerProvider from COMPUTER_DOCKER_* alone. Without COMPUTER_DOCKER_DAEMON it asks Docker its architecture and takes
+ * this package's daemon for it, and says when that daemon is not built. Options win over the environment.
+ */
+export async function fromEnv(env: Record<string, string | undefined> = process.env, options: DockerFromEnvOptions = {}): Promise<DockerProvider> {
+	const { timeoutMs, ...given } = options;
+	const user = env[ENV.user] || undefined;
+	let daemonPath = given.daemonPath ?? (env[ENV.daemon] || undefined);
+	if (daemonPath === undefined) {
+		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
+		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+	}
+	return new DockerProvider({ ...(user === undefined ? {} : { user }), ...given, daemonPath });
+}
+
+/** The conformance CLI's module for Docker: the drifted twin. */
+export const conformance = () => import("./conformance/docker.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = /^computer-[0-9a-f]{12}$/;
