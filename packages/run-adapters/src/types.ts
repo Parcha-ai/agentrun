@@ -183,9 +183,14 @@ export interface ModelPort {
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
   /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
-   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). */
-  note?(model: string): string | undefined;
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
+   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+  note?(model: string, request?: NoteRequest): string | undefined;
 }
+
+/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
+ *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {

@@ -158,7 +158,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
             // A note its host has for this request, taken before it is measured, as the model proxy takes it: its bytes count
             // in what the request is admitted at, and it is filed as sent once the request is admitted carrying it.
-            const note = io.models.note?.("faux");
+            const note = io.models.note?.("faux", { inputTokensMax: measured, ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) });
             if ("sideAfterNote" in action && action.sideAfterNote) {
               const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
               await io.models.afterRequest({ input: 10, output: 5, usd: action.sideAfterNote.usd }, side || undefined);
