@@ -83,5 +83,6 @@ test("guard (retryMarkSynced, no barrier needed): a capped request's lost attemp
   assert.deepEqual(killed.marks, [[REQUEST_STARTED, { heldUsd: HOLD }], [REQUEST_ENDED, { lost: true, heldUsd: HOLD }]], "a killed process keeps every commit: the start and the lost mark");
   const lost = await cutDuringRetry(t, true);
   assert.deepEqual(lost.marks[0], [REQUEST_STARTED, { heldUsd: HOLD }], "the start mark, synced before the request left (modelRequestStarted), survives the box");
+  assert.deepEqual(lost.marks, [[REQUEST_STARTED, { heldUsd: HOLD }]], "only the synced start mark survives the box; the lost-attempt mark is gone");
   assert.deepEqual([killed.spent, lost.spent], [HOLD, HOLD], `the request reads at its hold either way: the start mark carries the lost mark's figure (box loss kept ${lost.marks.length} mark(s))`);
 });
