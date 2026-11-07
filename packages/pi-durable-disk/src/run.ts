@@ -685,7 +685,8 @@ class Run implements DurableRun {
       lease.fromStore(row ? parseRunRecord(row.record) : undefined);
     });
     const storage = lease.observe(this.#store!.storage, () => {
-      if (this.#releasing === undefined) this.#closedFirst = true;
+      // A fence's own close (pi closes its storage when a commit fences) is never the app's misuse.
+      if (this.#releasing === undefined && !lease.fenced) this.#closedFirst = true;
     });
     // openDurableRun refused an open without Harness options (here or from afterClaim) before this runs.
     this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness!, env: this.env }, this.#context));
@@ -731,7 +732,8 @@ class Run implements DurableRun {
    * wrote it, as after a crash.
    */
   #assertOrder(what: string): void {
-    if (!this.#closedFirst) return;
+    // A fenced run answers with its fence's error, never this one.
+    if (!this.#closedFirst || this.#lease.fenced) return;
     throw new RunError(
       "RELEASE_ORDER",
       `${what} before closing the Harness: run ${this.ref.id}'s Harness was closed first, and its store with it, so its record cannot be written. close the Harness only through release(), which writes the record and then closes it`,

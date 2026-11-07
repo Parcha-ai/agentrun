@@ -677,6 +677,27 @@ describe("fences during the run", () => {
       }
     });
   }
+
+  it("a fenced run whose Harness then closes answers with the fence's error, never RELEASE_ORDER: a fence's close is not the app's misuse", async () => {
+    const dir = scratchRoot("fence-then-close");
+    try {
+      const faulty: { database?: FaultyDatabase } = {};
+      const decorateStore = (database: SqliteDatabase) => (faulty.database = new FaultyDatabase(database));
+      const t = setup(dir.root, { options: { decorateStore } });
+      const run = await t.open();
+      const root = await run.harness.root(ctx, { agent: t.agent });
+      faulty.database!.failNextCommit(sqliteError(SQLITE_IOERR_FSYNC, "disk I/O error"));
+      await assert.rejects(root.configure({ instructions: "never durable" }, ctx), StoreFencedError);
+      await until(() => t.fenced.length === 1);
+      await run.harness.close(ctx).catch(() => undefined);
+      await assert.rejects(run.setStatus("failed", { reason: "fenced" }), (error) => error === t.fenced[0]);
+      await assert.rejects(run.release(), (error) => error === t.fenced[0]);
+      assert.equal(run.record.status, "running");
+      await faulty.database!.inner.close();
+    } finally {
+      dir.remove();
+    }
+  });
 });
 
 describe("release", () => {
