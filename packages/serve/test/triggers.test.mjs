@@ -27,7 +27,7 @@ test("a cron line in America/Los_Angeles fires at its UTC instants across the fa
   meets("/triggers", "post", "201", created.body);
   const id = created.body.id;
   assert.equal(created.headers.get("location"), `/v2/triggers/${id}`);
-  assert.deepEqual([created.body.enabled, created.body.overlap, created.body.last_firing], [true, "skip", null]);
+  assert.deepEqual([created.body.enabled, created.body.overlap, created.body.last_firing], [true, undefined, null], "overlap is behaviour, not a field: always skip");
   assert.equal(created.body.next_at, "2026-11-01T08:30:00.000Z", "1:30 PDT, the first of the two 1:30s");
 
   clock.to("2026-11-01T08:30:00Z");
@@ -185,7 +185,7 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook"], targets: ["start_run", "message_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
 });
 
 test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000 }, async (t) => {

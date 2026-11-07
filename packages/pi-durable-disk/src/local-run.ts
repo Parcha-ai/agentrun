@@ -4,7 +4,7 @@
 //
 //   const run = await openDurableRun(ref, { ...localRun("/var/runs/run-1"), harness: { models, registry } });
 //
-// No mount token is needed (`acquire` is replaced). The claim's barrier does not sync the files the agent wrote: the
+// The claim's barrier does not sync the files the agent wrote: the
 // store's own commits are made durable by SQLite, and work/ is the operating system's to flush; a power loss can lose what
 // it had not written yet. It refuses once the claim is fenced, as a mount's does.
 //
@@ -20,7 +20,7 @@ import { openClaimDir, type ClaimDir } from "./status.ts";
 export interface LocalRun {
   /** Takes the claim: the directory, made when it is missing. */
   readonly acquire: (options: AcquireOptions) => Promise<Claim>;
-  /** Holds the directory open as the run's root; a local directory is not an Archil mount, so its type is not checked. */
+  /** Holds the directory open as the run's root. */
   readonly claimDir: (root: string) => Promise<ClaimDir>;
 }
 
@@ -32,7 +32,7 @@ export function localRun(root: string): LocalRun {
       await mkdir(dir, { recursive: true });
       return new LocalClaim(ref, dir);
     },
-    claimDir: (at) => openClaimDir(at, { fstype: null }),
+    claimDir: (at) => openClaimDir(at),
   };
 }
 
@@ -44,10 +44,6 @@ class LocalClaim implements Claim {
   readonly store: string;
   /** `<root>/commands`: a local run has no unit cgroup, so the next open ends the commands a killed one left running. */
   readonly commands: string;
-  readonly reused = false;
-  readonly stray = null;
-  readonly forced = false;
-  readonly timings = { mountMs: 0, verifyMs: 0 };
   #fence: { cause: unknown } | undefined;
 
   constructor(ref: RunRef, root: string) {

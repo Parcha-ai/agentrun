@@ -18,7 +18,7 @@
 import type { TSchema } from "typebox";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { clip, TITLE_CAP } from "./fetch-page.js";
+import { clip, TITLE_CAP } from "./web-fetch-direct.js";
 import { forModel } from "./result.js";
 import { fauxFetch } from "./decisions.js";
 import { FAUX_ENV } from "./model.js";

@@ -71,10 +71,6 @@ export class TriggerSecrets {
     this.secrets = this.key ? opened(this.key, this.sealed) : {};
   }
 
-  get sealing(): "sealed" | "unavailable" {
-    return this.key ? "sealed" : "unavailable";
-  }
-
   /** A new secret for `triggerId`, written sealed before it is answered: its only showing. */
   mint(triggerId: string): string {
     if (this.unreadable) throw new ApiError("store_unreadable", `${TRIGGER_SECRETS_FILE} in the data directory does not read (${this.unreadable}); it is never written over, so no webhook trigger's secret is made or rotated. Fix it or move it away, then restart.`);

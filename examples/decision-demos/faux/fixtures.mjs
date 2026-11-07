@@ -35,7 +35,7 @@ export function registryCitations(company, jurisdiction) {
   ];
 }
 
-/** The invented merchants fetch_page serves under --faux, with what each provider should find. */
+/** The invented merchants web_fetch serves under --faux, with what each provider should find. */
 export const merchants = {
   "kettlewick-roasters.example": {
     name: "Kettlewick Roasters", ip: "93.184.216.61", mcc: "5499",
