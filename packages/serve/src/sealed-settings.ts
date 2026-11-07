@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
-import { keyBytes, mintSecret } from "./standard-webhooks.js";
+import { keyBytes, MIN_KEY_BYTES, mintSecret } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { isObject } from "./validate.js";
 
@@ -59,6 +59,9 @@ export class SealedSettings {
       return;
     }
     this.sealed = read.sealed;
+    if (!this.key && Object.values(this.sealed).some((fields) => Object.keys(fields).length)) {
+      say({ condition: "trigger_settings_no_seal_key", adapter: adapterId, file: this.file, effect: `this server was handed no ${SEAL_KEY_ENV}: none of its sealed settings is read` });
+    }
     for (const [scope, fields] of Object.entries(this.sealed)) {
       for (const [field, value] of Object.entries(fields)) {
         if (!this.key) continue;
@@ -84,6 +87,11 @@ export class SealedSettings {
   set(scope: string, field: string, value: string): void {
     const spec = this.spec.fields[field];
     if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
+    // A value the list of the server's secrets would pass over (server-secrets.ts: whitespace, under 8 bytes) would be
+    // left out of every redaction: none is kept.
+    if (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
+    // A verification key is kept only as the spec writes one, or every request it checks would be refused.
+    if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith("whsec_")) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
     this.put(scope, field, value);
   }

@@ -19,8 +19,8 @@ const MAX_SIGNATURES_CHARS = 2048;
 /** A new secret: `whsec_` and 32 random bytes in base64. */
 export const mintSecret = (): string => `whsec_${randomBytes(32).toString("base64")}`;
 
-/** The bytes a secret signs with. */
-const keyOf = (secret: string): Buffer => Buffer.from(secret.slice("whsec_".length), "base64");
+/** The bytes a secret signs with: a `whsec_` secret's key, after its prefix; any other value, as base64. */
+const keyOf = (secret: string): Buffer => Buffer.from(secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret, "base64");
 /** How many bytes `value` holds as a key: a `whsec_` secret's decoded key, any other value's UTF-8. */
 export const keyBytes = (value: string): number => (value.startsWith("whsec_") ? keyOf(value).length : Buffer.byteLength(value, "utf8"));
 
