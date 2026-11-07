@@ -1062,7 +1062,8 @@ daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [
 undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under its line with what the
 case found. `computerNotes` (`[{ computer, note }]`, absent when empty) holds every note a `create` returned beside its
 ref, such as a probe target that accepted and sent nothing back, naming the computer, in the order they came; the text
-report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one.
+report prints each as `note <computer>: <words>` above the verdict, so a run that passes Core never hides one. Notes an
+`attach` returns are not carried: cases call `attach` on the provider directly, so the runner never sees them.
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
