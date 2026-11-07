@@ -42,7 +42,8 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 /** `sideAfterNote`: a client's side call on another model (a title, a summary: ModelRequest.side) admitted and answered
  *  at `usd` after this request took its host's note and before this request is admitted, as a Claude Code side call can
  *  be while the model proxy reads the credential between the two. */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number } };
+/** `resultWhen`: a call's result is told (its tool_end) only once this file exists, as a harness still recording it would. */
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; resultWhen?: string };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -211,6 +212,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 io.onEvent({ type: "tool_start", callId, name, args });
                 const result = tool ? await tool.call(args, { callId, signal }).catch((error: Error) => ({ text: error.message, isError: true })) : { text: `unknown tool ${name}`, isError: true };
                 if (tool) stats.calls.push(name);
+                if ("resultWhen" in action && typeof action.resultWhen === "string") await untilExists(action.resultWhen, signal);
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
                 io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
               }
