@@ -4,13 +4,14 @@
 // run-adapters host/parent-death.ts), so the kernel kills it the moment the run's process dies; the server then takes the
 // run back and opens it again on a new process. Read by pid and /proc: every process under the killed one, the CLI
 // among them, is gone within 2 s of the kill; the CLI's only way to the provider, the model proxy in its environment,
-// refuses connections; and no request reaches the provider from the old process after the kill (each request is
+// has no listener of the old tree left (read by the listening socket's owner, never the port number, which the kernel
+// may give to another process at once); and no request reaches the provider from the old process after the kill (each request is
 // attributed to the process that held the run when it came). claude-run.test.mjs's kill test checks the CLI only once
 // the run has completed; this one bounds the whole old process tree from the kill.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { connect } from "node:net";
+import { readdir, readFile, readlink } from "node:fs/promises";
+import { connect, createServer } from "node:net";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -57,8 +58,40 @@ const accepts = (port) => new Promise((resolve) => {
   socket.once("connect", () => (socket.destroy(), resolve(true)));
   socket.once("error", () => resolve(false));
 });
+/** The socket inodes listening on TCP `port` (IPv4 and IPv6), from /proc/net/tcp and tcp6 (state 0A is LISTEN). */
+async function listeningOn(port) {
+  const inodes = new Set();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    for (const line of (await readFile(table, "utf8").catch(() => "")).split("\n").slice(1)) {
+      const fields = line.trim().split(/\s+/);
+      if (fields.length < 10 || fields[3] !== "0A") continue;
+      if (Number.parseInt(fields[1].slice(fields[1].lastIndexOf(":") + 1), 16) === port) inodes.add(fields[9]);
+    }
+  }
+  return inodes;
+}
+/** The processes (pid and start time) holding any of `inodes` open, by each readable process's /proc/<pid>/fd. */
+async function holdersOf(inodes) {
+  const out = [];
+  if (!inodes.size) return out;
+  for (const name of await readdir("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    for (const fd of await readdir(`/proc/${name}/fd`).catch(() => [])) {
+      const target = await readlink(`/proc/${name}/fd/${fd}`).catch(() => "");
+      const inode = /^socket:\[(\d+)\]$/.exec(target)?.[1];
+      if (inode && inodes.has(inode)) {
+        out.push({ pid: Number(name), start: await startOf(Number(name)) });
+        break;
+      }
+    }
+  }
+  return out;
+}
+/** The processes of `old` (pid and start time) that hold a listener on `port`: a port the kernel gave to another process
+ *  since is never taken for the old one. */
+const oldListeners = async (port, old) => (await holdersOf(await listeningOn(port))).filter((h) => old.some((p) => p.pid === h.pid && p.start === h.start));
 
-test("a run's process SIGKILLed while its Claude CLI has a request out: every process under it is gone within 2 s, the CLI's proxy refuses connections, no request reaches the provider from it after the kill, and the run completes on its next process", { timeout: 240_000, skip }, async (t) => {
+test("a run's process SIGKILLed while its Claude CLI has a request out: every process under it is gone within 2 s, no listener of the old tree is left on the CLI's proxy port, no request reaches the provider from it after the kill, and the run completes on its next process", { timeout: 240_000, skip }, async (t) => {
   // The first request is held open until the test ends; every later one is answered. Each request is filed with the
   // process holding the run as it came: the run's record names its holder before that process starts its CLI.
   let release;
@@ -106,7 +139,11 @@ test("a run's process SIGKILLed while its Claude CLI has a request out: every pr
   t.after(async () => { for (const p of named) if (await runs(p)) try { process.kill(p.pid, "SIGKILL"); } catch {} });
   const proxy = new URL((await envOf(cli.pid)).ANTHROPIC_BASE_URL);
   assert.equal(proxy.hostname, "127.0.0.1", `the CLI's model endpoint is the run's proxy on loopback: ${proxy}`);
-  assert.ok(await accepts(Number(proxy.port)), "the proxy takes connections while the run's process lives");
+  const port = Number(proxy.port);
+  // The old tree as the listener check reads it: the run's process (which holds the proxy) and everything under it.
+  const oldTree = [{ pid: old, start: await startOf(old) }, ...named];
+  assert.ok(await accepts(port), "the proxy takes connections while the run's process lives");
+  assert.ok((await oldListeners(port, oldTree)).length > 0, `the proxy's listener on ${port} is the old tree's while it lives: the check sees it`);
 
   const killed = Date.now();
   process.kill(old, "SIGKILL");
@@ -120,7 +157,36 @@ test("a run's process SIGKILLed while its Claude CLI has a request out: every pr
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.equal(await runs(cli), false, `the old CLI ${cli.pid} is gone`);
-  assert.equal(await accepts(Number(proxy.port)), false, "the old CLI's way to the provider, its proxy, refuses connections");
+  // The CLI's way to the provider, the proxy, is gone with it: no listener on its port belongs to the old tree. Read by
+  // owner, never by the port alone, which the kernel may give to any process once it is free (another test's server, the
+  // run's next process).
+  for (;;) {
+    const holding = await oldListeners(port, oldTree);
+    if (!holding.length) break;
+    assert.ok(Date.now() - killed < GONE_MS, `within ${GONE_MS} ms of the kill no listener on the proxy's port ${port} is the old tree's; held by ${JSON.stringify(holding)}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // The check keys on the owner: this process takes the freed port, and the port answers, but nothing of the old tree
+  // holds it. A port another process took first (EADDRINUSE, as on a busy CI runner) is left to it, and the same check
+  // holds of whoever holds it; any other error taking it fails.
+  const squat = createServer();
+  const took = await new Promise((resolve) => {
+    squat.once("error", (error) => resolve(error));
+    squat.listen(port, "127.0.0.1", () => resolve(true));
+  });
+  if (took !== true) {
+    assert.equal(took?.code, "EADDRINUSE", `taking the freed proxy port ${port} fails only because another process holds it: ${took?.message ?? took}`);
+    t.diagnostic(`the freed proxy port ${port} was already taken by another process`);
+    assert.deepEqual(await oldListeners(port, oldTree), [], "a listener another process holds on the freed port is not the old proxy");
+  } else {
+    t.diagnostic(`the freed proxy port ${port} was taken by this test after the kill`);
+    try {
+      assert.ok(await accepts(port), "the freed port, taken by this test, answers");
+      assert.deepEqual(await oldListeners(port, oldTree), [], "a listener another process holds on the freed port is not the old proxy");
+    } finally {
+      await new Promise((resolve) => squat.close(resolve));
+    }
+  }
 
   // The run is taken back and completes on its next process.
   await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
