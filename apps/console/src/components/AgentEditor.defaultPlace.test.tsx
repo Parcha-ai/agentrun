@@ -15,7 +15,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const DOCKER = { mode: "sandbox", box: "docker" };
 const boxes = [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: true }];
-const served = (extra: Record<string, unknown>) => placesOf({ places: { modes: ["runner", "sandbox"], default: "runner", boxes, ...extra } });
+const served = (extra: Record<string, unknown>) => placesOf({ places: { modes: ["runner", "sandbox"], boxes, ...extra } });
 const tools = toolOffers([{ name: "read", available: true }, { name: "write", available: true }, { name: "bash", available: true, sandbox_only: true }, { name: "browser", available: true }]);
 const capsWith = (places: ReturnType<typeof placesOf>) => ({ harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places });
 

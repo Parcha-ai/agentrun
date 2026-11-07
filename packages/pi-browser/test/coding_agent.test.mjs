@@ -34,6 +34,18 @@ test("the coding agent lists the browser and web tools with the package's contra
   }
 });
 
+test("granted both, the model is told which one keeps cookies: web_fetch reads one page cold; run keeps cookies across pages, and saved sign-ins only with a session vault", async (t) => {
+  const descriptions = async (extra) => new Map((await startAgent(t, { extension: extensionOf(fake(), extra) })).session.getAllTools().map((tool) => [tool.name, tool.description]));
+  // No vault, as a local Chrome runs it: cookies across pages, and no sign-in claimed.
+  const plain = await descriptions();
+  assert.match(plain.get("web_fetch"), /It has no cookies, sign-ins or session: it reads one page cold\. /);
+  assert.match(plain.get("web_fetch"), /or the page is behind a sign-in or depends on an earlier page, drive it with run\/snapshot instead\./);
+  assert.ok(plain.get("run").includes("It keeps cookies across pages: use it for a page that depends on an earlier one, or one that sets cookies."), plain.get("run"));
+  assert.doesNotMatch(plain.get("run"), /sign-in/);
+  const vaulted = await descriptions({ sessionVault: { restore: async () => null, capture: async () => {}, forget: async () => {} } });
+  assert.ok(vaulted.get("run").includes("It keeps this agent's saved sign-ins and cookies: use it for anything behind a sign-in, or a page that depends on an earlier one."), vaulted.get("run"));
+});
+
 test("the static browser section is in the system prompt of every request", async (t) => {
   const agent = await startAgent(t, { extension: extensionOf(fake()) });
   await agent.run(turn(["snapshot"]));
@@ -446,11 +458,10 @@ test("the coding agent: a dropped connection that will not come back is retried 
   assert.deepEqual(next.result.details?.previous_session, { released: true, reason: "lost", at: ended.endedAt });
 });
 
-/** A driver factory whose reconnect meets an earlier init still running in the extension and waits for it, as
- *  stagehandDriver does (up to its 60 s in-flight wait, here `waitMs`), honouring the attach's signal; a wait that ends
- *  starts a second init. */
-function initStillRunning(base, waitMs) {
-  const seen = { attaches: 0, secondInits: 0, waitAborted: false };
+/** A driver factory whose reconnect waits on the browser (its connection held on the way: Stagehand's connect waits up to its
+ *  60 s init deadline, here `waitMs`), honouring the attach's signal, as stagehandDriver does; a wait that ends attaches. */
+function attachHeld(base, waitMs) {
+  const seen = { attaches: 0, lateAttaches: 0, waitAborted: false };
   const factory = async (target, signal, options) => {
     seen.attaches += 1;
     if (seen.attaches === 1) return base(target, signal, options);
@@ -458,15 +469,15 @@ function initStillRunning(base, waitMs) {
       const timer = setTimeout(resolve, waitMs);
       signal?.addEventListener("abort", () => { clearTimeout(timer); seen.waitAborted = true; reject(signal.reason ?? new Error("aborted")); }, { once: true });
     });
-    seen.secondInits += 1;
+    seen.lateAttaches += 1;
     return base(target, signal, options);
   };
   return { factory, seen };
 }
 
-test("the coding agent: an attach given a deadline stops waiting on an earlier init at that deadline, starts no second init, and the session is then released as lost", async () => {
+test("the coding agent: an attach given a deadline stops waiting on the browser at that deadline, nothing attaches late, and the session is then released as lost", async () => {
   const backend = fake();
-  const stuck = initStillRunning(fakeDriver(backend), 3_000);
+  const stuck = attachHeld(fakeDriver(backend), 3_000);
   const custody = new LocalCustody({
     config: { label: "", run: "run-deadline", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
     provider: async () => backend.provider, driver: stuck.factory, keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
@@ -476,8 +487,8 @@ test("the coding agent: an attach given a deadline stops waiting on an earlier i
   const started = Date.now();
   await assert.rejects(custody.session(AbortSignal.timeout(300)), "the reconnect's attach ends at its deadline");
   assert.ok(Date.now() - started < 300 + 1_000, `it ended near the deadline, not after the attach's wait (${Date.now() - started} ms)`);
-  assert.equal(stuck.seen.secondInits, 0, "no second init started");
-  assert.ok(stuck.seen.waitAborted, "the wait for the earlier init was cut by the deadline");
+  assert.equal(stuck.seen.lateAttaches, 0, "nothing attached late");
+  assert.ok(stuck.seen.waitAborted, "the wait was cut by the deadline");
   assert.equal((await custody.unreachable()).released, true, "then released as lost");
   assert.equal(backend.tally().releases, 1, "the provider released it once: nothing keeps billing");
   await custody.close("close");
@@ -675,8 +686,8 @@ test("web_fetch falls back to the host's fetchers when the provider cannot fetch
   assert.match(fetched.text, /# From https:\/\/example\.test\/x/);
 });
 
-test("a driver whose close never comes back does not hold the release: the provider still releases", { timeout: 30_000 }, async (t) => {
-  // A Stagehand close after its connection dropped and was reconnected can wait forever.
+test("a driver whose close never comes back does not hold the release: the provider still releases", { timeout: 60_000 }, async (t) => {
+  // Any DriverFactory may be passed; custody waits DRIVER_CLOSE_MS (25 s) at most for its close.
   const backend = fake();
   const hanging = async (target, signal, options) => ({ ...(await fakeDriver(backend)(target, signal, options)), close: () => new Promise(() => {}) });
   const agent = await startAgent(t, { extension: extensionOf(backend, { driver: hanging }) });

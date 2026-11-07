@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { client, FAUX, follow, runDir, scratch, serve, startRun, storeRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -107,7 +107,7 @@ test("ask_person makes the run input_required and waiting; a message answers it 
   assert.deepEqual(done.rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: EU"], "the answer is the person's next message, never a steer");
   // What the model read back for its ask_person call, as the run's store holds it: never empty, on every pi-durable this
   // package takes (1.1 reads a result's `content`, 1.2 and later its `output`).
-  const db = new DatabaseSync(join(data, "runs", run_id, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, run_id), "store", "run.sqlite"), { readOnly: true });
   t.after(() => db.close());
   const results = db.prepare("SELECT record FROM entries ORDER BY id").all()
     .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -156,13 +156,13 @@ test("a stop the run's door refuses leaves no stop behind: the run reads working
   assert.equal(stop.body.stopped, false);
   const run = (await api("GET", `/runs/${run_id}`)).body;
   assert.deepEqual([run.status, run.state], ["working", "working"], "not stopped");
-  const meta = JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8"));
+  const meta = JSON.parse(await readFile(join(runDir(data, run_id), "serve.json"), "utf8"));
   assert.equal(meta.stopped_at, undefined, "no stop kept");
   assert.equal(meta.stopped_after, undefined, "no stop kept");
   // The turn was never stopped, so it can be: the next stop holds.
   assert.equal((await api("POST", `/runs/${run_id}/stop`)).body.stopped, true);
   await follow(api, run_id, ["input_required"]);
-  assert.equal(typeof JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).stopped_at, "string", "this stop is kept");
+  assert.equal(typeof JSON.parse(await readFile(join(runDir(data, run_id), "serve.json"), "utf8")).stopped_at, "string", "this stop is kept");
 });
 
 test("cancel ends a working run cancelled once its process has exited; a second cancel says it already ended", async (t) => {
@@ -197,7 +197,7 @@ test("a run whose cap can't cover one request's least pauses at its cap, in plai
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   // faux-1 at $1 a token: the least, its answer's 1,024 tokens and its input, is past $1,024; nothing spent, so the cap to
   // raise to is the least.
-  const words = /^Not sent: this run's cap of \$0\.01 can't cover one faux-1 request \(at least \$(\d+\.\d\d)\)\. Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(run.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d\d), and this run's cap is \$0\.01\. Raise the cap to at least \$(\d+\.\d\d) to continue\.$/.exec(run.pending.said);
   assert.ok(words, run.pending.said);
   assert.equal(words[2], words[1]);
   assert.ok(Number(words[1]) > 1024, `the least covers the answer's 1,024 tokens: $${words[1]}`);
@@ -243,7 +243,7 @@ test("after a restart the runs are read from the agent home: status, result and 
   assert.equal(page.reset, true);
   assert.equal(page.final, true);
   assert.deepEqual(page.rows.map((r) => r.kind), before.rows.map((r) => r.kind));
-  assert.equal(JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).title, "What is six times seven?");
+  assert.equal(JSON.parse(await readFile(join(runDir(data, run_id), "serve.json"), "utf8")).title, "What is six times seven?");
   const next = await again("POST", `/runs/${run_id}/messages`, { content: "go on" });
   assert.equal(next.status, 202, JSON.stringify(next.body));
   assert.equal(next.body.mode, "follow_up");

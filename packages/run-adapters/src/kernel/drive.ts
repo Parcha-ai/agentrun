@@ -172,7 +172,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
   const drive: Drive = {
     runId: key,
     // The copied code's own writes (a journal's blobs) go through the same queue as the drive's.
-    world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]) } },
+    world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]), sync: () => queue.then(() => writer.sync?.()) } },
     config: options.config,
     attempt: options.attempt ?? 0,
     ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
@@ -220,6 +220,9 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
         // A withdraw appended while this intent was being written beat the placement: what the caller would send next
         // is not what the log placed, so it must rebuild instead of running.
         if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-kernel: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
+        // An effect that may not run twice runs only once its start is durable: after a lost box the next drive finds
+        // the start with no end and reports it interrupted, rather than finding nothing and running it again.
+        if (effectOptions.replay !== "safe") await writer.sync?.();
         const partial: unknown[] = [];
         let output: T;
         try {

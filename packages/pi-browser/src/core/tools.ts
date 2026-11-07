@@ -105,6 +105,20 @@ const pause = (ms: number, signal: AbortSignal | undefined) => new Promise<void>
 const text = (value: unknown, isError = false): ToolOutput =>
   ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const withNews = (news: string, body: string) => (news ? `${news}\n\n${body}` : body);
+type Lost = { method: string; url: string };
+const LOST = Symbol("lost requests");
+/** An action's error carries the requests its call lost (`lost` is filled by the flush in the `finally` that follows the
+ *  throw), so the failure answer still tells them. */
+const withLost = (error: unknown, lost: Lost[]): unknown => {
+  const carrier = error !== null && typeof error === "object" ? error : Object.assign(new Error(String(error)), { cause: error });
+  Object.defineProperty(carrier, LOST, { value: lost, configurable: true });
+  return carrier;
+};
+const lostOf = (error: unknown): Lost[] => (error !== null && typeof error === "object" ? ((error as { [LOST]?: Lost[] })[LOST] ?? []) : []);
+/** Told to a call whose page sent requests the browser lost before they left it (Chrome's network service restarted under
+ *  them): they were not sent, so the model may send them again. */
+export const lostRequests = (lost: readonly Lost[]): string =>
+  `The browser lost ${lost.length === 1 ? "a request" : `${lost.length} requests`} your page made before ${lost.length === 1 ? "the request" : "they"} left the browser: ${lost.map((r) => `${r.method} ${r.url}`).join(", ")}. Chrome's network service restarted while ${lost.length === 1 ? "it was" : "they were"} on ${lost.length === 1 ? "its" : "their"} way, so ${lost.length === 1 ? "the request was" : "the requests were"} not sent. Make ${lost.length === 1 ? "it" : "them"} again if you still need ${lost.length === 1 ? "it" : "them"}.`;
 
 /** A read of a browser that has loaded no page yet: it is fresh, and the next step is to navigate, to the replaced
  *  session's last page when there is one. */
@@ -247,8 +261,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         await pause(wait, call.signal);
         if (call.signal?.aborted) break;
       }
-      // The try's attach is bounded by what is left of the budget: one that waits on the browser (an earlier init still
-      // finishing in it) stops there instead of running past it. The timer is a ref'd one, cleared when the try ends, so a
+      // The try's attach is bounded by what is left of the budget: one that waits on the browser (a connection held on
+      // the way) stops there instead of running past it. The timer is a ref'd one, cleared when the try ends, so a
       // reconnect in progress keeps the process alive (AbortSignal.timeout's timer does not, and Node 22 then drains).
       const deadline = new AbortController();
       const timer = setTimeout(() => deadline.abort(new DOMException("the reconnect's budget ran out", "TimeoutError")), Math.max(0, until - Date.now()));
@@ -284,7 +298,14 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
     const tell = (out: ToolOutput): ToolOutput => (facts || previous ? { ...out, details: { ...(out.details as object | undefined), ...(facts ? { pendingEffect: facts } : {}), ...(previous ? { previous_session: previous } : {}) } } : out);
     const done = (out: ToolOutput) => { guard.note(tool, args, null); return tell(out); };
     // The notice leads a failure, never after its own keys: a call told nothing else first reads it.
-    const fail = (failure: BrowserFailure) => { guard.note(tool, args, failure); return tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...failure } : failure, true)); };
+    // Requests the failed action's call lost: told in the failure's message and listed in details, as on success.
+    let lostOnError: Lost[] = [];
+    const fail = (failure: BrowserFailure) => {
+      guard.note(tool, args, failure);
+      const told = lostOnError.length ? { ...failure, message: `${failure.message} ${lostRequests(lostOnError)}` } : failure;
+      const out = tell(text(news ? { notice: news, ...(previous ? { previous_session: previous } : {}), ...told } : told, true));
+      return lostOnError.length ? { ...out, details: { ...(out.details as object | undefined), lost: lostOnError } } : out;
+    };
     let cuts: Cut[] = [];
     // A look after a refusal settles every refused cut in the chain whose warning a saved answer had already told; one this call is
     // telling stays until a later look, so a process that dies before this answer is saved tells it again.
@@ -328,6 +349,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       }
       return await looked(effect === null ? await body(s, news) : await dispatched(tool, port, call, s, effect, () => body(s, news)));
     } catch (error) {
+      lostOnError = lostOf(error);
       const failure = await failureOf(error, effectful, port, call, action);
       if (failure.code !== "browser_unavailable" || error instanceof BrowserFailureError) return fail(failure);
       // A dropped CDP connection to a session the provider still runs: a read reconnects and runs once more; a run, which
@@ -372,10 +394,14 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       const codeSha = sha256Hex(JSON.stringify(args.code ?? args.actions));
       return perform("run", args, port, call, { effect: codeSha }, async (s, news) => {
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
-        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
+        const lost: Lost[] = [];
+        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); },
+          (request) => { lost.push({ method: request.method, url: call.redact(`${request.origin}${request.path}`) }); });
         let value: unknown;
         try {
           value = await s.driver.run(args.code !== undefined ? { code: runnableCode(args.code) } : { actions: args.actions });
+        } catch (error) {
+          throw withLost(error, lost);
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();
@@ -385,7 +411,8 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         if (url && scrubPageUrl(url, call.redact) !== s.record.lastUrl) { guardOf(call.conversationId, call.redact).moved(); await port.navigated(url); }
         const reported = args.actions !== undefined && value && typeof value === "object" && typeof (value as { url?: unknown }).url === "string" ? { ...(value as object), url: pageUrl(call, (value as { url: string }).url) } : value;
         const shown = typeof reported === "string" ? reported : reported === undefined ? "(run completed; the code returned no value: end it with `return <value>` to get one back)" : JSON.stringify(reported, null, 2) ?? String(reported);
-        return { ...text(withNews(news, shown)), ...(sent.length ? { details: { sent } } : {}) };
+        const told = lost.length ? `${shown}\n\n${lostRequests(lost)}` : shown;
+        return { ...text(withNews(news, told)), ...(sent.length || lost.length ? { details: { ...(sent.length ? { sent } : {}), ...(lost.length ? { lost } : {}) } } : {}) };
       });
     },
 
@@ -445,14 +472,19 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
       return perform("browser_upload", { path: asked, selector }, port, call, { effect: codeSha }, async (s, news) => {
         if (!s.driver.setInputFiles) throw refusedError("This browser driver cannot set a file input.");
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
-        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
+        const lost: Lost[] = [];
+        const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); },
+          (request) => { lost.push({ method: request.method, url: call.redact(`${request.origin}${request.path}`) }); });
         try {
           await s.driver.setInputFiles(selector, { name: file.name, mimeType: file.mime, buffer: file.bytes });
+        } catch (error) {
+          throw withLost(error, lost);
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();
         }
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, uploaded, selector, ...(news ? { notice: news } : {}) }) }], details: { uploaded, ...(sent.length ? { sent } : {}) } };
+        const notice = [news, lost.length ? lostRequests(lost) : ""].filter(Boolean).join(" ");
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, uploaded, selector, ...(notice ? { notice } : {}) }) }], details: { uploaded, ...(sent.length ? { sent } : {}), ...(lost.length ? { lost } : {}) } };
       });
     },
 

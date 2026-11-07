@@ -71,7 +71,7 @@ test("a cap that cannot buy 1,024 output tokens refuses before anything is sent,
   const refused = await capped.streamSimple(model(), context).result();
   assert.equal(sent.length, 0, "nothing was sent");
   assert.equal(refused.stopReason, "error");
-  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: this run's cap of $0.05 can't cover one Model M request (at least $0.11). Raise the cap to at least $0.11 to run it.");
+  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: the next step needs at least $0.11, and this run's cap is $0.05. Raise the cap to at least $0.11 to continue.");
 });
 
 test("what is left is what the cap leaves after what was spent and what is held: a request beside one holding the rest is refused, and the next one after it answers gets what then is left", async () => {
@@ -81,7 +81,7 @@ test("what is left is what the cap leaves after what was spent and what is held:
   const beside = await capped.streamSimple(model(), context).result();
   assert.equal(sent.length, 1, "the first holds the whole cap: nothing is left beside it for 1,024 tokens");
   assert.equal(beside.stopReason, "error");
-  assert.equal(beside.errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.50 for requests still answering, of its $0.50 cap, and its next Model M request needs at least $0.11. Raise the cap to at least $0.61 to run it.");
+  assert.equal(beside.errorMessage, "spend_cap_reached (out of budget): Not sent: this run has spent $0 and holds $0.50 for steps still running, of its $0.50 cap, and the next step needs at least $0.11. Raise the cap to at least $0.61 to continue.");
   assert.doesNotMatch(beside.errorMessage, /\d\.\d{5,}|in flight/, "no six-decimal amounts, no internal words");
   sent[0].end(0.1);
   await first.result();
@@ -98,7 +98,7 @@ test("a run that has spent its cap down to under 1,024 tokens' worth is refused 
   const capped = await capModels(models, 0.5, 0.45);
   const refused = await capped.streamSimple(model(), context).result();
   assert.equal(sent.length, 0);
-  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0.45 of its $0.50 cap, and its next Model M request needs at least $0.11. Raise the cap to at least $0.56 to run it.");
+  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: this run has spent $0.45 of its $0.50 cap, and the next step needs at least $0.11. Raise the cap to at least $0.56 to continue.");
 });
 
 // On the wire: pi-ai's own Anthropic provider, its fetch filing each body and answering a short message.
@@ -148,7 +148,7 @@ test("on the wire without thinking, 1,024 tokens are enough; with it, the least 
   const thinking = await fresh.streamSimple(CLAUDE, context, { reasoning: "high", apiKey: "test-key", fetch }).result();
   assert.equal(bodies.length, 1, "the thinking request was not sent");
   // 2,048 tokens at $0.000015 are $0.03072, so at least $0.04.
-  assert.equal(thinking.errorMessage, "spend_cap_reached (out of budget): Not sent: this run's cap of $0.025 can't cover one Claude X request (at least $0.04). Raise the cap to at least $0.04 to run it.");
+  assert.equal(thinking.errorMessage, "spend_cap_reached (out of budget): Not sent: the next step needs at least $0.04, and this run's cap is $0.025. Raise the cap to at least $0.04 to continue.");
 });
 
 // On claude-agent and codex the guard is the runner's (capBefore): it admits a request with the output limit what is left
@@ -158,17 +158,19 @@ const guarded = (cap) => capBefore(cap, model());
 
 test("the harnesses' guard admits a request with the output limit what is left buys, and refuses in words under 1,024 tokens", async () => {
   const guard = await guarded(0.5);
-  assert.deepEqual(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }), { outputTokensMax: 5_000 });
-  assert.deepEqual(guard.beforeRequest({ spentUsd: 0.1, inFlight: [], inputTokensMax: 0 }), { outputTokensMax: 4_000 });
-  assert.equal(guard.beforeRequest({ spentUsd: 0.45, inFlight: [], inputTokensMax: 0 }).refuse, "spend_cap_reached (out of budget): Not sent: the run has spent $0.45 of its $0.50 cap, and its next Model M request needs at least $0.11. Raise the cap to at least $0.56 to run it.");
-  assert.equal((await guarded(0.05)).beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }).refuse, "spend_cap_reached (out of budget): Not sent: this run's cap of $0.05 can't cover one Model M request (at least $0.11). Raise the cap to at least $0.11 to run it.");
-  assert.ok(Math.abs(guard.worstOf({ inputTokensMax: 0, outputTokensMax: 5_000 }) - 0.5) < 1e-9, "held at the limit it was admitted with");
+  assert.equal(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }).outputTokensMax, 5_000);
+  assert.equal(guard.beforeRequest({ spentUsd: 0.1, inFlight: [], inputTokensMax: 0 }).outputTokensMax, 4_000);
+  assert.equal(guard.beforeRequest({ spentUsd: 0.45, inFlight: [], inputTokensMax: 0 }).refuse, "spend_cap_reached (out of budget): Not sent: this run has spent $0.45 of its $0.50 cap, and the next step needs at least $0.11. Raise the cap to at least $0.56 to continue.");
+  assert.equal((await guarded(0.05)).beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }).refuse, "spend_cap_reached (out of budget): Not sent: the next step needs at least $0.11, and this run's cap is $0.05. Raise the cap to at least $0.11 to continue.");
+  assert.ok(Math.abs(guard.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 }).holdUsd - 0.5) < 1e-9, "held at the limit it was admitted with");
 });
 
 test("the harnesses' guard holds a request in flight at the limit it was admitted with, not at the ceiling", async () => {
   const guard = await guarded(0.5);
   // One in flight admitted with 3,000 tokens holds $0.30: $0.20 is left, 2,000 tokens.
-  assert.deepEqual(guard.beforeRequest({ spentUsd: 0, inFlight: [{ inputTokensMax: 0, outputTokensMax: 3_000 }], inputTokensMax: 0 }), { outputTokensMax: 2_000 });
+  assert.equal(guard.beforeRequest({ spentUsd: 0, inFlight: [{ inputTokensMax: 0, outputTokensMax: 3_000 }], inputTokensMax: 0 }).outputTokensMax, 2_000);
+  // One the runner says it held at $0.10 (what its host admitted it at) holds that: $0.40 is left, 4,000 tokens.
+  assert.equal(guard.beforeRequest({ spentUsd: 0, inFlight: [{ inputTokensMax: 0, outputTokensMax: 3_000, holdUsd: 0.1 }], inputTokensMax: 0 }).outputTokensMax, 4_000);
 });
 
 test("a refusal is final to pi-ai's retry whatever digits its words hold: pi-ai's own check says so", async () => {

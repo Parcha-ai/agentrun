@@ -3,19 +3,21 @@
 // work/ back at each turn's end and once more before the run's end is recorded, then destroys it. The run's process holds no key: its Daytona calls
 // go through the server's box relay, which sends on only the calls a run's tools make of that run's own box.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_RELAY_FILE, relayFetch, startBoxRelay } from "../dist/box-relay.js";
 import { BOX_ENV, BOX_SYNC_FILE, DEFAULT_BOX_ALLOW, runBox } from "../dist/run-box.js";
+import { BOX_WORK } from "../dist/place.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
-import { client, follow, scratch, serve, withEnv } from "./support.mjs";
+import { client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -27,7 +29,7 @@ const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 
 /** Each tool call of run `runId` and its answer, in order, from its released store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -126,7 +128,7 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   assert.equal(said[7].text.trim(), "1", "the file monid's answer was filed in is in the box");
   // The box's environment: the fixed one, and no key, token or door token.
   const door = (await readFile(join(data, ".door-token"), "utf8")).trim();
-  const runDoor = (await readFile(join(data, "runs", run.run_id, "door-token"), "utf8")).trim();
+  const runDoor = (await readFile(join(runDir(data, run.run_id), "door-token"), "utf8")).trim();
   for (const [name, value] of Object.entries({ KEY, model: planted("model"), token: server.token, door, runDoor, monid: MONID_KEY })) assert.ok(!said[5].text.includes(value), `${name} reached the box`);
   // The run's files: what the box wrote, pulled back; what it removed, removed.
   assert.deepEqual((await fileList(api, run.run_id)).filter((path) => !path.startsWith("evidence/")), ["note.txt", "out.txt"]);
@@ -146,9 +148,9 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   assert.ok(provider.length > 0);
   assert.deepEqual(provider.filter((r) => r.authorization !== `Bearer ${KEY}`).map((r) => `${r.method} ${r.path}`), []);
   assert.ok(fake.requests.some((r) => r.path.endsWith("/process/execute")));
-  const log = readFileSync(join(data, "runs", run.run_id, "process.log"), "utf8");
+  const log = readFileSync(join(runDir(data, run.run_id), "process.log"), "utf8");
   assert.ok(!log.includes(KEY), "the key is in no line of the run's process");
-  assert.ok(existsSync(join(data, "runs", run.run_id, BOX_SYNC_FILE)), "the pull's mark is kept beside the run");
+  assert.ok(existsSync(join(runDir(data, run.run_id), BOX_SYNC_FILE)), "the pull's mark is kept beside the run");
 });
 
 test("demo (claude-agent, codex): the faux harness's bash, write and read run in the run's Daytona box; an absolute path under its cwd is the box's same file; out.txt comes back", { timeout: 240_000 }, async (t) => {
@@ -223,13 +225,13 @@ test("a pull takes nothing from a lying box but the files it listed: an archive'
   assert.equal((await api("POST", "/agents", { definition: { id: "liar", name: "liar", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
   const run = await probe(api, "liar", [{ tool: "bash", args: { command: "printf real > out.txt" } }]);
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
-  const runDir = join(data, "runs", run.run_id);
-  assert.equal(readFileSync(join(runDir, "work", "out.txt"), "utf8"), "the listed file");
+  const dir = runDir(data, run.run_id);
+  assert.equal(readFileSync(join(dir, "work", "out.txt"), "utf8"), "the listed file");
   assert.deepEqual(readdirSync(outside), [], "nothing was written outside work/");
-  for (const name of ["escape.txt", "escape2.txt"]) assert.equal(existsSync(join(runDir, name)), false, `${name} is not beside work/`);
-  assert.equal(existsSync(join(runDir, "work", "link")), false, "no link was made");
-  assert.deepEqual(readdirSync(join(runDir, "work")).sort(), ["out.txt"]);
-  assert.ok(!lstatSync(join(runDir, "work", "out.txt")).isSymbolicLink());
+  for (const name of ["escape.txt", "escape2.txt"]) assert.equal(existsSync(join(dir, name)), false, `${name} is not beside work/`);
+  assert.equal(existsSync(join(dir, "work", "link")), false, "no link was made");
+  assert.deepEqual(readdirSync(join(dir, "work")).sort(), ["out.txt"]);
+  assert.ok(!lstatSync(join(dir, "work", "out.txt")).isSymbolicLink());
 });
 
 test("a pull a box's archive stops (unreadable) is not a whole copy: the run ends, and its box is kept, never destroyed with what it holds", { timeout: 180_000 }, async (t) => {
@@ -243,7 +245,7 @@ test("a pull a box's archive stops (unreadable) is not a whole copy: the run end
   assert.equal(fake.sandboxes.size, 1, "the box that holds out.txt is kept");
   const [kept] = fake.sandboxes.keys();
   assert.equal(readFileSync(fake.pathOf(kept, "run/agentrun/run/work/out.txt"), "utf8"), "kept");
-  assert.ok(existsSync(join(data, "runs", run.run_id, BOX_SYNC_FILE)), "the mark of what did come back is kept");
+  assert.ok(existsSync(join(runDir(data, run.run_id), BOX_SYNC_FILE)), "the mark of what did come back is kept");
   assert.equal(fake.sandboxes.get(kept).autoStopInterval, 15, "a kept box stops after 15 idle minutes: its disk stays, its compute stops");
   assert.equal(fake.sandboxes.get(kept).autoDeleteInterval, -1, "and is never deleted as it stops (a box is made with auto-delete 0, which would)");
 });
@@ -373,9 +375,9 @@ test("an agent's edit to a file the host filed and mirrored into the box comes b
   ];
   const run = await probe(api, "editor", plan);
   await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
-  const filed = readdirSync(join(data, "runs", run.run_id, "work", "evidence", "monid"));
+  const filed = readdirSync(join(runDir(data, run.run_id), "work", "evidence", "monid"));
   assert.equal(filed.length, 2, filed.join(", "));
-  for (const name of filed) assert.equal(readFileSync(join(data, "runs", run.run_id, "work", "evidence", "monid", name), "utf8"), "edited", `the box's edit of ${name} came back`);
+  for (const name of filed) assert.equal(readFileSync(join(runDir(data, run.run_id), "work", "evidence", "monid", name), "utf8"), "edited", `the box's edit of ${name} came back`);
 });
 
 test("a Daytona that neither keeps a domain list nor blocks a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {
@@ -534,7 +536,7 @@ test("a start pulls and destroys the box of a run that ended while its box was l
   fake.state.failDeletes = 0;
   const second = await serve(t, { data, faux: PROBE });
   await until(() => fake.sandboxes.size === 0, "the start's sweep");
-  assert.equal(readFileSync(join(data, "runs", run.run_id, "work", "late.txt"), "utf8"), "late");
+  assert.equal(readFileSync(join(runDir(data, run.run_id), "work", "late.txt"), "utf8"), "late");
   assert.deepEqual(await fileList(second.api, run.run_id), ["late.txt", "out.txt"]);
 });
 
@@ -582,20 +584,44 @@ test("a run's relay call takes only that run's own token: run A's process, with 
   await follow(api, a.run_id, ["input_required"], { deadlineMs: 120_000 });
   await follow(api, b.run_id, ["input_required"], { deadlineMs: 120_000 });
   const boxOf = (id) => [...fake.sandboxes.values()].find((s) => s.labels["agentrun.run"] === id).id;
-  // The token run A's process was handed: its own file when it has one, else the server-wide one.
-  const own = join(data, "runs", a.run_id, "door-token");
-  const tokenA = readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
+  const [boxA, boxB] = [boxOf(a.run_id), boxOf(b.run_id)];
+  // The token each run's process was handed: its own file when it has one, else the server-wide one.
+  const tokenOf = (id) => {
+    const own = join(runDir(data, id), "door-token");
+    return readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
+  };
+  const [tokenA, tokenB] = [tokenOf(a.run_id), tokenOf(b.run_id)];
   const relayUrl = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8")).url;
-  const asA = (run) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${tokenA}`, "x-agentrun-target": `${fake.url}/sandbox/${boxOf(run)}` } });
-  // Each turn's end pulls its box, and a read of the files waits for that pull: once both are done, nothing else asks
-  // run B's box.
+  const relayed = (token, run, target) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${token}`, "x-agentrun-target": target } });
+  // A read of a sandbox, and a toolbox read of a file only run A's calls name: what reaches Daytona from run A carries
+  // that name, and no call of run B's does.
+  // In the box's work/ (BOX_WORK), a path the fake maps into each sandbox's own directory, never one of this machine's.
+  const mark = `${BOX_WORK}/run-a-only-${randomUUID()}.txt`;
+  const read = (box) => `${fake.url}/sandbox/${box}`;
+  const marked = (box) => `${fake.toolboxUrl}/${box}/files/download?path=${encodeURIComponent(mark)}`;
+  const carriesMark = (box) => (r) => r.path.includes(box) && new URLSearchParams(r.query).get("path") === mark;
+  // The file is in both boxes, so a call that reached either would be answered.
+  for (const box of [boxA, boxB]) {
+    mkdirSync(dirname(fake.pathOf(box, mark.slice(1))), { recursive: true });
+    await writeFile(fake.pathOf(box, mark.slice(1)), "only run A names this file");
+  }
   await fileList(api, a.run_id);
   await fileList(api, b.run_id);
   const before = fake.requests.length;
-  const theirs = await asA(b.run_id);
-  assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box: ${theirs.status}`);
-  assert.deepEqual(fake.requests.slice(before).filter((r) => r.path.includes(boxOf(b.run_id))).map((r) => `${r.method} ${r.path}`), [], "run B's box was never asked");
-  assert.equal((await asA(a.run_id)).status, 200, "run A's own box answers its own token");
+  // Run B goes on using its own box meanwhile, as a late call of its own at its turn's end does.
+  const bItself = relayed(tokenB, b.run_id, read(boxB));
+  // Run A, with its token: on run B's relay path, and on its own path naming run B's box.
+  for (const [run, target] of [[b.run_id, read(boxB)], [b.run_id, marked(boxB)], [a.run_id, read(boxB)], [a.run_id, marked(boxB)]]) {
+    const theirs = await relayed(tokenA, run, target);
+    // A read that reached run B's box would answer 200: the box is there.
+    assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box (${run === a.run_id ? "its own path" : "run B's path"}, ${target}): ${theirs.status}`);
+  }
+  assert.equal((await bItself).status, 200, "run B's own call reaches its own box");
+  assert.deepEqual(fake.requests.slice(before).filter(carriesMark(boxB)).map((r) => `${r.method} ${r.path}${r.query}`), [], "run B's box was never asked by run A");
+  // The name is seen when a call is sent on: run A's own box, asked the same way, gets it.
+  assert.equal((await relayed(tokenA, a.run_id, read(boxA))).status, 200, "run A's own box answers its own token");
+  await relayed(tokenA, a.run_id, marked(boxA));
+  assert.equal(fake.requests.slice(before).filter(carriesMark(boxA)).length, 1, "run A's marked call reaches its own box");
 });
 
 test("the relay: the door token only; a run it holds only; only that run's own sandbox, for a read and its toolbox's programs and files; the key goes nowhere else", async (t) => {

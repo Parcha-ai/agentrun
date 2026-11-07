@@ -30,5 +30,22 @@ the console's Settings → Model keys, which counts from the save on. Other comm
 `npx @parcha/agentrun reset-password` clears the console's password. `--data DIR` and `--port N` change where it keeps
 its data and the port it takes.
 
+Every other command is the server's API, from a second terminal: `npx @parcha/agentrun agents list`,
+`agents create --body @agent.json`, `runs start AGENT_ID --max-cost-usd 2 --body '{"input":{"content":"..."}}'`,
+`runs get RUN_ID`, `runs message RUN_ID --content "..."`, and one command for each route the server serves
+(`npx @parcha/agentrun help` lists them; `api METHOD PATH` calls any route). It finds the server started with the same
+`--data` on its own: the server writes its address and where its token is to `DIR/.server.json` once it listens. For
+another server, set `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`. The response's JSON goes to stdout and an error's to
+stderr; the exit code is 0 when it worked, 1 when the server refused, 2 for bad usage, 3 when the server cannot be
+reached and 4 for a missing or refused token. The token is never a flag and never printed.
+
+`runs wait RUN_ID` waits until the run ends or waits on a person and prints it; `runs start AGENT_ID ... --wait` starts
+a run and does the same. Its exit code says how it stopped: 0 completed, 1 failed or cancelled, 8 it waits on a person
+(a question, its spend cap, a stopped turn, a paused workflow run), with a line on stderr saying what to do next, such as
+`runs message RUN_ID --content "..."` to answer. `--timeout SECONDS` stops waiting after that long and exits 1; the run
+goes on. `runs timeline RUN_ID --follow` prints the timeline as it changes, one page per line (NDJSON): upsert its
+`rows` by `id`, delete its `drop` ids, and drop everything first on a page with `reset: true`. It resumes a dropped
+connection where it left off and ends when the run ends, 0 completed, 1 failed or cancelled.
+
 The TypeScript SDK for the hosted AgentRun API is published as `@parcha/agentrun` 0.2.x, from its own repository; this
 package starts with 0.3.0, so a dependency on `^0.2` keeps the SDK.

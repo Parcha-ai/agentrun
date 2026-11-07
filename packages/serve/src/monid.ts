@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { writeInWork } from "./workspace.js";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { registerLabel, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
@@ -236,7 +236,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
       // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
       const quote = quoted.get(quoteKey(args));
       const held = quote ?? MONID_RUN_ALLOWANCE_USD;
-      const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no ${INSPECT} in this run quoted its price, so it is held at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its quote`;
+      const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no price was quoted for it in this run, so it counts at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its price`;
       const send = async (): Promise<MonidAnswer> => {
         try {
           await record(api, TOOL_STARTED, { ...label, heldUsd: held }, context);
