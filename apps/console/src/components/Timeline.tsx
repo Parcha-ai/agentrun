@@ -18,14 +18,14 @@ const ICON: Record<string, typeof Brain> = {
  *  text, after its arguments ("Not sent: the run was stopped. Your message: …"). */
 const notSent = (row: TimelineRow) => (row.kind === "tool_approval_requested" ? /\n\n(Not sent: [\s\S]*)$/.exec(row.text ?? "")?.[1] : undefined);
 /** A tool call's approval row while the call still waits: its summary (the server's) says so. */
-const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_requested" && row.summary.startsWith("Waiting for your approval");
+const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_requested" && (row.summary ?? "").startsWith("Waiting for your approval");
 
 /** A message the server wrote into the run (served `origin: "server"`): AgentRun's, never the person's. */
 const fromServer = (row: TimelineRow) => row.origin === "server";
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
  *  "AgentRun: "). */
 const title = (row: TimelineRow) => {
-  const text = row.summary.replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
@@ -47,7 +47,7 @@ const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
  *  other as the harness names it. */
 const toolName = (tool: string | null | undefined) => (tool ? (mcpToolLabel(tool) ?? (BROWSER.has(tool) ? nameOf(tool) : tool)) : tool);
 const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
-  ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval" })[row.kind] ?? row.kind;
+  ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
  *  of its own), as the run header's status chip says it. Only a wait whose row is a `waiting` one: a cap pause's. An
@@ -55,29 +55,25 @@ const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
  *  then is an earlier question, answered. */
 const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap" };
 
-/** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
- *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. A
- *  server row marked `paused` (the run paused at its cap) shows a pause icon, muted like any server row. */
+/** One step: a failed one reads as failed. A server row marked `paused` (the run paused at its cap) shows a pause icon,
+ *  muted like any server row. */
 function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingChip?: string }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
   const [open, setOpen] = useState(false);
-  const running = row.kind === "tool_use" && row.tool_status === "running";
   const paused = rowPaused(row);
-  const Icon = running ? LoaderCircle : paused ? CirclePause : ICON[row.kind] ?? Flag;
+  const Icon = paused ? CirclePause : ICON[row.kind] ?? Flag;
   // What the row says on its line: its title, or where the page shows what it asks.
   const shown = step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row);
   // What opens under it; none when it is the line's own words (the same sentence twice is no more to read).
   const more = step.above ? null : step.detail ?? rowDetail(row);
   const detail = more && more.trim() !== shown.trim() ? more : null;
-  const interrupted = row.tool_status === "interrupted";
-  const failed = rowFailed(row) || interrupted;
-  const missing = row.tool_status === "missing";
+  const failed = rowFailed(row);
   return (
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
-        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row)) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
-          <Icon className={cn("size-3.5", running && "animate-spin text-run-active")} aria-hidden />
+        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row)) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text")}>
+          <Icon className="size-3.5" aria-hidden />
         </span>
         {!last && <span className="w-px flex-1 bg-border" aria-hidden />}
       </div>
@@ -88,12 +84,12 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
               {label(row)}
               {row.kind === "waiting" && <Chip tone="warning">{waitingChip ?? "Input required"}</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
-              {failed && <Chip tone="error">{interrupted ? "Interrupted" : "Error"}</Chip>}
+              {failed && <Chip tone="error">Error</Chip>}
               {row.agent_label && <Chip>{row.agent_label}</Chip>}
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{shown}</span>
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", fromServer(row) && "text-muted-foreground")}>{shown}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
             {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>

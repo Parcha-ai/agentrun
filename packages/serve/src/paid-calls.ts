@@ -17,6 +17,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { BARRIER, JOURNAL_SYNCHRONOUS, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { paidCall } from "./cap.js";
 
 /** Parallel's published prices (https://docs.parallel.ai/getting-started/pricing, read 2026-11-03): a `fast` search
@@ -65,9 +66,50 @@ const ledgers = new AsyncLocalStorage<Ledger>();
  *  open). A request's settle (TOOL_COST) is written there: once a turn is stopped, its tool call can no longer commit
  *  (pi-durable refuses a task with a durable abort mark), though the request was sent and its charge stands. */
 let rootRecord: Ledger["record"] | undefined;
-export const settleIn = (record: Ledger["record"] | undefined): void => {
+/** The run's store, for the barrier after each hold (writeHold): set with the root's commit, once the run is open. */
+let holdStore: SyncTarget | undefined;
+/** The run journal's level: the store's own once one is open, this before (FULL syncs every commit, NORMAL only at a
+ *  barrier). */
+let journalLevel: "FULL" | "NORMAL" = JOURNAL_SYNCHRONOUS;
+export const settleIn = (record: Ledger["record"] | undefined, store: SyncTarget | undefined, journal: "FULL" | "NORMAL" = JOURNAL_SYNCHRONOUS): void => {
   rootRecord = record;
+  holdStore = store;
+  // Only a test passes `journal`, to run the barriers at NORMAL before the run journal is NORMAL (pi-durable-disk 2b).
+  journalLevel = journal;
 };
+/** Whether a barrier on the run journal has nothing to sync: no store open, while the journal syncs only at barriers. A
+ *  hold or a start mark written then would sit in the store with nothing to make it durable, so none is written. */
+export const noStoreToSync = (store: SyncTarget | undefined): boolean => store === undefined && journalLevel !== "FULL";
+
+/** A hold that could not be made durable (writeHold): nothing was sent. Its message says why, after "was not sent: ". */
+export class HoldNotDurable extends Error {
+  override readonly name = "HoldNotDurable";
+}
+
+/** The run's journal a hold is synced in (settleIn), for another barrier before a paid effect: browser-cost.ts'. */
+export const runJournal = (): SyncTarget | undefined => holdStore;
+
+/** A paid call's hold (TOOL_STARTED, at what the cap holds it at), written by `write` (the call's own commit), then the
+ *  run journal's barrier (pi-durable-disk barriers.ts, paidToolHold): the hold is on disk before the call is sent, so a
+ *  box loss never leaves a sent call the cap does not count. Every paid call writes its hold here: a paid request
+ *  (paidRequest), monid.run (monid.ts) and a priced MCP call (mcp-gateway.ts), so a new paid tool gets the sync with it.
+ *  Whatever throws, the caller sends nothing (holdRefusal says why): with no store to sync it writes no hold
+ *  (HoldNotDurable); a write that fails throws its own error; a sync that fails after the write settles the hold at $0
+ *  under its call (best effort), so no cap counts a call that never left, and throws HoldNotDurable. */
+export async function writeHold(write: (kind: string, data: Record<string, string | number | null>) => Promise<void>, data: Record<string, string | number | null>): Promise<void> {
+  if (noStoreToSync(holdStore)) throw new HoldNotDurable("the run's store is not open, so its hold cannot be made durable");
+  await write(TOOL_STARTED, data);
+  try {
+    await syncNow(holdStore, BARRIER.paidToolHold);
+  } catch (error) {
+    const { heldUsd: _held, ...label } = data;
+    await write(TOOL_COST, { ...label, usd: 0 }).catch(() => undefined);
+    throw new HoldNotDurable(`its hold could not be made durable (${String((error as Error)?.message ?? error).slice(0, 200)})`);
+  }
+}
+/** What a paid call that writeHold refused tells the model: `name` was not sent, and why. */
+export const holdRefusal = (name: string, error: unknown): string =>
+  error instanceof HoldNotDurable ? `${name} was not sent: ${error.message}` : `${name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})`;
 /** A settle of `kind` written to the run's root (settleIn), when that is set; else undefined, for the caller's own commit.
  *  monid.run's settle goes here too. */
 export const settleOnRoot = (kind: string, data: Record<string, string | number | null>): Promise<void> | undefined => rootRecord?.(kind, data);
@@ -100,9 +142,9 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>): Prom
   const chargeOf = (sent: Sent) => ("unmarked" in sent ? undefined : "thrown" in sent || billed(sent.response.status) ? fee.usd : 0);
   const sent = async (): Promise<Sent> => {
     try {
-      await ledger.record(TOOL_STARTED, { ...label, heldUsd: fee.usd });
+      await writeHold(ledger.record, { ...label, heldUsd: fee.usd });
     } catch (error) {
-      return { unmarked: `${fee.name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` };
+      return { unmarked: holdRefusal(fee.name, error) };
     }
     let outcome: Sent;
     try {

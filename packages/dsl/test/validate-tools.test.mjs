@@ -32,7 +32,7 @@ test('absent, the option changes nothing: workflows that name tools validate as 
 
 test('given, a tool outside the list is an error naming the node\'s path and the tool, for every kind that names tools', () => {
   for (const [kind, [workflow, pointer]] of Object.entries(KINDS)) {
-    const result = validateWorkflow(workflow, { tools: ['fetch_page'] });
+    const result = validateWorkflow(workflow, { tools: ['read_page'] });
     assert.equal(result.ok, false, kind);
     assert.equal(result.issues.length, 1, `${kind}: ${result.errors.join('; ')}`);
     assert.equal(result.issues[0].code, 'NODE_FIELD_INVALID', kind);
@@ -43,7 +43,7 @@ test('given, a tool outside the list is an error naming the node\'s path and the
 });
 
 test('given, every tool in the list passes', () => {
-  for (const [kind, [workflow]] of Object.entries(KINDS)) assert.deepEqual(validateWorkflow(workflow, { tools: ['fetch_page', 'search'] }), { ok: true }, kind);
+  for (const [kind, [workflow]] of Object.entries(KINDS)) assert.deepEqual(validateWorkflow(workflow, { tools: ['read_page', 'search'] }), { ok: true }, kind);
 });
 
 test('given an empty list, a workflow that names no tool passes and one that names a tool does not', () => {
@@ -53,7 +53,7 @@ test('given an empty list, a workflow that names no tool passes and one that nam
 });
 
 test('given, each unlisted tool of a node is its own error', () => {
-  const result = validateWorkflow(doc(model('agent', ['search', 'fetch_page', 'exec_command'])), { tools: ['fetch_page'] });
+  const result = validateWorkflow(doc(model('agent', ['search', 'read_page', 'exec_command'])), { tools: ['read_page'] });
   assert.equal(result.ok, false);
   assert.deepEqual(result.issues.map((issue) => [issue.path, issue.message.match(/tool "([^"]+)"/)[1]]), [['/root', 'search'], ['/root', 'exec_command']]);
 });

@@ -488,6 +488,38 @@ test("a server that closes while it installs stops npm and waits for it before i
   await next.close();
 });
 
+test("a server that closes while npm unpacks (past the point where npm only notes a SIGTERM and finishes the step) lets go of its data within a bound: npm is killed, nothing of it is left, and the next server installs whole", { timeout: 300_000, skip }, async (t) => {
+  let letGo;
+  const holdMcp = new Promise((resolve) => (letGo = resolve));
+  t.after(() => letGo());
+  const registry = await fakeRegistry(t, { holdMcp });
+  const anthropic = await anthropicEndpoint(t);
+  await firstUseEnv(t, registry, anthropic.fake);
+  const data = join(await scratch(t), "agents");
+  const lines = [];
+  const { close } = await firstUseServe(t, registry, data, { log: (line) => lines.push(line) });
+  // npm asks for the MCP library's tarball only once it unpacks (its reify): from there a SIGTERM sets a flag, and npm
+  // waits for the step to end (the held tarball) before it rolls back and exits.
+  await until("npm asks for the MCP library's tarball, which is held", () => registry.hits.some((hit) => decodeURIComponent(hit).startsWith(`/-/${MCP}/`)), 120_000);
+  let bound;
+  const closed = await Promise.race([close().then(() => "closed"), new Promise((resolve) => (bound = setTimeout(resolve, 30_000, "still waiting")))]);
+  clearTimeout(bound);
+  assert.equal(closed, "closed", "close() returned within 30 s while the tarball npm waits on is held");
+  assert.deepEqual(await npmOn(data), [], "npm has exited before close() returned");
+  assert.equal(lines.filter((line) => line.includes("harness_install_killed") && line.includes("npm did not stop within 5 s of SIGTERM; killed")).length, 1, lines.join("\n"));
+  assert.equal(installedIn(data), undefined);
+  assert.deepEqual((await readdir(join(data, "harnesses"))).filter((name) => name.startsWith(".claude-agent")), [], "the killed npm's staging directory is removed");
+  assert.equal(await sdkAnywhere(data), undefined, "nothing left beside the harnesses either");
+  letGo();
+  const next = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, data });
+  t.after(() => next.close());
+  const run = await next.api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  assert.equal((await follow(next.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
+  assert.equal(installedIn(data), PIN);
+  await next.close();
+});
+
 test("a partial tree is not Claude Code: one whose MCP library would resolve from above it (the data's own node_modules) is installed again whole, and the run starts on that", { timeout: 300_000, skip }, async (t) => {
   const registry = await fakeRegistry(t);
   const anthropic = await anthropicEndpoint(t);

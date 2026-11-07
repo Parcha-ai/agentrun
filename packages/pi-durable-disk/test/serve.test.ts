@@ -1,5 +1,4 @@
-// The serve mode without Archil: the HTTP front over a real pi Harness on a local "disk", and the client that
-// wakes a released run through ensureRunning. The requestId is deduplicated by pi in the run's store, so a retry that
+// The serve mode: the HTTP front over a real pi Harness on a local "disk". The requestId is deduplicated by pi in the run's store, so a retry that
 // reaches the next incarnation (fresh process memory) finds the same submission.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -10,8 +9,8 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { recordWake } from "../src/park.ts";
 import type { DurableRun } from "../src/run.ts";
-import { MESSAGE_ORIGIN_KIND, readServeToken, requestRun, serveRun, ServeError, type RunServer } from "../src/serve.ts";
-import { InProcessHost, lifecycleApp, LocalDisk, newCounters, openOn, sleep, until, type Counters } from "./_lifecycle.ts";
+import { MESSAGE_ORIGIN_KIND, readServeToken, serveRun, type RunServer } from "../src/serve.ts";
+import { lifecycleApp, LocalDisk, newCounters, openOn, sleep, until, type Counters } from "./_lifecycle.ts";
 import { ctx } from "./_run-support.ts";
 
 const REF = { disk: "dsk-local", region: "local", id: "serve-1" };
@@ -370,30 +369,8 @@ describe("the bearer token", () => {
     }
     await assert.rejects(serveRun({ url: "ftp://run-host.example:21" }), (e: unknown) => (e as { code?: string }).code === "SERVE_URL_INVALID");
     const server = await serveRun({ url: "https://run-host.example:8443" });
-    assert.equal(server.url, "https://run-host.example:8443", "run.json's holder carries the given address, not the bound one");
+    assert.equal(server.url, "https://run-host.example:8443", "the run's holder carries the given address, not the bound one");
     await server.close();
-  });
-
-  it("the client sends its token; without it the instance's 401 comes back as the answer", async () => {
-    const disk = new LocalDisk("serve-token-client");
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      const host = new InProcessHost(async (ref) => {
-        const app = lifecycleApp(newCounters());
-        const server = await serveRun({ root: { agent: app.agent }, token: TOKEN });
-        const run = await openOn(disk, ref, app, { holder: { driver: "in-process", serve: server.url } });
-        server.attach(run);
-        instances.push({ run, server });
-      });
-      const body = { requestId: "c1", content: "hello", wait: true };
-      const ok = await requestRun(REF, { method: "POST", path: "/submit", body }, { host, ensure: { control: disk }, token: TOKEN, timeoutMs: 10_000 });
-      assert.deepEqual([ok.status, (ok.body as any).answer.text], [200, "echo: hello"]);
-      const refused = await requestRun(REF, { method: "POST", path: "/submit", body }, { host, ensure: { control: disk }, timeoutMs: 10_000 });
-      assert.deepEqual([refused.status, (refused.body as any).error], [401, "UNAUTHORIZED"]);
-      for (const i of instances) (await i.run.release(), await i.server.close());
-    } finally {
-      disk.remove();
-    }
   });
 
   it("the token file must be private: 0600 is read, anything group or world readable, empty or missing is refused", () => {
@@ -412,126 +389,6 @@ describe("the bearer token", () => {
       assert.throws(() => readServeToken(file), (e: unknown) => (e as { code?: string }).code === "SERVE_TOKEN_INVALID");
       assert.throws(() => readServeToken(join(disk.base, "missing")), (e: unknown) => (e as { code?: string }).code === "SERVE_TOKEN_INVALID");
     } finally {
-      disk.remove();
-    }
-  });
-});
-
-describe("the client", () => {
-  it("starts a never-started run and a parked one on request, sends straight to a running one, and refuses a done run", async () => {
-    const disk = new LocalDisk("serve-client");
-    const counters = newCounters();
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      const host = new InProcessHost(async () => {
-        // The driver returns once the instance runs; the client finds it through run.json.
-        void served(disk, counters).then((i) => instances.push(i));
-      });
-      const options = { host, ensure: { control: disk }, timeoutMs: 10_000 };
-      const submit = (requestId: string, content: string) => requestRun(REF, { method: "POST", path: "/submit", body: { requestId, content, wait: true } as JsonValue }, options);
-
-      const first = await submit("c1", "hello");
-      assert.equal(first.status, 200);
-      assert.equal((first.body as any).answer.text, "echo: hello");
-      assert.deepEqual(first.ensured.map((e) => e.action), ["started"]);
-
-      const again = await submit("c2", "hi");
-      assert.deepEqual([again.status, again.ensured.length], [200, 0], "a running instance answers at once");
-
-      // Parked idle: run.json sleeping with no wake; only a request starts it.
-      await recordWake(instances[0]!.run, null);
-      await instances[0]!.run.release();
-      const woken = await submit("c3", "again");
-      assert.equal((woken.body as any).generation, 2);
-      assert.equal(woken.ensured[0]?.action === "started" && woken.ensured[0].woke, true);
-
-      await instances[1]!.run.setStatus("done");
-      await instances[1]!.run.release();
-      await assert.rejects(submit("c5", "too late"), (e: unknown) => e instanceof ServeError && e.code === "RUN_TERMINAL");
-      for (const i of instances) await i.server.close();
-      await sleep(10);
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("a control API that never answers ends the request at its deadline, not never", { timeout: 10_000 }, async () => {
-    const disk = new LocalDisk("serve-stall");
-    try {
-      const stalled = Object.assign(Object.create(disk) as LocalDisk, { getObject: () => new Promise<Uint8Array>(() => {}) });
-      const t0 = Date.now();
-      const err = await requestRun(REF, { method: "GET", path: "/status" }, { host: new InProcessHost(async () => {}), ensure: { control: stalled }, timeoutMs: 400 }).then(() => null, (e: unknown) => e);
-      assert.ok(err instanceof ServeError && err.code === "NOT_SERVED", String(err));
-      assert.ok(Date.now() - t0 < 2_000, `ended at its deadline (${Date.now() - t0} ms)`);
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("gives up on an instance whose lease lapses while a request is open (a frozen instance never answers) and asks the supervisor", async () => {
-    const disk = new LocalDisk("serve-frozen");
-    try {
-      const now = Date.now();
-      await disk.putObject(`runs/${REF.id}/run.json`, JSON.stringify({
-        run: REF.id, status: "running", generation: 1, sealedSeq: null, wakeAt: null, updatedAt: new Date(now).toISOString(),
-        heartbeatAt: new Date(now - 2_500).toISOString(), detail: null,
-        holder: { driver: "in-process", host: "h", bootId: null, pid: 1, since: new Date(now).toISOString(), serve: "http://127.0.0.1:9" },
-      }));
-      let aborted = 0;
-      const hanging = ((_url: URL, init: RequestInit) =>
-        new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => (aborted = Date.now() - now, reject(new Error("aborted")))))) as unknown as typeof fetch;
-      const host = new InProcessHost(async () => {});
-      const err = await requestRun(REF, { method: "GET", path: "/status" }, { host, ensure: { control: disk, leaseExpiryMs: 3_000 }, timeoutMs: 4_000, fetch: hanging }).then(() => null, (e: unknown) => e);
-      assert.ok(err instanceof ServeError && err.code === "NOT_SERVED", String(err));
-      assert.ok(aborted > 0 && aborted < 2_500, `the request was dropped once the lease lapsed (${aborted} ms), not at the deadline`);
-      assert.ok(err.ensured.some((e) => e.action === "started"), "and the supervisor was asked");
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("starts once while the instance opens, though nothing lists it yet, and asks again only after the start timeout", { timeout: 20_000 }, async () => {
-    const disk = new LocalDisk("serve-once");
-    const counters = newCounters();
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      // The driver returns at once; the instance mounts (and so shows in the delegations) 400 ms later.
-      const host = new InProcessHost(async () => void sleep(400).then(() => served(disk, counters)).then((i) => instances.push(i)));
-      const r = await requestRun(REF, { method: "POST", path: "/submit", body: { requestId: "o1", content: "hello", wait: true } }, { host, ensure: { control: disk }, timeoutMs: 10_000 });
-      assert.equal(r.status, 200);
-      assert.deepEqual(r.ensured.map((e) => e.action), ["started"]);
-      assert.equal(host.starts.length, 1);
-      await instances[0]!.run.release();
-      await instances[0]!.server.close();
-
-      const never = new InProcessHost(async () => {});
-      // The supervisor's start grace (300 ms here) has passed too by the time the client asks again.
-      const err = await requestRun({ ...REF, id: "serve-never" }, { method: "GET", path: "/status" }, { host: never, ensure: { control: disk, startGraceMs: 300 }, timeoutMs: 1_500, startTimeoutMs: 400 }).then(() => null, (e: unknown) => e);
-      assert.ok(err instanceof ServeError && err.code === "NOT_SERVED");
-      assert.ok(never.starts.length >= 2 && never.starts.length <= 4, `a start that never opens is retried after the start timeout (${never.starts.length} starts)`);
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("a start the supervisor reports in flight (`starting`, inside its start grace) is waited for, never doubled", { timeout: 20_000 }, async () => {
-    const disk = new LocalDisk("serve-starting");
-    const counters = newCounters();
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      // Another supervisor started generation 1 just now: its start mark is written, nothing is mounted yet.
-      await disk.putObject(`runs/${REF.id}/start.json`, JSON.stringify({ generation: 1, at: new Date().toISOString(), by: "other:1" }));
-      void sleep(500).then(() => served(disk, counters)).then((i) => instances.push(i));
-      const host = new InProcessHost(async () => {
-        throw new Error("this client must not start a second instance");
-      });
-      const r = await requestRun(REF, { method: "POST", path: "/submit", body: { requestId: "s1", content: "hello", wait: true } }, { host, ensure: { control: disk }, timeoutMs: 10_000 });
-      assert.equal(r.status, 200);
-      assert.deepEqual(r.ensured.map((e) => e.action), ["starting"], "asked once, then waited for generation 1");
-      assert.equal(host.starts.length, 0);
-      assert.equal((r.body as any).generation, 1);
-    } finally {
-      for (const i of instances) (await i.run.release().catch(() => {}), await i.server.close());
       disk.remove();
     }
   });

@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 // Start one run of the web example's agent: `node examples/web/agent/start-run.mjs <home>/runs/<id>`, on a run that
 // `startRun` of @parcha/pi-durable-agent created (the server does that). It runs `pi-durable-disk run --dir
-// <home>/runs/<id> --app examples/web/agent/app.ts --serve 0` on loopback, so the run's door address is in its run.json
-// (`holder.serve`). SIGTERM or SIGINT goes to the run, which releases its browser and exits 0; starting the same
+// <home>/runs/<id> --epoch N --app examples/web/agent/app.ts --serve 0` on loopback, N the run's last generation plus 1,
+// and writes the door the run prints as its first line into the run's web.json (`door`), where the server finds it. SIGTERM or SIGINT goes to the run, which releases its browser and exits 0; starting the same
 // directory again resumes it. With `AGENT_BROWSER=local` it first starts the run's own Chrome (chrome.ts) and stops
 // it, by its pid, once the run has exited; an agent that lists no browser tool gets no browser. With `RECORD_DIR` set,
 // the run's recording is finished once the run has exited (record.ts). Credentials come from the environment and
 // nothing here prints them.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openAgentHome, readAgentHome } from '@parcha/pi-durable-agent';
+import { HeldError, readLocalRunStatus } from '@parcha/pi-durable-disk';
+import { processTable } from '@parcha/pi-durable-disk/internals';
 import { browserOf, CHROME_ALIAS_NOTICE, chromeProfileFor, listsBrowser, startChrome } from './chrome.ts';
 import { seedMemory } from './memory.ts';
 import { finishRunRecording } from './record.ts';
@@ -26,6 +29,15 @@ const run = resolve(dir);
 if (!existsSync(join(run, 'store', 'run.sqlite'))) {
   console.error(`${run} is not a started run: create it with startRun of @parcha/pi-durable-agent first (the server does)`);
   process.exit(2);
+}
+// The run's epoch: its last generation plus 1, read from its store while no process holds it.
+let epoch;
+try {
+  epoch = ((await readLocalRunStatus(run))?.generation ?? 0) + 1;
+} catch (error) {
+  if (!(error instanceof HeldError)) throw error;
+  console.error(`${run} is held by another process: it is already running`);
+  process.exit(76);
 }
 const home = resolve(run, '..', '..');
 const state = await readAgentHome(await openAgentHome(home));
@@ -93,8 +105,39 @@ if (starting.signal.aborted) await finish(1);
 const cli = fileURLToPath(new URL('./cli.js', import.meta.resolve('@parcha/pi-durable-disk')));
 const app = join(import.meta.dirname, 'app.ts');
 child = spawn(process.execPath, [
-  '--no-warnings=ExperimentalWarning', cli, 'run', '--dir', run, '--app', app,
+  '--no-warnings=ExperimentalWarning', cli, 'run', '--dir', run, '--epoch', String(epoch), '--app', app,
   '--serve', '0', '--serve-host', '127.0.0.1', '--drain-timeout', '30s',
-], { stdio: 'inherit', env });
+], { stdio: ['inherit', 'pipe', 'inherit'], env });
+// The run's first line is its door, printed before any of its code runs: it goes into web.json, beside what the server
+// wrote there, with the start of the process that serves it. Every later line is the run's own output, passed on.
+let first = true;
+createInterface({ input: child.stdout }).on('line', (line) => {
+  if (!first) return void process.stdout.write(`${line}\n`);
+  first = false;
+  let door;
+  try {
+    door = JSON.parse(line);
+  } catch {
+    return void process.stdout.write(`${line}\n`);
+  }
+  if (door?.event !== 'door' || typeof door.serve !== 'string') return void process.stdout.write(`${line}\n`);
+  void writeDoor({ serve: door.serve, pid: door.pid, epoch: door.epoch, start: startOf(door.pid) }).catch((error) => console.error(`start-run: the door is not recorded: ${error.message}`));
+});
+/** The start of process `pid` (as the process table reads it), so a later process that reuses the pid is not taken for it. */
+function startOf(pid) {
+  try {
+    return processTable().snapshot().info(pid)?.start ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** web.json with `door` set, the rest as it was, written whole (a temporary file, then a rename). */
+async function writeDoor(door) {
+  const file = join(run, 'web.json');
+  const meta = await readFile(file, 'utf8').then(JSON.parse, () => ({}));
+  await writeFile(`${file}.tmp`, JSON.stringify({ ...meta, door }));
+  await rename(`${file}.tmp`, file);
+}
 // The run has let go of its browser by the time it exits; its Chrome goes now.
 child.on('exit', (code, signal) => void finish(code ?? (signal ? 1 : 0)));
