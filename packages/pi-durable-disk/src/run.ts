@@ -282,7 +282,7 @@ export interface RunClaim {
   readonly work: string;
   readonly store: string;
   readonly fenced: boolean;
-  /** The claim's barrier: the workspace is durable before a result commits and before a terminal status; a failure fences the run. */
+  /** The claim's barrier, before a result commits and before a terminal status: it refuses once the claim is fenced (a failure fences the run). On a local directory it syncs nothing beyond the store's own commits. */
   barrier(): Promise<void>;
 }
 
@@ -332,7 +332,7 @@ export interface RunLease {
   fenceSettled(): Promise<void>;
   /** Write a status transition. `done` and `failed` run the barrier first, so a terminal status never names workspace files that are not durable. */
   setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
-  /** The claim's barrier: the workspace is durable before a result commits and before a terminal status; a failure fences. */
+  /** The claim's barrier, before a result commits and before a terminal status: it refuses once the claim is fenced; a failure fences. On a local directory it syncs nothing beyond the store's own commits. */
   barrier(): Promise<void>;
   /**
    * After the app closed every Harness and store connection: `cleanup`, barrier, seal `run.json` with the store's last

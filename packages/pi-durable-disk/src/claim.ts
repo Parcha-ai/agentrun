@@ -22,7 +22,7 @@ export interface Claim {
    * incarnation left running (`reapCommands`, before the Harness opens).
    */
   readonly commands?: string;
-  /** Every pending write of the claim is durable when it resolves. A failure fences the claim. */
+  /** Refuses once the claim is fenced. On a local directory it syncs nothing: the store's commits are made durable by SQLite, and work/ is the operating system's to flush. */
   barrier(): Promise<{ ms: number }>;
   /** Barrier, then let go of the claim. */
   release(): Promise<{ via: Unmounted }>;
