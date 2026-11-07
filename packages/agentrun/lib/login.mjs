@@ -4,7 +4,7 @@
 // route?, help, options, run }`; cli.mjs runs it with `{ values, args, env, io, cli }`, where `cli` is its own
 // `{ fail, targetOf, clientOf, request, send, secretAt, BAD_HEADER }`: the token's custody and the requests are its.
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -101,6 +101,19 @@ function secretClient(clientOf, target, io, secrets) {
  *  public fields. */
 export const guarded = (clientOf, target, io, body, publicFields) => secretClient(clientOf, target, io, secretsOf(body, publicFields));
 
+/** The folder's entries on the disk, so a rename in it outlasts a crash; where a folder cannot be synced, as is. */
+function syncFolder(dir) {
+  let fd;
+  try {
+    fd = openSync(dir, constants.O_RDONLY);
+    fsyncSync(fd);
+  } catch {
+    // Some filesystems take no fsync of a folder: the file itself is on the disk.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 const print = (io, value) => io.stdout.write(`${io.stdout.isTTY ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`);
 
 export const LOGIN = {
@@ -151,12 +164,21 @@ export const LOGIN = {
       const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       made = true;
       try {
-        writeSync(fd, `${JSON.stringify({ base_url: base, api_key: token }, null, 2)}\n`);
+        // Every byte, however few one write takes (a full disk, a quota), and on the disk before it takes the old one's
+        // place: the rename never puts half a config where a whole one was.
+        const bytes = Buffer.from(`${JSON.stringify({ base_url: base, api_key: token }, null, 2)}\n`);
+        for (let at = 0; at < bytes.length; ) {
+          const wrote = writeSync(fd, bytes, at, bytes.length - at);
+          if (!(wrote > 0)) throw Object.assign(new Error("a write wrote nothing"), { code: "EIO" });
+          at += wrote;
+        }
+        fsyncSync(fd);
       } finally {
         closeSync(fd);
       }
       renameSync(temp, file);
       made = false;
+      syncFolder(dirname(file));
     } catch (error) {
       throw cli.fail(4, `Cannot write the config file ${file} (${/^E[A-Z]+$/.test(error?.code ?? "") ? error.code : "an error"}); nothing was written.`);
     } finally {

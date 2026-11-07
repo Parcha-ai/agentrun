@@ -10,7 +10,7 @@ The CLI's edges, each said plainly:
   - Upgrading: a script that read exit 3 for a malformed stream reads exit 1.
 - A `DIR/.server.json` whose `base_url` is no base URL is refused as a malformed record is, exit 4; a bad `--base-url`, `AGENTRUN_BASE_URL` or config `base_url` stays exit 2.
   - Upgrading: a script that read exit 2 for a bad server record reads exit 4.
-- `login` writes its config through a temporary file with a random name, opened only when it is new, and a config it cannot write is exit 4 with a plain message and nothing left behind.
+- `login` writes its config through a temporary file with a random name, opened only when it is new, and a config it cannot write is exit 4 with a plain message and nothing left behind. It writes every byte and syncs the file to the disk before the rename, so a full disk or a quota leaves the old config as it was.
 - A run stopped at its spend cap prints a hint naming `agentrun runs raise-cap RUN_ID --max-cost-usd N`, N the server's `suggested_cap_usd`.
 - An `Accept` given with `api --header`, in any case, is the one sent, alone; without one the default (`application/json, */*`) goes, and the token's `Authorization` is always set last.
   - Upgrading: `api ... --header 'Accept: ...'`, once overridden or merged with the default, is sent as given.

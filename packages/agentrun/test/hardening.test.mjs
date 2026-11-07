@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -153,4 +153,52 @@ test("an Accept given with api --header is the one sent, in any case; without on
   const read = await cli(env, ["runs", "read-file", "r1", "notes.md", "--base-url", server.base]);
   assert.deepEqual([read.code, read.out], [0, "the bytes\n"], read.err);
   assert.equal(server.requests.at(-1).headers.authorization, "Bearer fake-test-key", "the token goes last, as set");
+});
+
+/** The CLI in this process (`main`), its stdin `input` and its output kept: for a test that replaces an fs function. */
+async function inProcess(args, env, input = "") {
+  const { main } = await import("../lib/cli.mjs");
+  const { Readable } = await import("node:stream");
+  let out = "";
+  let err = "";
+  const io = { stdin: Readable.from([Buffer.from(input)]), stdout: { isTTY: false, write: (c) => ((out += c), true), on() {} }, stderr: { isTTY: false, write: (c) => ((err += c), true) } };
+  const code = await main(args, env, io);
+  return { code, out, err };
+}
+
+test("login writes the whole config or none of it: a short write is written on, a failed one leaves the old config as it was", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, (request, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"agents":[],"next_cursor":null}'));
+  const config = join(dir, ".config", "agentrun", "config.json");
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const real = fs.writeSync;
+  /** fs.writeSync replaced, for the files login writes (not stdout or stderr), by one that writes at most 7 bytes a call,
+   *  and throws ENOSPC once `budget` calls are spent. */
+  const stub = (budget = Infinity) => {
+    let calls = 0;
+    fs.writeSync = (fd, data, ...rest) => {
+      if (fd <= 2) return real(fd, data, ...rest);
+      if (++calls > budget) throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+      const bytes = typeof data === "string" ? Buffer.from(data) : data;
+      const offset = typeof data === "string" ? 0 : (rest[0] ?? 0);
+      const length = typeof data === "string" ? bytes.length : (rest[1] ?? bytes.length - offset);
+      return real(fd, bytes, offset, Math.min(length, 7));
+    };
+    syncBuiltinESMExports();
+  };
+  t.after(() => ((fs.writeSync = real), syncBuiltinESMExports()));
+
+  stub();
+  const short = await inProcess(["login", "--base-url", server.base], env, "fake-test-key\n");
+  assert.equal(short.code, 0, short.err);
+  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: "fake-test-key" }, "written whole, 7 bytes at a time");
+
+  const before = readFileSync(config);
+  stub(2);
+  const full = await inProcess(["login", "--base-url", server.base], env, "fake-test-key-two\n");
+  assert.equal(full.code, 4, full.err);
+  assert.match(full.err, /Cannot write the config file .*\(ENOSPC\); nothing was written\./);
+  assert.deepEqual(readFileSync(config), before, "the old config is as it was");
+  assert.deepEqual(readdirSync(join(dir, ".config", "agentrun")), ["config.json"], "no temporary file left");
 });
