@@ -5,6 +5,7 @@ import { AgentEditor } from "./AgentEditor";
 import { PerHarness, ToolTable, toolRows } from "./ToolSettings";
 import type { Agent, AgentFields } from "@/lib/agentForm";
 import { providerHelp, providerLabel, toolChoices } from "@/lib/toolSettings";
+import { optionsOf, pick, picker, valueOf } from "@/test/picker";
 
 // The browser's providers (serve's tool-plane.ts PROVIDERS.browser: auto, browserbase, kernel, chrome) read as the
 // browser's, not through the labels web_search and web_fetch share: there "kernel" is the guarded fetch and "auto" the
@@ -50,21 +51,21 @@ describe("Settings → Tools, the browser row", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(ToolTable, { label: "This server's tool providers", rows: toolRows(choices, []), settings: {}, fallbackOf: (t) => t.default_provider, resolvesOf: (t) => createElement(PerHarness, { choice: t }), issues: {}, onEdit: () => {} })));
     const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`tr[data-tool="${tool}"]`)!;
-    return { row, options: (tool: string) => [...row(tool).querySelectorAll("option")].map((o) => o.textContent) };
+    return { row, options: async (tool: string) => (await optionsOf(picker(row(tool), `${tool} provider`)!)).map((o) => o.text) };
   }
 
-  it("offers the browser's choices by name, explains the one picked, and says what it resolves to as the browser's", () => {
+  it("offers the browser's choices by name, explains the one picked, and says what it resolves to as the browser's", async () => {
     const t = table();
-    expect(t.options("browser")).toEqual([`${AUTO} (default)`, "Browserbase", "Kernel", "Local Chrome"]);
+    expect(await t.options("browser")).toEqual([`${AUTO} (default)`, "Browserbase", "Kernel", "Local Chrome"]);
     expect(t.row("browser").textContent).toContain(providerHelp("auto", "browser")!);
     expect(t.row("browser").textContent).toContain("pi: Kernel");
     expect(t.row("browser").textContent).not.toContain("kernel fetch");
   });
 
-  it("search's and fetch's rows read as they did", () => {
+  it("search's and fetch's rows read as they did", async () => {
     const t = table();
-    expect(t.options("web_search")).toEqual(["auto (default)", "native", "Exa keyless", "Parallel", "off"]);
-    expect(t.options("web_fetch")).toEqual(["kernel fetch (default)", "Parallel"]);
+    expect(await t.options("web_search")).toEqual(["auto (default)", "native", "Exa keyless", "Parallel", "off"]);
+    expect(await t.options("web_fetch")).toEqual(["kernel fetch (default)", "Parallel"]);
     expect(t.row("web_fetch").textContent).toContain("pi: kernel fetch");
   });
 });
@@ -82,25 +83,25 @@ describe("an agent's browser pick in its editor", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: choices, step: "tools", onSave: async (fields: AgentFields) => { saves.push(fields); return null; } })));
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    const select = () => host.querySelector<HTMLSelectElement>('section[aria-label="Tool settings"] tr[data-tool="browser"] select')!;
+    const select = () => host.querySelector<HTMLButtonElement>('section[aria-label="Tool settings"] tr[data-tool="browser"] button[aria-haspopup=listbox]')!;
     return { host, saves, select };
   }
 
   it("shows the agent's saved pick, by the browser's names", async () => {
     const page = await open(agentWith("kernel"));
-    expect(page.select().value).toBe("kernel");
-    expect([...page.select().options].map((o) => o.textContent)).toEqual([`${AUTO} (default)`, "Browserbase", "Kernel", "Local Chrome"]);
+    expect(valueOf(page.select())).toBe("kernel");
+    expect((await optionsOf(page.select())).map((o) => o.text)).toEqual([`${AUTO} (default)`, "Browserbase", "Kernel", "Local Chrome"]);
   });
 
   it("saves a new pick in tool_settings.browser, and a re-read shows it", async () => {
     const page = await open(agentWith("kernel"));
-    await act(async () => { const s = page.select(); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "browserbase"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(page.select(), "browserbase");
     const save = [...page.host.querySelectorAll("button")].find((b) => /^Save/.test((b.textContent ?? "").trim()))!;
     await act(async () => { save.click(); });
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(page.saves.at(-1)?.tool_settings).toEqual({ browser: { provider: "browserbase" } });
     act(() => root?.unmount()); document.body.innerHTML = "";
     const again = await open(agentWith("browserbase"));
-    expect(again.select().value).toBe("browserbase");
+    expect(valueOf(again.select())).toBe("browserbase");
   });
 });

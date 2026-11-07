@@ -79,7 +79,7 @@ describe("Settings → Tools", () => {
     await settle();
     expect([...host.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Tool", "Permission", "Provider", "Resolves to", "Reset"]);
     const cells = host.querySelectorAll("tr[data-tool='web_fetch'] td");
-    expect(cells[1]!.querySelector("select")!.getAttribute("aria-label")).toBe("web_fetch permission");
-    expect(cells[2]!.querySelector("select")!.getAttribute("aria-label")).toBe("web_fetch provider");
+    expect(cells[1]!.querySelector("button[aria-haspopup=listbox]")!.getAttribute("aria-label")).toBe("web_fetch permission");
+    expect(cells[2]!.querySelector("button[aria-haspopup=listbox]")!.getAttribute("aria-label")).toBe("web_fetch provider");
   });
 });
