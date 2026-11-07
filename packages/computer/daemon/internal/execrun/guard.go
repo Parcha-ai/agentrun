@@ -235,9 +235,15 @@ func inSession(group, session int) bool {
 	if sid, err := getsid(group); err == nil {
 		return sid == session
 	}
-	for _, d := range proctree.Descendants(os.Getpid()) {
-		if pgid, err := syscall.Getpgid(d); err == nil && pgid == group {
-			sid, err := getsid(d)
+	return inSessionAmong(group, session, proctree.Descendants(os.Getpid()), syscall.Getpgid, getsid)
+}
+
+// inSessionAmong is inSession's search once the group's leader is gone: a member of group among members, asked its
+// session.
+func inSessionAmong(group, session int, members []int, pgidOf, sidOf func(int) (int, error)) bool {
+	for _, d := range members {
+		if pgid, err := pgidOf(d); err == nil && pgid == group {
+			sid, err := sidOf(d)
 			return err == nil && sid == session
 		}
 	}
