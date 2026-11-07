@@ -21,6 +21,8 @@ import {
 	kindRefusals,
 	MAX_ACTIONS,
 	MAX_BATCH_WAIT_MS,
+	MAX_KEY_REPEAT,
+	MAX_PNG_BYTES,
 	readPng,
 	runConformance,
 } from "../dist/index.js";
@@ -190,6 +192,40 @@ test("checkActions: the whole batch first: its shape, its length, each key, each
 	assert.equal(checkActions([{ type: "scroll", dy: 10, unit: "px" }], all), undefined, "a pixel scroll where the implementer has one");
 	assert.deepEqual(failure([{ type: "wait", ms: MAX_BATCH_WAIT_MS - 10 }, { type: "hold", keys: ["shift"], ms: 5 }, { type: "wait", ms: 6 }]), [2, "limit"]);
 	assert.equal(checkActions([{ type: "wait", ms: MAX_BATCH_WAIT_MS }], all), undefined, "MAX_BATCH_WAIT_MS is allowed");
+});
+
+test("checkActions counts every duration toward the batch's cap and bounds a key's repeat (review: unbounded durations and repeat)", () => {
+	const all = ["input.pointer", "input.keys", "input.touch"];
+	const failure = (actions) => {
+		const failed = checkActions(actions, all);
+		assert.ok(failed, `expected ${JSON.stringify(actions)} to be refused`);
+		assert.ok(failed.message.length > 0);
+		return [failed.index, failed.kind];
+	};
+	assert.deepEqual(failure([{ type: "long_press", at: [1, 1], ms: 2 ** 52 }]), [0, "limit"]);
+	assert.deepEqual(failure([{ type: "wait", ms: 200_000 }, { type: "swipe", path: [[1, 1], [2, 2]], ms: 100_001 }]), [1, "limit"]);
+	assert.deepEqual(failure([{ type: "pinch", at: [1, 1], scale: 2, ms: MAX_BATCH_WAIT_MS + 1 }]), [0, "limit"]);
+	assert.deepEqual(failure([{ type: "hold", keys: ["shift"], ms: 1 }, { type: "long_press", at: [1, 1], ms: MAX_BATCH_WAIT_MS }]), [1, "limit"]);
+	assert.equal(checkActions([{ type: "long_press", at: [1, 1], ms: MAX_BATCH_WAIT_MS }], all), undefined, "a long press of the whole cap is allowed");
+	assert.equal(MAX_KEY_REPEAT, 100);
+	assert.deepEqual(failure([{ type: "key", keys: ["a"], repeat: 1e9 }]), [0, "limit"]);
+	assert.deepEqual(failure([{ type: "key", keys: ["a"], repeat: MAX_KEY_REPEAT + 1 }]), [0, "limit"]);
+	assert.equal(checkActions([{ type: "key", keys: ["a"], repeat: MAX_KEY_REPEAT }], all), undefined, "MAX_KEY_REPEAT is allowed");
+});
+
+test("screen.screenshot-size reads no more than the largest PNG it accepts, however big the provider says the shot is (review: unbounded shot reads)", async () => {
+	for (const [broken, words] of [
+		["screen-huge-size", new RegExp(`says 1099511627776 bytes, more than ${MAX_PNG_BYTES} bytes`)],
+		["screen-endless", /bytes read of 1048576, and still no eof/],
+	]) {
+		const { provider } = fakeDevices({ broken });
+		const started = Date.now();
+		const report = await run(provider, ["screen.screenshot-size"], { caseTimeoutMs: 20_000 });
+		assert.equal(statuses(report)["screen.screenshot-size"], "fail", broken);
+		assert.match(reasons(report)["screen.screenshot-size"], words, broken);
+		assert.ok(Date.now() - started < 15_000, `${broken}: refused at once, not read to the case's timeout`);
+	}
+	assert.equal(MAX_PNG_BYTES, 2 ** 25 * 4 + 16_384 + 4 * 1024 * 1024);
 });
 
 test("checkActions refuses undefined among the keys, wherever it is, and does not let it hide a later bad key (review: undefined keys pass the check)", () => {
