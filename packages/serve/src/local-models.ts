@@ -14,11 +14,13 @@ export const PRICE_OVERRIDES: readonly { readonly provider: string; readonly id:
   { provider: "openrouter", id: "particle-ai/particle-1", cost: { ...PARTICLE_1_PRICE } },
 ];
 
-/** `list` with each overridden model's price in place of the catalog's. */
+/** `list` with each overridden model's price in place of the catalog's, whole: a field of the catalog's cost the override
+ *  does not name (its price `tiers`, which pi-ai's calculateCost prices a request at once its input passes one) never
+ *  survives, so a later catalog's promotional tier cannot price a hold below the list price. */
 const priced = <M extends { id: string }>(list: readonly M[], overrides: typeof PRICE_OVERRIDES): readonly M[] =>
   list.map((model) => {
     const override = overrides.find((entry) => entry.id === model.id);
-    return override ? { ...model, cost: { ...(model as unknown as Model<Api>).cost, ...override.cost } } : model;
+    return override ? { ...model, cost: { ...override.cost } } : model;
   });
 
 /** `models` (pi-ai's built-in catalog, or one built on it) with PRICE_OVERRIDES set on their providers' own entries, in
