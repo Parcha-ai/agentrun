@@ -35,13 +35,12 @@ where each tool runs. The definition names tools; the host binds them. It does n
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
 ([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
-to 1.3.0, the newest its peer range takes. pi 1.4 is not supported yet; a later release widens the range. It does not
-need a browser, a key or a network.
+to 1.5.0, the one version its peers take. It does not need a browser, a key or a network.
 
 To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` in a built checkout writes
 `parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@latest`.
@@ -51,12 +50,11 @@ To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` 
 Two runs of one agent on this machine. The first signs in, using a stand-in for the provider, and the second finds that
 sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret.
 
-In an empty directory, install the package and the pi packages it runs with (pinned to 1.3.0: pi 1.4 is not supported yet;
-a later release widens the range), save this as `quickstart.mjs`, and run
+In an empty directory, install the package and the pi packages it runs with (pinned to 1.5.0), save this as `quickstart.mjs`, and run
 `node --no-warnings=ExperimentalWarning quickstart.mjs` (Node's SQLite is marked experimental and says so):
 
 ```sh
-npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 ```js
@@ -883,8 +881,8 @@ carried back later.
 ## Requirements
 
 - Node 22.19 or later.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.1.0 <1.4.0`, as peer dependencies. The package is
-  developed against 1.1.0, and CI runs its suite on 1.2.0 and 1.3.0 too.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `1.5.0` exactly, as peer dependencies. CI runs its suite
+  on 1.5.0.
 
 ## License
 

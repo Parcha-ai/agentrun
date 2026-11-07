@@ -31,10 +31,8 @@ promoted on receipts.
 Node 22.19 or later and git 2.40 or later. In an empty directory:
 
 ```sh
-npm install @parcha/pi-agent-learn@latest @parcha/pi-git-remote@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-agent-learn@latest @parcha/pi-git-remote@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
-
-pi 1.4 is not supported yet; a later release widens the range.
 
 Save this as `quickstart.mjs` and run `node quickstart.mjs`. The model is pi-ai's scripted faux provider.
 
@@ -517,5 +515,5 @@ under the new trial), never dropped.
 
 ## Versions
 
-The pi-durable and chord peers accept 1.1 to 1.3.x. The suite runs on 1.1.0 in the workspace and on 1.2.0 and 1.3.0 in
-the `pi-1-2` CI job, including a run killed with SIGKILL after `learn` committed and resumed from the same store.
+The pi-durable and chord peers are `1.5.0` exactly. CI runs the suite on 1.5.0, including a run killed with SIGKILL
+after `learn` committed and resumed from the same store.

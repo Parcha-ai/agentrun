@@ -36,17 +36,15 @@ first release that runs there, whatever its Since says.
 The examples on `main` are written against `main`, and what npm has is the last published beta (`npm view
 @parcha/pi-durable-disk dist-tags`). The **Since** column is the first published version that has what the example imports:
 older than that, it stops at its first import. To run one from an install, in an empty directory on Linux or macOS, from
-0.1.0-beta.14 (0.1.0-beta.13's peers stop below pi 1.3, the version the line pins), with Node 22.19 or later:
+the first release whose peers take pi 1.5.0 (the version the line pins; earlier betas' peers stop below it), with Node 22.19 or later:
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 mkdir audit-across-crashes && cd audit-across-crashes
 # copy the example's files in (main.ts and any helper beside it, not its README or its test), from a checkout or from GitHub
 node main.ts
 ```
-
-pi 1.4 is not supported yet; a later release widens the range.
 
 `npm pkg set type=module` is what lets Node read the example's `import` lines without reparsing every file and printing a
 warning on each start. Run it from the directory that holds `node_modules`, or from one inside it. An example whose Since is
@@ -79,10 +77,9 @@ The quickstart, `01-durable-chat/on-a-directory.mjs`, predates these conventions
    first, and print its path. The model is pi-ai's faux provider, scripted so the run is the same every time. A real model
    is an optional flag (`--model <provider>/<modelId>`, its key from the provider's usual environment variable), never
    needed by the test, and only where the property does not depend on what the model chooses. Two things keep a scripted
-   run the same on every pi version the peers accept (1.0.4 to 1.3): the faux script reads the last message that is not
-   the system's (pi 1.0.4 puts its system message after the user's), and a tool gives the model its text with
-   `api.output(text)` and returns no `content` (`api` is the `ToolExecutionApi`, `execute`'s second argument; pi 1.2 drops
-   a returned `content`), and reads a result's text as `output ?? content`.
+   run the same: the faux script reads the last message that is not the system's, and a tool gives the model its text
+   with `api.output(text)` and returns no `content` (`api` is the `ToolExecutionApi`, `execute`'s second argument; pi
+   drops a returned `content`), and reads a result's text from `output`.
 5. **Its own supervisor.** An example that kills and restarts the run spawns its own instances (`main.ts instance`), reads
    their output a line at a time (`readline`), and waits for `close`, not `exit`, before it reads what they wrote. It
    ends every process it started, on success and on failure.
