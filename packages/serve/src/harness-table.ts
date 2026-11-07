@@ -18,7 +18,8 @@ import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, type HarnessId } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
 import { chooseModel } from "./model.js";
-import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor, WIRES } from "./provider.js";
+import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
+import { WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 
 /** A module of entries a test merges over the built-in ones (HarnessTableModule), by absolute path. */

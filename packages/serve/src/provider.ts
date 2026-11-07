@@ -11,6 +11,10 @@
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
 import type { Wire } from "@parcha/agentrun-kernel";
 import { chooseModel, FAUX_ENV, hostModel, type ModelNeeds, type ModelRef } from "./model.js";
+import { WIRES } from "./wires.js";
+
+// Each wire's own settings live in a leaf module (wires.ts), which the harness table reads as it loads.
+export { WIRES };
 
 /** What fixes a harness that is not on this machine as its adapter needs it: `install`, its package or binary is missing;
  *  `pins`, what is installed is not the pinned build. */
@@ -63,13 +67,6 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
-/** Each wire's own settings: the vendor whose models it runs (a MODEL_KEYS row's id, model.ts), the endpoint a host may
- *  name for it, the vendor's key, and whether it is serve's gateway (AGENT_MODEL_BASE_URL), which pi's models take too and
- *  which runs any id (the gateway's own string, naming no vendor here). */
-export const WIRES: Readonly<Record<Wire, { vendor: string; label: string; base: string; key: string; gateway: boolean }>> = Object.freeze({
-  "anthropic-messages": { vendor: "anthropic", label: "Anthropic", base: "ANTHROPIC_BASE_URL", key: "ANTHROPIC_API_KEY", gateway: false },
-  "openai-responses": { vendor: "openai", label: "OpenAI", base: "AGENT_MODEL_BASE_URL", key: "OPENAI_API_KEY", gateway: true },
-});
 
 /**
  * Whether `wire` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
