@@ -43,6 +43,9 @@ class FakeDaytona {
 	readonly failures: Failure[] = [];
 	readonly root = mkdtempSync(join(tmpdir(), "pt-daytona-"));
 	failExecuteContaining: string | undefined;
+	/** What a box command's `/dev/fuse` names on this machine: a character device every user opens (the box has FUSE), or
+	 *  a path that is none (it lacks FUSE). Never this machine's own device, so the test does not hang on its host. */
+	fuseDevice = "/dev/null";
 	/** Runs before every toolbox command, to hold one back while something else happens. */
 	beforeExecute: ((command: string) => Promise<void>) | undefined;
 	/** A call to path `from` answered with this redirect, as a box that took its toolbox's port could answer. */
@@ -228,7 +231,7 @@ class FakeDaytona {
 		timeoutS: number,
 	): Promise<{ exitCode: number; result: string }> {
 		return new Promise((resolve) => {
-			const child = spawn("sh", ["-c", command], {
+			const child = spawn("sh", ["-c", command.replaceAll("/dev/fuse", this.fuseDevice)], {
 				cwd: this.root,
 				env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env },
 				stdio: ["ignore", "pipe", "pipe"],
@@ -422,7 +425,7 @@ describe("daytona boxes", () => {
 			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
 			expect(created.ok ? "" : created.error.message).toContain("snapshot");
 		}
-		for (const fields of [{ ports: [80] }, { capabilities: ["fuse" as const] }]) {
+		for (const fields of [{ ports: [80] }, { capabilities: ["gpu" as never] }]) {
 			const refused = await provider().create(spec(fields), context);
 			expect(refused.ok ? "ok" : refused.error.code).toBe("unsupported");
 		}
@@ -1014,6 +1017,84 @@ describe("daytona boxes", () => {
 			{},
 			"spool-clean",
 		);
+	});
+
+	it("kills a timed-out program under its exec's `killAs` when given: the user it runs as is the one that may signal it", async () => {
+		const box = await daytonaBoxes({
+			apiKey: API_KEY,
+			apiUrl: `${fake.url}/api`,
+			spoolDir: fake.path("spool-kill-as"),
+			workspace: fake.path("workspace"),
+			pollMs: 10,
+			execPollMs: 20,
+			listedStableMs: 50,
+			destroyRetryMs: 10,
+		}).create(spec(), context);
+		if (!box.ok) throw box.error;
+		try {
+			const before = fake.requests.length;
+			const slow = await box.value.exec(
+				["sleep", "30"],
+				{ timeoutMs: 200, killAs: ["env", "KILLED_AS=tool-user"] },
+				context,
+			);
+			if (!slow.ok) throw slow.error;
+			void readStream(slow.value.stdout);
+			await slow.value.wait();
+			let cleanup: string | undefined;
+			for (let waited = 0; waited < 3000 && cleanup === undefined; waited += 50) {
+				cleanup = fake.requests
+					.slice(before)
+					.map((r) =>
+						r.path.endsWith("/process/execute") ? (JSON.parse(r.body) as { command: string }).command : "",
+					)
+					.find((c) => c.includes("kill -9"));
+				if (cleanup === undefined) await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			expect(cleanup).toContain("KILLED_AS=tool-user");
+		} finally {
+			await box.value.destroy(context);
+		}
+	});
+
+	it("gives `fuse` only when root in the running box opens /dev/fuse: one that lacks it is deleted and refused, never made without it", async () => {
+		const made = await provider().create(spec({ capabilities: ["fuse"] }), context);
+		if (!made.ok) throw made.error;
+		try {
+			expect(made.value.facts().fuse).toBe(true);
+		} finally {
+			await made.value.destroy(context);
+		}
+		fake.fuseDevice = fake.path("no-fuse");
+		try {
+			const before = fake.sandboxes.size;
+			const lacking = await provider().create(spec({ capabilities: ["fuse"] }), context);
+			expect(lacking.ok ? "ok" : lacking.error.code).toBe("unsupported");
+			expect(lacking.ok ? "" : lacking.error.message).toMatch(
+				/asked for fuse and lacks it: \S+ is not a character device in the box/,
+			);
+			expect(fake.sandboxes.size).toBe(before);
+		} finally {
+			fake.fuseDevice = "/dev/null";
+		}
+		// A box asked for nothing says nothing of FUSE: absent, which a caller that needs it reads as none.
+		const plain = await provider().create(spec(), context);
+		if (!plain.ok) throw plain.error;
+		try {
+			expect(plain.value.facts().fuse).toBeUndefined();
+		} finally {
+			await plain.value.destroy(context);
+		}
+	});
+
+	it("answers its traits: egress held in the box, and a network disk only from a named snapshot", () => {
+		const bare = provider();
+		expect(bare.traits?.egress).toBe("in-box");
+		expect(bare.traits?.egressWords).toBe("enforced by an in-box firewall");
+		expect(bare.traits?.diskMount).toMatch(/only from a snapshot that ships its client.*the `snapshot` option/);
+		expect(
+			daytonaBoxes({ apiKey: API_KEY, apiUrl: `${fake.url}/api`, snapshot: "with-disk-client" }).traits?.diskMount,
+		).toBeUndefined();
 	});
 
 	it("resolves relative paths against the workspace and sets a file's mode", async () => {

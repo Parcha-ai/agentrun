@@ -48,7 +48,7 @@ function fixed(definition, fix) {
 
 const issueAt = (body, field) => body.error?.fields?.find((issue) => issue.field === field);
 
-test("a place of the wrong shape is a 422 whose fix is the place to copy, and the definition with that fix applied saves", async (t) => {
+test("a place of the wrong shape is a 422 whose fix is the place to copy, and the definition with that fix applied saves (or, a remote box's with no Archil disk here, says so)", async (t) => {
   const { api } = await serve(t);
   const cases = [
     ["docker", "wrong_type", "definition.place is an object: {mode}, or {mode, box}", DOCKER_PLACE],
@@ -70,7 +70,9 @@ test("a place of the wrong shape is a 422 whose fix is the place to copy, and th
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
     assert.deepEqual(issueAt(refused.body, "definition.place"), { field: "definition.place", reason, message, fix }, JSON.stringify(place));
     const saved = await api("POST", "/agents", { definition: fixed(definition, fix) });
-    assert.equal(saved.status, 201, `${JSON.stringify(place)} with "${fix}": ${JSON.stringify(saved.body)}`);
+    // A remote box's place keeps its run's folder on an Archil disk: with none here, the fixed definition says so.
+    if (fix.includes(`"box": "${VM}"`)) assert.match(saved.body.error?.message ?? "", /remote boxes keep their run folder on an Archil disk/, JSON.stringify(saved.body));
+    else assert.equal(saved.status, 201, `${JSON.stringify(place)} with "${fix}": ${JSON.stringify(saved.body)}`);
   }
 });
 

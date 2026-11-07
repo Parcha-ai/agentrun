@@ -18,12 +18,9 @@ import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { BoxProvider } from "@parcha/pi-transport";
+import { ARCHIL_KEYS } from "./archil.js";
 import { withoutSecrets } from "./secrets.js";
 
-/** Why the VM box has no network, said in capabilities whenever the server's host list is set: its provider's SDK takes
- *  a domain list at a sandbox's create, but has no read of a sandbox's network back, so the server could not check that
- *  a box holds the list it asked for (as it does Daytona's), and it never leaves the provider's open default either. */
-export const VM_NO_LIST = "the Modal sandbox takes a host list, but this server cannot read a sandbox's list back to check that it holds, so the Modal sandbox has no network";
 /** The VM provider: its box id, which is also its SDK's npm name, the SDK's client class and the token's names. */
 export const VM_PROVIDER = { id: "modal", client: "ModalClient", keys: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] } as const;
 const VM = VM_PROVIDER.id;
@@ -35,8 +32,8 @@ export type BoxId = (typeof BOX_IDS)[number];
 /** One box: whether this server has it, and why when not (or how it was checked). `state`, set where the server knows
  *  more than the probe did (box-image.ts): `preparing` is available, its image still coming. */
 /** A box as capabilities show it. `network`: what an available box reaches (BOX_NETWORKS), with `network_reason` when
- *  it is available and has none for a cause of its own (a Docker in a VM, a daemon elsewhere; a Daytona that could not
- *  keep its domain list). */
+ *  it is available and has none for a cause of its own (a Docker in a VM, a daemon elsewhere; a remote box, whose tools
+ *  have none yet). */
 export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetwork; network_reason?: string };
 /** What an available box reaches: the hosts of `places.allow` (`allowlist`), or nothing (`none`). */
 export const BOX_NETWORKS = ["allowlist", "none"] as const;
@@ -53,6 +50,9 @@ export type BoxRegistry = {
   provider(id: BoxId): BoxProvider | undefined;
   /** The VM box's SDK client, when it is available: the box relay makes a run's calls with it (box-relay-vm.ts). */
   vmClient(): unknown;
+  /** Why an available box's boxes cannot mount a network disk, in its provider's words (pi-transport's BoxTraits) with
+   *  the setting that fixes it; undefined when they can. */
+  diskMount(id: BoxId): string | undefined;
 };
 /** What boxRegistry takes beyond the environment: the probes' bound, and, for tests only, the module that stands in for
  *  the VM provider's SDK (startServe's `fauxVm`, under --faux) and the group file and this process's groups that say
@@ -69,6 +69,10 @@ const NO_BOXES = "none";
 export const BOX_APP_ENV = "AGENTRUN_BOX_APP";
 const DEFAULT_BOX_APP = "agentrun";
 const DAYTONA_KEY = "DAYTONA_API_KEY";
+/** The settings naming what a remote box starts from, which ships the archil client, the helper and the tool user
+ *  (the README): Daytona's snapshot, and the VM box's registry image. Each goes to its provider's own option. */
+export const DAYTONA_SNAPSHOT_ENV = "AGENTRUN_DAYTONA_SNAPSHOT";
+export const VM_IMAGE_ENV = "AGENTRUN_VM_IMAGE";
 /** Daytona's API when DAYTONA_API_URL names none: pi-transport's own default. */
 export const DAYTONA_API_URL = "https://app.daytona.io/api";
 
@@ -78,8 +82,9 @@ export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: st
   const apiKey = env[DAYTONA_KEY];
   return apiKey ? { apiKey, apiUrl: env.DAYTONA_API_URL || DAYTONA_API_URL } : undefined;
 }
-/** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
-export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
+/** The boxes' keys: secrets the server holds and the probes read, and the Archil disk's token, which no run's process is
+ *  handed (runs.ts). */
+export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys, ...ARCHIL_KEYS];
 
 /** Why docker is unavailable when its daemon refuses this server's process its socket (EACCES on /var/run/docker.sock)
  *  and the group file lists this user in the docker group: this process started before the user joined it (a systemd
@@ -118,7 +123,15 @@ const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 const NOT_PROBED = "configured; not probed at start";
 const TRANSPORT = "@parcha/pi-transport";
 
-type Probed = { offer: BoxOffer; provider?: BoxProvider; client?: unknown };
+type Probed = { offer: BoxOffer; provider?: BoxProvider; client?: unknown; diskMount?: string };
+/** Why a box whose provider answers nothing of its boxes (no traits) mounts no network disk. */
+const NO_TRAITS = "its provider does not say that its boxes can mount a network disk";
+/** `probed`, with its provider's words on why its boxes cannot mount a network disk, and the setting that names the
+ *  image or snapshot they would mount it from. */
+const mounting = (probed: Probed, setting: string): Probed => {
+  const why = probed.provider?.traits?.diskMount;
+  return why ? { ...probed, diskMount: `${why} (${setting} on this server)` } : probed;
+};
 const unavailable = (id: BoxId, reason: string): Probed => ({ offer: { id, available: false, reason } });
 const available = (id: BoxId, provider: BoxProvider, reason?: string, client?: unknown): Probed => ({ offer: { id, available: true, ...(reason ? { reason } : {}) }, provider, ...(client === undefined ? {} : { client }) });
 
@@ -156,6 +169,10 @@ export async function boxRegistry(env: NodeJS.ProcessEnv, options: BoxRegistryOp
     offers: () => probed.map(({ offer }) => ({ ...offer })),
     provider: (id) => probed.find(({ offer }) => offer.id === id && offer.available)?.provider,
     vmClient: () => probed.find(({ offer }) => offer.id === VM && offer.available)?.client,
+    diskMount: (id) => {
+      const found = probed.find(({ offer }) => offer.id === id && offer.available);
+      return found?.provider?.traits ? found.diskMount : NO_TRAITS;
+    },
   };
 }
 
@@ -235,9 +252,10 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
     if (apiUrl !== undefined && !URL.canParse(apiUrl)) return unavailable("daytona", "DAYTONA_API_URL is not a URL");
     const boxes = await load(TRANSPORT, () => import("@parcha/pi-transport/box/daytona").then((module) => module.daytonaBoxes));
     if (!boxes.ok) return unavailable("daytona", boxes.reason);
-    const provider = boxes.value({ apiKey, ...(apiUrl ? { apiUrl } : {}), ...(env.DAYTONA_TARGET ? { target: env.DAYTONA_TARGET } : {}) });
+    const snapshot = env[DAYTONA_SNAPSHOT_ENV]?.trim();
+    const provider = boxes.value({ apiKey, ...(apiUrl ? { apiUrl } : {}), ...(env.DAYTONA_TARGET ? { target: env.DAYTONA_TARGET } : {}), ...(snapshot ? { snapshot } : {}) });
     const found = await provider.attach(`agentrun-probe-${randomUUID()}`, withAbortSignal(signal, BACKGROUND_CONTEXT));
-    if (found.ok) return available("daytona", provider);
+    if (found.ok) return mounting(available("daytona", provider), DAYTONA_SNAPSHOT_ENV);
     if (found.error.code === "unauthorized") return unavailable("daytona", `Daytona refused ${DAYTONA_KEY}`);
     return unavailable("daytona", `Daytona did not answer the probe (${found.error.code})`);
   },
@@ -263,6 +281,7 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
     } catch (error) {
       return unavailable(VM, `its SDK's client did not start (${errorName(error)})`);
     }
-    return available(VM, vmBoxes(client, { appName: env[BOX_APP_ENV] || DEFAULT_BOX_APP }), NOT_PROBED, client);
+    const image = env[VM_IMAGE_ENV]?.trim();
+    return mounting(available(VM, vmBoxes(client, { appName: env[BOX_APP_ENV] || DEFAULT_BOX_APP, ...(image ? { image } : {}) }), NOT_PROBED, client), VM_IMAGE_ENV);
   },
 };

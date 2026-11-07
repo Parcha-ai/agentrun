@@ -686,7 +686,9 @@ class ModalBox implements Box {
  * (`unsupported`), a GPU with `vm`, a label key that is `pi-transport` or starts with `pi-transport.` and a lifetime that is not positive
  * (`invalid`), and so is a `workspace` that is not an absolute path. No other field is ignored; `region` becomes
  * Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart. The spec's `env` is the
- * sandbox's own, so a box found again by `attach` runs programs with it.
+ * sandbox's own, so a box found again by `attach` runs programs with it. Its traits: egress `allowlist` (the spec's
+ * IPv4 ranges become the sandbox's CIDR allowlist), and a network disk mounts only from the `image` option, which names
+ * an image that ships the disk's client; a spec that asks for `fuse` gets the VM runtime.
  */
 export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvider {
 	const theApp = once(() => sdk.apps.fromName(options.appName, { createIfMissing: true }));
@@ -695,6 +697,16 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 
 	return {
 		name: "modal",
+		traits: {
+			...(options.image === undefined
+				? {
+						diskMount:
+							"a Modal box mounts a network disk only from an image that ships its client, and none is named: name one in the `image` option",
+					}
+				: {}),
+			egress: "allowlist",
+			egressWords: "enforced by the provider's CIDR allowlist",
+		},
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));

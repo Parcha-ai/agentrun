@@ -3,7 +3,7 @@
 // its run's own door token (RUN_DOOR_TOKEN, the token its door takes, handed to that run's process alone), and the relay
 // sends it on with the key only when it is one of the calls a run's tools make of that run's own box: a read of the
 // sandbox, its toolbox's address, and its toolbox's programs and files. Nothing else passes: no call for another run (its
-// token is not this one), no create, listing, stop or delete (the server makes and seeds the box, pulls its work/ back
+// token is not this one), no create, listing, stop or delete (the server makes the box, has it mount the run's folder
 // and destroys it), no call to a sandbox that does not carry the run's label, and no redirect, ever followed: one would
 // carry the key. The relay's address is a file in the data directory, read again at each call, so a run's process that
 // outlives its server reaches the next one. A run in the VM box reaches it the same way, through the VM half
@@ -49,7 +49,7 @@ export type BoxRelayOptions = {
   vm?: ReturnType<typeof vmRelay>;
   /** Whether `runId` is a run this server holds in a remote box that has not ended. */
   serves(runId: string): boolean;
-  /** The run's box, found by its label or made with its work/ seeded (run-box.ts ensureRemoteBox): its id, and whether it is new. */
+  /** The run's box, found by its label or made, with the run's folder mounted (run-box.ts ensureRemoteBox): its id, and whether it is new. */
   ensure(runId: string): Promise<{ id: string; made: boolean; replaced?: boolean }>;
 };
 
@@ -224,7 +224,7 @@ export const relayFetch = (root: string, runDir: string, runId: string): typeof 
     return fetch(`${url}/runs/${encodeURIComponent(runId)}/daytona`, { ...init, headers });
   }) as typeof fetch;
 
-/** Asks the relay for run `runId`'s box: made and seeded by the server when it has none. */
+/** Asks the relay for run `runId`'s box: made, with the run's folder mounted, by the server when it has none. */
 export async function relayedBox(root: string, runDir: string, runId: string, signal?: AbortSignal): Promise<{ id: string; made: boolean; replaced?: boolean; apiUrl?: string }> {
   const { url, token } = await relayAddress(root, runDir);
   const sent = await fetch(`${url}/runs/${encodeURIComponent(runId)}/box`, { method: "POST", headers: { authorization: `Bearer ${token}` }, redirect: "error", ...(signal ? { signal } : {}) });

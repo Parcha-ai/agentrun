@@ -6,14 +6,15 @@
 // earlier version wrote is refused in words, with no migration. Through the HTTP API on the faux probe model.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { checkpointRunDb, HeldRunDbError, MonotonicReads, BehindReadError, observeRunDbOpens, runDbTestHooks } from "../dist/run-db.js";
-import { localDisk } from "../dist/disk.js";
+import { archilDisk, localDisk } from "../dist/disk.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { learningRepo } from "../dist/learning.js";
 import { agent, FAUX, flowAgent, follow, runDir, scratch, serve } from "./support.mjs";
 
@@ -37,12 +38,17 @@ async function probeRun(api, plan, id = "writer") {
 }
 
 test("demo through the API: a run's folder is on the disk, its file tools write into its work/ there, nothing is under <data>/runs, and its row's claim went from its process (epoch 1) to the server, which checkpointed its database", { timeout: 120_000 }, async (t) => {
+  // A common umask, which leaves a folder 0755 unless the code says otherwise.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
   const { api, data } = await serve(t, { faux: PROBE });
   const runId = await probeRun(api, [{ tool: "write", args: { path: "out.txt", content: "on the disk" } }]);
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   const root = realpathSync(data);
   const folder = join(root, "disk", "agents", folderOf("writer"), "runs", runId);
   assert.equal(readFileSync(join(folder, "work", "out.txt"), "utf8"), "on the disk");
+  // The agent's folder, its runs/, the run's folder and its store/ are this server's user's alone, whatever the umask.
+  for (const at of [join(folder, "..", ".."), join(folder, ".."), folder, join(folder, "store")]) assert.equal(statSync(at).mode & 0o777, 0o700, relative(root, at));
   assert.ok(existsSync(join(folder, "store", "run.sqlite")));
   assert.equal(existsSync(join(root, "runs")), false, "no run under the data directory's own files");
   const claim = claimOf(root, runId);
@@ -127,7 +133,7 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
   mkdirSync(work, { recursive: true });
   const claimed = [];
   const disk = localDisk(data, { runClaim: () => ({ epoch: claimed.length + 1, holder: null }), claimRun: (runId, holder, from) => (claimed.push([runId, holder, from]), from + 1) });
-  const mounted = await disk.mount("agents/a-0123456789abcdef/runs/r1/work", undefined, "tools");
+  const mounted = await disk.mount("local", "agents/a-0123456789abcdef/runs/r1/work", undefined, "tools");
   assert.deepEqual(mounted, { subpath: "agents/a-0123456789abcdef/runs/r1/work", path: work, mode: "tools" });
   // Its files and folders, nested, are synced; a link in it is never followed.
   mkdirSync(join(work, "a", "b"), { recursive: true });
@@ -137,10 +143,113 @@ test("the local disk adapter: mount gives a runner the folder itself, below the 
   await disk.unmount(mounted);
   assert.equal(await disk.revoke("r1"), 2);
   assert.deepEqual(claimed, [["r1", "server", 1]], "claimed from the epoch it read");
-  for (const bad of ["", "/etc", "agents/../../x", "agents/./a"]) await assert.rejects(disk.mount(bad, undefined, "tools"), /is not a path below the disk/, bad);
+  for (const bad of ["", "/etc", "agents/../../x", "agents/./a"]) await assert.rejects(disk.mount("local", bad, undefined, "tools"), /is not a path below the disk/, bad);
   symlinkSync(work, join(data, "disk", "agents", "linked"));
-  await assert.rejects(disk.mount("agents/linked", undefined, "tools"), /is a link/);
-  await assert.rejects(disk.mount("agents/a-0123456789abcdef/runs/r1/work", "/workspace", "tools"), /mounts .* where it is, not at \/workspace/);
+  await assert.rejects(disk.mount("local", "agents/linked", undefined, "tools"), /is a link/);
+  await assert.rejects(disk.mount("local", "agents/a-0123456789abcdef/runs/r1/work", "/workspace", "tools"), /mounts .* where it is, not at \/workspace/);
+});
+
+/** A box whose programs are noted, each exiting `code(command)`, its stdin kept: a box that takes a real stdin. */
+function notingBox(code = () => 0, said = "sudo: a password is required") {
+  const ran = [];
+  return {
+    ran,
+    box: {
+      id: "box-1",
+      facts: () => ({ provider: "fake", workspace: "/workspace", secretsVia: "fd" }),
+      exec: async (command) => {
+        const entry = { command: [...command], stdin: "" };
+        ran.push(entry);
+        const empty = (async function* () {})();
+        return { ok: true, value: { stdin: { write: async (bytes) => void (entry.stdin += new TextDecoder().decode(bytes)), close: async () => {} }, stdout: empty, stderr: (async function* () { if (code(command)) yield new TextEncoder().encode(said); })(), wait: async () => ({ ok: true, value: code(command) }) } };
+      },
+    },
+  };
+}
+
+test("the Archil disk adapter: a box mounts its run's work/ alone, through the helper by its fixed path, the token on its stdin; the folder is the shared group's; a revoke makes the next mount force a gone box's hold off; an unmount syncs, then checks in", async (t) => {
+  const data = realpathSync(await scratch(t));
+  const folder = "agents/a-0123456789abcdef/runs/r1/work";
+  mkdirSync(join(data, "disk", folder), { recursive: true });
+  // What the server put in work/ before the box: an input, in a folder of its own, as the server's umask made them.
+  mkdirSync(join(data, "disk", folder, "inputs"), { mode: 0o755 });
+  writeFileSync(join(data, "disk", folder, "inputs", "brief.txt"), "brief", { mode: 0o644 });
+  symlinkSync("/nonexistent/elsewhere", join(data, "disk", folder, "inputs", "away"));
+  const archil = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "planted-archil-token-0123456789", gid: process.getgid() };
+  const disk = archilDisk(data, archil, { runClaim: () => ({ epoch: 4, holder: "launch" }) });
+  const { box, ran } = notingBox();
+  const target = { box, path: "/workspace", context: BACKGROUND_CONTEXT };
+  const mounted = await disk.mount(archil.disk, folder, target, "tools");
+  assert.equal(mounted.path, "/workspace");
+  assert.deepEqual(ran.map((r) => [r.command, r.stdin]), [[["sudo", "-n", "/usr/local/sbin/agentrun-archil", "mount", archil.disk, archil.region, folder], `${archil.token}\n`]]);
+  assert.equal(statSync(join(data, "disk", folder)).mode & 0o7777, 0o2770);
+  // The whole tree is the shared group's, so the box's tool user can edit what the server put there: folders 2770,
+  // files their owner's bits for the group too and none for others; a link is left as it is.
+  assert.equal(statSync(join(data, "disk", folder, "inputs")).mode & 0o7777, 0o2770);
+  assert.equal(statSync(join(data, "disk", folder, "inputs", "brief.txt")).mode & 0o7777, 0o660);
+  for (const above of ["..", "../..", "../../.."]) assert.equal(statSync(join(data, "disk", folder, above)).mode & 0o7777, 0o700, above);
+  assert.equal(await disk.revoke("r1"), 4, "the run's claim is not bumped: its process holds it");
+  await disk.mount(archil.disk, folder, target, "tools");
+  assert.equal(ran[1].command[3], "revoke", "the mount after a revoke forces the hold off");
+  await disk.mount(archil.disk, folder, target, "tools");
+  assert.equal(ran[2].command[3], "mount", "and only that one");
+  await disk.unmount(mounted);
+  assert.deepEqual(ran.slice(3).map((r) => r.command.slice(3)), [["sync"], ["checkin"]]);
+  for (const r of ran) assert.ok(!r.command.some((part) => part.includes(archil.token)), "never an argument");
+  // Refused before any box call: another disk, a folder that is not a run's work/, a path of this machine, a loop.
+  const before = ran.length;
+  await assert.rejects(disk.mount("dsk-0000000000000001", folder, target, "tools"), /not dsk-0000000000000001/);
+  for (const bad of ["agents/a-0123456789abcdef/runs/r1", "agents/a-0123456789abcdef/runs/r1/store", "agents/a-0123456789abcdef/learning", "agents/../runs/r1/work"]) await assert.rejects(disk.mount(archil.disk, bad, target, "tools"), /mounts its run's work\/ alone/, bad);
+  await assert.rejects(disk.mount(archil.disk, folder, "/workspace", "tools"), /in a box, not at a path of this machine/);
+  await assert.rejects(disk.mount(archil.disk, folder, target, "loop"), /mounts its run's work\/ alone/);
+  assert.equal(ran.length, before);
+  // A checkin by a box that holds no delegation (it checked in already, or a revoke forced it off) fails in archil with
+  // EROFS (measured live, client 0.10.1): it holds nothing, so it has let go.
+  const released = notingBox((command) => (command[3] === "checkin" ? 1 : 0), "'checkin' operation failed while 'running command ArchilCheckinInode' on '/workspace': Unexpected error (30)");
+  await disk.unmount({ ...mounted, box: released.box });
+  assert.deepEqual(released.ran.map((r) => r.command.slice(3)), [["sync"], ["checkin"]]);
+  // The same words with another exit, or another operation's EROFS, are a failure.
+  for (const [code, said] of [[2, "'checkin' operation failed while 'running command ArchilCheckinInode' on '/workspace': Unexpected error (30)"], [1, "'sync' operation failed while 'running command ArchilSync' on '/workspace': Unexpected error (30)"]]) {
+    const failing = notingBox((command) => (command[3] === "checkin" ? code : 0), said);
+    await assert.rejects(disk.unmount({ ...mounted, box: failing.box }), /archil checkin in the box failed/);
+  }
+  // A box whose image has no helper its user may run: said, with what to do.
+  const bare = notingBox(() => 1);
+  await assert.rejects(disk.mount(archil.disk, folder, { ...target, box: bare.box }, "tools"), /the box has no Archil helper its user may run as root at \/usr\/local\/sbin\/agentrun-archil: use an image or snapshot that ships it/);
+});
+
+test("the Archil disk adapter: a later mount leaves what a box's tool user made in work/ as it is (this server may not change another user's file); this server's own inputs are shared at the first", async (t) => {
+  const data = realpathSync(await scratch(t));
+  const folder = "agents/a-0123456789abcdef/runs/r1/work";
+  mkdirSync(join(data, "disk", folder), { recursive: true });
+  writeFileSync(join(data, "disk", folder, "brief.txt"), "brief", { mode: 0o644 });
+  const archil = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "planted-archil-token-0123456789", gid: process.getgid() };
+  const claims = { runClaim: () => ({ epoch: 4, holder: "launch" }) };
+  const { box } = notingBox();
+  const target = { box, path: "/workspace", context: BACKGROUND_CONTEXT };
+  await archilDisk(data, archil, claims).mount(archil.disk, folder, target, "tools");
+  assert.equal(statSync(join(data, "disk", folder, "brief.txt")).mode & 0o7777, 0o660, "the server's input, shared");
+  // The box's tool user writes a file and a folder of its own (umask 022). Here, where every file is this test's, the
+  // next mount is the adapter of a server whose uid is another: what it finds is not its own, as a tool user's is not.
+  mkdirSync(join(data, "disk", folder, "made"), { mode: 0o755 });
+  writeFileSync(join(data, "disk", folder, "made", "out.txt"), "the tool's", { mode: 0o644 });
+  chmodSync(join(data, "disk", folder, "made"), 0o755);
+  await archilDisk(data, archil, claims, { uid: process.getuid() + 1 }).mount(archil.disk, folder, target, "tools");
+  assert.equal(statSync(join(data, "disk", folder, "made")).mode & 0o7777, 0o755, "its folder untouched");
+  assert.equal(statSync(join(data, "disk", folder, "made", "out.txt")).mode & 0o7777, 0o644, "its file untouched");
+});
+
+test("the Archil disk adapter: a sync in a box with nothing mounted fails (its tools' writes would not reach the disk); an unmount there has let go", async (t) => {
+  const data = realpathSync(await scratch(t));
+  const folder = "agents/a-0123456789abcdef/runs/r1/work";
+  const archil = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "planted-archil-token-0123456789", gid: process.getgid() };
+  const disk = archilDisk(data, archil, { runClaim: () => ({ epoch: 4, holder: "launch" }) });
+  const bare = notingBox((command) => (command[3] === "sync" || command[3] === "checkin" ? 3 : 0), "agentrun-archil: nothing is mounted at /workspace");
+  const mounted = { subpath: folder, path: "/workspace", mode: "tools", box: bare.box, context: BACKGROUND_CONTEXT };
+  const { NotMounted } = await import("../dist/archil.js");
+  await assert.rejects(disk.sync(mounted), (error) => typeof NotMounted === "function" && error instanceof NotMounted && /nothing mounted at \/workspace/.test(error.message));
+  await disk.unmount(mounted);
+  assert.deepEqual(bare.ran.map((r) => r.command.slice(3)), [["sync"], ["sync"], ["checkin"]]);
 });
 
 test("an agent's learning folder is on the disk, in its folder: <data>/disk/agents/<agent>/learning", () => {

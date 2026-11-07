@@ -7,14 +7,14 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, readFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
-import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
+import { AgentHomeError, DISK_DIR, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
@@ -27,7 +27,7 @@ import { dropHandover } from "./browser-live.js";
 import { DATA_ENV, dataOfRun, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeDurableSync, writeWhole } from "./files.js";
 import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
-import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
+import { type DaytonaApi, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { Hearing } from "./heard.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -58,7 +58,7 @@ import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
-import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LABEL, sweepRunBoxes } from "./run-box.js";
+import { BOX_ENV, destroyRunBoxes, ensureRemoteBox, releaseRemoteBox, type RemoteFolder, RUN_LABEL, sweepRunBoxes, syncRemoteBox } from "./run-box.js";
 import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
@@ -67,7 +67,9 @@ import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
 
 /** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
 const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
-import { type DiskAdapter, localDisk } from "./disk.js";
+import { archilDisk, type DiskAdapter, localDisk } from "./disk.js";
+import { type Archil, NO_ARCHIL } from "./archil.js";
+import { asToolProvider } from "./tool-user.js";
 import { RUN_BOX_VOLUME_ENV } from "./box-egress-vm.js";
 import { type BoxPaths, egressParentOf, RUN_BOX_PATHS_ENV } from "./box-paths.js";
 import type { BoxProvider } from "@parcha/pi-transport";
@@ -161,13 +163,12 @@ const warn = (runId: string, text: string) => void process.stderr.write(`agentru
 /** How long serve's calls on a run's box (its destroy, the start's sweep) may take. */
 const BOX_CALL_MS = 60_000;
 const boxContext = (ms = BOX_CALL_MS) => withAbortSignal(AbortSignal.timeout(ms), BACKGROUND_CONTEXT);
-/** How long a remote box's making and seed, or one pull of its work/, may take: a sandbox's start, then the copy. */
+/** How long a remote box's making and mount, or one sync or release of its run's folder, may take: a sandbox's start,
+ *  then the helper's. */
 const REMOTE_SYNC_MS = 15 * 60_000;
-/** How long a read of a run's files waits for the pull its turn's end began. */
-const PULL_WAIT_MS = 120_000;
+/** How long a read of a run's files waits for the sync its turn's end began. */
+const SYNC_WAIT_MS = 120_000;
 
-/** A run's end that waits for its remote box's last pull: its settle is tried again until the pull lands. */
-class PullPending extends Error {}
 /** A settle that cannot tell who holds the run (its row, or the process listing, cannot be read): tried again, never taken
  *  for a holder that is gone. */
 class HolderUnknown extends Error {}
@@ -423,10 +424,10 @@ export type Run = {
   /** Its own door token (RUN_DOOR_TOKEN), once read or made; absent for a run an older server started, whose door takes
    *  the server-wide one. */
   doorToken?: string;
-  /** A remote box's making and seed, asked by the run's process through the relay: one at a time. */
+  /** A remote box's making and mount, asked by the run's process through the relay: one at a time. */
   boxing?: Promise<{ id: string; made: boolean; replaced?: boolean }>;
-  /** Its remote box's newest pull: a read of its files waits for it. */
-  pulling?: Promise<void>;
+  /** Its remote box's newest sync: a read of its files waits for it. */
+  syncing?: Promise<void>;
   /** Its launch waits on its claim, tried again later (launch): it keeps its place in the server's limits (takePlace). */
   claimWait?: boolean;
   /** Why that claim waits, in words, for a request's 503 (notUp). */
@@ -968,7 +969,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `openTimeoutMs`: how long a launched process has to open its run (READY_TIMEOUT_MS,
  *  the first message's wait, by default; never the request's wait); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
+export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, mounted and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** The owner's Archil disk, mounted at <data>/disk, which remote boxes mount their run's folder from (archil.ts); absent, no remote box runs. */ archil?: Archil; /** Archil's IPv4 ranges (archil.ts ARCHIL_ALLOW_ENV): the whole network of a remote box whose provider holds its list itself. */ archilAllow?: readonly string[]; /** Daytona's API and the same key, for what the provider does not do: a stopped box's wake (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, mounted and ended with it, here alone, as a Daytona one is (box-relay-vm.ts). */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1124,6 +1125,17 @@ export class Runs {
     return (this.#disk ??= localDisk(this.options.agents.dir, this.store));
   }
   #disk: DiskAdapter | undefined;
+  /** The disk remote boxes mount their run's folder from (disk.ts archilDisk), when this server has one. */
+  private get remoteDisk(): DiskAdapter | undefined {
+    const archil = this.options.archil;
+    return archil && (this.#remoteDisk ??= archilDisk(this.options.agents.dir, archil, this.store));
+  }
+  #remoteDisk: DiskAdapter | undefined;
+  /** Run `id`'s folder as a remote box mounts it (its work/ below the disk), by its directory `dir`. */
+  private folderOf(dir: string): RemoteFolder | undefined {
+    const adapter = this.remoteDisk;
+    return adapter && { adapter, disk: this.options.archil!.disk, subpath: relative(join(this.options.agents.dir, DISK_DIR), join(dir, "work")).split(sep).join("/") };
+  }
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
   private readonly workflows = new Map<string, unknown>();
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
@@ -1132,8 +1144,6 @@ export class Runs {
   /** Every run's graph as served, part by part (servedGraph): one LRU by bytes across runs (graph-served.ts PartCache). */
   private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
-  /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
-  private remoteAllow: readonly string[] | "none" | undefined;
   private readonly clock = new ChangeClock();
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
@@ -1930,27 +1940,30 @@ export class Runs {
       if (runBoxes) {
         await sweepRunBoxes(runBoxes, (id) => ended.has(id), boxContext()).catch((error: Error) => warn("-", `its start's sweep of run boxes failed (${error.message}); the next start sweeps again`));
       }
-      // A remote box of an ended run is pulled first, so what it changed after its run's last pull is kept, and goes only
-      // once that pull landed: one that fails keeps the box for the next start, its lifetime bounding it.
+      // A remote box of an ended run lets go of its folder first (a sync, then a checkin), so what it wrote after its
+      // run's last sync is kept, and goes only once it has: one that cannot keeps the box for the next start, its lifetime
+      // bounding it. With no disk here any more, it goes as it is.
       const agentOf = new Map(rows.map((row) => [row.id, row.agent]));
       const dirOf = (id: string) => runDirIn(this.options.agents.dir, agentOf.get(id) ?? "", id);
-      const pulledFirst = (boxes: BoxProvider, daytona: boolean) => (id: string, boxId: string) =>
-        pullRemoteBox(boxes, { id, dir: dirOf(id) }, boxContext(REMOTE_SYNC_MS)).then(
+      const releasedFirst = (boxes: BoxProvider) => (id: string) => {
+        const folder = this.folderOf(dirOf(id));
+        if (!folder) return Promise.resolve(true);
+        return releaseRemoteBox(boxes, { id }, folder, boxContext(REMOTE_SYNC_MS)).then(
           () => true,
-          async (error: Error) => {
-            warn(id, `its box is kept: its pull failed (${error.message}); the next start tries again`);
-            await this.keepBox(id, boxId, daytona);
+          (error: Error) => {
+            warn(id, `its box is kept: it could not let go of the run's folder (${error.message}); the next start tries again`);
             return false;
           },
         );
+      };
       if (vmBoxes) {
-        await sweepRunBoxes(vmBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst(vmBoxes, false)).catch((error: Error) => warn("-", `its start's sweep of Modal sandboxes failed (${error.message}); the next start sweeps again`));
+        await sweepRunBoxes(vmBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), releasedFirst(vmBoxes)).catch((error: Error) => warn("-", `its start's sweep of Modal sandboxes failed (${error.message}); the next start sweeps again`));
       }
       if (remoteBoxes) {
-        // A box kept at a run's end that Daytona stopped once idle is woken first, so this sweep pulls it like the rest.
+        // A box of an ended run that Daytona stopped once idle is woken first, so this sweep releases it like the rest.
         const api = this.options.remoteApi;
         if (api) await wakeBoxes(api, (id) => ended.has(id)).catch((error: Error) => warn("-", `the stopped boxes of ended runs were not woken (${error.message}); the next start tries again`));
-        await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst(remoteBoxes, true)).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
+        await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), releasedFirst(remoteBoxes)).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
       }
       if (!box) return;
       const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: runDirIn(this.options.agents.dir, row.agent, row.id) })));
@@ -1965,12 +1978,10 @@ export class Runs {
   }
 
   /** A sandbox run's box (run-box.ts), destroyed by its label: at every settle, a cancel included, and at archive. A
-   *  remote box's work/ is pulled first, and its box goes only once that pull brought it back whole (or there is no box).
-   *  A copy that stopped for good (an archive the extractor cannot read, a limit it cannot pass) keeps the box, said in
-   *  the log, its lifetime bounding it, and the run ends. Any other failure at a run's end (`ending`) throws
-   *  PullPending, and the end is tried again; at an archive it only warns, the box kept for the run's end or the next
-   *  start's sweep. A destroy that fails only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
-  private async dropBox(run: Run, ending = false): Promise<void> {
+   *  remote box lets go of the run's folder first (a sync, then a checkin: run-box.ts releaseRemoteBox), and goes only
+   *  once it has (or there is no box). One that cannot is kept, said in the log, for the next start's sweep, and the run
+   *  ends. A destroy that fails only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
+  private async dropBox(run: Run): Promise<void> {
     const place = run.meta.place;
     if (place?.mode !== "sandbox") return;
     // The relay's hold on the run's programs (box-relay-vm.ts) ends with the run, whatever becomes of its box: one kept
@@ -1984,7 +1995,8 @@ export class Runs {
     // warns: the destroy ends them all the same.
     if (remote || existsSync(join(run.dir, "work", BACKGROUND_DIR))) {
       try {
-        const ended = await endBackground(boxes, { [RUN_LABEL]: run.id }, boxContext());
+        // A remote box's tools run as their own user (tool-user.ts), which alone may signal what they started.
+        const ended = await endBackground(remote ? asToolProvider(boxes, BOX_ENV) : boxes, { [RUN_LABEL]: run.id }, boxContext());
         if (ended) this.options.log?.("background_ended", { run: run.id, ended });
       } catch (error) {
         warn(run.id, `its background processes were not ended before its box goes (${(error as Error).message}); destroying the box ends them`);
@@ -1992,15 +2004,14 @@ export class Runs {
     }
     if (remote) {
       try {
-        await this.pullBox(run, true);
+        await this.syncing(run);
+        const folder = this.folderOf(run.dir);
+        if (folder) await releaseRemoteBox(boxes, run, folder, boxContext(REMOTE_SYNC_MS));
       } catch (error) {
-        if (error instanceof PullIncomplete && error.lasting) {
-          await this.keepBox(run.id, error.box, place.box === "daytona");
-          return warn(run.id, `its box is kept, not destroyed: ${error.message}; what came back is in its files, and the box stops after ${KEPT_AUTOSTOP_MINUTES} idle minutes, its files kept for the next start's pull`);
-        }
-        const why = `its box's last pull failed (${(error as Error).message})`;
-        if (ending) throw new PullPending(why);
-        return warn(run.id, `${why}; its box is kept for its end`);
+        // Kept, never destroyed with writes it has not made durable; the run ends all the same, and the next start's
+        // sweep has it let go, then destroys it (its 24-hour lifetime bounds it).
+        this.options.log?.("box_kept", { run: run.id, reason: "release_failed" });
+        return warn(run.id, `its box is kept, not destroyed: it could not let go of the run's folder (${(error as Error).message}); the next start tries again`);
       }
     }
     try {
@@ -2012,15 +2023,6 @@ export class Runs {
     }
   }
 
-  /** A remote box kept because its copy back is not whole: said in the log, and set to stop once idle, so it costs its
-   *  disk alone until the next start's pull (which wakes it) or its lifetime. */
-  private async keepBox(runId: string, boxId: string, daytona = true): Promise<void> {
-    this.options.log?.("box_kept", { run: runId, box: boxId, reason: "pull_incomplete" });
-    // A VM box keeps its lifetime alone: the provider has no idle stop to set.
-    const api = daytona ? this.options.remoteApi : undefined;
-    if (api) await keepWhenIdle(api, boxId).catch((error: Error) => warn(runId, `its kept box was not kept from deletion or set to stop when idle (${error.message})`));
-  }
-
   /** What wakes run `runId`'s remote box when Daytona stopped or paused it (a class that pauses when idle, while the run
    *  waited for a person): how many it woke. */
   private wakeOf(runId: string, place?: Place): (() => Promise<number>) | undefined {
@@ -2029,33 +2031,38 @@ export class Runs {
     return api && (() => wakeBoxes(api, (id) => id === runId));
   }
 
-  /** Pulls run `run`'s remote box into its work/, after any pull already running: at a turn's end in the background (a
-   *  failure warns, and the next pull brings it), or awaited (`strict`: a failure throws). */
-  private pullBox(run: Run, strict = false): Promise<void> {
+  /** Has run `run`'s remote box sync the run's folder, after any sync already running, so the server reads what it
+   *  wrote: at a turn's end in the background (a failure warns, and the next sync makes it durable). */
+  private syncBox(run: Run): Promise<void> {
     const place = run.meta.place;
     const boxes = place && remotePlace(place) ? this.remoteOf(place) : undefined;
-    if (!boxes || !place) return Promise.resolve();
-    // After any pull already running, and after the box's making and seed when one is under way.
-    const pull = Promise.all([run.pulling, run.boxing?.catch(() => undefined)]).then(async () => {
-      const pulled = await pullRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id, place));
-      if (pulled) this.options.log?.("box_pulled", { run: run.id, changed: pulled.changed, files: pulled.files, bytes: pulled.bytes, removed: pulled.removed });
-    });
-    const settled = pull.catch((error: Error) => {
-      if (!strict) warn(run.id, `its box's work/ was not pulled at its turn's end (${error.message}); the next pull brings it`);
-    });
-    run.pulling = settled;
+    const folder = this.folderOf(run.dir);
+    if (!boxes || !place || !folder) return Promise.resolve();
+    // After any sync already running, and after the box's making and mount when one is under way.
+    const settled = Promise.all([run.syncing, run.boxing?.catch(() => undefined)])
+      .then(() => syncRemoteBox(boxes, run, folder, boxContext(REMOTE_SYNC_MS)))
+      .then(
+        (synced) => void (synced && this.options.log?.("box_synced", { run: run.id })),
+        (error: Error) => warn(run.id, `its box did not sync the run's folder at its turn's end (${error.message}); the next sync makes it durable`),
+      );
+    run.syncing = settled;
     void settled.finally(() => {
-      if (run.pulling === settled) run.pulling = undefined;
+      if (run.syncing === settled) run.syncing = undefined;
     });
-    return strict ? pull : settled;
+    return settled;
   }
 
-  /** Waits for the pull run `id`'s turn's end began, if any, up to PULL_WAIT_MS: its files then show what its box wrote. */
-  async pulled(id: string): Promise<void> {
-    const pulling = this.runs.get(id)?.pulling;
-    if (!pulling) return;
+  /** The sync run `run`'s remote box has under way, if any. */
+  private syncing(run: Run): Promise<void> {
+    return run.syncing ?? Promise.resolve();
+  }
+
+  /** Waits for the sync run `id`'s turn's end began, if any, up to SYNC_WAIT_MS: its files then show what its box wrote. */
+  async synced(id: string): Promise<void> {
+    const syncing = this.runs.get(id)?.syncing;
+    if (!syncing) return;
     let timer: NodeJS.Timeout | undefined;
-    await Promise.race([pulling, new Promise<void>((resolve) => (timer = setTimeout(resolve, PULL_WAIT_MS)))]);
+    await Promise.race([syncing, new Promise<void>((resolve) => (timer = setTimeout(resolve, SYNC_WAIT_MS)))]);
     clearTimeout(timer);
   }
 
@@ -2070,26 +2077,24 @@ export class Runs {
     return place.mode === "sandbox" && place.box === VM_PROVIDER.id ? this.options.vmBoxes : this.options.remoteBoxes;
   }
 
-  /** Run `id`'s remote box, found or made and seeded: what its process asks the relay for at its first tool call. */
+  /** Run `id`'s remote box, found or made, with the run's folder mounted: what its process asks the relay for at its
+   *  first tool call. With no Archil disk here, none: a remote box keeps its run's folder on one. */
   ensureBox(id: string): Promise<{ id: string; made: boolean; replaced?: boolean }> {
     const run = this.runs.get(id);
     const place = run?.meta.place;
     const boxes = place && this.remoteOf(place);
     if (!run || !place || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
-    // The VM box has no network (its provider's host list cannot be read back), and takes the box limits.
+    const folder = this.folderOf(run.dir);
+    if (!folder) return Promise.reject(new Error(NO_ARCHIL));
+    // The VM box takes the box limits.
     const vm = place.mode === "sandbox" && place.box === VM_PROVIDER.id;
-    // After any pull of this run's box, so a seed never meets a pull.
-    run.boxing ??= (run.pulling ?? Promise.resolve())
+    const wake = this.wakeOf(run.id, place);
+    // After any sync of this run's box, so a mount never meets one.
+    run.boxing ??= this.syncing(run)
       .then(() =>
-        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), vm ? { allow: "none", ...(this.options.vmLimits ? { limits: this.options.vmLimits } : {}) } : {
-          wake: this.wakeOf(run.id, place),
-          allow: (this.remoteAllow ??= this.options.boxAllow ?? "none"),
-          onNoList: (code, message) => {
-            if (this.remoteAllow === "none") return;
-            this.remoteAllow = "none";
-            this.options.onNoBoxList?.(code, message);
-          },
-        }),
+        // The tools have no network yet: the box reaches Archil alone, through its provider's list of Archil's ranges or
+        // its own lock, as its provider answers (run-box.ts ensureRemoteBox).
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), { folder, allow: this.options.archilAllow ?? "none", ...(wake ? { wake } : {}), ...(vm && this.options.vmLimits ? { limits: this.options.vmLimits } : {}) }),
       )
       .finally(() => void (run.boxing = undefined));
     return run.boxing;
@@ -2142,10 +2147,10 @@ export class Runs {
    *  is told each time it is seen: webhooks.ts queues each wait once, whichever server sees it first. */
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
-    // A turn's end, or a run first read waiting (a start that finds it so, whose last turn's pull may not have landed):
-    // what its remote box changed is pulled into work/ now, and a read of the files waits for it.
+    // A turn's end, or a run first read waiting (a start that finds it so, whose last turn's sync may not have landed):
+    // what its remote box wrote in the run's folder is made durable now, and a read of the files waits for it.
     const waiting = status === "input_required";
-    if (waiting && run.waited !== true) this.pullBox(run);
+    if (waiting && run.waited !== true) void this.syncBox(run);
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
@@ -2925,7 +2930,7 @@ export class Runs {
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
       .catch((error: Error) => {
-        if (!(storeBusy(error) || error instanceof PullPending || error instanceof HolderUnknown) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
+        if (!(storeBusy(error) || error instanceof HolderUnknown) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
         // A store still held past the run end's retries: settled again later, not left until the next start.
         const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
         warn(run.id, `not settled: ${error.message}; trying again in ${every / 1000} s`);
@@ -3076,8 +3081,8 @@ export class Runs {
     // left one live at the vendor, so its lease then ends by the gone rule. One never launched (letGo unset) has none.
     await this.releaseSignIn(run, run.letGo !== false);
     // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
-    // A remote box's last pull lands first: the end is not recorded until its files are in work/.
-    await this.dropBox(run, true);
+    // A remote box lets go of the run's folder first, its writes durable on the disk; one that cannot is kept.
+    await this.dropBox(run);
     // Its end-of-run turn closed, and what the turn wrote set aside before the run reads ended (learning-run.ts).
     await this.learning.beforeSettle(run, outcome);
     // A run whose rows are not read (meta.unshown) has an unknown cost, never $0.

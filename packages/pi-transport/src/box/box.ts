@@ -185,6 +185,12 @@ export type BoxSnapshot = { readonly kind: "disk" | "memory"; readonly id: strin
 export type BoxExecOptions = {
 	/** After this long `wait()` resolves with a `timeout` error and the provider stops the program when it can. */
 	readonly timeoutMs?: number;
+	/**
+	 * For a program the caller started as another user (its command begins with these words, such as
+	 * `["sudo", "-n", "-u", "<user>", "--"]`), whom only that user may signal: the words a provider that kills the program
+	 * itself (at a timeout or an abort) kills it under. A provider whose kill reaches every user's programs ignores it.
+	 */
+	readonly killAs?: readonly string[];
 };
 
 /**
@@ -258,9 +264,30 @@ export interface BoxLauncher {
 	): Promise<Result<LaunchState, LaunchError>>;
 }
 
+/**
+ * What a host asks a provider about its boxes beyond a spec: whether they can mount a network disk, and how their egress
+ * is held to a list of addresses. Each provider answers in its own words.
+ */
+export type BoxTraits = {
+	/**
+	 * Why this provider's boxes cannot mount a FUSE network disk whose client their image ships, in its own words with the
+	 * fix (no image or snapshot named that ships it); absent when they can, given a spec that asks for `fuse`.
+	 */
+	readonly diskMount?: string;
+	/**
+	 * How a box's egress is held to a list of IPv4 ranges: `allowlist`, the provider holds the spec's network list itself;
+	 * `in-box`, it cannot, so the host makes the box open and the box locks its own network.
+	 */
+	readonly egress: "allowlist" | "in-box";
+	/** That, in words a host shows its users. */
+	readonly egressWords: string;
+};
+
 /** A source of boxes: one vendor, or one kind of machine. */
 export interface BoxProvider {
 	readonly name: string;
+	/** Its answers to a host's questions about its boxes (BoxTraits). Absent: it answers none, and its boxes mount no disk. */
+	readonly traits?: BoxTraits;
 	/**
 	 * `true` only when `create` binds a spec's `mounts` into the box. Absent means `false`: the provider refuses a spec with
 	 * any, so a caller that needs a path of this machine in the box asks this before it chooses the provider.

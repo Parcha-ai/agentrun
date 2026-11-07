@@ -9,7 +9,7 @@ import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { chooseModel, llmTiers, type ModelRef, nodeTiers, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./boxes.js";
-import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
+import { boxAvailability, newAgentPlace, placeFix, REMOTE_BOXES, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { capabilityOf, DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
@@ -74,7 +74,7 @@ const codexToolCheck = () => (codexCheck ??= import("@parcha/agentrun-harness-co
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined } = {}): Promise<Blocker[]> {
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], remote, offers, mcp }: { capped?: boolean; boxes?: readonly BoxOffer[]; remote?: string; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -94,7 +94,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
   // edit that leaves the place out keeps the agent's (agents.ts), so removing the field would change nothing.
   if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: placeFix({ mode: "runner" }), host: false });
-  else if (place && place.mode !== "runner") {
+  // A box on another machine keeps its run's folder on the owner's Archil disk: with none here (`remote`, why), its place
+  // is refused at a save as at a run, whatever else this server has.
+  else if (place && place.mode !== "runner" && remote !== undefined && REMOTE_BOXES.includes(place.box as never)) {
+    out.push({ field: "definition.place", reason: NOT_SET_UP, message: sentence(`This agent's place is ${place.mode} on ${place.box}, and this server cannot run it there: ${remote}`), fix: placeFix({ mode: "sandbox", box: "docker" }), host: false, box: place.box! });
+  } else if (place && place.mode !== "runner") {
     const box = boxAvailability(boxes).find((b) => b.id === place.box);
     // A box's reason says what to do, with no full stop of its own: the sentence ends in one, whatever the reason ends in.
     if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: sentence(`This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}`), host: true, ...(place.box ? { box: place.box } : {}) });

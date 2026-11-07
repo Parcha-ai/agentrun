@@ -76,7 +76,9 @@ const allowedExtraFiles = {
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
-  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json'],
+  // And the root helper a box on another machine mounts its run's folder from the Archil disk with (box/agentrun-archil),
+  // which a box's image installs.
+  serve: ['package/launcher/agentrun-serve', 'package/box/agentrun-archil', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json'],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs) and its skill's

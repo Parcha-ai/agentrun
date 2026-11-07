@@ -36,7 +36,7 @@ import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from ".
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, REMOTE_BOXES, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
@@ -46,7 +46,8 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_PROVIDER } from "./boxes.js";
+import { archilAllowOf, archilOf, NO_ARCHIL_ALLOW, noDiskImage, TOOLS_NO_NETWORK } from "./archil.js";
 import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV } from "./box-paths.js";
@@ -189,6 +190,9 @@ export type ServeOptions = {
   /** Under `faux` only: a module that stands in for the VM provider's SDK (its client class, by the SDK's name for it),
    *  so the VM box runs on the tests' fake, never the provider. */
   fauxVm?: string;
+  /** Under `faux` only: the mount table the server reads for its own mount of the Archil disk at <data>/disk (archil.ts),
+   *  the tests' fake, in place of /proc/self/mounts. */
+  archilMounts?: string;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
    *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
   harnessLocks?: Readonly<Record<string, string>>;
@@ -487,9 +491,6 @@ export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
  *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show;
  *  `gradeModel`, its `--grade-model`. */
-/** Why a Daytona box has no network although AGENTRUN_BOX_ALLOW names hosts: Daytona refused its domain list (`code`). */
-const noListReason = (code: string) =>
-  `Daytona did not keep a sandbox's domain list (${code}), so this server's Daytona boxes have no network until it starts again: Daytona takes a domain list on its tier 3 and 4 only. To keep them closed without trying, set ${BOX_ALLOW_ENV}=none`;
 
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
   return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes, gradeModel);
@@ -816,6 +817,25 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // box stands in for Docker, and nothing asks Docker.
   // Under --faux, the tests' fake stands in for the VM provider's SDK (startServe's `fauxVm`), never the provider.
   const boxes = await boxRegistry(env, options.faux && options.fauxVm ? { vmSdk: () => import(pathToFileURL(resolve(options.fauxVm!)).href) as Promise<Record<string, unknown>> } : {});
+  // The owner's Archil disk, which a box on another machine keeps its run's folder on: configured, and mounted by the
+  // operator at <data>/disk; else why not, which every remote box says (capabilities), and a save or a run of one meets.
+  const archilState = await archilOf(env, data, options.faux && options.archilMounts ? { mounts: options.archilMounts } : {});
+  const archil = "archil" in archilState ? archilState.archil : undefined;
+  const noArchil = "reason" in archilState ? archilState.reason : undefined;
+  // Each remote box's provider answers whether its boxes can mount the disk (from the image or snapshot its registry
+  // line names) and how it holds a box's egress (pi-transport's BoxTraits), in its own words: a box whose provider
+  // holds a list needs Archil's ranges for it.
+  const archilAllow = archilAllowOf(env);
+  const remoteOffer = (offer: BoxOffer): BoxOffer => {
+    if (!offer.available) return offer;
+    if (noArchil) return { id: offer.id, available: false, reason: noArchil };
+    const noMount = boxes.diskMount(offer.id);
+    if (noMount) return { id: offer.id, available: false, reason: noDiskImage(noMount) };
+    const traits = boxes.provider(offer.id)!.traits!;
+    if (traits.egress === "allowlist" && !Array.isArray(archilAllow)) return { id: offer.id, available: false, reason: archilAllow && "reason" in archilAllow ? archilAllow.reason : NO_ARCHIL_ALLOW };
+    // The tools have no network yet, and capabilities say how that is held.
+    return { ...offer, network: "none", network_reason: `${TOOLS_NO_NETWORK}; ${traits.egressWords}` };
+  };
   const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
   // The Docker box's image, asked of Docker now and pulled in the background when Docker has none (box-image.ts): docker
   // is preparing until it is in, and unavailable if the pull fails. Its record tells the run's processes; with no Docker
@@ -851,15 +871,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const proxy = egress?.state();
     return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist" };
   };
-  // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
-  // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
-  let daytonaNoList: string | undefined;
-  const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", network_reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
-  // The VM box has no network whatever AGENTRUN_BOX_ALLOW names: its provider takes a host list, but has no read of a
-  // box's list back, so the server cannot check one held (run-box.ts ensureRemoteBox makes it blocked). Said, with why.
-  const vmNetwork = (offer: BoxOffer): BoxOffer => (!offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : { ...offer, network: "none", network_reason: VM_NO_LIST });
-  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" ? daytonaNetwork(offer) : offer.id === VM_PROVIDER.id ? vmNetwork(offer) : offer));
+  // A remote box's tools have no network yet (remoteOffer above): no domain list is asked of a provider.
+  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : REMOTE_BOXES.includes(offer.id) ? remoteOffer(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
   const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
@@ -880,7 +893,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   } else await clearImage(data);
   boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
-  // Daytona's boxes are made, seeded, pulled and destroyed here, with the key this server holds; a run's process reaches
+  // Daytona's boxes are made, mounted and destroyed here, with the key this server holds; a run's process reaches
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
   // And the VM box's, the same way, with this server's SDK client: the relay's VM half makes a run's calls with it.
@@ -894,14 +907,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const limits = boxLimitsOf(env);
     return { cpus: limits.cpus, memoryMb: memoryMbOf(limits.memory) };
   })();
-  // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
-  // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
-  const onNoBoxList = (code: string, message: string) => {
-    daytonaNoList = code;
-    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code, message }));
-    boxOffers = offersNow();
-    if (offers) recompose();
-  };
   if (boxNetwork.allow !== "none" && boxNetwork.vm) {
     const allow = boxNetwork.allow;
     const egressLog = (state: ReturnType<EgressContainer["state"]>) => log?.(logLine("box_egress", { runtime: boxNetwork.vm!, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }));
@@ -955,7 +960,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       void probe(`${entry.id}_installed`).catch(() => undefined);
     })];
   }));
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(archil ? { archil, ...(Array.isArray(archilAllow) ? { archilAllow } : {}) } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1292,7 +1297,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers, mcp: mcpTools });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, remote: noArchil, offers, mcp: mcpTools });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -1325,14 +1330,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const named = revision.kind === "agentic" ? revision : workflowShape(revision);
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, offers, mcp: mcpTools });
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, remote: noArchil, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if (revision.kind === "agentic" && (revision.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, offers, mcp: mcpTools })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, offers, mcp: mcpTools });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, remote: noArchil, offers, mcp: mcpTools })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, remote: noArchil, offers, mcp: mcpTools });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
       // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));
@@ -2113,8 +2118,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "listRunFiles": {
         const run = await needRun(id);
         filesShown(run);
-        // A remote box's turn just ended: its pull lands first, so the list shows what the box wrote.
-        await runs.pulled(run.id);
+        // A remote box's turn just ended: its sync lands first, so the list shows what the box wrote.
+        await runs.synced(run.id);
         const { files, deep } = await walk(join(run.dir, "work"));
         files.sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP });
@@ -2186,7 +2191,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "readRunFile": {
         const run = await needRun(id);
         filesShown(run);
-        await runs.pulled(run.id);
+        await runs.synced(run.id);
         return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
       }
       case "createFile": {

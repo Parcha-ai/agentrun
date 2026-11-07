@@ -31,6 +31,7 @@
   "files": [
     "dist",
     "launcher",
+    "box",
     "harnesses",
     "skills",
     "README.md",

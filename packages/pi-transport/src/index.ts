@@ -17,6 +17,7 @@ export {
 	type BoxSnapshot,
 	type BoxSpec,
 	type BoxStatus,
+	type BoxTraits,
 	isReservedLabel,
 } from "./box/box.ts";
 export { downloadByExec, finish, readStream, uploadByExec } from "./box/files.ts";

@@ -1,14 +1,10 @@
 // The few calls this server makes of Daytona's API itself, beside its provider's (pi-transport's daytonaBoxes): with
 // the server's key, and never through a redirect, which would carry the key to wherever it points. The box relay
-// (box-relay.ts) reads a sandbox's labels and toolbox with them; runs.ts keeps a box whose copy back is not whole (no
-// auto-delete, an idle stop) and wakes a run's box that Daytona stopped or paused.
+// (box-relay.ts) reads a sandbox's labels and toolbox with them; runs.ts wakes a run's box that Daytona stopped or
+// paused.
 
 /** Daytona's API and this server's key for it (boxes.ts daytonaApi). `fetch`: for tests. */
 export type DaytonaApi = { apiUrl: string; apiKey: string; fetch?: typeof fetch };
-
-/** How long a box kept because its copy back stopped (runs.ts) runs idle before Daytona stops it: its files stay, for
- *  the next start's pull, and its compute stops. */
-export const KEPT_AUTOSTOP_MINUTES = 15;
 
 const CALL_MS = 30_000;
 const WAKE_MS = 120_000;
@@ -31,16 +27,7 @@ export async function daytonaCall(api: DaytonaApi, method: string, path: string)
   }
 }
 
-/** Keeps sandbox `id` with its files: Daytona's auto-delete off first (a box is made with 0, which deletes it as it
- *  stops), then its auto-stop at `minutes` without activity, so its compute stops and its disk stays. */
-export async function keepWhenIdle(api: DaytonaApi, id: string, minutes = KEPT_AUTOSTOP_MINUTES): Promise<void> {
-  const kept = await daytonaCall(api, "POST", `/sandbox/${encodeURIComponent(id)}/autodelete/-1`);
-  if (!kept.ok) throw new Error(`Daytona answered ${kept.status} to turning off a kept box's auto-delete`);
-  const stops = await daytonaCall(api, "POST", `/sandbox/${encodeURIComponent(id)}/autostop/${minutes}`);
-  if (!stops.ok) throw new Error(`Daytona answered ${stops.status} to the auto-stop of a kept box`);
-}
-
-/** The states a run's box is woken from: stopped (a kept box after its idle stop), paused (a class that pauses when
+/** The states a run's box is woken from: stopped (a box after its idle stop), paused (a class that pauses when
  *  idle, while its run waits for a person) and archived (a stopped box Daytona moved to its archive). `/start` takes
  *  each, an archived one restored. */
 const ASLEEP: ReadonlySet<unknown> = new Set(["stopped", "paused", "archived"]);
@@ -51,7 +38,7 @@ const SETTLE_MS = 60_000;
 type Listed = { id?: unknown; state?: unknown; labels?: Record<string, unknown> };
 
 /** Starts every stopped, paused or archived run box whose run `pick` names, and waits until each runs: a box kept at a run's end
- *  that Daytona stopped, which the start's sweep then pulls like any other, or a run's box that paused while it waited.
+ *  that Daytona stopped, which the start's sweep then releases like any other, or a run's box that paused while it waited.
  *  One still stopping, pausing or archiving is waited for first; one that has not settled in SETTLE_MS throws, so its caller keeps
  *  it and never makes another in its place. How many run now. */
 export async function wakeBoxes(api: DaytonaApi, pick: (runId: string) => boolean): Promise<number> {

@@ -239,14 +239,14 @@ function refuseLinks(base: string, dir: string): void {
     if (!stats.isDirectory()) throw invalid(`${path.relative(base, at)} is not a directory`);
   }
 }
-/** Makes each folder from `base` down to `dir` that is missing, 0700, each mode set after its mkdir, so no umask loosens it. */
+/** Makes each folder from `base` down to `dir` that is missing, and sets each, made or found, to 0700: its mode set after
+ *  its mkdir, so no umask loosens it, and one another part made first (an agent's folder, by its learning) tightened. */
 function ownedDirs(base: string, dir: string): void {
   const below = path.relative(base, dir);
   let at = base;
   for (const part of below.split(path.sep).filter(Boolean)) {
     at = path.join(at, part);
-    if (existsSync(at)) continue;
-    mkdirSync(at, { mode: 0o700 });
+    if (!existsSync(at)) mkdirSync(at, { mode: 0o700 });
     chmodSync(at, 0o700);
   }
 }
@@ -658,6 +658,8 @@ export class AgentStore extends AgentStoreReader {
     refuseLinks(this.dir, dir);
     const run: StartedRun = { runId, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: agent, revision };
     // The directory first, then the row: a seed that fails throws and nothing is written; a hard kill between the two leaves a directory no query shows.
+    // It and every folder above it, up to the data directory's disk, are 0700, whatever the umask.
+    ownedDirs(this.dir, dir);
     try {
       await seedRun({ storePath: run.storePath, workDir: run.workspace }, { runId, leases: [], profiles: {}, skills });
       // A start under the same origin that got here first (another call, another connection) wins: this one's directory goes.

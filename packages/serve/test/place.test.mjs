@@ -22,9 +22,13 @@ const storedBodies = (data) => {
 const BOXED = [
   { mode: "sandbox", box: "bwrap" },
   { mode: "sandbox", box: "docker" },
+];
+/** The boxes on another machine, which keep a run's folder on an Archil disk: with none here, a save is refused. */
+const REMOTE = [
   { mode: "sandbox", box: "modal" },
   { mode: "sandbox", box: "daytona" },
 ];
+const NO_ARCHIL = "remote boxes keep their run folder on an Archil disk: configure AGENTRUN_ARCHIL_DISK, AGENTRUN_ARCHIL_REGION and AGENTRUN_ARCHIL_TOKEN, or use the docker box";
 
 test("a definition that names no place stores none, answers none, and runs as before", async (t) => {
   const { api, data } = await serve(t);
@@ -54,7 +58,7 @@ test("an explicit runner place is stored and echoed, is another revision than no
   await follow(api, run.body.run_id, ["completed"]);
 });
 
-test("a sandbox place on each box, bwrap included, is stored and echoed as given on an agentic revision; a workflow revision's is a 422, and nothing is saved", async (t) => {
+test("a sandbox place on each box of this machine, bwrap included, is stored and echoed as given on an agentic revision; a remote box's, with no Archil disk here, and a workflow revision's are a 422, and nothing is saved", async (t) => {
   const { api, data } = await serve(t);
   for (const [index, place] of BOXED.entries()) {
     const made = await api("POST", "/agents", agent(`boxed-${index}`, { place }));
@@ -62,6 +66,11 @@ test("a sandbox place on each box, bwrap included, is stored and echoed as given
     assert.deepEqual(made.body.definition.place, place);
     assert.deepEqual((await api("GET", `/agents/boxed-${index}`)).body.definition.place, place);
     assert.deepEqual((await api("GET", `/agents/boxed-${index}/revisions`)).body.revisions[0].definition.place, place);
+  }
+  for (const [index, place] of REMOTE.entries()) {
+    const refused = await api("POST", "/agents", agent(`remote-${index}`, { place }));
+    assert.deepEqual([refused.status, refused.body.error?.fields?.map((f) => [f.field, f.reason])], [422, [["definition.place", "not_set_up_here"]]], JSON.stringify(refused.body));
+    assert.ok(refused.body.error.fields[0].message.endsWith(`${NO_ARCHIL}.`), refused.body.error.fields[0].message);
   }
   const flow = await api("POST", "/agents", flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }));
   assert.deepEqual([flow.status, flow.body.error?.fields?.map((f) => [f.field, f.reason])], [422, [["definition.place", "not_an_option"]]], JSON.stringify(flow.body));
@@ -103,7 +112,6 @@ test("a sandbox place saves with a warning naming its box, and a run of it is 40
   const { api } = await serve(t);
   for (const [id, body, box, input] of [
     ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), "bwrap", { content: "hi" }],
-    ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "modal" } }), "modal", { content: "hi" }],
     ["docked", agent("docked", { place: { mode: "sandbox", box: "docker" } }), "docker", { content: "hi" }],
   ]) {
     const made = await api("POST", "/agents", body);

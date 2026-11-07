@@ -42,7 +42,7 @@ import { promptOf, readsFiles, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
-import { mirrorWrites } from "./workspace.js";
+import { fileThroughBox } from "./workspace.js";
 import { deniedText, runGate } from "./tool-gate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
@@ -134,13 +134,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
   const root = dataOfRun(where.root);
-  // A remote box (Daytona) is the server's to make and seed, reached through its relay; Docker's is made here.
+  // A remote box (place.ts REMOTE_BOXES) is the server's to make and mount, reached through its relay; Docker's is made here.
   // Its box carries the epoch of the claim this process was launched under (runs.ts launch): a box of an earlier one is
   // an earlier process's, destroyed before this one makes its own (run-box.ts fenceRunBoxes).
   const epoch = Number(process.env[RUN_EPOCH_ENV] ?? "0");
   const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place, epoch: Number.isSafeInteger(epoch) ? epoch : 0 }) : undefined;
-  // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
-  if (box?.mirror) mirrorWrites(where.work, box.mirror);
+  // What the run's host tools file in work/ goes in through a remote box, which holds the run's folder.
+  if (box?.file) fileThroughBox(where.work, box.file);
   const coding = codingSource(place, box);
   // Every tool call the run's model makes passes the run's tool gate (tool-gate.ts): pi's tools wrapped by name where the
   // registry composes each agent's, another harness's host tools in their call. An approved call runs on this coding
