@@ -73,9 +73,8 @@ jobs:
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
     # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
-    # included, stay on GitHub's runners. The gh pool stays too: the viewer's Chromes starved a 4-vCPU Blacksmith runner
-    # until it lost contact, and Blacksmith's kernels have no Yama ptrace_scope, so pi-transport's launcher refuses a
-    # launch with stdin or secrets there.
+    # included, stay on GitHub's runners. The gh pool stays too: Blacksmith's kernels have no Yama ptrace_scope, so
+    # pi-transport's launcher refuses a launch with stdin or secrets there.
     runs-on: ${{ github.event_name == 'merge_group' && !startsWith(matrix.shard, 'gh-') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
@@ -123,9 +122,6 @@ jobs:
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - if: matrix.shard == 'checks'
         run: npm run typecheck
-      - name: Demo setup prompts match their specs
-        if: matrix.shard == 'checks'
-        run: node scripts/check-setup-prompts.mjs
       - name: undici in this install is at or above its floor
         if: matrix.shard == 'checks'
         run: node scripts/check-undici.mjs
@@ -308,9 +304,9 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - if: matrix.part == 'consumer'
         run: npm run build
-      - name: The clean consumer and the reference example at the leg's pi
+      - name: The clean consumer at the leg's pi
         # The packages packed and installed together in an empty directory, with the pi family at this version: one
-        # pi-durable and one chord there, and the reference job's record equal to the one fixed for this pi.
+        # pi-durable and one chord there.
         if: matrix.part == 'consumer'
         run: node scripts/verify-packages.mjs --pi ${{ matrix.pi }}
       - name: The family at the leg's pi, and this part's type-checks and test files on it
@@ -319,11 +315,6 @@ jobs:
           LEG_PI: ${{ matrix.pi }}
           LEG_PART: ${{ matrix.part }}
         run: node scripts/pi-leg.mjs --pi "$LEG_PI" --scratch --require-all --shard "$LEG_PART" --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
-      - name: The re-asked fold on this pi
-        if: matrix.part == '1'
-        # A real mid-stream kill and resume, recorded on the pi the leg installed: pi.live must still be version 1 and turn 0 asked twice.
-        # It skips until the package has the store export and the disk its beforeResume hook. If pi changes pi.live it fails; it is not adapted.
-        run: node --test examples/reference-midstream.test.mjs
       - name: Retain the leg's packages and resolved versions
         if: always()
         uses: actions/upload-artifact@v4
@@ -356,54 +347,6 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - run: node scripts/pi-cross-version.mjs --from 1.1.0 --to 1.2.0 --npm "npx --yes npm@11.21.0"
-
-  pi-vision-pi-floor:
-    # @parcha/pi-vision's peers accept pi-durable and chord from 1.0.4, while the package develops against 1.1.0. Its
-    # build, type tests and whole suite run again with pi-durable, chord and pi-ai at 1.0.4 as one copy at the root, which
-    # is how a host's install resolves them (a plain `npm install --no-save -w` leaves pi-durable 1.0.4 loading a chord
-    # and pi-ai 1.1.0). scripts/pi-leg.mjs fails the run if another version was resolved.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-vision --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
-      - name: Retain the leg's resolved versions
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-leg-pi-vision-floor
-          path: .release/pi-leg.json
-          if-no-files-found: ignore
-
-  vision-binaries:
-    # @parcha/pi-vision's suites that run programs in the environment (test/binaries: ffmpeg and poppler). They are not
-    # part of the verify matrix: they need the programs, not three Node versions. A provider that cannot find its
-    # program fails here instead of skipping.
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install ffmpeg and poppler
-        run: |
-          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils
-          ffmpeg -version | head -1
-          pdftoppm -v
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: npm run build -w @parcha/pi-vision
-      - run: npm run test:binaries -w @parcha/pi-vision
 
   pi-transport-pi-floor:
     # @parcha/pi-transport's peers accept the pi family from 1.0.4, while the package develops against 1.1.0. Its build,
@@ -529,8 +472,6 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - run: npm run test:chrome -w @parcha/pi-browser
-      # The assembled reference job on the same Chrome: its record and ledger must be the fixed ones (the receipt name and token counts are not).
-      - run: node scripts/check-reference-chrome.mjs
 
   stranger:
     # A package installed from its packed tarball into an empty directory, with an empty environment and home, runs the one command
@@ -542,7 +483,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, pi-durable-agent, pi-git-remote, pi-agent-learn, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-harness, agentrun-serve]
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-transport, pi-transport-docker, pi-durable-agent, pi-git-remote, pi-agent-learn, agentrun-kernel, agentrun-harness-claude, agentrun-harness-codex, agentrun-serve]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
