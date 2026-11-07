@@ -23,6 +23,8 @@ const MAX_LABEL = "agentrun.computer.max-deadline";
 const TIMEOUT_LABEL = "agentrun.computer.timeout-ms";
 const SPEC = { image: "desktop", lifetimeMs: 600_000, network: "none" };
 const HOUR = 3_600_000;
+/** What create and attach record of a computer with network none whose IPv4 probe targets E2B's firewall accepted. */
+const ACCEPTED_NOTE = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443";
 const BARE = "e2b_bare_key_must_never_be_used";
 const dir = mkdtempSync(join(tmpdir(), "computer-e2b-"));
 const DAEMON_PATH = join(dir, "computerd");
@@ -254,7 +256,7 @@ test("create() makes the sandbox from the template with the labels, the lifetime
 	const made = await provider.create({ ...SPEC, labels: { run: "r1", case: "c1" } });
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
 	const sb = only(fake);
-	assert.deepEqual(made.value, { id: sb.id, name: sb.metadata[NAME] });
+	assert.deepEqual(made.value, { id: sb.id, name: sb.metadata[NAME], notes: [ACCEPTED_NOTE] }, "E2B's firewall accepts and sends nothing back: recorded in words, not refused");
 	assert.match(made.value.name, /^computer-[0-9a-f]{12}$/);
 	const [, template, opts] = fake.calls.find(([name]) => name === "Sandbox.create");
 	assert.equal(template, "desktop");
@@ -421,7 +423,8 @@ test("drift at create is refused and the sandbox killed: hello, the daemon's cre
 		[{ info: { allowInternetAccess: true, network: { allowPublicTraffic: false } } }, /network: declared none, read back open/],
 		[{ info: { network: { allowPublicTraffic: true } } }, /public traffic/],
 		[{ info: { lifecycle: { onTimeout: "pause" } } }, /onTimeout/],
-		[{ box: { reached: ["1.1.1.1:443"] } }, /reached 1\.1\.1\.1:443/],
+		[{ box: { reached: ["1.1.1.1:443"] } }, /network: declared none, read back an answer from 1\.1\.1\.1:443/],
+		[{ box: { reached: ["8.8.8.8:443"], accepted: ["1.1.1.1:443"] } }, /network: declared none, read back an answer from 8\.8\.8\.8:443$/],
 		[{ info: { templateId: "tpl-other", name: "other-desktop" } }, /template: declared "desktop", read back "tpl-other" \(other-desktop\)/],
 		[{ info: { metadata: { [COMPUTER]: "1" } } }, /label agentrun\.computer\.name/],
 	]) {
@@ -493,12 +496,38 @@ test("attach() by id or by labels reads the spec back and checks the daemon; one
 	for (const by of [{ id: ref.id }, { labels: { run: "r1" } }]) {
 		const attached = await provider.attach(by);
 		assert.equal(attached.ok, true, attached.ok ? "" : attached.error.message);
-		assert.deepEqual({ ...attached.value, spec: { ...attached.value.spec, deadline: undefined } }, { ...ref, spec: { image: "desktop", snapshot: "tpl-desktop", user: "1000:1000", network: "none", workdir: "/work", deadline: undefined, kind: "desktop" } });
+		assert.deepEqual(
+			{ ...attached.value, spec: { ...attached.value.spec, deadline: undefined } },
+			{ ...ref, spec: { image: "desktop", snapshot: "tpl-desktop", user: "1000:1000", network: "none", workdir: "/work", deadline: undefined, kind: "desktop" }, notes: [ACCEPTED_NOTE] },
+		);
 	}
 	sb.box.status = { CapEff: "000001ffffffffff" };
 	const drifted = await provider.attach({ id: ref.id });
 	assert.equal(drifted.ok, false);
 	assert.match(drifted.error.message, /left as it is.*CapEff/);
+	assert.deepEqual(fake.kills, []);
+});
+
+test("network none: a probe whose targets only accepted keeps the computer, the accepts named; one answering target refuses it, whatever the others accepted", async () => {
+	const quiet = setup({}, { box: { accepted: ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"] } });
+	const made = await quiet.provider.create(SPEC);
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	assert.deepEqual(made.value.notes, ["network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443, [2606:4700:4700::1111]:443"]);
+	assert.deepEqual(quiet.fake.kills, []);
+	assert.deepEqual(await quiet.provider.network(made.value), { ok: true, value: "none" });
+
+	const open = setup();
+	const opened = await open.provider.create({ ...SPEC, network: "open" });
+	assert.equal(opened.ok, true, opened.ok ? "" : opened.error.message);
+	assert.equal(opened.value.notes, undefined, "open runs no probe and records nothing");
+
+	const { provider, fake } = setup();
+	const { ref, sb } = seeded(fake);
+	sb.box.reached = ["1.1.1.1:443"];
+	sb.box.accepted = ["8.8.8.8:443"];
+	const attached = await provider.attach({ id: ref.id });
+	assert.equal(attached.ok, false);
+	assert.match(attached.error.message, /left as it is.*network: declared none, read back an answer from 1\.1\.1\.1:443/);
 	assert.deepEqual(fake.kills, []);
 });
 

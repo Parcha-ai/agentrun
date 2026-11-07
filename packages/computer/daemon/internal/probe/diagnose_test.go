@@ -171,7 +171,7 @@ func only(t *testing.T, diagnosis probe.Diagnosis) probe.Outcome {
 	return diagnosis.Results[0]
 }
 
-func TestDiagnoseTLSIsAnsweredOnlyByAServerHello(t *testing.T) {
+func TestDiagnoseTLSIsAnsweredByAServerHelloOrAnAlert(t *testing.T) {
 	sawSNI := make(chan string, 1)
 	answering := tcpServer(t, func(conn net.Conn) {
 		if _, sni, ok := clientHello(conn); ok {
@@ -193,8 +193,8 @@ func TestDiagnoseTLSIsAnsweredOnlyByAServerHello(t *testing.T) {
 		}
 	})
 	got = only(t, probe.Diagnose([]probe.Check{{Probe: "tls", Address: alert, Name: "one.one.one.one"}}, short))
-	if got.Outcome != "accepted" || got.Bytes != 7 || !strings.Contains(got.Detail, "not a ServerHello") {
-		t.Fatalf("an alert came back, and the probe reported %+v; want accepted, 7 bytes, and that they are not a ServerHello", got)
+	if got.Outcome != "answered" || got.Bytes != 7 || !strings.Contains(got.Detail, "a TLS alert") {
+		t.Fatalf("an alert came back, and the probe reported %+v; want answered, 7 bytes, a TLS alert: the far side spoke", got)
 	}
 }
 
@@ -253,7 +253,7 @@ func TestDiagnoseWithNoNameSendsNoSNI(t *testing.T) {
 	}
 }
 
-func TestDiagnoseHTTPIsAnsweredOnlyByAStatusLine(t *testing.T) {
+func TestDiagnoseHTTPIsAnsweredByAStatusLineOrAnyOtherBytes(t *testing.T) {
 	request := make(chan string, 1)
 	answering := tcpServer(t, func(conn net.Conn) {
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -279,8 +279,8 @@ func TestDiagnoseHTTPIsAnsweredOnlyByAStatusLine(t *testing.T) {
 		_, _ = conn.Write([]byte("SSH-2.0-OpenSSH_9.6\r\n"))
 	})
 	got = only(t, probe.Diagnose([]probe.Check{{Probe: "http", Address: bare}}, short))
-	if got.Outcome != "accepted" || got.Bytes == 0 || !strings.Contains(got.Detail, "not an HTTP status line") {
-		t.Fatalf("other bytes came back, and the probe reported %+v; want accepted, with the bytes counted", got)
+	if got.Outcome != "answered" || got.Bytes == 0 || !strings.Contains(got.Detail, "not an HTTP status line") {
+		t.Fatalf("other bytes came back, and the probe reported %+v; want answered, as --connect counts them, the detail saying they are no status line", got)
 	}
 	if sent := <-noHost; sent != "HEAD / HTTP/1.0\r\n\r\n" {
 		t.Fatalf("with no name the probe sent %q; want no Host header", sent)
@@ -316,7 +316,7 @@ func TestDiagnoseAClosedPortIsRefused(t *testing.T) {
 	}
 }
 
-func TestDiagnoseDNSIsAnsweredOnlyByAResponseWithTheSameID(t *testing.T) {
+func TestDiagnoseDNSIsAnsweredByAnyReply(t *testing.T) {
 	queries := make(chan []byte, 2)
 	answering := udpServer(t, func(query []byte) []byte {
 		queries <- query
@@ -338,8 +338,8 @@ func TestDiagnoseDNSIsAnsweredOnlyByAResponseWithTheSameID(t *testing.T) {
 		return reply
 	})
 	got = only(t, probe.Diagnose([]probe.Check{{Probe: "dns", Address: wrongID}}, short))
-	if got.Outcome != "accepted" || got.Bytes == 0 {
-		t.Fatalf("a response with another id came back, and the probe reported %+v; want accepted, with the bytes counted", got)
+	if got.Outcome != "answered" || got.Bytes == 0 || !strings.Contains(got.Detail, "not a DNS response with the query's id") {
+		t.Fatalf("a response with another id came back, and the probe reported %+v; want answered (something on the path replied), the detail saying it is not the query's", got)
 	}
 
 	mute := udpServer(t, func([]byte) []byte { return nil })
@@ -387,8 +387,8 @@ func TestDiagnoseReadsAtMostMaxRead(t *testing.T) {
 		_, _ = conn.Write(bytes.Repeat([]byte{0x17}, 64*1024))
 	})
 	got := only(t, probe.Diagnose([]probe.Check{{Probe: "tls", Address: flood}}, probe.Bounds{Connect: time.Second, Read: time.Second, Whole: 5 * time.Second, MaxRead: 1024}))
-	if got.Bytes > 1024 || got.Outcome != "accepted" {
-		t.Fatalf("reported %+v; want accepted, and at most 1024 bytes read", got)
+	if got.Bytes == 0 || got.Bytes > 1024 || got.Outcome != "answered" {
+		t.Fatalf("reported %+v; want answered, and at most 1024 bytes read", got)
 	}
 }
 
