@@ -49,6 +49,7 @@ export function formatReport(report: ConformanceReport): string {
 		const [first = "", ...rest] = wrap(notRun);
 		lines.push(`core ${"not run".padEnd(9)} ${first}`, ...rest.map((more) => `${INDENT}${more}`));
 	}
+	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
 	// A Core case skipped for an optional group the computer does not declare is out of Core's count, and named apart.
 	const optional = (r: CaseResult) => r.status === "skip" && r.undeclared !== undefined;
 	const core = results.filter((r) => r.level === "core" && !optional(r));

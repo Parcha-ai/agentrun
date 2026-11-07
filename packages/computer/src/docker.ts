@@ -131,6 +131,7 @@ export class DockerProvider implements ComputerProvider {
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			user: ["root", "uid"],
 			release: ["stop", "delete"],
+			stopDeletes: false,
 		};
 	}
 

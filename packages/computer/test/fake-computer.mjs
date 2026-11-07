@@ -106,6 +106,8 @@ function fakeDaemon(hello, computer) {
  *   line); `statusForUser`: the same, in a computer whose spec asked for a user.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
  * - `listPage`: how many processes one process.list page holds. `filesPage`: how many entries one files.list page holds.
+ * - `declaresStopDeletes`: capabilities().stopDeletes, left out unless given. `stopIgnored`: a stop does nothing, and the
+ *   computer runs on.
  * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
  *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
  * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
@@ -139,6 +141,8 @@ export function fakeComputers({
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
+	declaresStopDeletes,
+	stopIgnored = false,
 	networkSwitches = false,
 	attachSpec = {},
 	release = ["stop", "delete"],
@@ -241,6 +245,7 @@ export function fakeComputers({
 		async release(ref, how) {
 			calls.push(["release", ref.name, how]);
 			if (releaseHangs) return new Promise(() => {});
+			if (how === "stop" && stopIgnored) return ok(undefined);
 			const record = computers.get(ref.name);
 			if (how === "stop" && !release.includes("stop") && !stopAnyway) return fail("unsupported", "this fake has no stop that keeps a computer; release it with delete");
 			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
@@ -249,5 +254,10 @@ export function fakeComputers({
 			return ok(undefined);
 		},
 	};
+	// stopDeletes as declared, apart from the line that declares the rest.
+	if (declaresStopDeletes !== undefined) {
+		const declared = provider.capabilities;
+		provider.capabilities = () => ({ ...declared(), stopDeletes: declaresStopDeletes });
+	}
 	return { provider, made, calls, alive: () => [...computers.keys()], open: () => connections };
 }

@@ -37,6 +37,8 @@ func TestMain(m *testing.M) {
 			os.Exit(execrun.Guard())
 		case "stdio":
 			os.Exit(daemon.Bridge(daemon.SocketPath(), os.Stdin, os.Stdout, os.Stderr))
+		case daemon.NoNewPrivsChildArg:
+			os.Exit(daemon.NoNewPrivsChild())
 		}
 	}
 	if len(os.Args) == 3 && os.Args[1] == "init" {

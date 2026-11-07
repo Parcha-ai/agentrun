@@ -261,6 +261,26 @@ test("the CLI loads a provider module by path, prints the report, and exits 0 wh
 	assert.match(out.text(), /core PASS 1\/1/);
 });
 
+test("a module's conformanceImage() is the run's image unless --image names one, and its conformanceNotes go in the report", async () => {
+	const out = sink();
+	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const report = JSON.parse(out.text());
+	assert.equal(report.image, "module-image");
+	assert.deepEqual(report.notes, ["a stop deletes on this configuration: the provider declares stopDeletes"]);
+	const named = sink();
+	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs", "--json", "--image", "alpine:3.20"], { stdout: named, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.equal(JSON.parse(named.text()).image, "alpine:3.20", "--image wins");
+	const text = sink();
+	assert.equal(await main(["--provider", "./fixtures/noted-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const lines = text.text().trimEnd().split("\n");
+	assert.equal(lines.at(-2), "note: a stop deletes on this configuration: the provider declares stopDeletes");
+	assert.match(lines.at(-1), /^core PASS 1\/1/);
+	const plain = sink();
+	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--json"], { stdout: plain, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.equal(JSON.parse(plain.text()).image, "debian:bookworm-slim", "a module that names no image: the default");
+	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "notes"), false, "no notes, no field");
+});
+
 test("the CLI's --json prints the report object; a Core failure exits 1", async () => {
 	const out = sink();
 	const cases = [pass("health.ping"), pass("exec.argv", { run: async (t) => t.equal(1, 2, "one and two") })];
@@ -657,6 +677,46 @@ test("provider.attach checks the spec attach reads back: the network and image c
 		assert.equal(statuses(report)["provider.attach"], "fail", JSON.stringify(attachSpec));
 		assert.match(reasons(report)["provider.attach"], words, JSON.stringify(attachSpec));
 	}
+});
+
+test("provider.stop holds a provider to the release it declares: stop kept, stop that deletes, or no stop at all", async () => {
+	const run = async (options) => {
+		const report = await runConformance(fakeComputers(options).provider, { image: IMAGE, cases: byId("provider.stop") });
+		return { status: statuses(report)["provider.stop"], reason: reasons(report)["provider.stop"] ?? "" };
+	};
+	for (const [what, options] of [
+		["a kept stop, declared", {}],
+		["a stop that deletes, declared with stopDeletes", { declaresStopDeletes: true, stopDeletes: true }],
+		["no stop, declared by a release of delete alone, and refused in words", { release: ["delete"] }],
+	]) {
+		const { status, reason } = await run(options);
+		assert.equal(status, "pass", `${what}: ${reason}`);
+	}
+	for (const [what, options, words] of [
+		["stopDeletes declared, and the stop leaves the computer running", { declaresStopDeletes: true, stopIgnored: true }, /stopDeletes\): listed after it: expected \[\], got \["fake-1"\]/],
+		["stopDeletes declared, and the stop keeps the computer, stopped", { declaresStopDeletes: true }, /listed after it/],
+		["a kept stop declared, and the stop deletes", { declaresStopDeletes: false, stopDeletes: true }, /a stopped computer is listed, stopped: expected \[\["fake-1","stopped"\]\], got \[\]/],
+		["a kept stop declared by default, and the stop deletes", { stopDeletes: true }, /a stopped computer is listed, stopped/],
+		["a kept stop declared, and the stop does nothing", { stopIgnored: true }, /got \[\["fake-1","running"\]\]/],
+		["no stop declared, and the stop stops", { release: ["delete"], stopAnyway: true }, /release stop, which the provider does not declare/],
+	]) {
+		const { status, reason } = await run(options);
+		assert.equal(status, "fail", what);
+		assert.match(reason, words, what);
+	}
+});
+
+test("provider.janitor needs release:stop and a provider that keeps a stopped computer, and skips in words otherwise", async () => {
+	for (const [options, reason] of [
+		[{ release: ["delete"] }, "the provider does not declare release:stop"],
+		[{ declaresStopDeletes: true, stopDeletes: true }, "the provider declares stopDeletes: a stop ends in deletion, so it keeps no stopped computer for the janitor to sweep"],
+	]) {
+		const report = await runConformance(fakeComputers(options).provider, { image: IMAGE, cases: byId("provider.janitor") });
+		assert.equal(statuses(report)["provider.janitor"], "skip", JSON.stringify(options));
+		assert.equal(reasons(report)["provider.janitor"], reason, JSON.stringify(options));
+	}
+	const kept = await runConformance(fakeComputers().provider, { image: IMAGE, cases: byId("provider.janitor") });
+	assert.equal(statuses(kept)["provider.janitor"], "pass", reasons(kept)["provider.janitor"]);
 });
 
 test("provider.network-switch-allow (Full, network:allow) checks an allowlist change on a provider that declares none and allow, not open", async () => {

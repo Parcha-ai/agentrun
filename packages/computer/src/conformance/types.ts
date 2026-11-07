@@ -171,6 +171,8 @@ export interface ConformanceReport {
 	 * after their case had ended (each deleted as it came).
 	 */
 	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[] };
+	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
+	notes?: string[];
 }
 
 export interface ConformanceOptions {
@@ -185,6 +187,8 @@ export interface ConformanceOptions {
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
 	/** Called as each case ends. */
 	onResult?: (result: CaseResult) => void;
+	/** Notes the provider module gives for the report, printed before the verdict. */
+	notes?: string[];
 	/** The longest one case may run; default 180 s. */
 	caseTimeoutMs?: number;
 	/** How long a case waits on a program; default 30 s. */

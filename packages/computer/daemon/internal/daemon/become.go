@@ -25,7 +25,8 @@ const (
 )
 
 // Become is init's start on a vendor that runs every computer as root and has no user of its own to give (Modal: "Modal
-// containers always run as root (uid 0)", its USER is ignored). As root it makes HOME and the socket's directory
+// containers always run as root (uid 0)", its USER is ignored), or whose image's privilege tools cannot be relied on
+// (Daytona: the default snapshot's setpriv is BusyBox's). As root it makes HOME and the socket's directory
 // uid:gid's alone (0700), then drops its privileges as Unprivileged does, becoming uid:gid with no supplementary groups
 // on the way. Root included: a uid of 0 keeps every capability through the uid change, so the sets are emptied as well.
 // It must run before Init.
