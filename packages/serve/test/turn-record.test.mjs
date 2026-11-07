@@ -139,7 +139,7 @@ for (const harness of ADAPTERS) {
 test("pi: a cancel while a turn holds on a tool ends the run cancelled from the 202 on, never completed", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { fauxWeb: WEB_HOLD });
   const dir = await scratch(t);
-  const runId = await start(api, "pi", `Fetch the pages held until ${join(dir, "one")} and ${join(dir, "two")}.`, { tools: ["fetch_page"] });
+  const runId = await start(api, "pi", `Fetch the pages held until ${join(dir, "one")} and ${join(dir, "two")}.`, { tools: ["web_fetch"] });
   await until("the turn holds on its first fetch", async () => (await rowsOf(api, runId)).some((r) => r.kind === "tool_use"));
   const seen = [(await api("GET", `/runs/${runId}`)).body.status];
   const cancel = await api("POST", `/runs/${runId}/cancel`, {});
@@ -187,7 +187,7 @@ for (const harness of ADAPTERS) {
   test(`${harness}: a turn that fails with a message queued behind it, whose own turn then completes, ends the run completed with that turn's answer; the failure stays in the timeline`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: WEB_HOLD });
     const go = join(await scratch(t), "go");
-    const runId = await start(api, harness, `Fail a turn held until ${go}, with a follow-up behind it.`, { input: "hi", tools: ["fetch_page"] });
+    const runId = await start(api, harness, `Fail a turn held until ${go}, with a follow-up behind it.`, { input: "hi", tools: ["web_fetch"] });
     // Held on its fetch until `go` exists: the follow-up waits its place behind it.
     await watch(api, runId, (view) => view.status === "working" && view.state === "working", "the first turn works");
     await until("the first turn has the person's message", async () => (await rowsOf(api, runId)).some((r) => r.kind === "user_message"));
@@ -210,7 +210,7 @@ for (const harness of ALL) {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: WEB_HOLD });
     const dir = await scratch(t);
     const [one, two] = [join(dir, "one"), join(dir, "two")];
-    const runId = await start(api, harness, `Fetch the pages held until ${one} and ${two}.`, { tools: ["fetch_page"] });
+    const runId = await start(api, harness, `Fetch the pages held until ${one} and ${two}.`, { tools: ["web_fetch"] });
     // Held on the first fetch: once its request's start is in, the turn writes nothing until the fetch ends, so the last
     // progress holds still (read twice, 300 ms apart).
     let held;
