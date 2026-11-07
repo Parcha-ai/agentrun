@@ -13,6 +13,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DaytonaProviderOptions } from "../daytona.js";
 import { COMPUTER_LABEL } from "../drift.js";
+import { waitUntil } from "../wait.js";
 import { createProvider } from "./daytona.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
@@ -43,7 +44,6 @@ exit: 0 every swept sandbox is gone, 1 one is still there, 2 usage error, unread
 class Usage extends Error {}
 
 const write = (stream: Writer, text: string) => new Promise<void>((resolve) => void stream.write(text, () => resolve()));
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function parse(argv: string[]): { mode: "before" | "after"; file: string } {
 	let found: { mode: "before" | "after"; file: string } | undefined;
@@ -109,20 +109,23 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		const released = await provider.release({ id: sb.id, name: sb.name ?? "" }, "delete");
 		if (!released.ok) await write(stderr, `${sb.id} (${sb.name ?? "no name"}) was not deleted: ${released.error.message}\n`);
 	}
-	// Each one read back on its own, at once: a 404 is gone; anything else, or no answer, is read again until its wait ends.
+	// Each one read back on its own, at once, through waitUntil: a 404 is gone; anything else, or no answer, is read
+	// again every pollMs until its wait ends.
 	const gone = await Promise.all(
 		fresh.map(async (sb) => {
-			const end = Date.now() + waitMs;
-			for (;;) {
-				const read = await provider.probe(sb.id);
-				if (read.ok && read.value.status === 404) return true;
-				if (Date.now() >= end) {
-					const last = read.ok ? `${read.value.status}${read.value.state ? ` (${read.value.state})` : ""}` : read.error.message;
-					await write(stderr, `${sb.id} is still there after ${waitMs / 1000} s: GET /sandbox/${sb.id} answered ${last}\n`);
-					return false;
-				}
-				await sleep(pollMs);
-			}
+			const waited = await waitUntil(
+				() => provider.probe(sb.id),
+				(read) => read.ok && read.value.status === 404,
+				{
+					boundMs: waitMs,
+					minMs: pollMs,
+					maxMs: pollMs,
+					what: `${sb.id} to be gone`,
+					describe: (read) => `GET /sandbox/${sb.id} answered ${read.ok ? `${read.value.status}${read.value.state ? ` (${read.value.state})` : ""}` : read.error.message}`,
+				},
+			);
+			if (!waited.ok) await write(stderr, `${sb.id} is still there: ${waited.error.message}\n`);
+			return waited.ok;
 		}),
 	);
 	const stillThere = fresh.filter((_, i) => !gone[i]).map((sb) => sb.id);

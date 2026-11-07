@@ -24,6 +24,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { waitUntil } from "./wait.js";
 
 /** The longest each kind of call may take, and the pauses between polls and retries. */
 export interface DaytonaTimeouts {
@@ -1220,55 +1221,60 @@ export class DaytonaProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Waits until Daytona reads the sandbox as wanted, twice running, by its own read and by the listing alike: "gone" is a
-	 * 404 and no listed computer; "stopped" is stopped (or gone) and listed stopped (or not at all, when gone). Polls with
-	 * pauses that double from pollMs, bounded by goneMs or stopMs and the caller's signal. A stop not under way (neither
-	 * stopping nor stopped) is asked for again.
+	 * Waits, through waitUntil, until Daytona reads the sandbox as wanted, twice running, by its own read and by the
+	 * listing alike: "gone" is a 404 and no listed computer; "stopped" is stopped (or gone) and listed stopped (or not at
+	 * all, when gone). Pauses double from pollMs to 5 s, bounded by goneMs or stopMs and the caller's signal. A stop not
+	 * under way (neither stopping nor stopped) is asked for again. A failed read or listing, or a sandbox gone to error,
+	 * ends the wait with that error.
 	 */
 	async #settle(ref: ComputerRef, want: "gone" | "stopped", how: "stop" | "delete", signal?: AbortSignal): Promise<Result<void>> {
-		const boundMs = how === "stop" ? this.#timeouts.stopMs : this.#timeouts.goneMs;
-		const end = Date.now() + boundMs;
-		let pause = this.#timeouts.pollMs;
+		type Read = { failed: Result<never> } | { settled: true } | { last: string };
+		let agreed = 0;
 		let last = "unread";
-		for (let agreed = 0; ; ) {
-			if (signal?.aborted) return fail("aborted", `release ${how} of ${ref.name} was aborted while it waited for Daytona; it last read ${last}`);
-			const read = await this.#rest.get(ref.id, signal);
-			if (!read.ok) {
-				if (read.error.code === "aborted") continue;
-				return fail(read.error.code, `release ${how} of ${ref.name}: reading it back failed (${read.error.message}); it last read ${last}`);
+		const read = async (readSignal: AbortSignal): Promise<Read> => {
+			const got = await this.#rest.get(ref.id, readSignal);
+			if (!got.ok) {
+				if (got.error.code === "aborted") return { last };
+				return { failed: fail(got.error.code, `release ${how} of ${ref.name}: reading it back failed (${got.error.message}); it last read ${last}`) };
 			}
-			const sb = read.value;
+			const sb = got.value;
 			last = stateWords(sb);
 			if (sb !== undefined && (sb.state === "error" || sb.state === "build_failed") && sb.desiredState !== "destroyed") {
-				return fail("daytona", `release ${how} of ${ref.name}: it went to ${sb.state}${sb.errorReason ? `: ${sb.errorReason}` : ""}`);
+				return { failed: fail("daytona", `release ${how} of ${ref.name}: it went to ${sb.state}${sb.errorReason ? `: ${sb.errorReason}` : ""}`) };
 			}
 			const gone = sb === undefined || sb.state === "destroyed";
 			const reached = gone ? "gone" : want === "stopped" && STOPPED.has(sb.state ?? "") ? "stopped" : undefined;
 			if (reached === undefined) {
 				agreed = 0;
 				if (how === "stop" && sb !== undefined && !going(sb) && !LEAVING.has(sb.state ?? "")) {
-					const again = await this.#rest.call("POST", this.#rest.sandbox(ref.id, "/stop"), {}, signal);
-					if (!again.ok && again.error.code !== "invalid" && again.error.code !== "not_found" && again.error.code !== "aborted") return again;
+					const again = await this.#rest.call("POST", this.#rest.sandbox(ref.id, "/stop"), {}, readSignal);
+					if (!again.ok && again.error.code !== "invalid" && again.error.code !== "not_found" && again.error.code !== "aborted") return { failed: again };
 				}
-			} else {
-				const listed = await this.#listOwn(signal);
-				if (!listed.ok) {
-					if (listed.error.code !== "aborted") return fail(listed.error.code, `release ${how} of ${ref.name}: the listing failed (${listed.error.message}); it last read ${last}`);
-				} else {
-					const item = listed.value.find((one) => one.id === ref.id);
-					const shown = item === undefined || !ours(item) || going(item) ? undefined : stateOf(item);
-					if (reached === "gone" ? shown === undefined : shown === "stopped") {
-						if (++agreed >= LISTED_ROUNDS) return ok(undefined);
-					} else {
-						agreed = 0;
-						last = `${last}, listed ${shown ?? "not at all"}`;
-					}
-				}
+				return { last };
 			}
-			if (Date.now() >= end) return fail("timeout", `${ref.name} was not ${want} within ${boundMs / 1000} s of its release ${how}; Daytona last read it ${last}`);
-			await sleep(pause, signal);
-			pause = Math.min(pause * 2, RELEASE_POLL_MAX_MS);
-		}
+			const listed = await this.#listOwn(readSignal);
+			if (!listed.ok) {
+				if (listed.error.code === "aborted") return { last };
+				return { failed: fail(listed.error.code, `release ${how} of ${ref.name}: the listing failed (${listed.error.message}); it last read ${last}`) };
+			}
+			const item = listed.value.find((one) => one.id === ref.id);
+			const shown = item === undefined || !ours(item) || going(item) ? undefined : stateOf(item);
+			if (reached === "gone" ? shown === undefined : shown === "stopped") return ++agreed >= LISTED_ROUNDS ? { settled: true } : { last };
+			agreed = 0;
+			last = `${last}, listed ${shown ?? "not at all"}`;
+			return { last };
+		};
+		const { pollMs, stopMs, goneMs } = this.#timeouts;
+		const waited = await waitUntil(read, (state) => !("last" in state), {
+			boundMs: how === "stop" ? stopMs : goneMs,
+			signal,
+			minMs: Math.min(pollMs, RELEASE_POLL_MAX_MS),
+			maxMs: RELEASE_POLL_MAX_MS,
+			what: `${ref.name} to be ${want} after its release ${how}`,
+			describe: (state) => ("last" in state ? `Daytona read it ${state.last}` : "done"),
+		});
+		if (!waited.ok) return waited;
+		return "failed" in waited.value ? waited.value.failed : ok(undefined);
 	}
 
 	/**

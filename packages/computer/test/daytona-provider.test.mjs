@@ -865,10 +865,10 @@ test("release(): a create that fails after the sandbox exists waits until it is 
 
 test("release(): when the bound runs out it fails in words, naming the last state Daytona read, and never claims done", async () => {
 	for (const [what, knobs, how, words] of [
-		["a delete that stays destroying", { lingerReads: Number.POSITIVE_INFINITY }, "delete", /not gone within 0\.05 s.*destroying/],
-		["a delete the listing keeps showing", { listStale: Number.POSITIVE_INFINITY }, "delete", /not gone within 0\.05 s.*listed running/],
-		["a stop that stays stopping", { stoppingReads: Number.POSITIVE_INFINITY }, "stop", /not stopped within 0\.05 s.*stopping/],
-		["a stop the listing shows running", { listStale: Number.POSITIVE_INFINITY }, "stop", /not stopped within 0\.05 s.*listed running/],
+		["a delete that stays destroying", { lingerReads: Number.POSITIVE_INFINITY }, "delete", /to be gone after its release delete did not happen within 0\.05 s; the last read: Daytona read it .*destroying/],
+		["a delete the listing keeps showing", { listStale: Number.POSITIVE_INFINITY }, "delete", /to be gone after its release delete did not happen within 0\.05 s; the last read: .*listed running/],
+		["a stop that stays stopping", { stoppingReads: Number.POSITIVE_INFINITY }, "stop", /to be stopped after its release stop did not happen within 0\.05 s; the last read: .*stopping/],
+		["a stop the listing shows running", { listStale: Number.POSITIVE_INFINITY }, "stop", /to be stopped after its release stop did not happen within 0\.05 s; the last read: .*listed running/],
 	]) {
 		const { provider } = setup(knobs, { timeouts: { ...FAST, goneMs: 50, stopMs: 50 } });
 		const made = await provider.create(SPEC);

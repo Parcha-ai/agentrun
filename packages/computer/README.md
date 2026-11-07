@@ -487,7 +487,8 @@ returns the first state `done` accepts. Each read gets a signal that aborts at t
 read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
 the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
 vendor's types: Modal's `untilFinished`, its one wait after a terminate, is built on it, and Modal's release, a create
-that refuses its sandbox, and the Modal sweep all wait through that.
+that refuses its sandbox, and the Modal sweep all wait through that; Daytona's release, a create that deletes its
+sandbox, and the Daytona sweep wait through it too.
 
 ## Modal
 
@@ -829,8 +830,8 @@ Daytona's container class runs code as root, and the open runner runs it privile
   one `running`. So release waits until Daytona reads the computer as release left it, twice running, by
   `GET /sandbox/{id}` and by the label listing alike: after a delete, a 404 and no listed computer; after a stop, a
   `stopped` read and a computer listed `stopped`, or, when the stop deletes (`autoDeleteMinutes: 0`), a 404 and no
-  listed computer. A stop that is not under way is asked for again. It polls with pauses that double from `pollMs` up
-  to 5 s, bounded by the `goneMs` timeout for a delete and `stopMs` for a stop (120 s each, unset), and by the signal
+  listed computer. A stop that is not under way is asked for again. It polls through `waitUntil`, with pauses that
+  double from `pollMs` up to 5 s, bounded by the `goneMs` timeout for a delete and `stopMs` for a stop (120 s each, unset), and by the signal
   `release(ref, how, { signal })` takes. When the bound runs out, or the sandbox goes to `error`, release fails in
   words naming the last state Daytona read: it never reports a release it has not seen done. A create that deletes
   the sandbox it made (a failure, a mismatch, an abort) waits the same way before it returns.
