@@ -71,7 +71,7 @@ export const BARRIERS = {
   },
   decisionHold: {
     store: "run-journal",
-    site: "serve/src/decisions.ts",
+    site: "serve/src/decision-cap.ts",
     status: "planned",
     why: "a workflow decision's admitted hold, before the decision is sent",
   },
