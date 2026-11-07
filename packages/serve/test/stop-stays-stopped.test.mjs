@@ -10,7 +10,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, scratch, serve, withEnv, jsonIn } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 // The faux harness in a process a test can hold at the write of a turn's end (TURN_END_ARM, TURN_END_HELD).
@@ -80,7 +80,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     await writeFile(arm, "");
     assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
     let hold = null;
-    await until("the stopped turn reaches the write of its end", async () => (hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))) !== null);
+    await until("the stopped turn reaches the write of its end", async () => (hold = await jsonIn(held)) !== null);
     assert.equal(holderOf(data, runId), hold.pid, "the held process is the run's");
     await writeFile(go, "");
     process.kill(hold.pid, "SIGKILL");
@@ -117,7 +117,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     await writeFile(arm, "");
     assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
     let hold = null;
-    await until("the stopped turn reaches the write of its end", async () => (hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))) !== null);
+    await until("the stopped turn reaches the write of its end", async () => (hold = await jsonIn(held)) !== null);
     assert.equal(holderOf(data, runId), hold.pid, "the held process is the run's");
     await writeFile(go, "");
     process.kill(hold.pid, "SIGKILL");
@@ -127,7 +127,7 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     // again, on the process it opens next.
     const posted = api("POST", `/runs/${runId}/messages`, { content: "go on" });
     let second = null;
-    await until("the next process reaches the write of the stopped turn's end", async () => (second = JSON.parse(await readFile(again, "utf8").catch(() => "null"))) !== null);
+    await until("the next process reaches the write of the stopped turn's end", async () => (second = await jsonIn(again)) !== null);
     assert.notEqual(second.pid, hold.pid);
     assert.equal(holderOf(data, runId), second.pid, "the second held process is the run's");
     process.kill(second.pid, "SIGKILL");

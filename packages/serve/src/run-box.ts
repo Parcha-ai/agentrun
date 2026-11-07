@@ -26,6 +26,7 @@ import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
 import { type BoxEgress, type DockerNetwork, EGRESS_MOUNT, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
 import { runBoxVolumeOf, vmDocker, vmEgress } from "./box-egress-vm.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
+import { egressParentOf, runBoxPathsOf } from "./box-paths.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
 import { VM_PROVIDER } from "./boxes.js";
 import { readJson, writeDurable } from "./files.js";
@@ -194,13 +195,16 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
   const image = boxImageOf(env);
   // The list the server resolved for this run's box (box-egress.ts boxNetworkOf), or none.
   const allow = runBoxAllowOf(env);
+  // A server in a container: where its Docker has the data directory (box-paths.ts), which a box's mounts come from, the
+  // egress proxy's directory with them. On a host, none: a box binds this machine's paths.
+  const paths = runBoxPathsOf(env);
   // On a Mac, the server's proxy container's volume (box-egress-vm.ts), which every box mounts read-only.
   const volume = allow === "none" ? undefined : runBoxVolumeOf(env);
   return {
-    ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true, ...(volume ? { volumes: [{ name: volume, target: EGRESS_MOUNT, readOnly: true }] } : {}) }),
+    ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true, ...(paths ? { paths } : {}), ...(volume ? { volumes: [{ name: volume, target: EGRESS_MOUNT, readOnly: true }] } : {}) }),
     ready: (context, note) => awaitImage(root, image, context, note),
     // Where the proxy runs: the one line that picks it (box-egress.ts BoxEgress).
-    ...(allow === "none" ? {} : { egress: volume ? vmEgress : hostEgress(allow, env, egressLog), net: netLabelOf(allow) }),
+    ...(allow === "none" ? {} : { egress: volume ? vmEgress : hostEgress(allow, env, egressLog, paths ? egressParentOf(root) : undefined), net: netLabelOf(allow) }),
   };
 }
 
