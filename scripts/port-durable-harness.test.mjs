@@ -415,3 +415,15 @@ test("the vendored budget: a copy's own patches change under 60 lines, and the f
   const bigOurs = await codexCopy(edit(OFFERED, (text) => relabel(larger(text))));
   assert.match((await budgetProblems(bigOurs)).join('\n'), /^src\/harness\.ts: its own patches change \d+ lines against upstream \(fewer than 60\)$/m);
 });
+
+test('a recorded ceiling admits a copy over the budget up to its own count: growth past it fails, and a ceiling left more than 10 lines above the count must come down', async () => {
+  const claude = join(root, 'packages', 'run-adapters-claude-agent');
+  const here = (await budgetLines(claude))['src/harness.ts'].ours;
+  const fake = (await budgetLines(claude))['src/testing/fake-sdk.ts'].ours;
+  assert.ok(here >= 60, `the Claude copy's harness.ts is over the 60-line budget (${here}), which is why it has a ceiling`);
+  assert.match((await budgetProblems(claude)).join('\n'), /^src\/harness\.ts: its own patches change \d+ lines against upstream \(fewer than 60\)$/m, 'with no ceiling it fails as before');
+  assert.deepEqual(await budgetProblems(claude, { ceilings: { 'src/harness.ts': here, 'src/testing/fake-sdk.ts': fake } }), []);
+  assert.deepEqual(await budgetProblems(claude, { ceilings: { 'src/harness.ts': here + 10, 'src/testing/fake-sdk.ts': fake } }), [], 'up to 10 lines of room');
+  assert.deepEqual(await budgetProblems(claude, { ceilings: { 'src/harness.ts': here - 1, 'src/testing/fake-sdk.ts': fake } }), [`src/harness.ts: its own patches change ${here} lines, over its recorded ceiling of ${here - 1}: offer patches upstream, or raise the ceiling in review`]);
+  assert.deepEqual(await budgetProblems(claude, { ceilings: { 'src/harness.ts': here + 11, 'src/testing/fake-sdk.ts': fake } }), [`src/harness.ts: its ceiling of ${here + 11} is 11 lines above its ${here}: lower the ceiling to keep what upstream took`]);
+});

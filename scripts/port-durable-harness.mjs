@@ -315,11 +315,20 @@ export async function budgetLines(dir) {
   }
 }
 
-/** The copies over either budget, each named with its count and the cap. */
-export async function budgetProblems(dir) {
+/** Room a recorded ceiling may leave above a copy's count before it must come down. */
+export const CEILING_SLACK = 10;
+
+/** The copies over either budget, each named with its count and the cap. `ceilings` ({ path: lines }) records a copy that is
+ *  over the own-lines budget at the size it is: it may not grow past its ceiling (raising one is an edit, seen in review),
+ *  and a ceiling more than CEILING_SLACK above the count must be lowered, so what upstream takes stays taken. */
+export async function budgetProblems(dir, { ceilings = {} } = {}) {
   const problems = [];
   for (const [path, { ours, offer }] of Object.entries(await budgetLines(dir))) {
-    if (ours >= OURS_LINES) problems.push(`${path}: its own patches change ${ours} lines against upstream (fewer than ${OURS_LINES})`);
+    const ceiling = ceilings[path];
+    if (ceiling !== undefined) {
+      if (ours > ceiling) problems.push(`${path}: its own patches change ${ours} lines, over its recorded ceiling of ${ceiling}: offer patches upstream, or raise the ceiling in review`);
+      else if (ceiling - ours > CEILING_SLACK) problems.push(`${path}: its ceiling of ${ceiling} is ${ceiling - ours} lines above its ${ours}: lower the ceiling to keep what upstream took`);
+    } else if (ours >= OURS_LINES) problems.push(`${path}: its own patches change ${ours} lines against upstream (fewer than ${OURS_LINES})`);
     if (offer >= OFFER_LINES) problems.push(`${path}: its offer patches change ${offer} lines (fewer than ${OFFER_LINES}): a larger fix is ours, or split`);
   }
   return problems;
