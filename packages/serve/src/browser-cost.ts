@@ -27,6 +27,7 @@ import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BARRIER, syncNow } from "@parcha/pi-durable-disk";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
 import { runJournal } from "./paid-calls.js";
+import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 
 /** The run journal's record of a browser session about to be created at its provider: its tag (pi-browser's, which a
@@ -71,8 +72,9 @@ type Open = { cid: number; reserve: Hold; at: number; call: string | null };
 type Row = { tag: string; conversationId: number; state: string; resourceId: string | null };
 
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
- *  a conversation's session (pi-browser's release, "close"). */
-export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>) {
+ *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
+ *  (default: the server's stderr). */
+export function browserSpend(provider: string, price: { usdPerHour: number | null; minimumS: number }, idleS: number, release: (conversation: Pick<Conversation, "id" | "commit">, context: Context) => Promise<void>, log: (line: string) => void = (line) => void process.stderr.write(`agentrun-serve: ${line}\n`)) {
   const rate = price.usdPerHour;
   const usdOf = (seconds: number) => ((rate ?? 0) * seconds) / 3600;
   const stretchS = price.minimumS + idleS + RELEASE_ALLOWANCE_S;
@@ -150,17 +152,34 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  `inventory`), once the commit is in: the charges first, so a release billed and ended in one commit is billed from
    *  its reserve before it goes. */
   function watch(harness: Pick<Session, "observeCommits">, inventory = "browser.inventory"): void {
+    // pi 1.5 detaches an observer whose advance throws, for good: every later charge would then go uncounted, silently.
+    // So nothing leaves advance. A charge it fails to count, or an end before the run's own (a listener error, a failed
+    // Session), makes the run's spend unknown (spent null), which a capped run's next paid request or call is refused
+    // on, as it refuses any unknown spend; an uncapped run goes on, with one line that says so.
+    let said = false;
+    const uncounted = (why: string) => {
+      addSpend(null);
+      if (said) return;
+      said = true;
+      log(logLine("browser_spend_uncounted", { said: `a browser charge was not counted in this process (${why.slice(0, 200)}): the run's spend is unknown from here` }));
+    };
     harness.observeCommits({
       advance: (publication) => {
-        for (const change of publication.changes) {
-          const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
-          if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
-        }
-        for (const change of publication.changes) {
-          if (change.type === "document" && change.kind === "change" && change.record.kind === inventory) tracked(((change.value as { rows?: Record<string, Row> }).rows) ?? {});
+        try {
+          for (const change of publication.changes) {
+            const data = change.type === "entry" && change.value.kind === TOOL_COST ? (change.value.data as Partial<Booked> | undefined) : undefined;
+            if (data?.tool === "browser" && typeof data.tag === "string") booked(data as Booked);
+          }
+          for (const change of publication.changes) {
+            if (change.type === "document" && change.kind === "change" && change.record.kind === inventory) tracked(((change.value as { rows?: Record<string, Row> }).rows) ?? {});
+          }
+        } catch (error) {
+          uncounted(String((error as Error)?.message ?? error));
         }
       },
-      end: () => undefined,
+      end: (end) => {
+        if (end.kind !== "ended") uncounted(`its commits stopped reaching the count: ${end.kind}${"error" in end ? `, ${String((end.error as Error)?.message ?? end.error)}` : ""}`);
+      },
     });
   }
 
