@@ -231,12 +231,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   // The gate reads its store before the run resumes (an agentic run's and a workflow's alike): the resume dispatches the
   // calls a crash cut, and a rerun of one it let through must find its mark (tool-gate.ts prime).
-  // The run's store as a barrier takes it, from the open's beforeResume: a task the open resumes (a workflow a crash cut)
-  // runs before onOpen, and its effects are synced on it too (workflowAdmit, below).
+  // The run's store as a barrier takes it, and its harness, from the open's beforeResume: a task the open resumes (a turn or
+  // a workflow a crash cut) runs before onOpen, and what it sends needs both. A workflow effect's admission is synced on
+  // the store (workflowAdmit, below); a paid call's hold is synced on it and booked on the run's root (settleIn), a call
+  // node's under its call (runEffect's ledger), and a priced MCP call's records go through the harness's commit.
   let journal: SyncTarget | undefined;
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async (run: BeforeResume) => { journal = run.syncTarget; await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
+    beforeResume: async (run: BeforeResume) => { journal = run.syncTarget; runHarness = run.harness; settleIn(rootRecordOf(run.harness), run.syncTarget); await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).
@@ -300,8 +302,6 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const live = liveView(where.root, [...earlier]);
   // The `llm` tool's one completion: on the run's models (capped and marked as a model node's), its tier's model.
   const complete = completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default"), thinkingLevel);
-  /** The run, once it opens: a call node's paid requests are booked in its store (paid-calls.ts). */
-  let opened: DurableRun | undefined;
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. Its
    *  input and output go to the node log, and its paid requests are booked under the node's own call (its execution
    *  path, and its item in a map). */
@@ -317,8 +317,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       const permission = toolGate.policy(node.tool!);
       if (permission === "deny") throw new Error(deniedText(node.tool!, undefined, toolGate.denyFrom(node.tool!)));
       if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
-      const durable = opened;
-      const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
+      // Booked in the run's store, through the harness beforeResume took: a call node a resumed workflow runs before onOpen
+      // is booked as on a first run.
+      const harness = runHarness;
+      const ledger = harness ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
@@ -384,7 +386,6 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
-    opened = durable;
     settleIn(rootRecordOf(durable.harness), durable.store);
     marked.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
