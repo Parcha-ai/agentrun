@@ -8,13 +8,16 @@ full VM, a machine. The protocol has two layers:
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
-  inside. It never runs commands itself: the daemon does. This package has three: Docker, Modal's VM runtime, and Daytona,
-  each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
+  inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
+  and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
 ## What it does today
 
-The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*` and the `process.*` methods; hello
-reports kind `linux` and groups `["exec", "files", "processes"]` (see [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)).
+The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*`, the `process.*` methods and
+`deadline.extend`; hello reports kind `linux` and groups `["exec", "files", "processes"]` (see [The protocol
+extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)). With an X display it also answers
+`screen.shot`, `screen.read` and `input.actions`, and reports kind `desktop` with `screen`, `input.pointer` and
+`input.keys` (see [The X11 shim](#the-x11-shim)).
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
@@ -48,7 +51,7 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
 
 ### Init, the socket and the bridge
 
-- `computerd init --deadline <time>` is the computer's first process. It listens on a unix socket,
+- `computerd init --deadline <time> [--max-deadline <time>]` is the computer's first process. It listens on a unix socket,
   `/run/agentrun/computerd.sock` (or `AGENTRUN_COMPUTERD_SOCKET`); the socket is 0600, so only the daemon's user can
   connect. Init does not make the socket's directory, since a non-root init cannot write under `/run`: the provider
   gives it, the daemon's user's alone (mode 0700). Init exits 1, saying why, when the directory is missing, is not the
@@ -98,7 +101,12 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
   `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and sent nothing back)
   and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes` and `detail` in
   words. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
-  [Network none, read from inside](#network-none-read-from-inside-nothing-answers).
+  [Network none, read from inside](#network-none-read-from-inside-nothing-answers). `computerd probe --diagnose` asks
+  more: for 1.1.1.1, 8.8.8.8, 9.9.9.9 and 151.101.1.57 (Fastly's anycast edge, which is no resolver) on 443/tcp,
+  80/tcp and 53/udp it reports `refused` (no TCP accept, no UDP answer), `accepted` (an accept, no answer) or
+  `answered` (a TLS ServerHello, an `HTTP/1.` status line, a DNS response with the query's id), with 3 s to connect and
+  3 s to answer, 15 s in all and at most 4 KiB read per check, and a `verdict`: `egress`, `accepted-only` or `none`.
+  It sends nothing of the computer's: a ClientHello with a random nonce, `HEAD / HTTP/1.0`, a query for `example.com`.
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
@@ -113,6 +121,10 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
   and init exits 0. So every program that started gets SIGTERM before any SIGKILL. Connections stay open until init
   exits, so reads, waits and lists still answer. One shutdown serves all three.
 - A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
+- `deadline.extend({ at })` moves init's deadline to `at` (an ISO time) and answers `{ at }`, the deadline it holds
+  after. It refuses in words an earlier time (`invalid`), one past `--max-deadline`, the most the provider allowed at
+  start (`limit`), and any move when init got no `--max-deadline` (`unsupported`); a refusal moves nothing. Init
+  refuses to start with a maximum before its deadline.
 
 ### Network none, read from inside: nothing answers
 
@@ -140,11 +152,12 @@ Where a vendor reads no network policy back, `computerd probe` stands for one, a
   path that forwards outbound bytes and drops every reply (a one-way leak) reads the same from inside. The answered
   check catches a path that carries traffic both ways, and nothing proves the one-way case from inside the computer.
   The probe also shows its own targets are blocked, not every address.
-- **What it changes.** Only a provider that probes, on a vendor whose firewall accepts first, reads differently. Docker
-  reads its network back from `docker inspect` (`--network none` leaves no interface but `lo`, so a connection is
+- **What it changes.** Only a provider that probes, on a vendor whose firewall accepts first, reads differently: E2B
+  ([below](#network)), whose computers with network none the accept-counts rule refused, and are now kept with notes.
+  Docker reads its network back from `docker inspect` (`--network none` leaves no interface but `lo`, so a connection is
   refused outright, which `test/docker/modal-commands.docker.test.mjs` pins with the probe itself); Daytona reads
-  `networkBlockAll` back from its API and runs no probe; Modal's live run with `blockNetwork` read back no TCP accept
-  at any target under the earlier accept-counts rule, so nothing it accepted is newly let through.
+  `networkBlockAll` back from its API and runs no probe; Modal's live run with `blockNetwork` read back no TCP accept at
+  any target under the earlier accept-counts rule, so nothing it accepted is newly let through.
 
 ### Processes
 
@@ -260,9 +273,9 @@ params and results of `files.*` and `tar.*` sit beside their code in `daemon/int
 ## The protocol extension: kind, daemon modes, screen, input, apps, lifetime
 
 The types and the conformance cases for computers past a Linux shell: desktops, Android and iOS phones. This package
-has the types and the cases; the daemon's screen and input (an X11 shim), the desktop fixture, a desktop provider and a
-phone provider come in later changes. Docker declares `linux` with computerd as PID 1, so every new case skips on it
-in words.
+has the types, the cases, the daemon's screen and input on X11 ([The X11 shim](#the-x11-shim)), the desktop fixture and
+a Docker desktop; a phone provider comes in a later change. Docker declares `linux` with computerd as PID 1 unless it is
+made a desktop, so on a plain Docker computer every new case skips in words.
 
 **Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios"`, and hello repeats it. `os` stays: it names
 the platform the key table and exec need; kind names the shape the tools need. Only these pairs are valid
@@ -298,7 +311,8 @@ provider declares, either way.
 
 Points are `[x, y]` in the full screenshot's pixels, origin top left; a region shot never changes that space. A key is a
 name in `KEYS` (enter, tab, space, backspace, delete, escape, insert, the arrows, home, end, pageup, pagedown, f1-f12,
-shift, ctrl, alt, super, capslock) or one printable ASCII character (0x21-0x7e); the daemon's Go table will mirror it.
+shift, ctrl, alt, super, capslock) or one printable ASCII character (0x21-0x7e); the daemon's Go table
+(`daemon/internal/keys`) mirrors it, and a Go test keeps the two equal.
 Model vocabularies (Anthropic's `Return` or `ctrl+s`, OpenAI's keypress) are mapped to these by a tool adapter on the
 server, once per model family, never per vendor.
 
@@ -315,14 +329,45 @@ does.
 `checkLifetime(lifetimeMs, capabilities)` is the one rule every `check()` shares: a whole number of milliseconds above
 0, at most the cap, refused in words with no vendor call. A provider may offer `extend(ref, ttlMs)`, which sets the
 deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs) by moving the
-vendor's timer, the deadline label and init's own deadline (`deadline.extend`, typed in `protocol.ts`; init answers it
-from the X11 shim's change on, and is `unsupported` until then), and `stream(ref)`, the vendor's live screen URL. Docker
+vendor's timer, the deadline label and init's own deadline (`deadline.extend`, up to the `--max-deadline` the provider
+gave init at start), and `stream(ref)`, the vendor's live screen URL. Docker
 has neither: its deadline is a container label, which cannot change after create, so ask for the whole lifetime at
 create. The janitor counts a deadline more than maxLifetimeMs (and a minute of clock skew) past now as unreadable, and
 deletes it.
 
 Brains never run inside the computer: a computer only takes tool calls. There is no duplex group and no "brain and
 hands" placement.
+
+### The X11 shim
+
+computerd drives the X display named by `DISPLAY` when init started, in pure Go (`daemon/internal/x11`, written against
+the X protocol with no cgo and no dependency, so the daemon stays one static binary): pixels from `GetImage` on the
+root window, input from the XTEST extension's `FakeInput`. A batch of actions is one write and one round trip, with no
+program started for any action. The image needs only an X server.
+
+- The display is reached when it is first asked for, and again after it goes: hello declares `screen`,
+  `input.pointer` and `input.keys`, and kind `desktop`, only while the display answers with XTEST. So a provider may
+  start its X server through `process.start` after init is up. With no display (`DISPLAY` unset, nothing answering, no
+  XTEST) nothing is declared, and each method is `unsupported`, saying why.
+- Programs get no `DISPLAY` from the daemon (exec and process environments stay minimal): one that should show on the
+  display is given it in `env`.
+- `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
+  `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
+  `screen.read` of another id is `not_found`.
+- `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
+  (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
+  that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
+  than newline and tab, `invalid`). Its own bounds are `limit`: 64 Ki characters a `type`, `repeat` 1000, 10,000
+  clicks a scroll, 1000 points a drag, 16 keys at once. Then the batch runs; a point off the display stops it there
+  (`invalid`, naming the display's size), and an X error from the server stops it at the action that sent it.
+- Scroll: `dy` above 0 turns down, below 0 up, `dx` right and left, one wheel click each, vertical first. A key or
+  character that needs shift gets it, pressed before and released after.
+- Typing a character the keyboard map has no key for (é on a US map, any CJK character, an emoji) uses the keysym remap
+  xdotool does: the character is bound to a keycode with no keysym (`ChangeKeyboardMapping`), then typed with it.
+  Unlike xdotool the binding is not undone, which would race a client still reading the map; it stays, so the
+  character has a key from then on. When no keycode is free, the binding used longest ago is moved once it has
+  settled (250 ms after its last key, so clients have read the events bound to it). A `type` needing more keycodes at
+  once than the map can give is refused as `limit`, before any key, saying to type it in parts.
 
 ## Docker
 
@@ -341,7 +386,15 @@ await docker.release(made.value, "delete");
 ```
 
 - `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, and `maxLifetimeMs`
-  of 30 days; there is no `extend()` or `stream()`.
+  of 30 days; there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
+- `new DockerProvider({ daemonPath, desktop: {} })` makes desktops: kind `desktop`, with `screen`, `input.pointer` and
+  `input.keys` too, on an image with an X server (`test/fixtures/desktop/Dockerfile` is Alpine and Xvfb, 48 MB).
+  `create` gives the daemon `DISPLAY` (`display`, default `:0`), then starts the X server through it with
+  `process.start` (`server`, default `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`), as the computer's user and as any
+  program: computerd stays PID 1 and starts nothing itself, and the server is one process in its table that ends with
+  the computer. `create` waits (`timeoutMs`, default 30 s) until hello declares the display, then runs the drift check;
+  a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
+  words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
   30 days), a network
   allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
@@ -1011,6 +1064,223 @@ repository's main; the docs were read on 2026-11-05.
 | a snapshot's size is its own; delete with retries and a forced stop; the listing trails a create; no redirect followed; three tries with backoff | `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:913`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:799-817`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:819-824`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:343`, `agentrun@7907382ed:packages/pi-transport/src/box/daytona.ts:35-36` |
 | auto-delete off with `-1` | `agentrun@7907382ed:packages/serve/src/daytona-api.ts:37` |
 
+## E2B
+
+```ts
+import { providerFromEnv } from "@parcha/agentrun-computer";
+
+// COMPUTER_E2B_API_KEY, and the host's own e2b package (npm e2b 2.63.0).
+const e2b = await providerFromEnv("e2b");
+const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" });
+```
+
+An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2B Desktop's (Ubuntu 22.04 with Xvfb,
+Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
+server itself, as on a Docker desktop, and its X11 shim drives it. With `COMPUTER_E2B_KIND=linux` it is kind `linux`
+on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
+offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, of which `src/e2b.ts` names
+only the slice it calls (`E2BSandboxClass`) and imports nothing at load; the package is the host's to install, as
+Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
+and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
+calls.
+
+### The key
+
+`fromEnv` reads the key from `COMPUTER_E2B_API_KEY` and nowhere else; without it, it refuses in words that name it and
+never `E2B_API_KEY`, whose value may be another team's on a shared host. The SDK reads `E2B_API_KEY`, `E2B_DOMAIN`,
+`E2B_API_URL` and `E2B_DEBUG` from `process.env` whenever it is not given them (`index.mjs:1140-1152`,
+`1177-1191`), so every call is given the key, the domain (`COMPUTER_E2B_DOMAIN`, default `e2b.app`), the API URL
+`https://api.<domain>` and `debug: false` explicitly: with debug on, the SDK fakes a create and skips a kill
+(`index.mjs:5402`, `6021-6024`). The SDK also takes `E2B_SANDBOX_URL` when it is given no sandbox URL, and no option
+clears it (`index.mjs:1152`, `1183-1185`): it would send every call into a sandbox, the upload and the bridge with it,
+there. So the provider refuses to start while it is set. A unit test hands the provider's options to the real SDK's
+`ConnectionConfig` with all four ambient variables set, and reads back the provider's own.
+
+### How the daemon gets in, and how it is reached
+
+E2B's envd is the sandbox's first process, a systemd service with `Restart=always` (e2b-dev/infra
+`envd.service.tpl:26-30`), so computerd is a `child`, as on Daytona, and init's exit leaves the sandbox:
+
+1. `Sandbox.create(template, ...)` with the run's labels as `metadata` (the provider's own beside them:
+   `agentrun.computer=1`, its name, the deadline, the image, the timeout and the most extend may reach), `timeoutMs`
+   the lifetime in whole seconds (`index.mjs:502-504`, `5694`), `allowInternetAccess` (false for none),
+   `network.allowPublicTraffic: false`, and `lifecycle.onTimeout: "kill"`, explicitly, so a timeout never pauses and
+   keeps the computer (`index.mjs:5674-5699`). The create is raced against the caller's signal and its bound, never
+   cancelled: one that lands after create gave up is killed by its id, one whose answer never comes by its name label.
+2. `getInfo` reads the sandbox back (below).
+3. `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
+   same install command as Daytona's (`src/child.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and prints its
+   sha256, which must be the uploaded one's.
+4. `commands.run(init, { background: true, user: "root", timeoutMs: 0 })` starts `computerd init --deadline <time>
+   --user 1000:1000 --max-deadline <create's time plus the cap>` with `DISPLAY=:0`, in a clean environment. envd runs
+   the command under `bash -l -c` (`index.mjs:5123-5146`). Its timeout is 0 because envd kills a command whose
+   timeout passes, and keeps one running when its stream ends (envd `process/start.go:39-44`); the SDK's default
+   would end init after 60 s (`index.mjs:4978`). Create disconnects from it after.
+5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true` and `retainOutput: false` (so a long
+   connection keeps no copy of its output, `index.mjs:2708-2711`, `5150-5153`): its stdout comes through `onStdout`
+   (decoded as a stream, `index.mjs:2860`), and requests go in with `sendStdin`, one call after another.
+   `close()` kills the bridge (SIGKILL, `index.mjs:5092-5095`), which ends nothing else.
+6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
+   `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
+   shared with Docker). Hello re-checks the display on every call, so `connect()` refuses a desktop whose X server has
+   gone (it reads back kind `linux`).
+
+envd runs as root and obeys anyone with the API key, as Daytona's toolbox does; the computer's daemon runs as 1000:1000
+with no capability in any set and `no_new_privs`. envd has no `KillMode` in its unit, so a restart of envd ends every
+process in its cgroup, init with it: the computer then answers `gone`, and the caller releases it (a restarted init
+would hold an empty process table).
+
+### Capabilities
+
+| Capability | Declared | Why |
+| --- | --- | --- |
+| `kind` | `desktop` (default) or `linux` | `COMPUTER_E2B_KIND`; a desktop's X server is computerd's own |
+| `lifetime` | `vendor` | E2B kills the sandbox at its timeout, set to the lifetime; init ends every process at the deadline too |
+| `network` | `none`, `open` | `allowInternetAccess`, read back by `getInfo` with `network.denyOut` and `allowPublicTraffic`; `open` only with `publicStream` |
+| `networkReadBack` | `true` | `getInfo` reports `allowInternetAccess` and `network` (`index.mjs:5432-5458`) |
+| `isolation` | `microvm` | Firecracker |
+| `daemon` | `child` | envd is the first process; init is a background command it runs |
+| `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys` | checked against hello on every connect |
+| `maxLifetimeMs` | 1 h, up to 24 h | Hobby's cap by default; `COMPUTER_E2B_MAX_LIFETIME_MS` up to Pro's 24 h (`index.d.mts:10169-10172`) |
+| `release` | `delete` | `Sandbox.kill`; E2B's pause keeps a sandbox, but no release maps to it here |
+
+### Network
+
+E2B can do none: `allowInternetAccess: false`, which E2B documents as `denyOut: ["0.0.0.0/0"]`
+(`index.d.mts:10179`), with no allow list, and no public traffic in. Public traffic matters as much as egress: a
+sandbox's every port has a URL, `https://<port>-<id>.<domain>` (`index.mjs:1208-1211`), and with public traffic anyone
+with that URL reaches whatever listens there, so a computer with no internet could still hand out data. The provider
+always sends `allowPublicTraffic: false` (a project's default may be public), and then a request needs the sandbox's
+traffic token as a header. `0.0.0.0/0` is IPv4, so for none the probe (`computerd probe`, through the daemon, as on
+Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, and refuses the computer if one answers
+(the rule every provider shares: [Network none, read from inside](#network-none-read-from-inside-nothing-answers)). An
+allowlist (`allowOut`) is refused until the live bypass cases pass (ruling 9). The network is fixed at
+create: `network(ref, policy)` refuses a change.
+
+E2B's firewall accepts an outbound TCP connection before it decides whether the destination is allowed. E2B's docs
+(network/internet-access, "Behavior of blocked TCP connections", read 2026-11-07; the copy read is
+`vendor-docs/e2b/docs-network-internet-access.md` in the review evidence) say: "The firewall has to accept the
+connection first before it can decide whether the destination is allowed. This means that, from inside the sandbox, a
+TCP connection can succeed and report the socket as open even when the destination is denied - no packets actually
+reach the destination", and to check for an application-level answer instead; and that this "may change in the
+future". `e2b-dev/infra@ff3922213` `packages/orchestrator/pkg/tcpfirewall/handlers.go` shows it: the proxy reads the
+hostname from the connection's first bytes, decides, and closes a denied connection without dialing the destination.
+E2B documents no stricter setting: `allowInternetAccess: false` is `denyOut 0.0.0.0/0`, and `dnsServers` matters only
+with a domain in `allowOut`. Under the shared rule only an answer refuses network none, so such a sandbox is kept, and
+create's and attach's `notes` name the accepted targets: `network: none; accepted with no answer (no bytes came back):
+1.1.1.1:443, 8.8.8.8:443`. The one live diagnostic (below) read that: every IPv4 target on 443/tcp and 80/tcp accepted
+and closed with 0 bytes, no answer on 53/udp, and, in the provider's own probe, no accept from the IPv6 target.
+
+The risk that stays is one-way. From inside, the provider cannot prove that an accepted connection's outbound bytes go
+nowhere: a path that carries the request out and drops every reply reads the same as E2B's firewall. E2B says no
+packets reach the destination, and that this may change. The answered check catches any change that forwards traffic
+both ways, since the first byte back refuses network none; it does not catch a one-way leak, and nothing run from
+inside can. That is the provisional ruling (one rule for every provider, pending the owner's confirmation), and why every
+accept is recorded in words rather than dropped.
+
+`dist/conformance/e2b-diagnose.js` (live switch
+`AGENTRUN_COMPUTER_LIVE_E2B=1`) makes one sandbox exactly as create does for network none, with a 10-minute E2B
+timeout, records the read-back and the provider's own check (`passed` with its `notes`, or its refusal), runs
+`computerd probe --diagnose` in it (each check judged as `--connect` judges a target: any byte back is answered),
+prints one JSON line, and kills the sandbox and reads it back gone, after an error or an abort too (SIGINT, SIGTERM,
+or its own 8-minute bound). Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 with no live
+switch or a refused setting.
+
+### Extend and stream
+
+`extend(ref, ttlMs)` sets E2B's timer to now + `ttlMs` (`Sandbox.setTimeout`, `index.mjs:5529-5541`), reads the end
+back, then moves init's own deadline there with `deadline.extend`. It is never earlier than the current end, and never
+past create's time plus the cap, the maximum init was given; a refusal moves nothing. When init's move fails after
+E2B's, the error says E2B's timer moved and init's did not: the programs end at the old deadline, earlier than asked,
+never later. E2B has no call that changes metadata, so the deadline label stays as create wrote it, and `list()`
+reports E2B's own end once it is past where create set it (its start plus the timeout create gave, by E2B's clock).
+
+`stream()` exists only on a provider made with `publicStream` (`COMPUTER_E2B_PUBLIC_STREAM=1`): a private sandbox's
+URL needs the `e2b-traffic-access-token` header, which a browser cannot send (E2B docs, network/restrict-public-access),
+so a stream URL a person can open needs public traffic, and that opens every port, so such a provider's computers are
+network `open` only, and `check()` refuses none in words. `stream()` starts x11vnc on the display, listening on
+loopback only and IPv4 alone, with a fresh password from a file only the computer's user reads, and noVNC in front of it, both through
+the daemon (the ports and paths are E2B Desktop's own: `@e2b/desktop@2.5.0` `dist/index.mjs:426-506`), and returns
+`https://6080-<id>.<domain>/vnc.html?autoconnect=true&resize=scale&password=<password>`. The password is the URL's
+only secret beyond the sandbox's id, a bearer token: it is never logged and never in an error (a unit test holds that).
+VNC authentication reads 8 characters at most (it keys DES with them), so it is 8 random letters and digits. Each call
+starts the stream anew, so an earlier URL stops working; `viewOnly` starts x11vnc with `-viewonly`. E2B's own SDK
+leaves x11vnc listening on every interface (`dist/index.mjs:502`); this provider does not.
+
+### What the provider does
+
+- `check(spec)` refuses in words, with no call: no template, a lifetime past the cap (the shared `checkLifetime`), a
+  network that is neither none nor open, an allowlist, none with `publicStream`, a label in the provider's namespace,
+  `cpus`, `memoryMb` or `pids` (a template's size is its own), `user`, `workdir` and any other field.
+- `create` reads the sandbox back with `getInfo` and refuses any drift: the template (its id, or its alias when E2B
+  reports one), every label, the network (above), `lifecycle.onTimeout` other than `kill`, `autoResume`, a state that
+  is not `running`, and an end that is not E2B's start plus the timeout create gave. Then the daemon: hello (version,
+  `linux`, `amd64`, kind and groups), `/proc/self/status` (uid and gid 1000, no groups, `NoNewPrivs` 1, every
+  capability set zero), `/proc/self/cwd` (`/work`), `/proc/self/exe`; and for none, the probe. It waits until the label
+  listing shows the new computer. A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
+  create never returns ok once its signal has aborted.
+- `attach({ id })` or `attach({ labels })` reads the spec back from E2B and, for a running computer, the daemon, as at
+  create; one that drifts is refused and left as it is. `image` is the template create was asked for, from its label,
+  and `snapshot` the id E2B reports.
+- `list(labels)` asks E2B for the labels with `agentrun.computer=1` (`Sandbox.list`, running and paused sandboxes,
+  `index.d.mts:10289`), every page, and reads each one back with `getInfo` for its network; paused is `stopped`.
+- `connect(ref)` refuses a paused computer without connecting, since E2B's connect resumes one; it gives E2B a timeout
+  a little under what is left, and E2B moves a running sandbox's timer only to a longer one (`index.d.mts:10250`), so
+  connecting never moves the end.
+- `release(ref, "delete")` kills (`index.mjs:5398-5410`; a sandbox E2B no longer has is done), never signalled, then
+  waits through `waitUntil` until `getInfo` answers not found (`index.mjs:5431`) and the label listing no longer shows
+  it, twice running, with pauses doubling from `pollMs` to 5 s, within `goneMs` (120 s) and the caller's signal.
+  `release(ref, "stop")` is refused in words.
+- Every SDK call has its own bound and takes the caller's signal; the paginator takes it per page (`Sandbox.list`
+  itself takes none, `index.d.mts:10280`).
+
+### Conformance on E2B
+
+```sh
+AGENTRUN_COMPUTER_LIVE_E2B=1 COMPUTER_E2B_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider e2b
+```
+
+The conformance module, `dist/conformance/e2b.js`, checks `AGENTRUN_COMPUTER_LIVE_E2B=1` before it reads anything
+else, then builds the provider through `fromEnv` with every computer capped at 30 minutes, Hobby's plan for conformance
+(Hobby caps a sandbox at 1 h; a run that needs more moves to Pro). `conformanceImage()` is `COMPUTER_E2B_TEMPLATE`, else
+`desktop` (`base` for kind linux), and `createDriftedProvider()` uploads a daemon built with Go as `<version>-drift`.
+`test/e2b/conformance.e2b.test.mjs` runs the suite with `computerd-fixture` built for linux/amd64, and skips unless the
+switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
+
+`dist/conformance/e2b-sweep.js --before <file>` records every sandbox E2B lists with `agentrun.computer=1`; `--after
+<file>` kills every one not in the file, reads each back until `getInfo` no longer finds it and the listing no longer
+shows it, up to 60 s each, and prints `{"swept":n,"gone":m,"stillThere":[ids]}`. Exit 0 when every swept sandbox is
+gone, 1 when one is still there, 2 on a usage error, an unreadable before file, no key, or a refused listing (nothing is
+killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the provider does, and needs no live switch.
+
+`fromEnv` reads `COMPUTER_E2B_API_KEY` (required), `COMPUTER_E2B_DOMAIN`, `COMPUTER_E2B_DAEMON`, `COMPUTER_E2B_KIND`,
+`COMPUTER_E2B_MAX_LIFETIME_MS`, `COMPUTER_E2B_USER` and `COMPUTER_E2B_PUBLIC_STREAM`.
+
+### What waits for a live run
+
+One live E2B run has been made, the network diagnostic of 2026-11-07 (one sandbox, killed and read back gone); every
+other fact above is read from the SDK, envd and the desktop template's source, and the unit tests run against a fake.
+A live run must show:
+
+- that `getInfo` reports `allowInternetAccess` or `denyOut`, and `network.allowPublicTraffic: false`, for a sandbox
+  made with them: the provider refuses a computer whose read-back lacks them, so a missing field fails every create;
+- that `getInfo` reports a template asked for by alias with that alias, or its id (the drift check skips an alias E2B
+  does not report);
+- that a sandbox with no internet access gets no answer from any probe target, IPv6 included (the one diagnostic read
+  the IPv6 target refused and every IPv4 one accepted with 0 bytes), and what else `denyOut 0.0.0.0/0` lets through;
+- that envd keeps init running once create disconnects, and how long `getInfo` takes to answer not found after a kill;
+- that Xvfb starts as uid 1000 in the desktop template, and the screen and input cases pass against it;
+- `endAt` against E2B's start plus the timeout, to the second, and how long the listing takes to show a new sandbox;
+- with `publicStream`, that noVNC answers 200 at the URL.
+
+### Sources
+
+`e2b@2.63.0` (npm, `dist/index.mjs` and `dist/index.d.mts`), `@e2b/desktop@2.5.0` (npm, `dist/index.mjs`),
+`e2b-dev/desktop@91f23aca` (`template/template.py`), `e2b-dev/infra@ff3922213`
+(`packages/orchestrator/pkg/template/build/core/rootfs/files/envd.service.tpl`,
+`packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
+(network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
@@ -1148,7 +1418,8 @@ export const providers = {
 	docker: () => import("./docker.js"),
 	modal: () => import("./modal.js"),
 	daytona: () => import("./daytona.js"),
-	e2b: () => import("./e2b.js"), // the new line
+	e2b: () => import("./e2b.js"),
+	fly: () => import("./fly.js"), // a new computer's line
 } satisfies Record<string, () => Promise<ProviderModule>>;
 ```
 
@@ -1167,13 +1438,13 @@ exports what a `ProviderModule` is:
   case skips, so Core does not pass.
 
 Docker reads `COMPUTER_DOCKER_DAEMON` (default this package's daemon for Docker's architecture, from `docker version`)
-and `COMPUTER_DOCKER_USER`; Modal and Daytona read the names in their sections. `test/providers.test.mjs` holds every
+and `COMPUTER_DOCKER_USER`; Modal, Daytona and E2B read the names in their sections. `test/providers.test.mjs` holds every
 provider file to its registry line and its line to this shape, and checks that the CLI's usage names every id. Run the
 suite on the new computer, by path before its line exists and by id after:
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/e2b.js
-npm run conformance -w @parcha/agentrun-computer -- --provider e2b
+npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/fly.js
+npm run conformance -w @parcha/agentrun-computer -- --provider fly
 ```
 
 ## Build
@@ -1191,9 +1462,15 @@ cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] npm run test:daytona -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
+AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, a key the lead OKed, and the e2b package
 ```
 
-The live tests run the conformance suite on Docker, one test per case, and the CLI against `alpine:3.20`; the rest of
+Where Xvfb is on PATH, the Go tests also run the X client, and screen and input against the fixture, on a real X
+server; elsewhere those tests skip in words and the fake X server's tests still run.
+
+The live tests run the conformance suite on Docker, one test per case, on a plain computer and on a desktop built from
+`test/fixtures/desktop/Dockerfile` with `computerd-fixture` built from `daemon/cmd/fixture`, and the CLI against
+`alpine:3.20`; the rest of
 them check what only Docker shows (the user, sizes, tmpfs mounts and hardening flags in `docker inspect`, the daemon
 mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
 stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`
@@ -1205,6 +1482,11 @@ and `no_new_privs`, and answers hello over `computerd stdio`. Those root contain
 capabilities, or every one (`--cap-add ALL`), with no `--cap-drop`, as Modal runs them: with `--user 0:0` and
 `--user 1000:1000`, `exec.run` reads every thread of init and its own status with all five sets zero and
 `NoNewPrivs` 1, and a root container without CAP_SETPCAP has init refuse to start, in words.
+`test/docker/e2b-commands.docker.test.mjs` runs the E2B provider's install, init and bridge as sent, in a root
+container of the desktop fixture's image, starts Xvfb through the daemon on the display init was given and waits for
+hello to declare the screen, and checks that `deadline.extend` moves up to `--max-deadline` and no further. The
+programs the daemon starts get no `DISPLAY` of init's (it passes on only PATH, HOME, USER and LOGNAME): a caller that
+starts a GUI program gives it `DISPLAY` in the request's `env`, on E2B as on Docker.
 
 ## Acknowledgements
 

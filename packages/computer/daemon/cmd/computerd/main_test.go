@@ -218,6 +218,33 @@ func TestInitRefusesAUserThatIsNotUidAndGidInNumbers(t *testing.T) {
 	}
 }
 
+func TestInitTakesTheMostItsDeadlineMayMoveTo(t *testing.T) {
+	past := time.Now().Add(-time.Second).UTC().Format("2006-01-02T15:04:05.000Z")
+	later := time.Now().Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+	code, stderr := computerd(t, 30*time.Second, "init", "--deadline", past, "--max-deadline", later)
+	if drops, why := dropsHere(t); !drops {
+		// It took both times, and refused to start only for the bounding set.
+		refusedToStart(t, why, code, stderr)
+	} else if code != 0 {
+		t.Fatalf("exit code %d with --max-deadline, want 0 at a deadline already past; stderr: %s", code, stderr)
+	}
+	for _, args := range [][]string{
+		{"init", "--deadline", later, "--max-deadline"},
+		{"init", "--deadline", later, "--max-deadline", "never"},
+		{"init", "--deadline", later, "--max-deadline", past},
+		{"init", "--max-deadline", later, "--deadline", later, "extra"},
+		{"init", "--deadline", later, "--max-deadline", later, "--max-deadline", later},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code == 0 {
+			t.Errorf("computerd %q exited 0; want a refusal", args)
+		}
+		if !strings.Contains(stderr, "--max-deadline") {
+			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
 func TestInitWithAUserMustStartAsRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root: init would drop this test's privileges; the drop is a live case")
@@ -295,6 +322,23 @@ func TestProbeRefusesATargetThatIsNotHostAndPort(t *testing.T) {
 		code, _, stderr := computerdOut(t, 30*time.Second, args...)
 		if code != 2 || !strings.Contains(stderr, "host:port") {
 			t.Errorf("computerd %q: exit %d, stderr %q; want exit 2 and a refusal in words", args, code, stderr)
+		}
+	}
+}
+
+// probe --diagnose tries its own fixed public targets and nothing else, so it is never run here (no test reaches past
+// this machine); its checks are tested in internal/probe against this machine's own listeners. Here: it takes no other
+// argument, and --connect beside it is refused.
+func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
+	for _, args := range [][]string{
+		{"probe", "--diagnose", "--connect", "example.com:443"},
+		{"probe", "--connect", "example.com:443", "--diagnose"},
+		{"probe", "--diagnose", "example.com:443"},
+		{"probe", "--diagnose", "--diagnose"},
+	} {
+		code, stdout, stderr := computerdOut(t, 30*time.Second, args...)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "--diagnose") {
+			t.Errorf("computerd %q: exit %d, stdout %q, stderr %q; want exit 2, nothing on stdout and a refusal that names --diagnose", args, code, stdout, stderr)
 		}
 	}
 }

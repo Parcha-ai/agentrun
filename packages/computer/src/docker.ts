@@ -6,6 +6,7 @@ import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
+import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import {
 	COMPUTER_LABEL,
 	CPU_PERIOD_US,
@@ -40,9 +41,18 @@ import {
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
+/**
+ * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
+ * computerd stays the first process and starts nothing of its own: create gives it DISPLAY, then starts the X server
+ * through it with process.start (startDisplay in ./desktop.ts).
+ */
+export type DockerDesktopOptions = DesktopOptions;
+
 export interface DockerProviderOptions {
 	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). */
 	daemonPath: string;
+	/** Makes every computer a desktop (kind desktop): its image must have the X server. */
+	desktop?: DockerDesktopOptions;
 	/** The docker CLI. */
 	docker?: string;
 	/** Who a computer runs as when its spec does not say: uid or uid:gid, in numbers. Default: this process's uid:gid, or
@@ -151,12 +161,14 @@ export class DockerProvider implements ComputerProvider {
 	readonly #daemonPath: string;
 	readonly #docker: string;
 	readonly #user: string;
+	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, docker = "docker", user }: DockerProviderOptions) {
+	constructor({ daemonPath, docker = "docker", user, desktop }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#docker = docker;
+		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
@@ -168,14 +180,14 @@ export class DockerProvider implements ComputerProvider {
 
 	capabilities(): ComputerCapabilities {
 		return {
-			kind: "linux",
+			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
 			network: ["none", "open"],
 			networkReadBack: true,
 			isolation: "container",
 			os: "linux",
 			daemon: "pid1",
-			groups: ["exec", "files", "processes"],
+			groups: ["exec", "files", "processes", ...(this.#desktop ? DESKTOP_GROUPS : [])],
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			user: ["root", "uid"],
 			release: ["stop", "delete"],
@@ -245,6 +257,7 @@ export class DockerProvider implements ComputerProvider {
 		const user = userOf(spec.user) ?? this.#user;
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
 		args.push("--user", user, "--env", `HOME=${WORK}`);
+		if (this.#desktop) args.push("--env", `DISPLAY=${this.#desktop.display}`);
 		for (const [path, options] of Object.entries(tmpfsOf(user, memoryMb))) args.push("--tmpfs", `${path}:${options}`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
@@ -276,6 +289,15 @@ export class DockerProvider implements ComputerProvider {
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
+		if (this.#desktop) {
+			const shown = await this.#startDisplay(ref, this.#desktop, signal);
+			if (signal?.aborted) return this.#abandon(ref);
+			if (!shown.ok) {
+				const removed = await this.release(ref, "delete");
+				const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
+				return fail(shown.error.code, `the computer ${name} ${after}: ${shown.error.message}`);
+			}
+		}
 		const checked = await this.#check(spec, ref, report as DockerInspect, host.value, deadline, user, signal);
 		// Fail closed: no create returns ok once its signal has aborted.
 		if (signal?.aborted) return this.#abandon(ref);
@@ -291,6 +313,17 @@ export class DockerProvider implements ComputerProvider {
 		const removed = await this.release(ref, "delete");
 		const after = removed.ok ? "was deleted" : `could not be deleted (${removed.error.message})`;
 		return fail("aborted", `create was aborted after docker run; the computer ${ref.name} ${after}`);
+	}
+
+	/** Starts the desktop's X server through the daemon and waits until hello declares the display (startDisplay). */
+	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
+		const opened = await this.#open(ref, signal);
+		if (!opened.ok) return opened;
+		try {
+			return await startDisplay(opened.value.client, desktop, { version: VERSION, vendor: "docker", signal });
+		} finally {
+			await opened.value.close();
+		}
 	}
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */

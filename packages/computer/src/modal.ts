@@ -6,7 +6,19 @@ import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, helloDrift, WORK } from "./drift.js";
+import {
+	COMPUTER_LABEL,
+	DAEMON_IN_COMPUTER,
+	DEADLINE_LABEL,
+	DEFAULT_CPUS,
+	DEFAULT_MEMORY_MB,
+	helloDrift,
+	type ProbeReport,
+	probeNetworkDrift,
+	probeNotes,
+	probeReportOf,
+	WORK,
+} from "./drift.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -127,7 +139,7 @@ export interface ModalProviderOptions {
 	/** Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 1000:1000. */
 	user?: string;
 	timeouts?: Partial<ModalTimeouts>;
-	/** host:port addresses the probe tries to connect to, to show a computer with network none reaches nothing. */
+	/** host:port addresses the probe tries, to show none of them answers a computer with network none. */
 	probeTargets?: string[];
 }
 
@@ -330,18 +342,6 @@ interface Recorded {
 	runtime: "vm";
 }
 
-/**
- * What `computerd probe` reports from inside the computer: reached, the targets that answered (bytes came back), and
- * accepted, those that accepted a connection and sent nothing back.
- */
-interface ProbeReport {
-	uid: number;
-	gid: number;
-	kernel: string;
-	reached: string[];
-	accepted: string[];
-}
-
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
@@ -531,36 +531,14 @@ function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
 	return { other: `the tag ${SPEC_TAG} names no network this provider makes` };
 }
 
-const isAddresses = (value: unknown): value is string[] => Array.isArray(value) && value.every((one) => typeof one === "string");
-
-function probeOf(stdout: string): ProbeReport | undefined {
-	try {
-		const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as Partial<ProbeReport> | null;
-		if (isWhole(value?.uid) && isWhole(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached) && (value.accepted === undefined || isAddresses(value.accepted))) {
-			return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted ?? [] };
-		}
-	} catch {
-		// Not the probe's JSON: undefined.
-	}
-	return undefined;
-}
-
 /** Every way the probe's report differs from what the computer should be. */
 function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
 	const found: string[] = [];
 	const user = `${probe.uid}:${probe.gid}`;
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
 	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
-	if (expected.network === "none" && probe.reached.length > 0) found.push(`network: declared none, read back an answer from ${probe.reached.join(", ")}`);
+	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
 	return found;
-}
-
-/**
- * What the probe recorded that does not refuse the computer: under network none, the targets that accepted a connection
- * and sent nothing back. A firewall that accepts first and decides after looks so from inside; only an answer is drift.
- */
-function probeNotes(probe: ProbeReport, network: NetworkSpec): string[] {
-	return network === "none" && probe.accepted.length > 0 ? [`network: none; accepted with no answer (no bytes came back): ${probe.accepted.join(", ")}`] : [];
 }
 
 /** Every way the tags read back differ from those create gave. */
@@ -880,7 +858,7 @@ export class ModalProvider implements ComputerProvider {
 		if (exitCode !== 0) {
 			return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 		}
-		const report = probeOf(stdout);
+		const report = probeReportOf(stdout);
 		if (report === undefined) return fail("refused", `the probe in ${name} wrote what is not its report: ${Buffer.from(stdout, "base64").toString("utf8").slice(0, 200)}`);
 		return ok(report);
 	}

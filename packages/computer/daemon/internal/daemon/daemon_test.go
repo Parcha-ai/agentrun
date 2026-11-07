@@ -19,6 +19,7 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
 )
 
@@ -41,12 +42,18 @@ func TestMain(m *testing.M) {
 			os.Exit(daemon.NoNewPrivsChild())
 		}
 	}
-	if len(os.Args) == 3 && os.Args[1] == "init" {
+	if (len(os.Args) == 3 || len(os.Args) == 4) && os.Args[1] == "init" {
 		deadline, err := time.Parse(time.RFC3339Nano, os.Args[2])
 		if err != nil {
 			os.Exit(99)
 		}
-		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), deadline, log.New(os.Stderr, "computerd: ", 0)))
+		var most time.Time
+		if len(os.Args) == 4 {
+			if most, err = time.Parse(time.RFC3339Nano, os.Args[3]); err != nil {
+				os.Exit(99)
+			}
+		}
+		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), lifetime.New(deadline, most), log.New(os.Stderr, "computerd: ", 0)))
 	}
 	// The drop is tested in a test binary without cgo, as computerd is built: a plain go test, with cgo on, runs these
 	// tests in one built again with CGO_ENABLED=0.
@@ -66,7 +73,13 @@ type initProcess struct {
 // socketIn makes a fresh directory of mode, as a provider would, and returns a socket path in it.
 func socketIn(t *testing.T, mode os.FileMode) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "run")
+	// Not under t.TempDir(): its name holds the test's, and a socket's path must fit in 108 bytes.
+	base, err := os.MkdirTemp("", "computerd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	dir := filepath.Join(base, "run")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +98,25 @@ func startInit(t *testing.T) *initProcess {
 
 func startInitUntil(t *testing.T, deadline time.Time) *initProcess {
 	t.Helper()
+	return startInitWith(t, deadline, time.Time{})
+}
+
+// startInitWith runs init with a deadline and, unless it is zero, the most it may move to. Init gets no DISPLAY.
+func startInitWith(t *testing.T, deadline, most time.Time) *initProcess {
+	t.Helper()
 	socket := socketIn(t, 0o700)
 	in := &initProcess{socket: socket, log: &bytes.Buffer{}, ended: make(chan error, 1)}
-	in.cmd = exec.Command(os.Args[0], "init", deadline.UTC().Format(time.RFC3339Nano))
-	in.cmd.Env = append(os.Environ(), daemon.SocketEnv+"="+socket)
+	args := []string{"init", deadline.UTC().Format(time.RFC3339Nano)}
+	if !most.IsZero() {
+		args = append(args, most.UTC().Format(time.RFC3339Nano))
+	}
+	in.cmd = exec.Command(os.Args[0], args...)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "DISPLAY=") {
+			in.cmd.Env = append(in.cmd.Env, kv)
+		}
+	}
+	in.cmd.Env = append(in.cmd.Env, daemon.SocketEnv+"="+socket)
 	in.cmd.Stderr = in.log
 	if err := in.cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -530,5 +558,54 @@ func TestInitEndsEveryProcessAtItsDeadlineAndExits0(t *testing.T) {
 	}
 	for _, pid := range pids {
 		gone(t, pid)
+	}
+}
+
+func TestDeadlineExtendMovesWhenInitEnds(t *testing.T) {
+	start := time.Now()
+	deadline := start.Add(5 * time.Second)
+	in := startInitWith(t, deadline, start.Add(time.Hour))
+	c := dial(t, in.socket)
+	moved := deadline.Add(4 * time.Second)
+	var res struct {
+		At string `json:"at"`
+	}
+	c.ok("deadline.extend", map[string]any{"at": moved.UTC().Format(time.RFC3339Nano)}, &res)
+	if at, err := time.Parse(time.RFC3339Nano, res.At); err != nil || at.Sub(moved).Abs() > time.Millisecond {
+		t.Fatalf("deadline.extend answered %q, want %v", res.At, moved)
+	}
+	select {
+	case err := <-in.ended:
+		in.ended <- err
+		t.Fatalf("init ended at its first deadline (%v), not the moved one: %s", err, in.log)
+	case <-time.After(time.Until(deadline) + time.Second):
+	}
+	// Still answering past its first deadline.
+	c.ok("ping", map[string]any{}, &struct{}{})
+	select {
+	case err := <-in.ended:
+		in.ended <- err
+		if err != nil {
+			t.Fatalf("init at its moved deadline: %v: %s", err, in.log)
+		}
+	case <-time.After(time.Until(moved) + 2*patience):
+		t.Fatalf("init did not end at its moved deadline: %s", in.log)
+	}
+	if time.Now().Before(moved) {
+		t.Fatalf("init ended before its moved deadline: %s", in.log)
+	}
+}
+
+func TestDeadlineExtendIsRefusedPastTheMaximumOrWithoutOne(t *testing.T) {
+	start := time.Now()
+	in := startInitWith(t, start.Add(time.Hour), start.Add(2*time.Hour))
+	c := dial(t, in.socket)
+	if r := c.call("deadline.extend", map[string]any{"at": start.Add(3 * time.Hour).UTC().Format(time.RFC3339Nano)}); r.Error == nil || r.Error.Data.Kind != "limit" || !strings.Contains(r.Error.Message, "maximum") {
+		t.Fatalf("past the maximum: %+v", r)
+	}
+	plain := startInit(t)
+	p := dial(t, plain.socket)
+	if r := p.call("deadline.extend", map[string]any{"at": start.Add(90 * time.Minute).UTC().Format(time.RFC3339Nano)}); r.Error == nil || r.Error.Data.Kind != "unsupported" || !strings.Contains(r.Error.Message, "--max-deadline") {
+		t.Fatalf("with no maximum: %+v", r)
 	}
 }

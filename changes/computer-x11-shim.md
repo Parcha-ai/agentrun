@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-computer
+kind: feature
+---
+computerd drives an X display: `screen.shot`, `screen.read` and `input.actions` on the display `DISPLAY` names, in pure Go with no cgo (GetImage for pixels, XTEST for input, one round trip a batch), and `deadline.extend`. A Docker computer can be a desktop.
+- Hello declares `screen`, `input.pointer` and `input.keys`, and kind `desktop`, only while the display answers with XTEST; with none, nothing is declared and each method is `unsupported`, saying why. `input.actions` checks the whole batch first, as `checkActions` does, and also refuses touch actions and pixel scrolls (`unsupported`), points and clicks that are not whole, and text with a control character other than newline and tab; then it runs until the first failure, releasing what the batch held. Characters with no key on the keyboard map are typed through xdotool's keysym remap, which keeps its bindings instead of undoing them.
+- `computerd init --deadline <time> --max-deadline <time>`: `deadline.extend({ at })` moves init's deadline up to the maximum, refusing an earlier time or one past it in words; without `--max-deadline` the deadline cannot move. Docker passes none: its deadline is a label.
+- `new DockerProvider({ daemonPath, desktop: {} })` makes kind `desktop` computers on an image with an X server: `create` gives the daemon `DISPLAY` and starts Xvfb through `process.start`, so computerd stays PID 1 and starts nothing itself. `createProvider({ desktop })` and `createDriftedProvider({ desktop })` in `dist/conformance/docker.js` run the suite on one; with `test/fixtures/desktop/Dockerfile` (Alpine and Xvfb) and `computerd-fixture` (`daemon/cmd/fixture`, test-only) Core passes 58/58.

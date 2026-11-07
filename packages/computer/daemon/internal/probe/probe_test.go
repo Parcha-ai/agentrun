@@ -52,9 +52,9 @@ func listening(t *testing.T, answer func(net.Conn)) string {
 	return address
 }
 
-// silent accepts and closes at once, having read nothing and sent nothing: what a firewall that accepts first and
-// passes nothing looks like from inside.
-func silent(net.Conn) {}
+// acceptsSilently accepts and closes at once, having read nothing and sent nothing: what a firewall that accepts
+// first and passes nothing looks like from inside.
+func acceptsSilently(net.Conn) {}
 
 // holding accepts and keeps the connection open, sending nothing, until the probe gives up.
 func holding(conn net.Conn) { _, _ = io.Copy(io.Discard, conn) }
@@ -87,8 +87,8 @@ func refusing(t *testing.T) string {
 	return address
 }
 
-// serverHello is the head of a TLS handshake record whose first message is a ServerHello, as a server sends it.
-var serverHello = []byte{0x16, 0x03, 0x03, 0x00, 0x2a, 0x02, 0x00, 0x00, 0x26, 0x03, 0x03}
+// helloRecord is the head of a TLS handshake record whose first message is a ServerHello, as a server sends it.
+var helloRecord = []byte{0x16, 0x03, 0x03, 0x00, 0x2a, 0x02, 0x00, 0x00, 0x26, 0x03, 0x03}
 
 // alert is a TLS fatal alert record (handshake_failure), what a server sends a ClientHello it will not serve.
 var alert = []byte{0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28}
@@ -110,7 +110,7 @@ func TestProtocolIsChosenByThePort(t *testing.T) {
 }
 
 func TestASilentAcceptIsAcceptedAndNeverReached(t *testing.T) {
-	address := listening(t, silent)
+	address := listening(t, acceptsSilently)
 	result := probe.Run([]string{address}, quick)
 	if len(result.Reached) != 0 {
 		t.Fatalf("reached %q: an accept that sent nothing back is no answer", result.Reached)
@@ -151,7 +151,7 @@ func TestAClosedPortIsRefused(t *testing.T) {
 
 func TestAServerHelloIsAnAnswerAndTheClientHelloCarriesNoNameForAnAddress(t *testing.T) {
 	got := make(chan []byte, 1)
-	address := listening(t, afterRequest(serverHello, got))
+	address := listening(t, afterRequest(helloRecord, got))
 	result := probe.Try(address, "tls", quick)
 	if result.Outcome != "answered" || !strings.Contains(result.Detail, "ServerHello") {
 		t.Fatalf("%+v; want answered, a ServerHello", result)
@@ -217,7 +217,7 @@ func TestBytesThatAreNotTheProtocolsAnswerStillCountAsAnAnswer(t *testing.T) {
 func TestAnyByteBackOnAPortOfNoKnownProtocolIsAnAnswer(t *testing.T) {
 	speaksFirst := listening(t, banner)
 	answersHTTP := listening(t, afterRequest([]byte("HTTP/1.0 200 OK\r\n\r\n"), nil))
-	quiet := listening(t, silent)
+	quiet := listening(t, acceptsSilently)
 	result := probe.Run([]string{speaksFirst, quiet, answersHTTP}, quick)
 	if !reflect.DeepEqual(result.Reached, []string{speaksFirst, answersHTTP}) || !reflect.DeepEqual(result.Accepted, []string{quiet}) {
 		t.Fatalf("reached %q, accepted %q; want reached [%s %s], accepted [%s]", result.Reached, result.Accepted, speaksFirst, answersHTTP, quiet)
@@ -243,7 +243,7 @@ func TestTheAnswerReadIsBounded(t *testing.T) {
 }
 
 func TestAnIPv6TargetIsTriedAsAnyOther(t *testing.T) {
-	quiet := serve(t, "[::1]:0", silent)
+	quiet := serve(t, "[::1]:0", acceptsSilently)
 	if quiet == "" {
 		t.Skip("this host has no IPv6 loopback to listen on, so the IPv6 case is not run here")
 	}
@@ -255,7 +255,7 @@ func TestAnIPv6TargetIsTriedAsAnyOther(t *testing.T) {
 }
 
 func TestRunReportsEachTargetInTheOrderAsked(t *testing.T) {
-	closed, quiet, speaks := refusing(t), listening(t, silent), listening(t, banner)
+	closed, quiet, speaks := refusing(t), listening(t, acceptsSilently), listening(t, banner)
 	asked := []string{speaks, closed, quiet}
 	result := probe.Run(asked, quick)
 	outcomes := []string{}
