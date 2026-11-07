@@ -138,6 +138,18 @@ test("the contract's operations are as vendored; this server's own are added and
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");
       continue;
     }
+    if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
+      // A hidden run's files (signins/1): the contract's description, then why 403 is answered here, and 403 added where
+      // the contract has none; the rest as vendored.
+      assert.ok(op.description.startsWith(original.description.trimEnd()) && /403 forbidden/.test(op.description), "the contract's description first, then the 403");
+      assert.equal(op.responses["403"].$ref, "#/components/responses/Forbidden");
+      assert.deepEqual(Object.keys(changes).sort(), original.responses["403"] ? ["description"] : ["description", "responses"]);
+      const { description: _a, responses: _b, ...same } = rest;
+      const { description: _c, responses: _d, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for the 403`);
+      for (const code of Object.keys(original.responses)) assert.deepEqual(op.responses[code], original.responses[code], code);
+      continue;
+    }
     if (op.operationId === "cancelRun" || op.operationId === "createRun") {
       // What a cancel's 202 reads here, and how long a run create's key replays: the contract's description, then this
       // server's own reading of it.

@@ -16,6 +16,11 @@ export const MAX_LIST_ENTRIES = 1000;
 export const PROCESS_RING_BYTES = 8 * 1024 * 1024;
 /** How many processes a daemon holds, running or ended; the oldest ended ones are dropped first. */
 export const MAX_PROCESSES = 256;
+/**
+ * How much output a daemon's rings hold together. Past it, the rings of the processes that ended first are let go (a
+ * read then reports their bytes as dropped); a running process's ring is never let go.
+ */
+export const PROCESS_RETAINED_BYTES = 256 * 1024 * 1024;
 /** The longest a process.read waits for new bytes. */
 export const MAX_READ_WAIT_MS = 30_000;
 
@@ -253,7 +258,10 @@ export interface ProcessReadResult {
 	/** base64. */
 	data: string;
 	nextOffset: number;
-	/** Bytes before offset the ring no longer held: the read began at the ring's start instead. */
+	/**
+	 * Bytes before offset the ring no longer held: the read began at the ring's start instead. Once an ended process's
+	 * ring is let go, every byte from offset on.
+	 */
 	dropped: number;
 	/** The process has ended and nothing is left past nextOffset. */
 	exited: boolean;

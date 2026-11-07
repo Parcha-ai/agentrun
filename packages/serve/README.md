@@ -1155,17 +1155,37 @@ picks which one a run gets, never the model.
   read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): …"), and its rows are
   not read, since what it says could repeat the pointer, which the server could not cut. Once the sign-in opens again
   (the right seal key back), its rows are read and shown, cut of it. A run that had already ended keeps how it ended,
-  but while the sign-in does not open none of what it said is served (rows, answer, output, error words, a workflow
-  run's graph, which answers 403 `forbidden`), it can't be continued, and what its end-of-run learning turn wrote is
-  not checked, graded or merged (it waits as it was for a server that reads the sign-in). It is shown again, cut, once
-  the sign-in opens. A run that was never handed the sign-in (one launched signed out since the key changed) is taken
-  up as any other. That a run was handed it is kept in its `serve.json`; a launch that can't save that hands it none,
-  and the run browses signed out. Its `held_by` still names a run that holds its lease, as a held one does.
+  but while the sign-in does not open none of what it said is served (rows, answer, output, error words, a review's
+  reason, a workflow run's graph, and its files, `GET /runs/{id}/files` and each file, which answer 403 `forbidden`),
+  it can't be continued, and what its end-of-run learning turn wrote is not checked, graded or merged (it waits as it
+  was for a server that reads the sign-in). It is shown again, cut, once the sign-in opens. A run that was never
+  handed the sign-in (one launched signed out since the key changed) is taken up as any other. That a run was handed
+  it is kept in its `serve.json`; a launch that can't save that hands it none, and the run browses signed out. A run
+  still going whose `serve.json` is there but can't be read or parsed (where its plane and that mark are kept) is
+  hidden the same way when its agent's revision grants the browser, or can't be read: nothing else says which browser
+  it ran on, so whether it was handed the sign-in is not known ("This server can't read the run's record (its
+  serve.json is damaged or can't be read), …"). An ended run whose `serve.json` is damaged since is withheld the same
+  way, its end kept. That mark is the SHA-256 of each pointer the run was handed (a list, one per pointer; never a
+  pointer), and what a run was handed is read back by it alone: each hash matched to the agent's live pointer or a
+  forgotten one (below). A run with no mark was never handed one. When any of its hashes matches no pointer that opens
+  (one under another seal key or none, one forgotten and since dropped out of the newest 32 kept, the agent's sign-ins
+  file gone), the run is hidden or withheld as above, and shown again, cut, once every one does: nothing keeps that
+  verdict, each server reads it anew. Forgetting the agent's other sign-ins never withholds it. A mark of any other
+  shape (one an older build wrote, `true` or a single hash, or a damaged one) is read as handed some sign-in no one
+  can name: the run is hidden or withheld, never served uncut, and forget waits for it while it goes. A run list's row
+  for an ended run the server has not read (from its row and `serve.json` alone) serves its error (its details too)
+  and review cut the same way, or withholds them in the same words, and withholds them when its `serve.json` is
+  damaged. Its `held_by` still names a run that holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
-  pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. A run of the agent that is still
-  going without the lease keeps the pointer it was handed: once the vendor's object is gone, its later sessions fail. Archiving an agent keeps its
-  sign-ins; this server has no route that deletes an agent.
+  pointer goes all the same. It is `409 sign_in_held` while a run holds the lease (`details.held_by`), and also while
+  a run it was handed is still going without the lease (`details.handed_to`): one that waits for its person, say, or
+  one whose process went more than 30 minutes ago. What that run says could repeat the pointer, and once it is forgotten
+  a restarted server could not read it back to cut it. The message names the run, never the pointer; forget it once
+  that run ends. A forgotten pointer is still kept, sealed as it was, in the agent's sign-ins file
+  (`forgotten`), the newest 32 per agent: never listed in `sign_ins`, never served, never handed to a run, never a
+  sign-in a forget finds. It is kept only so a later server still cuts it from what a run that was handed it said: one
+  that ended before the forget, or one opened again since on a new sign-in. Archiving an agent keeps its sign-ins; this server has no route that deletes an agent.
 
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
@@ -1561,7 +1581,8 @@ A trigger's input, a started run's first message or a firing's message, is the t
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
 never by its payload (true for a schedule, fired on time or by hand; false for a webhook, its body empty or not). The
 model reads the very text it did; the run's timeline shows it as a `phase` row, "Trigger <its id>: <its first line>",
-with `origin: "trigger"`, never as "You: ...", and what the run learns reads it as the trigger's.
+with `origin: "trigger"` and `trigger: {id, source, owner}` (so a client labels it by its source without reading the
+summary), never as "You: ...", and what the run learns reads it as the trigger's.
 
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
 each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
@@ -1585,7 +1606,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
-| `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease. |
+| `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
