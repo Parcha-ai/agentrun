@@ -1,7 +1,7 @@
 // files.* and tar.*: each call, a large file, a tar round trip, zip-slip refused, and pulls and pushes that end however
 // they are left.
 import { createHash, randomBytes } from "node:crypto";
-import type { DaemonClient } from "../../client.js";
+import type { ComputerClient } from "../../protocol.js";
 import { pullTar, pullTarStream, pushTar, readFile, writeFile } from "../../files.js";
 import { describeEntry, type TarEntry, tarOf, untar } from "../tar.js";
 import type { Capability, Case, CaseContext } from "../types.js";
@@ -33,7 +33,7 @@ async function bigTree(t: CaseContext): Promise<string> {
 }
 
 /** Runs 8 pushes of archive on one client, all open at once: no source gives its bytes until every push has begun. */
-function eightAtOnce(client: DaemonClient, dir: string, archive: Uint8Array) {
+function eightAtOnce(client: ComputerClient, dir: string, archive: Uint8Array) {
 	let arrived = 0;
 	let release: () => void = () => {};
 	const gate = new Promise<void>((resolve) => (release = resolve));
