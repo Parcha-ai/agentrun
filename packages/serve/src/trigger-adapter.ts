@@ -53,6 +53,28 @@ export type TriggerAdapter = {
   clock?(source: Source): Clock;
   /** Why a source kept in the file no longer reads on this server, if it does not: its trigger is turned off, alone. */
   problem?(source: Source): string | undefined;
+  /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
+   *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
+  push?: Push;
+};
+
+/** Request headers, as Node gives them. */
+export type Headers = Record<string, string | string[] | undefined>;
+/** How a pushed source's requests are taken, in this order: its headers, its body (at most maxBodyBytes), its check
+ *  against its settings' `key`, its handshake, its parse. Every refusal is the one 401. */
+export type Push = {
+  maxBodyBytes: number;
+  /** The settings field it checks a request with. */
+  key: string;
+  /** Why the headers alone are refused, before a byte of the body is read. */
+  headers?(headers: Headers, nowMs: number): string | undefined;
+  /** Why the request is not the sender's under `key`, or undefined when it is. */
+  verify(key: string, headers: Headers, body: Buffer, nowMs: number): string | undefined;
+  /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
+  handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
+  /** The event: its id (the sender's, which a retry repeats), the text its run is given, and its trigger when the path
+   *  names none. Undefined when it is no event this source takes: answered 200, and said. */
+  parse(headers: Headers, body: Buffer): { eventId: string; payload: string; triggerId?: string } | undefined;
 };
 
 /** A closed object schema: every field in `required` is, and `optional`'s may be. */

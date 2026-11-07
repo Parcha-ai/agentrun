@@ -242,6 +242,9 @@ export class Triggers {
     this.file = join(data, TRIGGERS_FILE);
     this.clock = deps.clock ?? REAL_CLOCK;
     this.adapters = deps.adapters ?? TRIGGER_ADAPTERS;
+    // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
+    const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
+    if (shaped) throw new Error(`a trigger source's id never starts as a trigger's does: ${shaped.id}`);
     let text: string | undefined;
     try {
       text = readFileSync(this.file, "utf8");
