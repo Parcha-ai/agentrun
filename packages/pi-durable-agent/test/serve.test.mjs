@@ -573,11 +573,11 @@ test("a store that is not a store, or one from a newer pi-durable, is a plain 50
   const served = await serveHome(seeded.home);
   try {
     const db = new DatabaseSync(seeded.holder.storePath);
-    db.exec("UPDATE durable_schema SET version = 2");
+    db.exec("UPDATE durable_schema SET version = 3");
     db.close();
     const newer = await request(served.url, { target: "/api/runs/holder" });
     assert.equal(newer.status, 500);
-    assert.match(JSON.parse(newer.body).error, /pi-durable schema 2; this version reads 1/);
+    assert.match(JSON.parse(newer.body).error, /pi-durable schema 3; this version reads 2/);
     assert.ok(!newer.body.includes(seeded.dir), "no path in the answer");
     const agent = new DatabaseSync(path.join(seeded.home.dir, "agent.sqlite"));
     agent.exec("UPDATE durable_schema SET version = 3");

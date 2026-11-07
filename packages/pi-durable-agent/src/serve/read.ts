@@ -15,8 +15,10 @@ import type { AgentDefinition, AgentIdentity, AgentSource, PromptVariant, RunRec
 import { AgentHomeError, openStore } from "../store.js";
 import type { EntryLike } from "../timeline/index.js";
 
-/** The one schema version of pi-durable's SQLite store this reader knows; a newer one is refused, not guessed at. */
-const SCHEMA_VERSION = 1;
+/** The one schema version of pi-durable's SQLite store this reader knows; a newer one is refused, not guessed at. pi 1.5
+ *  writes 2 (pi-durable dist/storage/sqlite/migrations.js: version 2 rebuilds `tasks` to admit the `sleeping` status);
+ *  `entries`, the one table read here, is as version 1 made it. */
+const SCHEMA_VERSION = 2;
 const BUSY_MS = 5_000;
 
 /** A store opened read-only, with its schema version checked; a write through the handle fails. The store of an `ended` run
