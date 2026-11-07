@@ -93,6 +93,18 @@ export function script(spec) {
   // One answer that writes, calls, writes again and calls again, both calls ending before it is paid (Claude Code's
   // cost comes in after its response), then the closing answer.
   if (/Write between two calls\./.test(text)) return [{ calls: [{ say: "First I write a.md.", call: "write", args: { path: "a.md", content: "alpha" } }, { say: "Then b.md.", call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote both.", usd: 0.002 }];
+  // Two requests on a store slow to write (the tests' ROOT_WRITE_DELAY_ENV): the first writes, then calls, and is paid
+  // after its call ends (Claude Code's cost comes in after its response); the second answers.
+  if (/Write on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
+  // The same, but the first request is paid only once <file> exists: after the second has started and answered.
+  const paidLate = /Write on a slow store, paid once (\S+) exists\./.exec(text);
+  if (paidLate) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookWhen: paidLate[1] }, { say: "Wrote it.", usd: 0.002 }];
+  // The same two requests, the first's cost unknown (its provider gave none).
+  if (/Write unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
+  // The same, the second ending the turn, then a follow-up's request, under a cap.
+  if (/Pay unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
+  // The same two requests (the second ends the turn), then a follow-up's request, under a cap.
+  if (/Pay on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   // Reads a file the run was given (an upload, copied into its inputs/), then says so.
   const upload = /Read the upload (\S+)\./.exec(text)?.[1];
