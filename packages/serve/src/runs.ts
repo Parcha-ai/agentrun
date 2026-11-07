@@ -5,6 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -89,6 +90,8 @@ const DRAIN = "30s";
 const PROCESS_LOG = "process.log";
 /** How long a request waits for a run's door: its process coming up, or a settle in progress. */
 const READY_TIMEOUT_MS = 45_000;
+/** How long a launched process whose door failed its proof has to exit on its own before it is stopped. */
+const DOOR_EXIT_WAIT_MS = 2_000;
 /** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
  *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
@@ -2839,8 +2842,11 @@ export class Runs {
         // A door that does not answer this launch's nonce (wrongly, or not within the proof's time) is not this launch's
         // to record, and its process is not taken for up: as one that misses its open time, it is said once and stopped,
         // by this server's own handle on its child, and its exit opens the run again (up to MAX_RELAUNCHES), the last
-        // one's failure naming this cause. One that has exited already is its exit's to settle.
+        // one's failure naming this cause. One that has exited already is its exit's to settle, and so is one that exits
+        // on its own within DOOR_EXIT_WAIT_MS: an app that fails at its start closes its door, failing the proof, before its
+        // exit is seen here, and that exit fails the run with its own error, never as a process that did not open it.
         if (!(await verifyDoor(door, nonce, this.headers(run)))) {
+          if (run.child === child && child.exitCode === null && child.signalCode === null) await once(child, "exit", { signal: AbortSignal.timeout(DOOR_EXIT_WAIT_MS) }).catch(() => undefined);
           if (run.child !== child || child.exitCode !== null || child.signalCode !== null) return;
           run.notOpened = "its process's door did not answer this launch's nonce";
           warn(run.id, `its process ${pid}'s door did not answer this launch's nonce; it is stopped`);
