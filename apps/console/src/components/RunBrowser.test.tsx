@@ -186,6 +186,50 @@ describe("the run page's Browser tab", () => {
     expect(reads).toBeGreaterThan(1);
   });
 
+  /** The page, rendered again with `run` changed (it ends) while the reads go on; `reads()` counts them. */
+  async function moving(read: () => Promise<RunBrowser>) {
+    let reads = 0;
+    const counted = async () => { reads += 1; return read(); };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const show = (run: Run) => act(async () => { root!.render(createElement(RunDetail, { run, agentName: "browsing", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readBrowser: counted, browserEvery: 20, tab: "browser" } as never)); });
+    await show(working);
+    await settle();
+    const section = () => host.querySelector('section[aria-label="Browser"]')?.textContent ?? "";
+    return { host, show, section, reads: () => reads, frame: () => host.querySelector("iframe") };
+  }
+  const ended = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
+
+  it("an ended run whose last read was live shows that the browser closed, with no iframe: an ended run has nothing to watch", async () => {
+    const p = await moving(async () => ({ state: "live", viewer: VIEWER }));
+    expect(p.frame()).not.toBeNull();
+    await p.show(ended);
+    await settle(120);
+    expect(p.frame()).toBeNull();
+    expect(p.section()).toContain("The browser closed when the run ended.");
+  });
+
+  it("a failed last read and then the end show the same, and nothing more is read after the end", async () => {
+    let failing = false;
+    const p = await moving(async () => { if (failing) throw new Error("502"); return { state: "live", viewer: VIEWER }; });
+    failing = true;
+    await settle(60);
+    await p.show(ended);
+    const atEnd = p.reads();
+    await settle(150);
+    expect(p.frame()).toBeNull();
+    expect(p.section()).toContain("The browser closed when the run ended.");
+    expect(p.reads(), "no read after the end").toBe(atEnd);
+  });
+
+  it("off while the run is going hides the tab, and the next read still comes: the run's process may still open a browser with the key it launched with", async () => {
+    let n = 0;
+    const p = await page(async () => (++n <= 2 ? { state: "off", reason: "no browser key" } : { state: "live", viewer: VIEWER }));
+    await settle(150);
+    expect(n).toBeGreaterThan(2);
+    expect(p.tabButton()?.textContent).toBe("Watch live");
+  });
+
   it("has no controls of its own: taking over and handing back are the viewer's", async () => {
     const p = await page(async () => ({ state: "live", viewer: VIEWER }), working, "browser");
     const panel = p.host.querySelector('section[aria-label="Browser"]') as HTMLElement;

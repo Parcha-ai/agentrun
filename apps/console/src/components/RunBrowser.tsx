@@ -4,29 +4,40 @@ import { ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
 import type { RunBrowser } from "@/lib/v2";
 
-/** The run's browser, read from GET /v2/runs/{id}/browser and read again every `every` ms while the run is live, and once
- *  more after it ends (a session is released at the end). Null until the first read, and for a run whose browser the
- *  console can't show, which is read no more: `off`, or a caller the route refuses (401, 403). Any other failed read
- *  keeps the last answer, so a page being watched isn't torn down by one bad poll. Nothing about the answer is logged. */
+/** The run's browser, read from GET /v2/runs/{id}/browser and read again every `every` ms while the run is live. Null
+ *  until the first answer, and while it is `off`. `off` is read from the server's keys now, but a running run's process
+ *  holds the key it launched with and may still open a browser, so a live run is read on; a caller the route refuses
+ *  (401, 403) is read no more. An ended run has nothing to watch: it is not read again, and a browser it showed reads as
+ *  closed (none), whatever the last read said. A page opened on an ended run reads once, to know whether it had one. Any
+ *  other failed read keeps the last answer, so a page being watched isn't torn down by one bad poll. Nothing about the
+ *  answer is logged. */
 export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, live: boolean, every = 3000): RunBrowser | null {
   const [now, setNow] = useState<RunBrowser | null>(null);
   const [gone, setGone] = useState(false);
   // The newest reader, so a page that passes a new function each render doesn't restart the reads.
   const reader = useRef(read);
   reader.current = read;
+  // Whether a read has answered on this page: an ended run is then read no more.
+  const answered = useRef(false);
   const has = !!read;
   useEffect(() => {
     if (!has || gone) return;
+    if (!live && answered.current) { setNow((prev) => (prev ? { state: "none" } : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const once = async () => {
       try {
         const next = await reader.current!();
         if (!alive) return;
-        // A run with no browser keeps none: no more reads for it.
-        if (next.state === "off") { setGone(true); setNow(null); return; }
+        answered.current = true;
+        if (next.state === "off") {
+          setNow(null);
+          if (!live) { setGone(true); return; }
+        }
+        // An ended run's browser is closed, whatever it last said.
+        else if (!live) setNow({ state: "none" });
         // A same answer keeps the same object, so a live viewer's iframe is not touched by a poll.
-        setNow((prev) => (prev && prev.state === next.state && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer)) ? prev : next));
+        else setNow((prev) => (prev && prev.state === next.state && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer)) ? prev : next));
       } catch (e) {
         if (!alive) return;
         if (e instanceof ClientError && [401, 403].includes(e.status)) { setGone(true); setNow(null); return; }
