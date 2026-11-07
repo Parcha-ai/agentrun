@@ -32,6 +32,7 @@ for (const harness of ["pi", "codex"]) {
     const floor = (await api("GET", `/agents/${id}`)).body.cap_floor;
     assert.ok(floor, "the paused run's refused request measured the floor");
     assert.equal(typeof floor.model, "string");
+    assert.ok(Number.isFinite(Date.parse(floor.measured_at)), JSON.stringify(floor));
     assert.ok(floor.least_usd > 0.1024 - 1e-6 && floor.least_usd < pending.needs_usd, JSON.stringify({ floor, pending }));
     assert.ok(floor.typical_usd > floor.least_usd, JSON.stringify(floor));
     // A second run with the same input and cap: refused at create, its least the very figure the pause needed.
@@ -62,10 +63,10 @@ test("pi: the create's least counts the run's own input: a longer input needs it
   await follow(api, first.body.run_id, SETTLED);
   const { pending } = (await api("GET", `/runs/${first.body.run_id}`)).body;
   assert.equal(pending?.kind, "budget", JSON.stringify(pending));
-  // 1,000 more plain bytes in the message: $0.01 more at $10 a million.
+  // 1,001 more plain bytes in the message (a space and 1,000 x's): $0.01001 more at $10 a million.
   const longer = await api("POST", "/agents/floor-input/runs", { input: { content: `Write one.md ${"x".repeat(1000)}` }, max_cost_usd: 0.02 });
   assert.equal(longer.status, 422, JSON.stringify(longer.body));
-  near(longer.body.error.details.least_usd - pending.needs_usd, 1000 * 10 / 1e6, 2e-6, "the input's bytes at $10 a million");
+  near(longer.body.error.details.least_usd - pending.needs_usd, 1001 * 10 / 1e6, 2e-6, "the input's bytes at $10 a million");
 });
 
 test("pi: a completed run measures the floor as a paused one does, and a cap above the least is never refused", { timeout: 120_000 }, async (t) => {
@@ -79,4 +80,18 @@ test("pi: a completed run measures the floor as a paused one does, and a cap abo
   assert.deepEqual(floor.by_effort?.[floor.effort], { least_usd: floor.least_usd, typical_usd: floor.typical_usd }, JSON.stringify(floor));
   const above = await api("POST", "/agents/floor-done/runs", { input: { content: "Write one.md" }, max_cost_usd: 5 });
   assert.equal(above.status, 202, JSON.stringify(above.body));
+});
+
+test("pi: a floor is its revision's: a new revision has none until its own first run, which is never refused", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FLOOR_PRICED });
+  assert.equal((await api("POST", "/agents", agent("floor-rev"))).status, 201);
+  const first = await api("POST", "/agents/floor-rev/runs", { input: { content: "Write one.md" } });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await follow(api, first.body.run_id, SETTLED);
+  assert.ok((await api("GET", "/agents/floor-rev")).body.cap_floor, "the first revision's run measured it");
+  // New instructions: another first request, so the old floor is not this revision's.
+  assert.equal((await api("PUT", "/agents/floor-rev/definition", { definition: { ...agent("floor-rev").definition, instructions: "Answer in one line." } })).status, 200);
+  assert.equal((await api("GET", "/agents/floor-rev")).body.cap_floor, undefined, "no floor on the new revision yet");
+  const small = await api("POST", "/agents/floor-rev/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.02 });
+  assert.equal(small.status, 202, `the new revision's first run is never refused: ${JSON.stringify(small.body)}`);
 });
