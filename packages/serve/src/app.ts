@@ -241,9 +241,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     if (!tools) bound.set(name, (tools = entry.bind(host)));
     return tools;
   };
+  // The gate reads its store before the run resumes (an agentic run's and a workflow's alike): the resume dispatches the
+  // calls a crash cut, and a rerun of one it let through must find its mark (tool-gate.ts prime).
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async (run: BeforeResume) => { await markResumed(run); for (const settle of settles) await settle(run.harness); },
+    beforeResume: async (run: BeforeResume) => { await toolGate.prime(run.harness, run.context); await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).

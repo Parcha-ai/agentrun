@@ -509,3 +509,19 @@ test("a box's network label does not depend on the list's order: one an earlier 
   assert.ok(execs.length > 0 && execs.every((args) => args.includes(id)), "its commands ran in the box the earlier process made");
   assert.deepEqual(docker.runs(), [], "taken over: no box made again");
 });
+
+/** main's `docker run` of a box with the default list on a Docker of this Linux machine's own (captured on main at
+ *  1412fa833, before a server in a container could run boxes): the host's box is made byte for byte as it was. Its bind's
+ *  source is the run's work/ where main keeps it since 0fc110a4d (the agent's disk, `disk/agents/<key>/runs/<run>`). */
+const LIST_GOLDEN = ["run", "--detach", "--init", "--rm", "--workdir", "/run/agentrun/run/work", "--label", "pi-transport.box=1", "--label", 'pi-transport.facts={"provider":"docker","isolation":"container","cpus":2,"memoryMb":4096,"gpu":null,"workspace":"/run/agentrun/run/work","maxLifetimeMs":86400000,"snapshot":null,"bulk":"stream","secretsVia":"fd","network":"none","ports":[],"startedAt":"<TIME>"}', "--label", "agentrun.run=<RUN>", "--label", "agentrun.box=run", "--label", "agentrun.net=c9a2b5a1123de35d", "--env", "LANG=C.UTF-8", "--env", "HOME=/tmp", "--env", "HTTP_PROXY=http://127.0.0.1:3128", "--env", "HTTPS_PROXY=http://127.0.0.1:3128", "--env", "http_proxy=http://127.0.0.1:3128", "--env", "https_proxy=http://127.0.0.1:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "<UID:GID>", "--cpu-period", "100000", "--cpu-quota", "200000", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "1024", "--mount", "type=bind,source=<DATA>/disk/agents/boxed-1fd10d64e0796fee/runs/<RUN>/work,target=/run/agentrun/run/work", "--mount", "type=bind,source=<EGRESS>,target=/run/agentrun/egress,readonly", "--entrypoint", "sleep", "debian:bookworm-slim", "86400"];
+
+test("golden: on a Docker of this Linux machine's own, with the default list, a run's `docker run` is byte for byte main's", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+  const runId = await boxedRun(api, [{ tool: "bash", args: { command: "true" } }]);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const [run] = docker.runs();
+  const egress = egressDir(runId);
+  const got = normalized(run, data, runId).map((arg) => arg.split(egress).join("<EGRESS>"));
+  assert.deepEqual(got, LIST_GOLDEN);
+});

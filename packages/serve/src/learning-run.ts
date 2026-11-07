@@ -21,7 +21,8 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { statusesOf } from "./learning-routes.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -163,9 +164,12 @@ const nameOf = (file: string, text: string) => {
  *  ANSWER_MAX, which the parser refuses; and each message the person sent the run before the turn, whole, in order. */
 function turnOf(run: Run): Turn {
   const answer = [...(run.turnText ?? new Map<number, string>())].sort(([a], [b]) => a - b).map(([, text]) => text).filter(Boolean).join("\n\n");
-  // From the run's store, whole (runs.ts noteTurns): a timeline row cuts a message at 2,000 characters.
-  const asked = [...(run.said ?? new Map<number, string>())].filter(([id]) => !reflects(run.meta.reflect, id)).sort(([a], [b]) => a - b).map(([, text]) => text);
-  return { answer: answer.length > ANSWER_MAX ? answer.slice(0, ANSWER_MAX + 1) : answer, asked };
+  // From the run's store, whole (heard.ts): a timeline row cuts a message at 2,000 characters. A trigger's input that
+  // its owner did not write is never what the user said: it goes apart, by its source.
+  const heard = [...(run.hearing?.heard ?? new Map())].filter(([id]) => !reflects(run.meta.reflect, id)).sort(([a], [b]) => a - b).map(([, said]) => said);
+  const asked = heard.filter((said) => said.source === undefined).map(({ text }) => text);
+  const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
+  return { answer: answer.length > ANSWER_MAX ? answer.slice(0, ANSWER_MAX + 1) : answer, asked, ...(triggered.length ? { triggered } : {}) };
 }
 
 /** One side of an agent's impact: how many runs, their median time to the answer, the median of their job's own cost
@@ -432,7 +436,7 @@ export class LearningRuns {
       });
     }
     // Kept now, or never to be: the person's words, whole, are let go (a finished run is held for the server's life).
-    if (keeping || (run.meta.learning?.state !== "seeded" && run.meta.learning?.state !== "reflecting")) run.said = undefined;
+    if (keeping || (run.meta.learning?.state !== "seeded" && run.meta.learning?.state !== "reflecting")) run.hearing = undefined;
     await this.noteRead(run);
   }
 
@@ -528,6 +532,22 @@ export class LearningRuns {
   /** A key was saved on this server or deleted from it: the next view reads them again. */
   keysChanged(): void {
     this.saved = undefined;
+  }
+
+  /** Agent `agentId`'s run's `learning` as it reads now (learning.ts currentLearning): what it held for its owner's OK
+   *  checked against the folder's main (learning-routes.ts statusesOf, one read per commit of main). Its record stays as
+   *  the merge wrote it; one that held nothing is read as it is, with no read of the folder. */
+  async current(agentId: string, learning: Learning | undefined): Promise<Learning | undefined> {
+    if (!holdsForOk(learning)) return learning;
+    return currentLearning(learning, await statusesOf(this.options.agents.dir, agentId));
+  }
+
+  /** `rows` with their learning row as it reads now (current): its words from what it held, checked against main. */
+  async rowsNow(agentId: string, learning: Learning | undefined, rows: readonly TimelineEvent[]): Promise<TimelineEvent[]> {
+    const now = await this.current(agentId, learning);
+    if (now === learning || !now) return [...rows];
+    const [row] = withLearning([], now, this.shown()) as (TimelineEvent & { learning?: unknown })[];
+    return rows.map((one) => (one.kind === "learning" && row ? ({ ...one, summary: row.summary, text: row.text, learning: row.learning } as TimelineEvent) : one));
   }
 
   /** A run's learning as its view shows it (learning.ts learningView), cut of the host's secrets now; `settled`, once
@@ -822,7 +842,7 @@ export class LearningRuns {
         const { instructions, harness, model, thinking } = known.revision.body;
         const env = this.hostEnv();
         const gradeModel = gradeModelOf(env, this.options.gradeModel);
-        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
+        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { ...checkedOut, cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("error" in judged) {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);

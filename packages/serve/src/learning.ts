@@ -36,7 +36,7 @@ import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
-import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
+import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 import { readWorkText } from "./workspace.js";
 
@@ -153,6 +153,33 @@ export function notesView({ state, given, read: opened, learned, pending, skills
   const [kept, drafts] = [files(skills), files(workflows)];
   return { ...(started.length ? { given: started } : {}), ...(read.length ? { read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}), ...(kept.length ? { skills: kept } : {}), ...(drafts.length ? { workflows: drafts } : {}) };
 }
+/** A learned item's status on main (a note's front matter, a skill's SKILL.md, a draft's README.md), with what a note
+ *  supersedes. */
+export type ItemStatus = { status: string; supersedes?: readonly string[] };
+/** Whether a run's learning held anything for its owner's OK: a merge with a held note, skill or draft. Only such a
+ *  run's reads check main (currentLearning). */
+export const holdsForOk = (learning: Learning | undefined): learning is Learning =>
+  learning?.state === "merged" && ((Array.isArray(learning.pending) && learning.pending.length > 0) || [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].some((item) => item?.pending));
+
+/** A merged run's learning as it reads now: what it held for the owner's OK checked against each item's status on
+ *  main now (`status`, by file: a note's, a skill's SKILL.md, a draft's workflow.json). Still pending, it waits; approved
+ *  (active), it is learned, as a merge that held nothing says it; retired or gone, it is no longer said. The record keeps
+ *  what the merge wrote; only its reads change. No status (the folder unread): as written. */
+export function currentLearning(learning: Learning, status: ReadonlyMap<string, ItemStatus> | undefined): Learning {
+  if (!status || learning.state !== "merged") return learning;
+  const of = (file: unknown) => (typeof file === "string" ? status.get(file)?.status : undefined);
+  const held = Array.isArray(learning.pending) ? learning.pending : [];
+  // An approved note replaces what its front matter on main says it supersedes, as a merge that held nothing says it.
+  const approved = held.filter((note) => of(note?.file) === "active").map(({ file, name }) => ({ file, name, supersedes: [...(status.get(file)?.supersedes ?? [])] }));
+  const files = (list: LearnedFile[] | undefined) => (Array.isArray(list) ? list.flatMap((item) => (!item?.pending || of(item.file) === "pending" ? [item] : of(item.file) === "active" ? [{ file: item.file, name: item.name }] : [])) : list);
+  const { pending: _pending, learned, skills, workflows, ...rest } = learning;
+  const waits = held.filter((note) => of(note?.file) === "pending");
+  const kept = [...(Array.isArray(learned) ? learned : []), ...approved];
+  const [madeSkills, madeDrafts] = [files(skills), files(workflows)];
+  const gone = !kept.length && !waits.length && !madeSkills?.length && !madeDrafts?.length;
+  return { ...rest, ...(gone ? { detail: said.retiredSince } : {}), ...(kept.length ? { learned: kept } : learned ? { learned } : {}), ...(waits.length ? { pending: waits } : {}), ...(madeSkills ? { skills: madeSkills } : {}), ...(madeDrafts ? { workflows: madeDrafts } : {}) };
+}
+
 /** A run's learning in a person's words as a read shows them (learning-words.ts wordsOf): each part cut of the host's
  *  secrets as they are now (`shown`) first, then the words cut short to `max`, so a secret is never shown in part. */
 export const detailShown = (learning: Learning, shown: Shown, max = DETAIL_MAX): string | null => {
@@ -181,7 +208,10 @@ export const LEARNING_LABEL = "learning";
  *  when it gives none), and what the user said in the run as the grader reads it (each message cut of the host's
  *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[] };
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
+/** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
+ *  source: never what the user said. */
+export type Triggered = { source: string; text: string };
 
 /** A run's pin, in its directory: written once, when the run is made, and never changed by a resume. */
 export const LEARNING_PIN = "learning.json";
@@ -190,7 +220,7 @@ export const LEARNED_DIR = ".learning";
 /** What the run's end-of-run turn answered, and what the user said in the run, kept in the run's directory as the run
  *  settles (learning-run.ts beforeSettle), where the host alone reads it: what propose.ts checks. */
 export const LEARNING_TURN = "learning-turn.json";
-export type Turn = { answer: string; asked: string[] };
+export type Turn = { answer: string; asked: string[]; triggered?: Triggered[] };
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads under `# Learned` (learnedOf), when
  *  it learned anything.
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
@@ -763,7 +793,9 @@ export async function keepTurn(runDir: string, turn: Turn): Promise<void> {
 /** The turn a run's directory keeps (keepTurn). One that is not there, or out of shape, throws. */
 export async function readTurn(runDir: string): Promise<Turn> {
   const turn = JSON.parse(await readFile(join(runDir, LEARNING_TURN), "utf8")) as unknown;
-  if (!isObject(turn) || typeof turn.answer !== "string" || !Array.isArray(turn.asked) || !turn.asked.every((message) => typeof message === "string")) throw new Error(`the run's ${LEARNING_TURN} is not a turn`);
+  const triggered = isObject(turn) ? turn.triggered : undefined;
+  const triggeredOk = triggered === undefined || (Array.isArray(triggered) && triggered.every((one) => isObject(one) && typeof one.source === "string" && typeof one.text === "string"));
+  if (!isObject(turn) || typeof turn.answer !== "string" || !Array.isArray(turn.asked) || !turn.asked.every((message) => typeof message === "string") || !triggeredOk) throw new Error(`the run's ${LEARNING_TURN} is not a turn`);
   return turn as Turn;
 }
 

@@ -123,6 +123,11 @@ export function expectedInput(bound: number, previous: Previous | undefined, now
 }
 /** The wrap-up's trigger (wrapUpDue): what is left of a cap under this many times a priced request's typical cost. */
 export const WRAP_UP_FACTOR = 3;
+/** The output a request is counted at as the wrap-up's typical cost while nothing is priced (step 0): its input bound and
+ *  this many output tokens at the model's price, never its whole output allowance (the hold), which no turn uses and which
+ *  made every cap under about $3 on Sonnet 4.5 hear the wrap-up before the run had done anything. The lead's ruling (d),
+ *  2026-11-07 (Manuel's retest: every $1 run told at its start). Admission's hold and bound are unchanged. */
+export const WRAP_UP_STEP0_ANSWER_TOKENS = 4_096;
 /** A priced request's typical cost, for the wrap-up's trigger: the median of `costs` (the run's own model's requests, a
  *  cost known and above 0) after the first, which writes the cache and costs several warm ones; with one priced request,
  *  that one; with none, `nextExpected`, the next request's expected cost (what admission holds it at). No wait for a
@@ -1015,7 +1020,9 @@ export interface CapGuard {
  *  (`boundUsd`, BOUND_USD), and what it counts at if its client stops it part way having streamed that many tokens (one a
  *  byte): its input and those tokens plus STOP_ALLOWANCE_TOKENS of output, at most its output limit, never more than its
  *  hold. */
-export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number };
+/** `typicalUsd`: the request at its input and WRAP_UP_STEP0_ANSWER_TOKENS of output (at most what it asked), the wrap-up's
+ *  typical cost while nothing is priced. */
+export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number; typicalUsd?: number };
 export type GuardRequest = {
   spentUsd: number | null;
   /** The requests in flight, each held at what it was admitted at (`holdUsd`), else at its worst case at the output limit
@@ -1055,13 +1062,14 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const cost = priced.cost;
       const bound = (tokens: number) => Math.max(0, priced.worst(tokens) - cost(tokens));
       const boundOf = (tokens: number) => (bound(tokens) > 0 ? { boundUsd: bound(tokens) } : {});
-      const admitted = (limit: number): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit) });
+      const admitted = (limit: number, typicalUsd = cost(limit)): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit), typicalUsd });
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
       if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? admitted(0) : { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(0))), ...boundOf(0) };
       const asked = Math.min(outputTokensAsked ?? output, output);
+      const typical = cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked));
       const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
-      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most);
+      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most, typical);
     },
   };
 }
@@ -1140,7 +1148,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  (limited to what is left of the cap, when that is less than it asks for), or why the cap refuses it. `simpleCall`:
    *  through streamSimple or completeSimple, whose thinking pi-ai turns into a budget or an effort; a direct call sends
    *  its maxTokens as is. */
-  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options; context?: Context };
+  type Judged = { hold: number; bound: number; stopped: Stopped; options?: Options; context?: Context; typical?: number };
   /** `judgeOne`, and near the cap the wrap-up (wrapUpDue), once: a turn's request on the run's own model is sent with the
    *  words after everything its context holds (`context`), its bytes admitted with it. Only in this one request: pi's
    *  transcript never holds the note, and no input is queued, so the run spends nothing after the model answers. */
@@ -1149,7 +1157,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     if (!("hold" in judged) || !wrapUp || wrapUp.sent || joined || !turn || model.id !== wrapUp.model) return judged;
     const spentUsd = spentNow();
     // What is left as admission counted it: what was spent, and what requests and paid calls in flight are held at.
-    const due = spentUsd === null ? undefined : wrapUpDue(cap, spentUsd, held + paidHolds(), typicalCost(wrapUp.costs, judged.hold));
+    // Nothing priced yet: the request at its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its hold.
+    const due = spentUsd === null ? undefined : wrapUpDue(cap, spentUsd, held + paidHolds(), typicalCost(wrapUp.costs, judged.typical ?? judged.hold));
     if (!due) return judged;
     const words = wrapUpWords(due.leftUsd, wrapUp.costs.length === 0);
     const noted = { ...context, messages: [...context.messages, { role: "user", content: `<system-reminder>${words}</system-reminder>`, timestamp: now() }] } as Context;
@@ -1222,14 +1231,16 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // did not stream (max(0, budget - the reasoning streamed), so thinking that streamed is not counted twice), and the
     // allowance, within its worst case.
     const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message) + Math.max(0, hiddenOf(limit) - reasoningBytes(message)));
-    if (most === asked) return { hold: cost(asked), bound: bound(asked), stopped: stoppedAt(asked) };
+    // The wrap-up's typical cost while nothing is priced: its input and a typical answer, at most what it asks.
+    const typical = cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked));
+    if (most === asked) return { hold: cost(asked), bound: bound(asked), stopped: stoppedAt(asked), typical };
     // Limited: sent with `most` tokens at most, thinking included. On a budget API the budget is squeezed first, keeping
     // the answer's 1,024, and maxTokens is what is left of `most` beside it, so pi-ai's sum is `most`.
     const clamp = { tokens: most, leftUsd: Math.round(left * 1e6) / 1e6, capUsd: cap };
-    if (!budgeted) return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), options: { ...options, maxTokens: most, [CLAMP]: clamp } };
+    if (!budgeted) return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, options: { ...options, maxTokens: most, [CLAMP]: clamp } };
     const level = simple.clampReasoning(thinking)!;
     const budget = Math.min(simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets), most - ANSWER_TOKENS_LEAST);
-    return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), options: { ...options, maxTokens: most - budget, thinkingBudgets: { ...options?.thinkingBudgets, [level]: budget }, [CLAMP]: clamp } };
+    return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, options: { ...options, maxTokens: most - budget, thinkingBudgets: { ...options?.thinkingBudgets, [level]: budget }, [CLAMP]: clamp } };
   };
   const refusal = (model: Model<Api>, why: string): AssistantMessage => ({
     role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
