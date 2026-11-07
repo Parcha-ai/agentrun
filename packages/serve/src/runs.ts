@@ -2301,11 +2301,13 @@ export class Runs {
           this.watchPause(run);
         } else if (door) await this.follow(run, door, abort.signal).catch(() => undefined);
         if (abort.signal.aborted || (!this.live(run) && !this.doorOf(run))) break;
-        // Unref'd, and cut short by the watch's end (the process's settle, the server's close): nothing waits on it.
+        // Unref'd, and cut short by the watch's end (the process's settle, the server's close): nothing waits on it. Its
+        // listener goes when its timer fires, so a long watch holds one at most, never one a round.
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, run.kind === "workflow" ? 500 : 200);
+          const cut = () => (clearTimeout(timer), resolve());
+          const timer = setTimeout(() => (abort.signal.removeEventListener("abort", cut), resolve()), run.kind === "workflow" ? 500 : 200);
           timer.unref();
-          abort.signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+          abort.signal.addEventListener("abort", cut, { once: true });
         });
       }
       if (run.feed === abort) run.feed = undefined;
