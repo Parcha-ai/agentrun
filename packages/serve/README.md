@@ -1090,14 +1090,17 @@ picks which one a run gets, never the model.
   hidden the same way when its agent's revision grants the browser, or can't be read: nothing else says which browser
   it ran on, so whether it was handed the sign-in is not known ("This server can't read the run's record (its
   serve.json is damaged or can't be read), …"). An ended run whose `serve.json` is damaged since is withheld the same
-  way, its end kept. What a run was handed is read back by that mark alone: the pointer whose SHA-256 it is, live or
-  forgotten since (below), or every one the agent keeps for a run handed several. A run with no mark was never handed
-  one. When the marked pointer can't be read back (it does not open under this server's seal key, live or forgotten,
-  or it was forgotten and has since dropped out of the newest 32 kept; for a run handed several, once any was dropped,
-  or when the agent keeps none at all, its sign-ins file gone or holding none for that browser), the run is hidden or
-  withheld as above. A run list's row for an ended run the server has not read (from its row and `serve.json` alone)
-  serves its error (its details too) and review cut the same way, or withholds them in the same words, and withholds
-  them when its `serve.json` is damaged. Its `held_by` still names a run that holds its lease, as a held one does.
+  way, its end kept. That mark is the SHA-256 of each pointer the run was handed (a list, one per pointer; never a
+  pointer), and what a run was handed is read back by it alone: each hash matched to the agent's live pointer or a
+  forgotten one (below). A run with no mark was never handed one. When any of its hashes matches no pointer that opens
+  (one under another seal key or none, one forgotten and since dropped out of the newest 32 kept, the agent's sign-ins
+  file gone), the run is hidden or withheld as above, and shown again, cut, once every one does: nothing keeps that
+  verdict, each server reads it anew. Forgetting the agent's other sign-ins never withholds it. A mark of any other
+  shape (one an older build wrote, `true` or a single hash, or a damaged one) is read as handed some sign-in no one
+  can name: the run is hidden or withheld, never served uncut, and forget waits for it while it goes. A run list's row
+  for an ended run the server has not read (from its row and `serve.json` alone) serves its error (its details too)
+  and review cut the same way, or withholds them in the same words, and withholds them when its `serve.json` is
+  damaged. Its `held_by` still names a run that holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
   pointer goes all the same. It is `409 sign_in_held` while a run holds the lease (`details.held_by`), and also while
