@@ -32,6 +32,9 @@ export const PERSON_HOLD_MS = 15 * 60_000;
 export const PERSON_AWAY_MS = 2 * 60_000;
 /** Under `--faux` only (the tests, beside the fake browser's own FAUX_BROWSER_LOG): the two windows above, in ms, `<hold>,<away>`. */
 export const FAUX_PERSON_MS_ENV = "FAUX_BROWSER_PERSON_MS";
+/** For tests (under `--faux`): a file's path; the run's process dies once (making the file) right after it writes an ask's
+ *  record and before it commits the ask's row, as a crash there would. */
+export const FAUX_ASK_DIES_ENV = "FAUX_BROWSER_ASK_DIES";
 
 export type AskOutcome = "done" | "cancelled" | "expired";
 /** An ask's pending record, as the server reads it. */
@@ -233,6 +236,10 @@ export function personHands(options: {
   /** The person's time on a session that just ended, `seconds` of it, to hold until a charge books it (browser-cost.ts
    *  carry): the up-front holds go as it ends, the time it took stays counted. */
   carry?(tag: string, seconds: number): void;
+  /** How many waiting rows session `tag` has in the run's timeline (each ask on it writes one, in the order asked). */
+  waiting?(tag: string): Promise<number>;
+  /** For tests: called between an ask's record and its row. */
+  afterRecord?: () => void;
 }) {
   const holdMs = options.holdMs ?? PERSON_HOLD_MS;
   const timers = options.timers ?? { set: (run: () => void, ms: number) => setTimeout(run, ms).unref(), clear: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) };
@@ -394,6 +401,17 @@ export function personHands(options: {
     return ask;
   };
 
+  /** Ask `id`, taken up from an earlier process, whose row that process never committed (it ended between the record and
+   *  the row): the row is committed now, so the run shows the ask and its notice goes out. The nth ask on a session is in
+   *  once the session has n waiting rows, as askShown reads it. An ask answered or expired needs none. */
+  const reshow = async (id: string): Promise<void> => {
+    const dir = askDir(options.root);
+    const kept = dir && options.waiting ? pendingOf(readOwn(dir, `${id}.json`), id) : undefined;
+    if (!dir || !kept || settled.has(id) || answerOf(readOwn(dir, `${id}.answer.json`)) || Date.parse(kept.expires_at) <= Date.now()) return;
+    const nth = asksIn(options.root).map(({ ask: each }) => each).filter((each) => each.tag === kept.tag).reverse().findIndex((each) => each.id === id) + 1;
+    if (nth > 0 && (await options.waiting!(kept.tag)) < nth) await note("agent.handover", { state: "waiting", reason: kept.instruction, session: kept.tag });
+  };
+
   /** Ask `id`'s answer, once there is one (the person's, or `expired` once it is due, written here): its hold dropped, any
    *  take-over of its session ended, and its row written, once. An ask this process did not make is taken up first. */
   const settle = (id: string): AskOutcome | undefined => {
@@ -456,8 +474,12 @@ export function personHands(options: {
         if (settled.has(id) || open.has(id)) return { interactionId: id };
         const dir = askDir(options.root, true);
         if (!dir) return { refused: "the run's directory for a hand-over is not this server's alone" };
-        // An ask an earlier process of this run made: waited on again, its time no longer held (that process is gone).
-        if (adopt(id)) return { interactionId: id };
+        // An ask an earlier process of this run made: waited on again, its time no longer held (that process is gone), and
+        // its row committed if that process ended before it could.
+        if (adopt(id)) {
+          await reshow(id);
+          return { interactionId: id };
+        }
         if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
         // A take-over of the same session holds the person's time already: the ask shares it.
         const user = `ask:${id}`;
@@ -476,6 +498,7 @@ export function personHands(options: {
         }
         open.set(id, { tag: ask.sessionTag, expiresAt: at + holdMs, drop: () => hold.drop() });
         watch();
+        options.afterRecord?.();
         // The record is in place before the row: the row's commit is what makes the server read the run's status again.
         await note("agent.handover", { state: "waiting", reason: record.instruction, session: ask.sessionTag });
         return { interactionId: id };

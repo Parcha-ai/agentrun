@@ -6,7 +6,7 @@
 // named only by an agent whose place is a box (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
@@ -262,6 +262,26 @@ const browserTool: ToolEntry = {
       redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
       holdMs: windows.holdMs,
+      // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.
+      waiting: async (tag) => (await opened?.commit(async (tx) => {
+        let count = 0;
+        for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+          const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+          for (const entry of page.items) {
+            const data = entry.data as { state?: unknown; session?: unknown } | undefined;
+            if (entry.kind === "agent.handover" && data?.state === "waiting" && data.session === tag) count += 1;
+          }
+          if (page.next === undefined) return count;
+          cursor = page.next;
+        }
+      }, context)) ?? 0,
+      // Tests only (--faux): the process dies once between an ask's record and its row.
+      afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
+        const mark = host.env[person.FAUX_ASK_DIES_ENV]!;
+        if (existsSync(mark)) return;
+        writeFileSync(mark, "");
+        process.kill(process.pid, "SIGKILL");
+      } : undefined,
     });
     const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;

@@ -7,7 +7,7 @@
 // record and the viewer's token are in no row, view, file list or other file. On fakes: no network, no key.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const BROWSE_ASK = new URL("./fixtures/faux-browse-ask.mjs", import.meta.url).pathname;
 const BROWSE_WAIT = new URL("./fixtures/faux-browse-wait.mjs", import.meta.url).pathname;
 const BROWSE_HANDOFF = new URL("./fixtures/faux-browse-handoff.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_STATE", "FAUX_HELD_API_KEY", "FAUX_ECHO_VALUE"];
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_STATE", "FAUX_HELD_API_KEY", "FAUX_ECHO_VALUE", "FAUX_BROWSER_ASK_DIES"];
 const json = { "content-type": "application/json" };
 /** A test password, no real one. */
 const PASSWORD = ["not-a-secret", "owner"].join("-");
@@ -277,6 +277,25 @@ test("a restart while the ask is open and nobody answers: the new process expire
   await restartedMidAsk(w);
   const answered = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 60_000);
   assert.match(answered || "", /"outcome":"expired"/, "the agent heard expired");
+});
+
+test("a restart between the ask's record and its waiting row: the next process commits the row, so the run shows the request and run.needs_input is sent once", { timeout: 240_000 }, async (t) => {
+  const got = [];
+  const receiver = createServer((req, res) => { const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { got.push(Buffer.concat(chunks).toString("utf8")); res.writeHead(200).end(); }); });
+  await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (receiver.close(resolve), receiver.closeAllConnections())));
+  // The run's first process dies once, right after it writes the ask's record and before its row is committed.
+  const died = join(await scratch(t), "died");
+  const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_BROWSER_STATE: join(await scratch(t), "vendor-sessions.json"), FAUX_BROWSER_ASK_DIES: died, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, hook: { url: `http://127.0.0.1:${receiver.address().port}/hook` } });
+  assert.ok(existsSync(died), "the first process died between the record and the row");
+  const view = await w.view();
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.instruction], ["input_required", "browser", ASK.instruction]);
+  assert.equal((await w.rows()).filter((row) => row.kind === "waiting").length, 1, "one waiting row");
+  assert.ok(await until(() => got.some((body) => body.includes("run.needs_input"))), "run.needs_input sent");
+  await sleep(1_500);
+  assert.equal(got.filter((body) => body.includes("run.needs_input")).length, 1, "once");
+  const done = await w.handBack("done");
+  assert.deepEqual([done.status, done.json], [200, { outcome: "done" }]);
 });
 
 test("an ask whose words echo a value the server holds as a key shows it cut, never in the clear: in the run's pending, the run list, its waiting row and the run.needs_input message", { timeout: 180_000 }, async (t) => {
