@@ -184,8 +184,8 @@ export const NORMAL_PRECONDITIONS = {
     what: "the tool gate and kernel drive proofs bite now (barriers-box-loss); the side-request proof (side-request-box-loss) bites only at NORMAL, so 2b flips this with its evidence",
   },
   retryMarkSynced: {
-    done: false,
-    what: "a pi request's lost attempt is marked ended at its hold before pi-ai's retry is sent (serve/src/request-start.ts:121), but that mark is not synced: a lost box can drop it while the retry goes out",
+    done: true,
+    what: "no barrier needed before pi-ai's retry: a lost attempt's end mark (serve/src/request-start.ts) carries the request's hold, which its start mark, synced before the request left (modelRequestStarted), carries too, and the retry writes no start mark of its own; a box that drops the lost mark leaves the request read as one a crash cut, at that same hold, and the WAL keeps the lost mark whenever it keeps an answer of the retry (serve/test/retry-mark-box-loss.test.mjs, a guard)",
   },
   holdRefusedUnsynced: {
     done: false,
