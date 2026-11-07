@@ -6,7 +6,8 @@
 //    never waits for a raise;
 //  - a model node's failure takes a refusal kept with no path of its own only while that node runs alone.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { AsyncResource } from "node:async_hooks";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -148,6 +149,82 @@ test("a step whose nested decision waits for a raise counts once, as waiting: th
   stop.abort();
   await running;
   assert.equal(gone, 1, "let go once the hold had passed");
+});
+
+/** A step's execution path, from its params (app.ts hands each step its node's, a model node's verify decision included). */
+const pathOf = (params) => params?.executionPath ?? null;
+
+test("a model node's verify decision run where its node's context is lost (pi-durable's scheduler drain) is still that node's work, by its path: waiting, the process lets go after the hold", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "drained-verify-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent: the decision could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  const stop = new AbortController();
+  // The drain runs queued work in the context that kicked it: here none of the node's (bound outside any step).
+  const drain = AsyncResource.bind((fn) => fn());
+  const decision = waits.step(async (params) => waits.wait(refusal, stop.signal, { label: "answer (verify)", path: params.executionPath }), pathOf);
+  const node = waits.step(async (params) => drain(() => decision({ executionPath: params.executionPath })), pathOf);
+  const running = node({ executionPath: "/root/steps/0" });
+  for (const end = Date.now() + 2_000; gone === 0 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 50));
+  stop.abort();
+  await running;
+  assert.equal(gone, 1, "the decision waits for its node, the one step in flight: let go once the hold had passed");
+});
+
+test("two map items whose verify decisions both wait, one run in the other's context (the drain a sibling's commit kicked), each count for their own item: the process lets go after the hold", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "sibling-verify-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent: the decision could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  const stop = new AbortController();
+  const [zero, one] = ["/root/steps/0/items/0/body", "/root/steps/0/items/1/body"];
+  let drainOfOne;
+  const kicked = new Promise((resolve) => (drainOfOne = resolve));
+  const decision = waits.step(async (params) => waits.wait(refusal, stop.signal, { label: "answer (verify)", path: params.executionPath }), pathOf);
+  const node = waits.step(async (params) => {
+    // Item 1 kicks the drain from its own context; item 0's decision is run by that drain, in item 1's context.
+    if (params.executionPath === one) {
+      drainOfOne(AsyncResource.bind((fn) => fn()));
+      return decision(params);
+    }
+    return (await kicked)(() => decision(params));
+  }, pathOf);
+  const both = [node({ executionPath: zero }), node({ executionPath: one })];
+  for (const end = Date.now() + 2_000; gone === 0 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 50));
+  stop.abort();
+  await Promise.all(both);
+  assert.equal(gone, 1, "both items wait at their decisions, every step in flight: let go once the hold had passed");
+});
+
+test("a wait whose pause's mark cannot be written throws and counts nothing as waiting: a later pause beside its step, still working, never lets the process go", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mark-unwritten-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent: the call could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  // The mark's write fails: its temporary file's name is taken by a directory (EISDIR).
+  mkdirSync(join(root, "budget.json.tmp"));
+  let release;
+  let threw;
+  const working = waits.step(async () => {
+    threw = await waits.wait(refusal, undefined, { label: "a", path: "/root/steps/0" }).then(() => "no throw", (error) => error.code);
+    // The step goes on with its work, waiting for nothing.
+    await new Promise((resolve) => (release = resolve));
+  });
+  const first = working();
+  for (const end = Date.now() + 2_000; !release && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(threw, "EISDIR");
+  rmSync(join(root, "budget.json.tmp"), { recursive: true });
+  const stop = new AbortController();
+  const second = waits.step(async () => waits.wait(refusal, stop.signal, { label: "b", path: "/root/steps/1" }))();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const goneThen = gone;
+  stop.abort();
+  release();
+  await Promise.all([first, second]);
+  assert.equal(goneThen, 0, "a step still working beside the one that waits keeps the process");
 });
 
 test("a step still working beside one that waits keeps the process: nothing lets go while work is under way (a pin)", { timeout: 30_000 }, async (t) => {

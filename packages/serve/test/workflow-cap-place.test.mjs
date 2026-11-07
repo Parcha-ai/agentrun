@@ -1,6 +1,7 @@
 // A raise that opens a paused workflow run again, its process let go, starts a process like any other start: under the
 // server's limits (max_concurrent_runs, and the memory its harness takes). With no place free, the run waits for one,
-// still paused, and opens once one frees; never a process past the limit.
+// still paused, and opens once one frees; never a process past the limit. The place that frees is kept for it, oldest
+// first: a newer start is refused meanwhile, never starving the run that waited.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -82,6 +83,62 @@ async function waitingForPlace(api, data, id, gate) {
   for (const end = Date.now() + 5_000; (await view(api, runId)).status !== "queued"; await sleep(100)) assert.ok(Date.now() < end, "waits for a place, queued");
   return { runId, busyId: busy.body.run_id };
 }
+
+test("a place that frees while a raised run waits for it is kept for that run: a newer start is refused, in words that say so, and the raised run opens on the queue's next try", { timeout: 240_000 }, async (t) => {
+  // The queue is tried again a minute after the raise here, so the freed place stands free until then and a newer start
+  // meets it.
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000", AGENTRUN_SERVE_TEST_PLACE_RETRY_MS: "60000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
+  const gate = join(data, "free");
+  const { runId, busyId } = await waitingForPlace(api, data, "kept", gate);
+  assert.equal((await api("POST", "/agents", agent("newer"))).status, 201);
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
+  const newer = await api("POST", "/agents/newer/runs", { input: { content: "hi" } });
+  assert.equal((await view(api, runId)).status, "queued", "the raised run still waits for the queue's next try");
+  assert.deepEqual([newer.status, newer.body.error?.code, newer.body.error?.details?.kept_for_raised], [429, "rate_limited", 1], JSON.stringify(newer.body));
+  assert.equal(newer.body.error.message, "This server's free place is kept for a run whose cap was raised and that waits to open again; start this one when another ends.");
+  await follow(api, runId, ENDED, { deadlineMs: 120_000 });
+  assert.equal((await view(api, runId)).status, "completed", "the raised run opened in the place kept for it");
+});
+
+test("a raised run waiting for a place gets the place that frees, never a newer start: new starts keep being refused until it has opened (a guard)", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
+  const gate = join(data, "free");
+  const { runId } = await waitingForPlace(api, data, "starved", gate);
+  assert.equal((await api("POST", "/agents", agent("newer"))).status, 201);
+  // A stream of new starts, refused while the place is held; then the place frees.
+  let accepted;
+  let raisedThen;
+  const stream = (async () => {
+    for (const end = Date.now() + 90_000; Date.now() < end; await sleep(50)) {
+      const tried = await api("POST", "/agents/newer/runs", { input: { content: "hi" } });
+      if (tried.status === 202) return void ((accepted = tried.body.run_id), (raisedThen = (await view(api, runId)).status));
+      assert.equal(tried.status, 429, JSON.stringify(tried.body));
+    }
+  })();
+  await sleep(500);
+  await writeFile(gate, "");
+  await stream;
+  assert.ok(accepted, "a new start was accepted in the end");
+  assert.notEqual(raisedThen, "queued", "the freed place went to the raised run that waited for it, not to a newer start");
+});
+
+test("the place kept for a raised run waiting for one goes back when it is cancelled: a new start then takes the place that frees (a guard)", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
+  const gate = join(data, "free");
+  const { runId, busyId } = await waitingForPlace(api, data, "gone", gate);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(api, runId, ENDED, { deadlineMs: 30_000 });
+  await writeFile(gate, "");
+  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
+  assert.equal((await api("POST", "/agents", agent("after-cancel"))).status, 201);
+  let started;
+  for (const end = Date.now() + 10_000; Date.now() < end && started?.status !== 202; await sleep(200)) started = await api("POST", "/agents/after-cancel/runs", { input: { content: "hi" } });
+  assert.equal(started?.status, 202, `nothing keeps the place for a cancelled run: ${JSON.stringify(started?.body)}`);
+});
 
 test("a run waiting for a place is still waiting after the server restarts: its pause's mark on disk, the next server finishes the raise once a place frees", { timeout: 240_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);

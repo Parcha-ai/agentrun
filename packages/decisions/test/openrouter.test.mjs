@@ -311,3 +311,22 @@ test("priceOf: a catalog that answers 200 with no list of models is one that can
   broken = false;
   assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers a list");
 });
+
+test("priceOf: a catalog that answers 200 with an empty list, or lists the model with no price, cannot be read for it: CatalogUnreadable, never kept, and read again next time", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  const shapes = {
+    "an empty list": { data: [] },
+    "the model listed with no price": { data: [{ id: "liquid/d1", name: "liquid/d1", architecture: { input_modalities: ["text"], output_modalities: ["decisions"] } }] },
+  };
+  const seen = [];
+  for (const [name, shape] of Object.entries(shapes)) {
+    let broken = true;
+    const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async (url, init) => (broken && new URL(String(url)).pathname.endsWith("/v1/models") ? new Response(JSON.stringify(shape), { status: 200, headers: { "content-type": "application/json" } }) : faux(url, init)) });
+    const first = await provider.priceOf("liquid/d1").then((price) => `a price: ${JSON.stringify(price)}`, (error) => error.name);
+    broken = false;
+    const again = (await provider.priceOf("liquid/d1"))?.promptUsd;
+    seen.push([name, first, again]);
+  }
+  // Each shape: unreadable for the model, then read again once the catalog answers its price.
+  assert.deepEqual(seen, [["an empty list", "CatalogUnreadable", 0.00000002], ["the model listed with no price", "CatalogUnreadable", 0.00000002]]);
+});

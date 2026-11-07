@@ -196,6 +196,62 @@ test("a capped workflow's llm call in a collecting map is not sent when it would
   assert.equal(entriesOf(data, runId).filter((entry) => entry.kind === REQUEST_COST).length, 2, "each item's one completion, after the raise");
 });
 
+/** One model node `answer` whose verify clause asks Jev whether its answer is right: under a cap that admits the node's
+ *  request (CHEAP) and has no room for the decision, the decision waits for a raise. In a collecting map over the
+ *  input's questions (`mapped`), each item runs it. */
+const verified = (mapped = false) => {
+  const answer = { node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer", verify: { out: "Check", state: { question: mapped ? "{item}" : "{question}" } } };
+  return {
+    v: 2, name: "verified",
+    schemas: {
+      In: mapped ? { type: "object", required: ["questions"], properties: { questions: { type: "array", items: { type: "string" } } } } : { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
+      Check: { type: "object", additionalProperties: false, required: ["answer"], properties: { answer: { type: "boolean", description: "Is `answer` the right answer to `question`?" } } },
+      Answers: { type: "array" },
+    },
+    input: { schemaId: "In" },
+    output: mapped ? { schemaId: "Answers", path: "answers" } : { schemaId: "Answer", path: "answer" },
+    root: mapped
+      ? { node: "chain", steps: [{ node: "map", label: "each", itemsPath: "questions", as: "answers", resultPath: "answer", maxConcurrency: 2, onItemFailure: "collect", failedAs: "missed", body: answer }] }
+      : answer,
+  };
+};
+const CHEAP = new URL("./fixtures/faux-workflow-cheap.mjs", import.meta.url).pathname;
+const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
+
+test("a capped workflow whose model node's verify decision would cross the cap waits for a raise at the decision, and its process lets go after the hold: the decision is the node's work, not a step of its own still in flight (a guard)", { timeout: 120_000 }, async (t) => {
+  const { CANARY: JEV_CANARY } = await import("./fixtures/faux-jev.mjs");
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000", TYPESAFE_API_KEY: JEV_CANARY }, KEYS);
+  const { api, data } = await serve(t, { faux: CHEAP, fauxJev: FAUX_JEV });
+  assert.equal((await api("POST", "/agents", flowAgent("checked", verified()))).status, 201);
+  // The node's request is admitted at $0.000001024 and costs $0.0000004; the decision on Jev (hundreds of input tokens at
+  // $0.042 a million) has no room in what is left.
+  const started = await api("POST", "/agents/checked/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.0000012 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.pending?.kind], ["input_required", "budget"], JSON.stringify(run));
+  await letGo(data, runId);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+});
+
+test("a capped workflow whose map items' verify decisions both wait for a raise lets its process go after the hold: each decision counts for its own item", { timeout: 120_000 }, async (t) => {
+  const { CANARY: JEV_CANARY } = await import("./fixtures/faux-jev.mjs");
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000", TYPESAFE_API_KEY: JEV_CANARY }, KEYS);
+  const { api, data } = await serve(t, { faux: CHEAP, fauxJev: FAUX_JEV });
+  assert.equal((await api("POST", "/agents", flowAgent("checked-each", verified(true)))).status, 201);
+  // Room for both items' requests ($0.000001024 each at least), none for either decision.
+  const started = await api("POST", "/agents/checked-each/runs", { input: { questions: ["What is six times seven?", "What is two plus two?"] }, max_cost_usd: 0.0000022 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.pending?.kind], ["input_required", "budget"], JSON.stringify(run));
+  await letGo(data, runId);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+});
+
 test("cancelling a capped workflow run paused at its cap whose process was let go ends it cancelled: nothing more is sent, and no process opens it again", async (t) => {
   withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
   const { api, data } = await serve(t, { faux: PRICED });
