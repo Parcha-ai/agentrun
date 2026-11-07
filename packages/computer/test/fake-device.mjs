@@ -13,6 +13,31 @@ const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer",
 const ANDROID_GROUPS = ["files", "screen", "input.touch", "apps", "apps.install", "apps.ui_tree"];
 const BACKGROUND = [40, 40, 40];
 
+const chunk = (type, body) => {
+	const length = Buffer.alloc(4);
+	length.writeUInt32BE(body.length);
+	return Buffer.concat([length, Buffer.from(type, "latin1"), body, Buffer.alloc(4)]);
+};
+
+/**
+ * A PNG of the IHDR fields given, with idat as its one IDAT chunk's body (no IDAT when undefined). It need not decode:
+ * the tests build broken and hostile images with it.
+ */
+export function pngOf({ width, height, depth = 8, colorType = 2, interlace = 0, idat }) {
+	const ihdr = Buffer.alloc(13);
+	ihdr.writeUInt32BE(width, 0);
+	ihdr.writeUInt32BE(height, 4);
+	ihdr[8] = depth;
+	ihdr[9] = colorType;
+	ihdr[12] = interlace;
+	return Buffer.concat([
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+		chunk("IHDR", ihdr),
+		...(idat === undefined ? [] : [chunk("IDAT", idat)]),
+		chunk("IEND", Buffer.alloc(0)),
+	]);
+}
+
 /** An RGB PNG of width x height, each pixel from color(x, y); odd rows use the Sub filter, so a reader must undo it. */
 export function png(width, height, color) {
 	const raw = Buffer.alloc(height * (width * 3 + 1));
@@ -26,18 +51,11 @@ export function png(width, height, color) {
 			for (let c = 0; c < 3; c++) raw[row + 1 + x * 3 + c] = filter === 1 ? (rgb[c] - left[c]) & 0xff : rgb[c];
 		}
 	}
-	const chunk = (type, body) => {
-		const length = Buffer.alloc(4);
-		length.writeUInt32BE(body.length);
-		return Buffer.concat([length, Buffer.from(type, "latin1"), body, Buffer.alloc(4)]);
-	};
-	const ihdr = Buffer.alloc(13);
-	ihdr.writeUInt32BE(width, 0);
-	ihdr.writeUInt32BE(height, 4);
-	ihdr[8] = 8;
-	ihdr[9] = 2;
-	return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+	return pngOf({ width, height, idat: deflateSync(raw) });
 }
+
+/** The shot a fake broken in its pixels gives: a valid IHDR for width x height, and no IDAT or one that is not zlib. */
+const undecodable = (width, height, broken) => pngOf({ width, height, idat: broken === "screen-no-idat" ? undefined : Buffer.from("these bytes are not zlib") });
 
 const inside = ([x, y], [rx, ry, rw, rh]) => x >= rx && y >= ry && x < rx + rw && y < ry + rh;
 const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
@@ -46,10 +64,26 @@ const shift = ([x, y], dx, dy = 0) => [x + dx, y + dy];
  * The provider, and `made` (each computer's name and spec). Options: `kind` (desktop or android), `mode` (its daemon),
  * `groups`, `network`, `hello` (merged over the hello), `extend` and `stream` (whether those methods are there),
  * `maxLifetimeMs`, `chunk` (bytes a screen.shot or screen.read gives), and `broken`, one of: no-cap, screen-size,
- * screen-region, screen-colors, click-offset, type-case, no-precheck, no-stop, tap-offset, swipe-stuck,
- * pinch-together, terminate-stays, tree-types, extend-noop, extend-past-cap, stream-http.
+ * screen-region, screen-colors, screen-no-idat, screen-corrupt-idat, screen-region-corrupt, click-offset, type-case,
+ * no-precheck, no-stop, no-release, tap-offset, swipe-stuck, pinch-together, terminate-stays, tree-types, extend-noop,
+ * extend-past-cap, extend-per-call, extend-shortens, stream-http, fixture-never-ready.
  */
+/**
+ * The clock the fake devices and the group tests' runs share: it reads the wall clock plus whatever its sleeps skipped,
+ * so a case that waits a minute on a deadline (lifetime.extend) waits no time in a test.
+ */
+export const testClock = (() => {
+	let skipped = 0;
+	return {
+		now: () => Date.now() + skipped,
+		sleep: async (ms) => {
+			skipped += Math.max(0, ms);
+		},
+	};
+})();
+
 export function fakeDevices({
+	clock = testClock,
 	id = "fake-device",
 	kind = "desktop",
 	mode = kind === "desktop" ? "pid1" : "none",
@@ -89,6 +123,12 @@ export function fakeDevices({
 			}
 		};
 		const finger = (pointer, phase, at) => appUp() && log({ event: "touch", pointer, phase, at });
+		/** A button's press or release where the cursor is, as the fixture logs it when the cursor is over it. */
+		const button = (event, name) => {
+			if (event === "down") c.held.add(name);
+			else c.held.delete(name);
+			if (desktopUp() && inside(c.cursor, FIXTURE_WINDOW)) log({ event, button: name, at: c.cursor });
+		};
 		const screenColor = (x, y) => {
 			if (!desktopUp() || !inside([x, y], FIXTURE_WINDOW)) return BACKGROUND;
 			const [, , w, h] = FIXTURE_WINDOW;
@@ -102,6 +142,8 @@ export function fakeDevices({
 			if (type === "move") {
 				if (!inside(action.at, [0, 0, width, height])) return `${action.at} is outside the ${width}x${height} display`;
 				c.cursor = action.at;
+			} else if (type === "down" || type === "up") {
+				button(type, action.button ?? "left");
 			} else if (type === "click") {
 				const at = action.at ?? c.cursor;
 				pointerAt(broken === "click-offset" ? shift(at, 1) : at, action.button ?? "left", action.count ?? 1);
@@ -156,7 +198,7 @@ export function fakeDevices({
 				const pid = `p${++pids}`;
 				if (argv[0].endsWith("/computerd-fixture") && argv[1] === "--log" && c.files.has(argv[0])) {
 					c.fixture = { log: argv[2], process: pid };
-					log({ event: "ready" });
+					if (broken !== "fixture-never-ready") log({ event: "ready" });
 				}
 				c.processes.set(pid, true);
 				return ok({ id: pid, pid: 100 + pids });
@@ -169,7 +211,8 @@ export function fakeDevices({
 			"process.wait": ({ id }) => (c.processes.has(id) ? ok({ running: c.processes.get(id), exitCode: null, signal: c.processes.get(id) ? null : "KILL" }) : fail("not_found", `no process ${id}`)),
 			"screen.shot": ({ region } = {}) => {
 				const [x, y, w, h] = region && broken !== "screen-region" ? region : [0, 0, width, height];
-				const bytes = png(w, h, (px, py) => screenColor(x + px, y + py));
+				const bad = broken === "screen-no-idat" || broken === "screen-corrupt-idat" || (broken === "screen-region-corrupt" && region !== undefined);
+				const bytes = bad ? undecodable(w, h, broken) : png(w, h, (px, py) => screenColor(x + px, y + py));
 				c.shot = { id: `s${++next}`, bytes };
 				const first = bytes.subarray(0, chunk);
 				return ok({ id: c.shot.id, size: bytes.length, data: first.toString("base64"), eof: first.length >= bytes.length, width: broken === "screen-size" ? w + 1 : w, height: h, scale: 1 });
@@ -183,13 +226,23 @@ export function fakeDevices({
 				const failed = broken === "no-precheck" ? undefined : checkActions(actions, groups, { pixelScroll: false });
 				if (failed) return ok({ done: 0, failed });
 				let done = 0;
+				// What this batch pressed and has not released, released when it stops at a failure (broken: left held).
+				const pressed = new Set();
+				const release = () => {
+					if (broken !== "no-release") for (const name of pressed) if (c.held.has(name)) button("up", name);
+				};
 				for (const [index, action] of actions.entries()) {
 					// Broken: each action checked only as its turn comes, so what comes before a bad one runs.
 					const bad = broken === "no-precheck" ? checkActions([action], groups) : undefined;
 					if (bad) return ok({ done, failed: { ...bad, index } });
 					const why = run(action);
-					if (why === undefined) done++;
-					else if (broken !== "no-stop") return ok({ done, failed: { index, kind: "invalid", message: why } });
+					if (why === undefined) {
+						done++;
+						if (action.type === "down") pressed.add(action.button ?? "left");
+					} else if (broken !== "no-stop") {
+						release();
+						return ok({ done, failed: { index, kind: "invalid", message: why } });
+					}
 				}
 				return ok(broken === "no-stop" ? { done: actions.length } : { done });
 			},
@@ -204,7 +257,7 @@ export function fakeDevices({
 				if (!c.apps.has(id)) return fail("not_found", `no app ${id}`);
 				c.foreground = id;
 				c.fixture = { log: fixtureAppLog(id) };
-				log({ event: "ready" });
+				if (broken !== "fixture-never-ready") log({ event: "ready" });
 				return ok({});
 			},
 			"apps.terminate": ({ id }) => {
@@ -222,7 +275,7 @@ export function fakeDevices({
 			async call(method, params, { signal } = {}) {
 				if (closed) return fail("gone", "the connection was closed");
 				if (signal?.aborted) return fail("aborted", `${method} was aborted`);
-				if (!computers.has(c.ref.name) || Date.now() > c.deadline.getTime()) return fail("gone", `${c.ref.name} has ended`);
+				if (!computers.has(c.ref.name) || clock.now() > c.deadline.getTime()) return fail("gone", `${c.ref.name} has ended`);
 				const answer = methods[method];
 				if (answer === undefined || (method !== "hello" && method !== "ping" && !declares(method))) return fail("unsupported", `${method} is not a method of this computer`);
 				return answer(params ?? {});
@@ -255,7 +308,7 @@ export function fakeDevices({
 			const refusals = provider.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((r) => r.message).join("; "));
 			const name = `${kind}-${++next}`;
-			const created = Date.now();
+			const created = clock.now();
 			computers.set(name, {
 				ref: { id: `id-${name}`, name },
 				labels: { ...spec.labels },
@@ -267,6 +320,7 @@ export function fakeDevices({
 				apps: new Map(),
 				foreground: null,
 				cursor: [0, 0],
+				held: new Set(),
 			});
 			made.push({ name, spec });
 			return ok({ id: `id-${name}`, name });
@@ -277,7 +331,7 @@ export function fakeDevices({
 		},
 		async list(labels) {
 			const found = [...computers.values()].filter((c) => Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: Date.now() > c.deadline.getTime() ? "stopped" : "running", network: c.network })));
+			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: clock.now() > c.deadline.getTime() ? "stopped" : "running", network: c.network })));
 		},
 		async network(ref) {
 			const c = computers.get(ref.name);
@@ -286,7 +340,7 @@ export function fakeDevices({
 		async connect(ref) {
 			const c = computers.get(ref.name);
 			if (c === undefined) return fail("not_found", `no computer ${ref.name}`);
-			if (Date.now() > c.deadline.getTime()) return fail("gone", `${ref.name} has ended`);
+			if (clock.now() > c.deadline.getTime()) return fail("gone", `${ref.name} has ended`);
 			const client = clientOf(c);
 			const said = await client.call("hello", { client: "fake" });
 			return ok({ client, hello: said.value, close: async () => client.close() });
@@ -300,9 +354,11 @@ export function fakeDevices({
 		provider.extend = async (ref, ttlMs) => {
 			const c = computers.get(ref.name);
 			if (c === undefined) return fail("not_found", `no computer ${ref.name}`);
-			const at = Date.now() + ttlMs;
-			if (at > c.created + maxLifetimeMs && broken !== "extend-past-cap") return fail("refused", `a deadline ${ttlMs} ms from now is past this provider's cap of ${maxLifetimeMs} ms`);
-			if (at < c.deadline.getTime()) return fail("refused", "a deadline earlier than the current one");
+			const at = clock.now() + ttlMs;
+			// Broken: extend-per-call holds each ttlMs to the cap on its own, so extends move the deadline past created + cap.
+			const past = broken === "extend-per-call" ? ttlMs > maxLifetimeMs : at > c.created + maxLifetimeMs;
+			if (past && broken !== "extend-past-cap") return fail("refused", `a deadline ${ttlMs} ms from now is past this provider's cap of ${maxLifetimeMs} ms from create`);
+			if (at < c.deadline.getTime() && broken !== "extend-shortens") return fail("refused", "a deadline earlier than the current one");
 			if (broken !== "extend-noop") c.deadline = new Date(at);
 			return ok({ deadline: new Date(at) });
 		};

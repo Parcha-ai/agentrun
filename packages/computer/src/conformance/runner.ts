@@ -8,7 +8,7 @@ import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec } 
 import { type ComputerErrorCode, fail, ok, type Result } from "../result.js";
 import { conformanceCases } from "./cases/index.js";
 import { type StartedFixture, startFixture } from "./fixture.js";
-import { type Capability, type Case, type CaseContext, type CaseResult, type ConformanceOptions, type ConformanceReport, coreGroups, type Ran } from "./types.js";
+import { type Capability, type Case, type Clock, type CaseContext, type CaseResult, type ConformanceOptions, type ConformanceReport, coreGroups, type Ran } from "./types.js";
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
@@ -70,6 +70,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	const { image, only, signal, cases = conformanceCases, drifted, onResult, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
+	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
 	const capabilities = provider.capabilities();
@@ -230,6 +231,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		const refs: Array<{ ref: ComputerRef; by: ComputerProvider }> = [];
 		const connections: ComputerConnection[] = [];
 		let started: Promise<StartedFixture> | undefined;
+		/** The fixture's stop, set as soon as it is launched: one that never logs ready is stopped as well. */
+		let stopFixture: (() => Promise<void>) | undefined;
 		let dirs = 0;
 		// Set when the case ends: what a provider call gives after that is ended at once, not left to the case.
 		let ended = false;
@@ -321,10 +324,13 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					if (fixture === undefined) {
 						return t.skip("no fixture was given: --fixture names computerd-fixture for a desktop, or the fixture APK for an Android phone");
 					}
-					started ??= startFixture(t, fixture);
+					started ??= startFixture(t, fixture, (stop) => {
+						stopFixture = stop;
+					});
 					return started;
 				},
 				fetch: (url, init) => fetcher(url, { ...init, signal: init?.signal ?? caseSignal }),
+				clock,
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();
@@ -395,8 +401,12 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		} finally {
 			ended = true;
 			clearTimeout(timeout);
-			// The fixture is stopped while the case's connection is still open; a stop that fails is not the case's verdict.
-			if (started !== undefined) await bounded(started.then((one) => one.stop()).catch(() => {}), CLOSE_MS);
+			// The fixture is stopped while the case's connection is still open, whether or not it logged ready; a start still
+			// launching is given CLOSE_MS to launch or fail first. A stop that fails is not the case's verdict.
+			if (started !== undefined) {
+				if (stopFixture === undefined) await bounded(started.catch(() => {}), CLOSE_MS);
+				if (stopFixture !== undefined) await bounded(stopFixture().catch(() => {}), CLOSE_MS);
+			}
 			for (const connection of connections) await bounded(connection.close().catch(() => {}), CLOSE_MS);
 			for (const { ref, by } of refs) await release(ref, by);
 		}

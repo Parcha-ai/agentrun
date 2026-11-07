@@ -1,13 +1,13 @@
-// The screen: a shot is a PNG of the size it says, read whole through screen.read; a region shot has the region's
-// size; on a desktop the fixture's colors are where the fixture paints them. The stream, where a provider offers one,
-// is an https URL that answers.
+// The screen: a shot is a PNG of the size it says, read whole through screen.read, and every pixel of it decodes; a
+// region shot has the region's size and decodes too; on a desktop the fixture's colors are where the fixture paints them.
+// The stream, where a provider offers one, is an https URL that answers.
 import { MAX_CHUNK_BYTES, type Rect, type ScreenShotResult } from "../../protocol.js";
 import { FIXTURE_COLORS } from "../fixture.js";
-import { readPng } from "../png.js";
+import { type Png, readPng } from "../png.js";
 import type { Case, CaseContext } from "../types.js";
 
-/** A whole screenshot: screen.shot, then screen.read from each offset until eof. */
-export async function shoot(t: CaseContext, region?: Rect): Promise<{ shot: ScreenShotResult; png: Buffer }> {
+/** A whole screenshot: screen.shot, then screen.read from each offset until eof, then every pixel decoded. */
+export async function shoot(t: CaseContext, region?: Rect): Promise<{ shot: ScreenShotResult; image: Png }> {
 	const what = region ? `the shot of region ${JSON.stringify(region)}` : "the shot";
 	const shot = await t.call("screen.shot", region ? { region } : {});
 	const first = Buffer.from(shot.data, "base64");
@@ -27,7 +27,13 @@ export async function shoot(t: CaseContext, region?: Rect): Promise<{ shot: Scre
 	}
 	const png = Buffer.concat(parts);
 	t.equal(png.length, shot.size, `${what}: the bytes read, against its size`);
-	return { shot, png };
+	let image: Png;
+	try {
+		image = readPng(png);
+	} catch (error) {
+		throw new Error(`${what}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	return { shot, image };
 }
 
 const QUADRANTS = ["top left", "top right", "bottom left", "bottom right"];
@@ -39,20 +45,18 @@ export const screenCases: Case[] = [
 		group: "screen",
 		needs: ["screen"],
 		async run(t) {
-			const { shot, png } = await shoot(t);
-			const image = readPng(png);
+			const { shot, image } = await shoot(t);
 			t.assert(shot.width > 0 && shot.height > 0, `the shot is ${shot.width}x${shot.height}`);
 			t.deepEqual([image.width, image.height], [shot.width, shot.height], "the PNG's size (IHDR), against the shot's width and height");
 			t.assert(typeof shot.scale === "number" && shot.scale > 0, `scale is a number above 0, not ${JSON.stringify(shot.scale)}`);
 			const region: Rect = [Math.floor(shot.width / 4), Math.floor(shot.height / 4), Math.max(1, Math.floor(shot.width / 2)), Math.max(1, Math.floor(shot.height / 2))];
 			const part = await shoot(t, region);
-			const partImage = readPng(part.png);
-			t.deepEqual([partImage.width, partImage.height], [region[2], region[3]], `the PNG of region ${JSON.stringify(region)}: its size (IHDR)`);
+			t.deepEqual([part.image.width, part.image.height], [region[2], region[3]], `the PNG of region ${JSON.stringify(region)}: its size (IHDR)`);
 			t.deepEqual([part.shot.width, part.shot.height], [region[2], region[3]], `the shot of region ${JSON.stringify(region)}: its width and height`);
 			if (t.provider.capabilities().kind !== "desktop") return;
 			const fixture = await t.fixture();
 			const [x, y, w, h] = fixture.bounds;
-			const painted = readPng((await shoot(t)).png);
+			const painted = (await shoot(t)).image;
 			for (const [i, [fx, fy]] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]].entries()) {
 				const px = Math.floor(x + (fx as number) * w);
 				const py = Math.floor(y + (fy as number) * h);
