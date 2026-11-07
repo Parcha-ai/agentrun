@@ -132,9 +132,10 @@ export function openSupervisor(options: { dir: string; redact?: Redact }): Super
 export const PI_LIVE_EVENTS = ['run_start', 'turn_start', 'turn_end', 'message_start', 'message_end', 'tool_execution_start', 'tool_execution_end'] as const;
 /** One conversation's agent events: pi-durable's `watchEvents`, or a stand-in in a test. */
 export type WatchEvents = (session: unknown, conv: number) => Promise<{ start(listener: (events: readonly { type: string }[]) => Promise<void>): void; stop(): Promise<unknown> }>;
-const piWatch: WatchEvents = async (session, conv) => {
-  const [{ watchEvents }, { BACKGROUND_CONTEXT }] = await Promise.all([import('@earendil-works/pi-durable'), import('@earendil-works/chord/context')]);
-  return watchEvents(session as never, conv as never, BACKGROUND_CONTEXT) as never;
+// pi 1.5 removed watchEvents. Held branch pi/family-1.5 only: a recording's live pi lines refuse until P5 moves them to
+// conversation.watch with ConversationTranscript and pi.live (scripts/watch-events-p5.test.mjs lists every such site).
+const piWatch: WatchEvents = async () => {
+  throw new Error('live events move to conversation.watch in P5');
 };
 
 export function openRecorder(options: { dir: string; /** The recording's clock, when this directory has none yet (a box's child). */ started?: string; /** A spool segment is closed past this many bytes and the next one opened (default 1 MB), so a grown spool stays small and a closed segment is never read again. */ segmentBytes?: number; /** This process's number in the recording, when the recording directory is its own (a box's): the supervisor knows it, a directory of one process cannot count it. */ gen?: number; redact?: Redact; commits?: CommitRecorder; supervisor?: Supervisor; watch?: WatchEvents }): Recorder {
