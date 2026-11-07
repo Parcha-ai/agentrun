@@ -110,9 +110,11 @@ export function checkActions(actions: unknown, groups: readonly Group[], { pixel
 		const given = action as Record<string, unknown>;
 		const shape = shapeOf(given);
 		if (shape !== undefined) return { index, kind: "invalid", message: `action ${index} (${show(given.type)}): ${shape}` };
-		const bad = (Array.isArray(given.keys) ? given.keys : []).find((key) => !isKey(key));
-		if (bad !== undefined) {
-			return { index, kind: "invalid", message: `action ${index}: ${show(bad)} is not a key: a key is a name in KEYS or one printable ASCII character` };
+		// By index, not by value: the bad key may itself be undefined.
+		const keys: unknown[] = Array.isArray(given.keys) ? given.keys : [];
+		const bad = keys.findIndex((key) => !isKey(key));
+		if (bad !== -1) {
+			return { index, kind: "invalid", message: `action ${index}: ${show(keys[bad])} is not a key: a key is a name in KEYS or one printable ASCII character` };
 		}
 		const type = given.type as InputAction["type"];
 		const group = GROUP_OF[type];

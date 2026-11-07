@@ -1495,8 +1495,8 @@ run up, the firing reads `failed` ("The server stopped while setting up the run.
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
-no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. Overlap is `skip` alone:
-a firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
+no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
+firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
 because a firing queued behind a parked run would wait as long as the person does. A firing whose run is refused is `failed`, and a webhook set on this server
 gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
 `webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the
@@ -2412,8 +2412,10 @@ offered raise, `suggested_cap_usd`, is `spent_usd` + 10 × `needs_usd` rounded u
 cap, so a `PATCH` with it (below) resumes the run; it is absent with the other figures. The figures come from the refusal's own start mark, so a
 server started again says them too, shown as `cost.usd` is (to a millionth of a dollar), except `spent_usd` once the paused process is gone: the refusal counted requests
 still answering at what it held for them, so then it is the store's spend, when that is lower, and `suggested_cap_usd`
-follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, then a waiting row: "Waiting for you to raise the cap", and no more: the words are
-`pending.said`'s, which a client shows once. The
+follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, the server's `phase` row "Paused at the run's cap" (`origin` server, its id
+ending `:note`, so it is no message) marked `paused` (never an `error` row; it stays once the cap is raised, as the
+run's history), then a waiting row: "Waiting for you to raise the
+cap", and no more: the words are `pending.said`'s, which a client shows once. The
 webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
 releases the run), so a paused run holds no place; a server started again reads it paused from its store. A paused
 process that does not let go within the drain timeout (`--drain-timeout`, 30 s by default) is killed, and the run ends

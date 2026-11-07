@@ -166,9 +166,11 @@ export interface ComputerProvider {
 	/** Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. */
 	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>>;
 	/**
-	 * Sets the deadline to now + ttlMs: never earlier than the current deadline, never past created + maxLifetimeMs. It
-	 * moves the vendor's timer, the deadline label and init's own deadline, in that order; when a step fails the computer
-	 * ends earlier than asked, never later, and the error names what moved. The result is the deadline read back.
+	 * Sets the deadline to now + ttlMs: never earlier than the current deadline, never past created + maxLifetimeMs. A
+	 * ttlMs that would move it earlier, or past that cap, is refused in words with the deadline unchanged: an extend
+	 * never shortens a computer's life, and the cap counts from create, not from each call. It moves the vendor's timer,
+	 * the deadline label and init's own deadline, in that order; when a step fails the computer ends earlier than asked,
+	 * never later, and the error names what moved. The result is the deadline read back.
 	 * Optional: a provider without it asks for the whole lifetime at create.
 	 */
 	extend?(ref: ComputerRef, ttlMs: number, context?: CallContext): Promise<Result<{ deadline: Date }>>;

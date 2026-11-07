@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
+import { deflateSync } from "node:zlib";
 import test from "node:test";
 import {
 	checkActions,
@@ -24,7 +25,7 @@ import {
 	runConformance,
 } from "../dist/index.js";
 import { fakeComputers } from "./fake-computer.mjs";
-import { fakeDevices, fakeFetch, png } from "./fake-device.mjs";
+import { fakeDevices, fakeFetch, png, pngOf, testClock } from "./fake-device.mjs";
 
 const IMAGE = "fixture:image";
 const dir = mkdtempSync(join(tmpdir(), "computer-groups-"));
@@ -40,7 +41,7 @@ const byId = (...ids) => {
 	assert.deepEqual(found.map((c) => c.id).sort(), [...ids].sort(), "every case asked for is in the suite");
 	return found;
 };
-const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMAGE, cases: byId(...ids), fixture: FIXTURE, fetch: fakeFetch, patience: 1000, ...extra });
+const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMAGE, cases: byId(...ids), fixture: FIXTURE, fetch: fakeFetch, clock: testClock, patience: 1000, ...extra });
 
 const NEW_CASES = [
 	"health.kind-consistent",
@@ -191,6 +192,17 @@ test("checkActions: the whole batch first: its shape, its length, each key, each
 	assert.equal(checkActions([{ type: "wait", ms: MAX_BATCH_WAIT_MS }], all), undefined, "MAX_BATCH_WAIT_MS is allowed");
 });
 
+test("checkActions refuses undefined among the keys, wherever it is, and does not let it hide a later bad key (review: undefined keys pass the check)", () => {
+	for (const keys of [[undefined], ["a", undefined], [undefined, "Hyper_Q"]]) {
+		const failed = checkActions([{ type: "key", keys }], ["input.keys"]);
+		assert.ok(failed, `keys ${JSON.stringify(keys)} must be refused`);
+		assert.deepEqual([failed.index, failed.kind], [0, "invalid"], JSON.stringify(keys));
+		assert.match(failed.message, /^action 0: undefined is not a key/);
+	}
+	const later = checkActions([{ type: "click", at: [1, 1], keys: ["shift"] }, { type: "click", at: [1, 1], keys: [undefined] }], ["input.pointer", "input.keys"]);
+	assert.deepEqual([later?.index, later?.kind], [1, "invalid"], "a click whose held keys hold undefined");
+});
+
 test("readPng reads a PNG's size and pixels, undoing its filters, and refuses what is not a PNG in words", () => {
 	const image = readPng(png(7, 5, (x, y) => [x * 30, y * 50, (x + y) % 256]));
 	assert.deepEqual([image.width, image.height], [7, 5]);
@@ -198,6 +210,36 @@ test("readPng reads a PNG's size and pixels, undoing its filters, and refuses wh
 	assert.deepEqual(image.rgb(3, 1), [90, 50, 4]);
 	assert.throws(() => image.rgb(7, 0), /outside the 7x5 screenshot/);
 	assert.throws(() => readPng(Buffer.from("GIF89a and then some more bytes past thirty-three")), /not a PNG/);
+});
+
+test("readPng decodes every pixel when it reads: a valid IHDR with no IDAT, one that is not zlib, or short pixels is refused at once (review: unreadable screenshots pass)", () => {
+	// 4x4 RGB: 4 rows of a filter byte and 12 bytes of pixels.
+	assert.throws(() => readPng(pngOf({ width: 4, height: 4 })), /^Error: the screenshot's PNG has no IDAT$/);
+	assert.throws(() => readPng(pngOf({ width: 4, height: 4, idat: Buffer.from("these bytes are not zlib") })), /^Error: the screenshot's PNG does not inflate: /);
+	assert.throws(() => readPng(pngOf({ width: 4, height: 4, idat: deflateSync(Buffer.alloc(10)) })), /^Error: the screenshot's PNG holds 10 bytes of pixels, not the 52 its IHDR gives$/);
+	assert.throws(() => readPng(pngOf({ width: 4, height: 4, idat: deflateSync(Buffer.alloc(52, 9)) })), /^Error: the screenshot's PNG has filter 9 on row 0$/);
+	for (const fields of [{ depth: 16 }, { interlace: 1 }, { colorType: 5 }, { depth: 4, colorType: 3 }]) {
+		const { depth = 8, colorType = 2, interlace = 0 } = fields;
+		const words = `the screenshot's PNG is bit depth ${depth}, color type ${colorType}, interlace ${interlace}: the suite reads 8-bit, non-interlaced images`;
+		assert.throws(() => readPng(pngOf({ width: 4, height: 4, ...fields, idat: deflateSync(Buffer.alloc(200)) })), { message: words }, JSON.stringify(fields));
+	}
+});
+
+test("readPng holds what it inflates to the exact size IHDR gives and bounds the size: a zlib bomb is refused, not inflated (review: bad screenshots stall the runner)", () => {
+	// 64 MiB of zeros, deflated to about 64 KiB, behind an IHDR of 16x16 RGB: 16 rows of 1 + 48 bytes.
+	const bomb = deflateSync(Buffer.alloc(64 * 1024 * 1024));
+	assert.ok(bomb.length < 128 * 1024, `the bomb is ${bomb.length} bytes`);
+	assert.throws(() => readPng(pngOf({ width: 16, height: 16, idat: bomb })), { message: "the screenshot's PNG inflates past the 784 bytes its IHDR gives" });
+	// One byte over is refused the same way: the bound is exact.
+	assert.throws(() => readPng(pngOf({ width: 16, height: 16, idat: deflateSync(Buffer.alloc(785)) })), { message: "the screenshot's PNG inflates past the 784 bytes its IHDR gives" });
+	assert.deepEqual(readPng(pngOf({ width: 16, height: 16, idat: deflateSync(Buffer.alloc(784)) })).rgb(15, 15), [0, 0, 0]);
+	for (const [width, height] of [[0, 16], [16, 0], [16_385, 1], [1, 16_385], [8_193, 8_193], [2 ** 31, 2 ** 31]]) {
+		assert.throws(
+			() => readPng(pngOf({ width, height, idat: bomb })),
+			{ message: `the screenshot's PNG is ${width}x${height}: the suite reads 1 to 16384 pixels a side and at most 33554432 pixels` },
+			`${width}x${height}`,
+		);
+	}
 });
 
 test("a linux computer with computerd as PID 1, as Docker declares, skips every new case but kind-consistent in words, and passes Core", async () => {
@@ -223,7 +265,10 @@ test("a linux computer with computerd as PID 1, as Docker declares, skips every 
 	assert.equal(report.core, "pass", formatReport(report));
 	assert.deepEqual(report.undeclared, ["screen", "stream", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "apps.ui_tree", "extend"]);
 	const text = formatReport(report).trimEnd().split("\n");
-	assert.equal(text.at(-1), "core PASS 2/2 · 9 Core cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
+	assert.equal(text.at(-1), "core PASS 2/2 · 9 optional cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
+	// A case its kind does not require is never filed under core: a linux computer's report has no core screen line.
+	assert.deepEqual(text.filter((line) => /^core (screen|input|touch|apps) /.test(line)), [], text.join("\n"));
+	assert.ok(text.some((line) => /^optional screen +screenshot-size +- 1$/.test(line)), text.join("\n"));
 	assert.ok(text.includes("  - screen.screenshot-size: the provider does not declare screen"), text.join("\n"));
 });
 
@@ -246,7 +291,7 @@ test("an Android phone with daemon none passes every phone case through its in-p
 	assert.match(formatReport(report), /^computer conformance · fake-device · android, daemon none · the provider 1\.0\.0 android\/amd64\n/);
 });
 
-test("lifetime.extend passes a provider whose extend moves the deadline: the computer outlives its 45 s", { timeout: 120_000 }, async () => {
+test("lifetime.extend passes a provider whose extend moves the deadline: the computer outlives its 45 s, and the cap from create and an earlier deadline are refused", { timeout: 120_000 }, async () => {
 	const { provider } = fakeDevices();
 	const report = await run(provider, ["lifetime.extend"]);
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
@@ -260,10 +305,17 @@ const BROKEN = [
 	["screen.screenshot-size", { broken: "screen-size" }, /the PNG's size \(IHDR\), against the shot's width and height: expected \[321,240\], got \[320,240\]/],
 	["screen.screenshot-size", { broken: "screen-region" }, /the PNG of region \[80,60,160,120\]: its size/],
 	["screen.screenshot-size", { broken: "screen-colors" }, /the fixture's top left quadrant, at \(50, 50\): expected \[255,0,0\], got \[255,255,0\]/],
+	// Review (unreadable screenshots pass): every shot is decoded whole, on a phone too, and a region shot as well.
+	["screen.screenshot-size", { broken: "screen-corrupt-idat" }, /^the shot: the screenshot's PNG does not inflate: /],
+	["screen.screenshot-size", { kind: "android", broken: "screen-corrupt-idat" }, /^the shot: the screenshot's PNG does not inflate: /],
+	["screen.screenshot-size", { kind: "android", broken: "screen-no-idat" }, /^the shot: the screenshot's PNG has no IDAT$/],
+	["screen.screenshot-size", { kind: "android", broken: "screen-region-corrupt" }, /^the shot of region \[90,160,180,320\]: the screenshot's PNG does not inflate: /],
 	["input.click-lands", { broken: "click-offset" }, /the fixture's log of a click at 40,60/],
 	["input.type-text", { broken: "type-case" }, /the text the fixture got: expected "Hello, agentrun! 123", got "hello, agentrun! 123"/],
 	["input.key-table-refuses-unknown", { broken: "no-precheck" }, /^done, for a batch whose second action names a key not in KEYS: expected 0, got 1/],
-	["input.actions-stops-at-first-failure", { broken: "no-stop" }, /^done, for \[click 50,50, move off-screen to 100000,100000, click 150,150\]: expected 1, got 3/],
+	["input.actions-stops-at-first-failure", { broken: "no-stop" }, /^done, for \[move to 50,50, left down, move off-screen to 100000,100000, click 150,150\]: expected 2, got 4/],
+	// Review (held buttons go unchecked): the batch fails with the left button down, and the failure must release it.
+	["input.actions-stops-at-first-failure", { broken: "no-release" }, /^the left button the stopped batch pressed at 50,50, released in the fixture's log: still not so/],
 	["touch.tap", { kind: "android", broken: "tap-offset" }, /a tap at 180,256 was logged down at 185,256/],
 	["touch.swipe", { kind: "android", broken: "swipe-stuck" }, /a swipe to 180,192 was logged ending at 180,448/],
 	["touch.pinch", { kind: "android", broken: "pinch-together" }, /a pinch apart: the fingers went from 40 px apart to 20 px/],
@@ -271,6 +323,9 @@ const BROKEN = [
 	["apps.ui-tree-shape", { kind: "android", broken: "tree-types" }, /apps\.ui_tree: root\.children\[0\]\.enabled is "true", not a boolean/],
 	["lifetime.extend", { broken: "extend-noop" }, /list\(\) shows the deadline .*, not the extended/],
 	["lifetime.extend", { broken: "extend-past-cap" }, /extend past maxLifetimeMs \(7200001 ms\): expected an error, got ok/],
+	// Review (lifetime boundaries go unchecked): the cap counts from create, and an extend never moves the deadline earlier.
+	["lifetime.extend", { broken: "extend-shortens" }, /^extend to 60 s, earlier than the current deadline: expected an error, got ok/],
+	["lifetime.extend", { broken: "extend-per-call" }, /^extend to 7170 s, past create \+ maxLifetimeMs \(7200000 ms\): expected an error, got ok/],
 	["screen.stream", { broken: "stream-http" }, /the stream at http:\/\/stream\.example\.test: its scheme: expected "https:", got "http:"/],
 ];
 
@@ -306,7 +361,9 @@ test("a Core case whose group the kind requires fails when it is not declared; a
 	assert.deepEqual(statuses(optional), { "input.click-lands": "pass", "touch.tap": "skip", "apps.ui-tree-shape": "skip", "screen.stream": "skip" });
 	assert.equal(optional.core, "pass", formatReport(optional));
 	assert.deepEqual(optional.undeclared, ["stream", "input.touch", "apps.ui_tree"]);
-	assert.match(formatReport(optional), /core PASS 1\/1 · 2 Core cases skipped, not declared · full 0\/1/);
+	assert.match(formatReport(optional), /core PASS 1\/1 · 2 optional cases skipped, not declared · full 0\/1/);
+	assert.match(formatReport(optional), /^core input +click-lands +✓ 1$/m, "a group its kind requires stays under core");
+	assert.match(formatReport(optional), /^optional touch +tap +- 1$/m);
 });
 
 test("a phone that declares neither files nor apps.ui_tree skips the touch cases: no way to observe the effect", async () => {
@@ -323,6 +380,30 @@ test("a case that needs the fixture skips in words when the run was given none, 
 	assert.deepEqual(statuses(report), { "input.click-lands": "skip" });
 	assert.match(reasons(report)["input.click-lands"], /^no fixture was given: --fixture names computerd-fixture for a desktop/);
 	assert.equal(report.core, "fail");
+});
+
+test("a fixture that starts but never logs ready is stopped when its case fails, on a desktop and on a phone (review: failed fixtures stay running)", async () => {
+	const desktop = fakeDevices({ broken: "fixture-never-ready", chunk: 1 << 20 });
+	let afterwards;
+	const desktopCases = [
+		{ id: "input.with-fixture", level: "core", group: "input", needs: [], run: async (t) => void (await t.fixture()) },
+		{ id: "input.after-it", level: "core", group: "input", needs: [], run: async (t) => void (afterwards = readPng(Buffer.from((await t.call("screen.shot", {})).data, "base64")).rgb(50, 50)) },
+	];
+	const desktopReport = await runConformance(desktop.provider, { image: IMAGE, cases: desktopCases, fixture: FIXTURE, patience: 1000 });
+	assert.deepEqual(statuses(desktopReport), { "input.with-fixture": "fail", "input.after-it": "pass" }, JSON.stringify(reasons(desktopReport)));
+	assert.match(reasons(desktopReport)["input.with-fixture"], /^the desktop fixture logged ready: still not so/);
+	assert.deepEqual(afterwards, [40, 40, 40], "the bare screen after the case whose fixture never logged ready: the fixture was stopped");
+
+	const phone = fakeDevices({ kind: "android", broken: "fixture-never-ready" });
+	let foreground;
+	const phoneCases = [
+		{ id: "apps.with-fixture", level: "core", group: "apps", needs: [], run: async (t) => void (await t.fixture()) },
+		{ id: "apps.after-it", level: "core", group: "apps", needs: [], run: async (t) => void ({ foreground } = await t.call("apps.list", {})) },
+	];
+	const phoneReport = await runConformance(phone.provider, { image: IMAGE, cases: phoneCases, fixture: FIXTURE, patience: 1000 });
+	assert.deepEqual(statuses(phoneReport), { "apps.with-fixture": "fail", "apps.after-it": "pass" }, JSON.stringify(reasons(phoneReport)));
+	assert.match(reasons(phoneReport)["apps.with-fixture"], /^the fixture app logged ready: still not so/);
+	assert.equal(foreground, null, "the app in front after the case whose fixture app never logged ready: it was terminated");
 });
 
 test("the fixture a case started is stopped when the case ends", async () => {

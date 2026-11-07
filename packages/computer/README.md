@@ -253,7 +253,7 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG, its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
@@ -278,7 +278,8 @@ does.
 **Lifetime.** `capabilities().maxLifetimeMs` is the vendor's hard cap for the provider instance (Docker: 30 days).
 `checkLifetime(lifetimeMs, capabilities)` is the one rule every `check()` shares: a whole number of milliseconds above
 0, at most the cap, refused in words with no vendor call. A provider may offer `extend(ref, ttlMs)`, which sets the
-deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs) by moving the
+deadline to now + ttlMs (never earlier than the current deadline, never past create + maxLifetimeMs: either is refused
+in words with the deadline unchanged, so an extend never shortens a computer's life) by moving the
 vendor's timer, the deadline label and init's own deadline (`deadline.extend`, typed in `protocol.ts`; init answers it
 from the X11 shim's change on, and is `unsupported` until then), and `stream(ref)`, the vendor's live screen URL. Docker
 has neither: its deadline is a container label, which cannot change after create, so ask for the whole lifetime at
@@ -714,12 +715,12 @@ core health    hello ping unknown-method kind-consistent    ✓ 4
 core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
-core screen    screenshot-size                              - 1
-  - screen.screenshot-size: the provider does not declare screen
-...
 full lifetime  extend                                       - 1
   - lifetime.extend: the provider has no extend()
-core PASS 53/53 · 9 Core cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+optional screen screenshot-size                              - 1
+  - screen.screenshot-size: the provider does not declare screen
+...
+core PASS 53/53 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
@@ -761,13 +762,14 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
   on a phone. `health.kind-consistent` checks the kind, os and daemon pair, that hello's kind and groups are the
   provider's, and that kind's Core groups are declared; `provider.check-refuses` also asks `check` for
-  `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (the PNG decodes, its IHDR size is
-  `width` x `height`, `scale` is above 0, a region shot has the region's size, and on a desktop the fixture's four
-  colors are where it paints them), `input.click-lands` (a single and a double click show in the fixture's log at their
+  `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (every pixel of the PNG decodes, its
+  IHDR size is `width` x `height`, `scale` is above 0, a region shot decodes and has the region's size, and on a
+  desktop the fixture's four colors are where it paints them; the suite reads 8-bit, non-interlaced PNGs of at most
+  16384 pixels a side and 2^25 pixels, and inflates no more than their IHDR gives), `input.click-lands` (a single and a double click show in the fixture's log at their
   point, with their count), `input.type-text` (`Hello, agentrun! 123` arrives exactly),
   `input.key-table-refuses-unknown` (a batch whose second action names `Hyper_Q` gives `done` 0, `failed.index` 1,
-  kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (click, move off the screen, click: `done`
-  1, only the first click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
+  kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
+  click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
   fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
   front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
   the screenshot, with the fixture's button found by its id and text).
@@ -778,15 +780,18 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capability in any set and `no_new_privs`, read as in Core; and from the extension `touch.pinch` (two fingers logged
   moving apart), `lifetime.extend` (`extend`: made with 45 s and extended to 120 s, at 60 s it answers ping with a
-  process started earlier still running and `list()` shows the new deadline; an extend past the cap is refused with the
-  deadline unchanged) and `screen.stream` (`stream`: an https URL that answers 200; only its origin is ever reported).
+  process started earlier still running and `list()` shows the new deadline; three extends are refused with the
+  deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
+  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
+  (`stream`: an https URL that answers 200; only its origin is ever reported).
 
 A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, or an optional
 provider method (`extend`, `stream`, declared by being there). When a Core case needs what its kind requires and the
 provider or the computer lacks it, the case fails in words: `a desktop computer with daemon pid1 must declare screen:
 the provider does not declare screen`. Any other need that is not declared skips the case with the reason, never
-fails it, and names it in `undeclared`; a Core case skipped so is out of Core's count, and the verdict says how many
-(`9 Core cases skipped, not declared`). Any other skip of a Core case (no fixture given, no way to observe a touch)
+fails it, and names it in `undeclared`; a Core case skipped so is not Core for this kind of computer: the report lists
+it under `optional`, never under `core`, it is out of Core's count, and the verdict says how many (`9 optional cases
+skipped, not declared`). Any other skip of a Core case (no fixture given, no way to observe a touch)
 is not a pass, so Core does not pass.
 
 The cases that check what input did read a fixture's own log, with no model. `--fixture <path>` (`fixture` from code)
@@ -797,7 +802,7 @@ installed with `apps.install` and launched, logging to its files directory, with
 `ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
 button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
 contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
-fixture is stopped when its case ends. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
 `no way to observe the effect: declare files or apps.ui_tree`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
