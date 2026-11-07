@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
@@ -169,4 +170,24 @@ test("an event whose scope more than one trigger listens on (a file edited by ha
   assert.ok(said[0].includes(a.id) && said[0].includes(b.id), said[0]);
   const nextApi = client(next.baseUrl, next.token);
   for (const id of [a.id, b.id]) assert.deepEqual((await nextApi("GET", `/triggers/${id}/firings`)).body.firings, [], "fired none");
+});
+
+test("a hook body over its source's cap is 413 at once, its socket closed, never read to its end: declared up front, or counted as it streams", { timeout: 60_000 }, async (t) => {
+  const { server } = await pingServer(t);
+  const { port } = new URL(server.baseUrl);
+  const ask = (headers, first) => new Promise((resolve, reject) => {
+    const socket = connect(Number(port), "127.0.0.1");
+    let answer = "";
+    socket.on("data", (chunk) => (answer += chunk));
+    socket.on("close", () => resolve(answer));
+    socket.on("error", reject);
+    // Declared 10 MiB; only a first piece is ever sent, the rest held back: an answer and a close mean the body was not read.
+    socket.write(`POST /v2/hooks/ping HTTP/1.1\r\nHost: 127.0.0.1\r\nwebhook-id: msg_big\r\nwebhook-timestamp: ${Math.floor(Date.now() / 1000)}\r\nwebhook-signature: v1,AAAA\r\ncontent-type: application/json\r\n${headers}\r\n`);
+    socket.write(first);
+    setTimeout(() => reject(new Error(`no answer and close within 5 s: ${answer}`)), 5_000).unref();
+  });
+  const declared = await ask(`content-length: ${10 << 20}\r\n`, "x".repeat(1024));
+  assert.match(declared, /^HTTP\/1\.1 413 /, declared);
+  const streamed = await ask("transfer-encoding: chunked\r\n", `${(8192).toString(16)}\r\n${"x".repeat(8192)}\r\n`);
+  assert.match(streamed, /^HTTP\/1\.1 413 /, streamed);
 });
