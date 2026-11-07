@@ -1,5 +1,5 @@
 // A run opened on a local directory that does nothing and never releases, so a test can SIGKILL it and leave the run as a
-// crash does: `run.json` `running`, this process its holder, no new seal. `node open-and-hold.ts <root> <run id>`; prints
+// crash does: its record `running`, this process its holder. `node open-and-hold.ts <root> <run id>`; prints
 // `opened <generation> <pid>` once the run is open, then waits to be killed.
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry } from "@earendil-works/pi-durable";

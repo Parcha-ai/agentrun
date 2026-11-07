@@ -1,5 +1,5 @@
 // Seed a run: what a new run starts with, written before anything sees it. `seed` writes the run's store file (a SQLite
-// database the Harness then opens) and files in its workspace, once, on the open that finds no run.json. The next open
+// database the Harness then opens) and files in its workspace, once, on the open that finds no record in its store. The next open
 // does not seed again, so what the agent changed since stays. No disk, no key: `localRun` is a directory of this machine.
 import { appendFileSync, readFileSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";

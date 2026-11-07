@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
-import { writeHold } from "./paid-calls.js";
+import { holdRefusal, writeHold } from "./paid-calls.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -164,6 +164,24 @@ export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCrede
   return out;
 }
 
+/** Why a connection failed, in a few words: the network's own code, read down the error's causes (the SDK wraps fetch's
+ *  error, which wraps the socket's), else the deepest message, cut short. */
+function unreachable(error: unknown): string {
+  const WORDS: Record<string, string> = {
+    ECONNREFUSED: "connection refused", ECONNRESET: "the connection was reset", ENOTFOUND: "its name did not resolve", EAI_AGAIN: "its name did not resolve",
+    ETIMEDOUT: "the connection timed out", UND_ERR_CONNECT_TIMEOUT: "the connection timed out", EHOSTUNREACH: "no route to it", ENETUNREACH: "no route to it",
+  };
+  let deepest = "connection failed";
+  for (let at: unknown = error, depth = 0; at && depth < 6; at = (at as { cause?: unknown }).cause, depth++) {
+    const code = (at as { code?: unknown }).code;
+    if (typeof code === "string" && WORDS[code]) return WORDS[code]!;
+    if (typeof code === "string" && /CERT|TLS|SSL/.test(code)) return "its TLS certificate was not accepted";
+    const message = (at as { message?: unknown }).message;
+    if (typeof message === "string" && message) deepest = message.slice(0, 80);
+  }
+  return deepest;
+}
+
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
 /** `text` with every credential value in it replaced, with or without its `Bearer `: an upstream answer or error that
@@ -279,8 +297,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** `sending`, when given, runs once the server is connected and right before the call leaves: its refusal (a text)
    *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. */
   const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>): Promise<McpCallResult> => {
+    let connected = false;
     try {
       const upstream = await until(connect(server, url, headers), signal);
+      connected = true;
       if (sending && !signal.aborted) {
         const refused = await sending();
         if (refused) return said(refused, true);
@@ -296,6 +316,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const status = statuses.get(server)?.last;
       // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
+      // It never answered at all: its connection failed before any HTTP status, so nothing reached it.
+      if (!connected && status === undefined) return said(`The MCP server ${server} could not be reached at ${URL.parse(url)?.origin ?? "its address"} (${scrub(unreachable(error), headers)}); nothing was sent.`, true);
       const why = scrub(String((error as Error)?.message ?? error), headers).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
     }
@@ -350,7 +372,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
           await writeHold((kind, data) => record(commit, kind, data), { ...label, heldUsd: price });
           return undefined;
         } catch (error) {
-          return `${name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})`;
+          return holdRefusal(name, error);
         }
       });
       if (went) await record(commit, TOOL_COST, { ...label, usd: price }).catch(() => undefined);

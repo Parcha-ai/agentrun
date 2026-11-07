@@ -97,9 +97,12 @@ export class McpServers {
     return this.key ? "sealed" : "unavailable";
   }
 
-  /** This server's address as a browser reaches it: an OAuth sign-in's callback is under it. */
-  attach(base: string): void {
+  /** This server's address as a browser reaches it (`base`: an OAuth sign-in's callback is under it), and where it
+   *  listens (`listening`, required: the same as `base` when no public address is set). A loopback authorization
+   *  server never reaches either one's port when it is local (McpSignIns.own). */
+  attach(base: string, listening: string): void {
     this.signIns.base = base.replace(/\/+$/, "");
+    this.signIns.listening = listening.replace(/\/+$/, "");
   }
 
   clientDocument() {
@@ -179,7 +182,11 @@ export class McpServers {
     // lands, or a PUT or DELETE, while this listed makes the listing stale: its token never goes with another URL.
     if (auth.type === "oauth" && (!servers[name] || saving(servers[name]) !== saving(was!))) throw new ApiError("unavailable", `The server ${name} was signed in to, saved or forgotten while its tools were listed: save it again.`);
     const kept = auth.type === "oauth" ? servers[name]!.auth : { type: auth.type, ...(sealed ? { sealed, check: this.sealCheck } : {}) };
-    servers[name] = { url: url.href, auth: kept, ...listed, ...(prices && Object.keys(prices).length ? { prices } : {}), listed_at: now, updated_at: now };
+    // A body with no `prices` keeps the saved ones, for the tools still listed at the same address: a save from any
+    // client never turns a paid tool into an unmetered one. `{}` clears them, and a new address is another server.
+    const before = servers[name];
+    const priced = prices ?? (before?.url === url.href ? pricesListed(before.prices, listed.tools) : undefined);
+    servers[name] = { url: url.href, auth: kept, ...listed, ...(priced && Object.keys(priced).length ? { prices: priced } : {}), listed_at: now, updated_at: now };
     this.write(servers);
     return this.view(name, servers[name]);
   }
@@ -198,8 +205,8 @@ export class McpServers {
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     const next: Kept = { ...now, ...listed, listed_at: new Date().toISOString() };
     // A price of a tool the server no longer lists goes with it.
-    const prices = Object.entries(now.prices ?? {}).filter(([tool]) => after.has(tool));
-    if (prices.length) next.prices = Object.fromEntries(prices);
+    const prices = pricesListed(now.prices, listed.tools);
+    if (Object.keys(prices).length) next.prices = prices;
     else delete next.prices;
     servers[name] = next;
     this.write(servers);
@@ -310,7 +317,7 @@ export class McpServers {
       // Tried twice when the authorization server does not answer (a timeout, a 5xx, the network): only a refusal is final.
       for (let tries = 0; set.tokens.refresh_token && !next && !no && tries < 2 && !this.stopped.signal.aborted; tries++) {
         try {
-          next = await refreshed(set, kept.url, this.stopped.signal, this.network);
+          next = await refreshed(set, kept.url, this.stopped.signal, this.network, this.signIns.own);
         } catch (error) {
           no = await refused(error);
         }
@@ -357,9 +364,12 @@ export class McpServers {
   private view(name: string, kept: Kept) {
     const { auth, ...rest } = kept;
     const opened = auth.type === "none" ? null : this.open(name, kept);
+    // The tools a call of which no price meters: outside the run's cost and its cap, said on every read.
+    const unmetered = kept.tools.filter((tool) => !(kept.prices && Object.hasOwn(kept.prices, tool.name))).map((tool) => tool.name);
     return {
       name,
       ...marked(kept.url, rest),
+      ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: auth.type, ...(auth.type === "headers" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
       credential: opened === null ? null : !("headers" in opened) ? opened.unreadable : auth.oauth?.expired ? ("expired" as const) : ("sealed" as const),
       ...(auth.oauth ? { oauth: { ...(auth.oauth.expires_at ? { expires_at: auth.oauth.expires_at } : {}), scopes: auth.oauth.scopes, client: auth.oauth.client, ...(auth.oauth.client_id ? { client_id: auth.oauth.client_id } : {}) } } : {}),
@@ -425,6 +435,11 @@ export class McpServers {
 
 /** `listed` with each known meta tool (mcp-meta.ts) marked `grantable: false` with its reason: the snapshot keeps what
  *  the server listed, and every read says which of its tools can't be granted. */
+/** `prices` for the tools `listed` still holds: a tool gone takes its price with it. Keyed by tool names with no prototype. */
+function pricesListed(prices: McpPrices | undefined, listed: readonly { name: string }[]): McpPrices {
+  return Object.assign(Object.create(null), Object.fromEntries(Object.entries(prices ?? {}).filter(([tool]) => listed.some((t) => t.name === tool)))) as McpPrices;
+}
+
 function marked<T extends { tools: McpTool[] }>(url: string, listed: T): T & { tools: (McpTool & { grantable?: false; reason?: string })[] } {
   return { ...listed, tools: listed.tools.map((tool) => {
     const meta = metaToolOf(url, tool.name);

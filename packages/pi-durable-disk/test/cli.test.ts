@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { main, parseDuration, watchdogOwnsCgroup } from "../src/cli.ts";
+import { main, parseDuration } from "../src/cli.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
@@ -15,7 +15,7 @@ test("durations: a number and its unit (ms, s, m, h); a bare number is refused w
   for (const bad of ["", "30 s", "-1s", "1d", "s", "1.5"]) assert.throws(() => parseDuration(bad), /not a duration/);
   assert.throws(() => parseDuration("90"), /: not a duration: "90": give a unit, e\.g\. 90s or 90ms$/);
   assert.throws(() => parseDuration("0"), /not a duration: "0": give a unit/, "a bare 0 is a bare number too");
-  // A flag whose name carries its unit (-ms) takes a bare number as milliseconds, and units as before.
+  // A rule whose flag name carries its unit takes a bare number as milliseconds, and units as before.
   assert.deepEqual(["250", "2s"].map((d) => parseDuration(d, { bareMs: true })), [250, 2_000]);
   // A flag whose 0 turns its feature off takes a bare 0, and nothing else bare.
   assert.equal(parseDuration("0", { zeroOff: true }), 0);
@@ -36,7 +36,7 @@ async function said(argv: string[]): Promise<{ code: number; err: string }> {
 
 // A run up to its duration flags; its directory cannot be made, so a run that got past its flags stops there, before it
 // opens anything.
-const RUN = ["run", "--dir", "/dev/null/r1", "--app", "a.ts"];
+const RUN = ["run", "--dir", "/dev/null/r1", "--epoch", "1", "--app", "a.ts"];
 const UNIT_FLAGS: [string[], string][] = ["park-threshold", "park-idle", "drain-timeout"].map((f) => [RUN, f] as [string[], string]);
 
 test("every duration flag whose name carries no unit refuses a bare number, with the hint, before the command does anything", async () => {
@@ -49,15 +49,11 @@ test("every duration flag whose name carries no unit refuses a bare number, with
   }
 });
 
-test("a bare 0 is accepted only where 0 turns a feature off (--park-threshold); -ms flags keep bare milliseconds", async () => {
+test("a bare 0 is accepted only where 0 turns a feature off (--park-threshold)", async () => {
   assert.doesNotMatch((await said([...RUN, "--park-threshold", "0"])).err, /not a duration/, "--park-threshold 0 turns it off");
   for (const [command, flag] of [[RUN, "drain-timeout"], [RUN, "park-idle"]] as [string[], string][]) {
     assert.match((await said([...command, `--${flag}`, "0"])).err, /not a duration: "0": give a unit/, `${command[0]} --${flag} 0 is a bare number`);
     assert.doesNotMatch((await said([...command, `--${flag}`, "0s"])).err, /not a duration/, `${command[0]} --${flag} 0s behaves as before`);
-  }
-  for (const flag of ["heartbeat-ms", "lease-expiry-ms", "lease-margin-ms"]) {
-    assert.doesNotMatch((await said([...RUN, `--${flag}`, "2000"])).err, /not a duration/, `--${flag} 2000 is milliseconds`);
-    assert.match((await said([...RUN, `--${flag}`, "soon"])).err, /not a duration/, `--${flag} soon`);
   }
 });
 
@@ -94,34 +90,3 @@ test("--help (alone, or after a command) prints the usage on stdout and exits 0"
   }
 });
 
-test("the watchdog owns the cgroup only when /proc confirms the unit the holder names, and its parent is elsewhere", () => {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-cgroup-"));
-  try {
-    const proc = (self: string | undefined, parent: string | undefined, ppid = 4242) => {
-      const root = mkdtempSync(join(dir, "proc-"));
-      for (const [pid, path] of [["self", self], [String(ppid), parent]] as const) {
-        mkdirSync(join(root, pid), { recursive: true });
-        if (path !== undefined) writeFileSync(join(root, pid, "cgroup"), `0::${path}\n`);
-      }
-      return { proc: root, ppid };
-    };
-    const unit = { driver: "local", mode: "systemd", unit: "pda-r1-mux1" };
-    const inUnit = "/system.slice/pda-r1-mux1.service";
-    assert.deepEqual(watchdogOwnsCgroup(unit, proc(inUnit, "/init.scope")), { owns: true }, "its own unit, started by the manager");
-    const refused = (holder: Record<string, unknown>, at: { proc: string; ppid: number }, why: RegExp) => {
-      const decision = watchdogOwnsCgroup(holder, at);
-      assert.equal(decision.owns, false);
-      assert.match(decision.warning ?? "", why);
-    };
-    refused(unit, proc("/system.slice/pda-r2-mux9.service", "/init.scope"), /is not pda-r1-mux1\.service/);
-    refused({ driver: "local", mode: "systemd" }, proc(inUnit, "/init.scope"), /names no unit/);
-    refused(unit, proc("/user.slice/user-1000.slice/session-3.scope", "/user.slice/user-1000.slice/session-3.scope"), /is not pda-r1-mux1\.service/);
-    refused(unit, proc(inUnit, inUnit), /parent shares cgroup/);
-    refused(unit, proc(undefined, "/init.scope"), /no cgroup v2 path/);
-    refused(unit, proc(inUnit, undefined), /parent's cgroup cannot be read/);
-    assert.deepEqual(watchdogOwnsCgroup({ driver: "local", mode: "child" }, proc(inUnit, "/init.scope")), { owns: false }, "child mode claims nothing");
-    assert.deepEqual(watchdogOwnsCgroup({}, proc(inUnit, "/init.scope")), { owns: false }, "no holder handle (a run started by hand) never owns the cgroup");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
