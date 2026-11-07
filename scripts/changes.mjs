@@ -362,6 +362,24 @@ export async function staleOwnVersions(root, base) {
   return stale;
 }
 
+/**
+ * The commit `--check` compares HEAD with. CI checks GitHub's test merge (refs/pull/N/merge: first the base branch as merged,
+ * then the pull request), but the event's base SHA is the base branch when the pull request was last synchronized, which can
+ * be older. After a release merges, the diff from that older SHA carries the release's bumps and fold, and every open pull
+ * request read as a release with unfolded fragments (seven of the first ten runs after beta.29). So when HEAD is a merge whose
+ * first parent holds `base`, that first parent is the base: the pull request's own change against the main it is tested on.
+ * Only on that checkout (`ref`, GITHUB_REF there, is refs/pull/<n>/merge): a branch that merged another one locally is
+ * checked against the base it was given, or its own edits would hide behind its first parent. A commit that is not a merge,
+ * or a merge whose first parent does not hold `base` (a restack: the old head, then main), keeps it too.
+ */
+export async function comparedBase(root, base, ref = process.env.GITHUB_REF ?? '') {
+  if (!/^refs\/pull\/\d+\/merge$/.test(ref)) return base;
+  const parents = (await git(root, ['rev-list', '--parents', '-n', '1', 'HEAD'])).trim().split(' ').slice(1);
+  if (parents.length !== 2) return base;
+  try { await git(root, ['merge-base', '--is-ancestor', base, parents[0]]); } catch { return base; }
+  return parents[0];
+}
+
 /** The packages on their own version line whose version differs from the merge base's, `[{ directory, was, now }]`. Only the release
  *  sets it; a package the base does not have is new. */
 export async function movedOwnVersions(root, base) {
@@ -386,8 +404,10 @@ async function main() {
   const root = defaultRoot;
   if (args[0] === '--check') {
     const fragments = await loadFragments(root);
-    const base = option('--base');
-    if (!base || /^0+$/.test(base)) { console.log(`Changes: ${fragments.length} fragment(s) valid. No base commit given, so the Unreleased sections were not compared.`); return; }
+    const given = option('--base');
+    if (!given || /^0+$/.test(given)) { console.log(`Changes: ${fragments.length} fragment(s) valid. No base commit given, so the Unreleased sections were not compared.`); return; }
+    const base = await comparedBase(root, given);
+    if (base !== given) console.log(`Changes: comparing with ${base.slice(0, 9)}, the base branch this merge was made on (the given base ${given.slice(0, 9)} is older).`);
     const { fold: isFold, edited } = await unreleasedEdits(root, base);
     assert.deepEqual(edited, [], `An Unreleased section is edited in ${edited.join(', ')}. Add a fragment in changes/ instead (see CONTRIBUTING.md); only the release fold edits it.`);
     const { release, unfolded } = await releaseRace(root, base);
