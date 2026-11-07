@@ -239,8 +239,9 @@ export function fakeE2B({
 				// With no internet access, E2B's firewall accepts each IPv4 TCP connection and then closes it with nothing
 				// sent back (docs network/internet-access, "Behavior of blocked TCP connections"; e2b-dev/infra@ff3922213
 				// tcpfirewall/handlers.go); the live runs of 2026-11-07 read the IPv6 target refused. Non-TCP to the deny
-				// set is dropped in nftables (infra@ff3922213 tcpfirewall rules 3 and 5), so a host:port/udp target gets no
-				// reply: refused, as the live diagnostic read 53/udp everywhere. Open answers every target.
+				// set denyOut fills is dropped in nftables (infra@ff3922213 sandbox/network/firewall.go, installRules rule
+				// 5), so a host:port/udp target gets no reply: refused, as the live diagnostic read 53/udp everywhere. Open
+				// answers every target.
 				const udp = (target) => target.endsWith("/udp");
 				const none = sb.allowInternetAccess === false;
 				const reached = sb.box.reached ?? (none ? (sb.box.udpAnswers ? targets.filter(udp) : []) : targets);

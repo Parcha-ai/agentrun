@@ -133,9 +133,9 @@ Where a vendor reads no network policy back, `computerd probe` stands for one, a
 provider.
 
 - **Targets.** `host:port` is tried over TCP; `host:port/udp` (the `/udp` suffix, on `--connect` and in a provider's
-  `probeTargets`) is sent a DNS query over UDP. Modal's defaults are TCP to `1.1.1.1:443`, `8.8.8.8:443` and
-  `[2606:4700:4700::1111]:443`, and DNS over UDP to `1.1.1.1:53/udp` and `[2606:4700:4700::1111]:53/udp`: DNS over UDP
-  is the classic path out of a sandbox that drops TCP.
+  `probeTargets`) is sent a DNS query over UDP. Modal's and E2B's defaults are TCP to `1.1.1.1:443`, `8.8.8.8:443`
+  and `[2606:4700:4700::1111]:443`, and DNS over UDP to `1.1.1.1:53/udp` and `[2606:4700:4700::1111]:53/udp`: DNS over
+  UDP is the classic path out of a sandbox that drops TCP.
 - **Each TCP target gets a request by its port**, so a server that waits for its client speaks: 443 a TLS 1.2
   ClientHello, 80 an HTTP/1.0 `HEAD /`, 53 a DNS query for example.com (behind its 2-byte length), and any other port
   an HTTP `HEAD /` (the most common protocol where the client speaks first; a server that speaks first, as SSH and SMTP
@@ -145,8 +145,8 @@ provider.
   records with a random id.
 - **Bounds:** 10 s to connect, 10 s from the request to the answer, at most 4 KiB read per target, every target at once.
   The probe runs once per create (and per attach and `network(ref)`), so its window is wide: a transparent proxy that
-  connects onward lazily, under load, still answers within it. Modal's 30 s bound on the probe's `exec.run` covers the
-  longest a probe can take (20 s).
+  connects onward lazily, under load, still answers within it. Modal's and E2B's 30 s bound on the probe's `exec.run`
+  covers the longest a probe can take (20 s).
 - **Outcomes.** `refused`: no connection, or for UDP no reply (UDP has no accept, so a datagram that brings nothing back
   is refused, as is one the far side's ICMP port-unreachable answers). `answered`: any byte came back, whatever it is: a
   ServerHello, a TLS alert (a server that will not serve the hello still spoke), an HTTP status line, a DNS response
@@ -1170,8 +1170,11 @@ sandbox's every port has a URL, `https://<port>-<id>.<domain>` (`index.mjs:1208-
 with that URL reaches whatever listens there, so a computer with no internet could still hand out data. The provider
 always sends `allowPublicTraffic: false` (a project's default may be public), and then a request needs the sandbox's
 traffic token as a header. `0.0.0.0/0` is IPv4, so for none the probe (`computerd probe`, through the daemon, as on
-Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, and refuses the computer if one answers
-(the rule every provider shares: [Network none, read from inside](#network-none-read-from-inside-nothing-answers)). An
+Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, the same defaults as Modal's (TCP to
+`1.1.1.1:443`, `8.8.8.8:443` and `[2606:4700:4700::1111]:443`, DNS over UDP to `1.1.1.1:53/udp` and
+`[2606:4700:4700::1111]:53/udp`, or the `probeTargets` option), and refuses the computer if one answers within the 10 s
+window (the rule every provider shares: [Network none, read from inside](#network-none-read-from-inside-nothing-answers)).
+The probe's `exec.run` is bounded at 30 s (`timeouts.probeMs`), above its longest run, 20 s. An
 allowlist (`allowOut`) is refused until the live bypass cases pass (ruling 9). The network is fixed at
 create: `network(ref, policy)` refuses a change.
 
@@ -1187,7 +1190,11 @@ E2B documents no stricter setting: `allowInternetAccess: false` is `denyOut 0.0.
 with a domain in `allowOut`. Under the shared rule only an answer refuses network none, so such a sandbox is kept, and
 create's and attach's `notes` name the accepted targets: `network: none; accepted with no answer (no bytes came back):
 1.1.1.1:443, 8.8.8.8:443`. The one live diagnostic (below) read that: every IPv4 target on 443/tcp and 80/tcp accepted
-and closed with 0 bytes, no answer on 53/udp, and, in the provider's own probe, no accept from the IPv6 target.
+and closed with 0 bytes, no answer on 53/udp, and, in the provider's own probe, no accept from the IPv6 target. UDP
+is not proxied: the same firewall drops non-TCP to the user deny set, which `denyOut` fills, in nftables
+(`e2b-dev/infra@ff3922213` `packages/orchestrator/pkg/sandbox/network/firewall.go`, `installRules`, rule 5), so the probe's UDP targets get no reply within the 10 s window
+and read `refused`, not `accepted`, and are not named in `notes`; a reply from either refuses network none. The provider's
+own probe has not yet run its UDP targets live on E2B: the diagnostic's 53/udp checks (3 s each) are the measured read.
 
 The risk that stays is one-way. From inside, the provider cannot prove that an accepted connection's outbound bytes go
 nowhere: a path that carries the request out and drops every reply reads the same as E2B's firewall. E2B says no

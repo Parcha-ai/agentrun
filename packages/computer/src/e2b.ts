@@ -141,7 +141,7 @@ export interface E2BTimeouts {
 	execMs: number;
 	/** From a connect's start to the daemon's hello, and each read-back call after it. */
 	helloMs: number;
-	/** The probe, run through the daemon. */
+	/** The probe, run through the daemon: it takes at most 20 s (10 s to connect, 10 s to answer, every target at once). */
 	probeMs: number;
 	/** One whole list, every page and every sandbox's read-back. */
 	listMs: number;
@@ -176,7 +176,10 @@ export interface E2BProviderOptions {
 	 */
 	publicStream?: boolean;
 	timeouts?: Partial<E2BTimeouts>;
-	/** host:port addresses the probe tries, to show none of them answers a computer with network none. */
+	/**
+	 * The addresses the probe tries, to show none of them answers a computer with network none: host:port over TCP, or
+	 * host:port/udp, a DNS query over UDP.
+	 */
 	probeTargets?: string[];
 }
 
@@ -307,8 +310,15 @@ const PAGE = 100;
 /** E2B's end, read back, is its start plus the timeout create gave it, to the second it rounds to (index.mjs:502-504). */
 const END_SLACK_MS = 2_000;
 const STAGING = "/tmp/agentrun-computerd-";
-const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
-const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$/;
+/**
+ * Public anycast resolvers, by address, as Modal's: TCP to 443, and DNS over UDP to 53, the classic path out where TCP
+ * is dropped, over IPv4 and IPv6. E2B's firewall drops non-TCP to the deny set denyOut fills, in nftables
+ * (e2b-dev/infra@ff3922213 pkg/sandbox/network/firewall.go, installRules rule 5): with no internet access a UDP target
+ * gets no reply, refused.
+ */
+const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
+/** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
+const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 /** The desktop template's VNC server and its noVNC page (@e2b/desktop@2.5.0 dist/index.mjs:426-437, 471, 502). */
 const VNC_PORT = 5900;
 const STREAM_PORT = 6080;
@@ -561,7 +571,7 @@ export class E2BProvider implements ComputerProvider {
 		const merged = { ...DEFAULTS, ...timeouts };
 		for (const [key, value] of Object.entries(merged)) if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(`timeouts.${key} must be a number of ms above 0`);
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0 || probeTargets.some((target) => typeof target !== "string" || !TARGET.test(target))) {
-			throw new Error("probeTargets must name at least one host:port for the probe");
+			throw new Error("probeTargets must name at least one address for the probe, each host:port or host:port/udp");
 		}
 		this.#Sandbox = Sandbox;
 		this.#connection = connectionOptions({ apiKey, domain });
