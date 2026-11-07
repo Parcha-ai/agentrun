@@ -572,7 +572,8 @@ export function adapterRun(
       // or a request that never left leave the note for the next request. Every path that can carry the note says how its
       // request ended (the model proxy, the runner's own withdrawals and cut bookings, the faux harness); only side calls
       // and host requests, which never carry it, may say nothing.
-      if (wrap.pending && wrap.pending.turn === event.turn) {
+      // A host request never carries or settles the note.
+      if (wrap.pending && event.host === undefined && wrap.pending.turn === event.turn) {
         const { data } = wrap.pending;
         wrap.pending = undefined;
         if (event.ended?.end === "answered") {
