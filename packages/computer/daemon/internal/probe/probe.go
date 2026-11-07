@@ -1,12 +1,15 @@
 // Package probe is what a provider asks of a computer from inside it, where the vendor's API reads nothing back: who
 // the daemon's programs run as, the kernel (gVisor names itself in its release), and which outbound addresses answer.
-// For a computer with network none, nothing answering is the only read-back there is; it shows those addresses are
-// blocked, not that every one is.
+// For a computer with network none, nothing answering within 10 s is the only read-back there is; it shows those
+// addresses are blocked, not that every one is.
 //
 // A target is reached only when bytes come back from it. A TCP accept alone says nothing: some vendors' firewalls (E2B's,
 // by its own docs: network/internet-access, "Behavior of blocked TCP connections") accept every outbound connection
 // first and decide after, closing a denied one with nothing sent back. Such a target is accepted, reported apart and
 // never counted as reached.
+//
+// A target is host:port, tried over TCP, or host:port/udp, sent a DNS query in one datagram. UDP has no accept: a UDP
+// target is answered when a datagram comes back and refused when none does.
 package probe
 
 import (
@@ -18,6 +21,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,11 +35,32 @@ type Bounds struct {
 	MaxRead int
 }
 
-// ConnectBounds are `computerd probe --connect`'s: 3 s to connect, 3 s to answer, 4 KiB read per target.
-var ConnectBounds = Bounds{Connect: 3 * time.Second, Read: 3 * time.Second, MaxRead: 4096}
+// ConnectBounds are `computerd probe --connect`'s: 10 s to connect, 10 s to answer, 4 KiB read per target. It runs once
+// per create, so its window is wide: a proxy that connects onward lazily, under load, still answers within it.
+var ConnectBounds = Bounds{Connect: 10 * time.Second, Read: 10 * time.Second, MaxRead: 4096}
 
-// Target is one target's result. Outcome is refused (no connection), accepted (a connection, and no byte back within
-// the read bound) or answered (bytes came back); Detail says what, in words.
+// UDP is the suffix that makes a target UDP: host:port/udp.
+const UDP = "/udp"
+
+// ParseTarget reads a target, host:port (TCP) or host:port/udp, into its address and network ("tcp" or "udp"). The
+// port is a number.
+func ParseTarget(target string) (address, network string, err error) {
+	address, network = target, "tcp"
+	if strings.HasSuffix(target, UDP) {
+		address, network = strings.TrimSuffix(target, UDP), "udp"
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return "", "", fmt.Errorf("the port %q is not a number from 0 to 65535", port)
+	}
+	return address, network, nil
+}
+
+// Target is one target's result. Outcome is refused (no connection; for UDP, no reply), accepted (a TCP connection, and
+// no byte back within the read bound) or answered (bytes came back); Detail says what, in words.
 type Target struct {
 	Target   string `json:"target"`
 	Protocol string `json:"protocol"`
@@ -54,10 +80,14 @@ type Result struct {
 	Results  []Target `json:"results"`
 }
 
-// ProtocolOf is the request a target gets, by its port: tls (443), http (80), dns (53, over TCP), else any (an HTTP
-// HEAD, the most common protocol where the client speaks first; a server that speaks first answers whatever is sent).
-func ProtocolOf(address string) string {
-	_, port, _ := net.SplitHostPort(address)
+// ProtocolOf is the request a target gets: a UDP target dns (a DNS query, the request a UDP server most commonly
+// answers), a TCP one by its port: tls (443), http (80), dns (53), else any (an HTTP HEAD, the most common protocol
+// where the client speaks first; a server that speaks first answers whatever is sent).
+func ProtocolOf(target string) string {
+	if strings.HasSuffix(target, UDP) {
+		return "dns"
+	}
+	_, port, _ := net.SplitHostPort(target)
 	switch port {
 	case "443":
 		return "tls"
@@ -69,7 +99,7 @@ func ProtocolOf(address string) string {
 	return "any"
 }
 
-// Run tries each host:port target at once, each by its port's protocol and within bounds, and reports them in the
+// Run tries each target (host:port or host:port/udp) at once, each by its port's protocol and within bounds, and reports them in the
 // order given.
 func Run(targets []string, bounds Bounds) Result {
 	results := make([]Target, len(targets))
@@ -94,20 +124,22 @@ func Run(targets []string, bounds Bounds) Result {
 	return result
 }
 
-// Try connects to address over TCP, sends protocol's request and reads what comes back, within bounds.
-func Try(address, protocol string, bounds Bounds) Target {
-	result := Target{Target: address, Protocol: protocol, Outcome: "refused"}
-	host, _, err := net.SplitHostPort(address)
+// Try connects to target (host:port over TCP, host:port/udp over UDP), sends protocol's request and reads what comes
+// back, within bounds.
+func Try(target, protocol string, bounds Bounds) Target {
+	result := Target{Target: target, Protocol: protocol, Outcome: "refused"}
+	address, network, err := ParseTarget(target)
 	if err != nil {
-		result.Detail = fmt.Sprintf("%q is not host:port", address)
+		result.Detail = fmt.Sprintf("%q is not host:port or host:port/udp", target)
 		return result
 	}
-	ask, ok := askFor(protocol, host)
+	host, _, _ := net.SplitHostPort(address)
+	ask, ok := askFor(protocol, host, network)
 	if !ok {
-		result.Detail = fmt.Sprintf("%q is no protocol: tls, http, dns or any", protocol)
+		result.Detail = fmt.Sprintf("%q is no protocol over %s: tls, http, dns or any over TCP, dns over UDP", protocol, network)
 		return result
 	}
-	outcome, n, detail := exchange("tcp", address, ask, bounds.Connect, bounds.Read, bounds.MaxRead)
+	outcome, n, detail := exchange(network, address, ask, bounds.Connect, bounds.Read, bounds.MaxRead)
 	result.Outcome, result.Bytes, result.Detail = outcome, n, detail
 	return result
 }
@@ -120,9 +152,16 @@ type asking struct {
 	expected string
 }
 
-// askFor is protocol's request to host. A TLS ClientHello names host as the server only when it is a name: an IP
-// literal is no server name (RFC 6066, section 3).
-func askFor(protocol, host string) (asking, bool) {
+// askFor is protocol's request to host over network. A TLS ClientHello names host as the server only when it is a name:
+// an IP literal is no server name (RFC 6066, section 3). Over UDP only dns is asked: one bare query in one datagram.
+func askFor(protocol, host, network string) (asking, bool) {
+	if network == "udp" {
+		if protocol != "dns" {
+			return asking{}, false
+		}
+		query, id := dnsQuery()
+		return asking{request: query, name: dnsResponse(id), expected: "a DNS response with the query's id"}, true
+	}
 	switch protocol {
 	case "tls":
 		name := host
@@ -150,9 +189,10 @@ func exchange(network, address string, ask asking, connect, read time.Duration, 
 		return "refused", 0, "no connection: " + reason(err)
 	}
 	defer conn.Close()
-	silent := "refused"
+	// UDP has no accept: no reply is refused.
+	silent, nothing := "refused", "no reply"
 	if network == "tcp" {
-		silent = "accepted"
+		silent, nothing = "accepted", "no bytes"
 	}
 	_ = conn.SetDeadline(time.Now().Add(read))
 	_, sent := conn.Write(ask.request)
@@ -169,11 +209,11 @@ func exchange(network, address string, ask asking, connect, read time.Duration, 
 	case errors.Is(err, io.EOF):
 		return silent, 0, "the connection closed with no bytes"
 	case isTimeout(err):
-		return silent, 0, fmt.Sprintf("no bytes within %v", read)
+		return silent, 0, fmt.Sprintf("%s within %v", nothing, read)
 	case err != nil:
-		return silent, 0, "no bytes: " + reason(err)
+		return silent, 0, nothing + ": " + reason(err)
 	}
-	return silent, 0, "no bytes"
+	return silent, 0, nothing
 }
 
 // readAnswer reads until name can judge what came (it says how many bytes it needs), the peer ends, or the deadline

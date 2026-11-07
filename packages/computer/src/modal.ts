@@ -127,7 +127,10 @@ export interface ModalProviderOptions {
 	/** Who a computer runs as when its spec does not say: uid:gid in numbers, never root or root's group. Default 1000:1000. */
 	user?: string;
 	timeouts?: Partial<ModalTimeouts>;
-	/** host:port addresses the probe tries to connect to, to show a computer with network none reaches nothing. */
+	/**
+	 * The addresses the probe tries, to show a computer with network none reaches nothing: host:port over TCP, or
+	 * host:port/udp, a DNS query over UDP.
+	 */
 	probeTargets?: string[];
 }
 
@@ -239,7 +242,8 @@ const WORKDIR = /^\/[A-Za-z0-9._/-]*$/;
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
 const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it";
-const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$/;
+/** A probe target: host:port, over TCP, or host:port/udp, a DNS query over UDP. */
+const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}(?:\/udp)?$/;
 /** Modal's own default request (guide/sandbox-resources, "Pay for what you use"): a spec's sizes are limits, as in Docker. */
 const CPU_REQUEST = 0.125;
 const MEMORY_REQUEST_MIB = 128;
@@ -306,8 +310,11 @@ export function modalCommands({
 		stdio: [daemon, "stdio"],
 	};
 }
-/** Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). */
-const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+/**
+ * Public anycast resolvers, by address: with no network, not even DNS works (guide/sandbox-networking). TCP to 443, and
+ * DNS over UDP to 53, the classic path out where TCP is dropped, over IPv4 and IPv6.
+ */
+const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
 const CLOSE_WAIT_MS = 5_000;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
@@ -533,16 +540,24 @@ function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
 
 const isAddresses = (value: unknown): value is string[] => Array.isArray(value) && value.every((one) => typeof one === "string");
 
-function probeOf(stdout: string): ProbeReport | undefined {
+/**
+ * The probe's report from its stdout, or what is wrong with it in words. The accepted list is required: a report
+ * without it cannot tell a target that only accepted from one refused, so it is no read-back of network none.
+ */
+function probeOf(stdout: string): ProbeReport | { not: string } {
+	const text = Buffer.from(stdout, "base64").toString("utf8");
+	const notReport = { not: `wrote what is not its report: ${text.slice(0, 200)}` };
+	let value: Partial<ProbeReport> | null;
 	try {
-		const value = JSON.parse(Buffer.from(stdout, "base64").toString("utf8")) as Partial<ProbeReport> | null;
-		if (isWhole(value?.uid) && isWhole(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached) && (value.accepted === undefined || isAddresses(value.accepted))) {
-			return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted ?? [] };
-		}
+		value = JSON.parse(text) as Partial<ProbeReport> | null;
 	} catch {
-		// Not the probe's JSON: undefined.
+		return notReport;
 	}
-	return undefined;
+	if (!(isWhole(value?.uid) && isWhole(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached))) return notReport;
+	if (!isAddresses(value.accepted)) {
+		return { not: `wrote a report with no accepted list, so a target that only accepted cannot be told from one refused: ${text.slice(0, 200)}` };
+	}
+	return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted };
 }
 
 /** Every way the probe's report differs from what the computer should be. */
@@ -624,7 +639,7 @@ export class ModalProvider implements ComputerProvider {
 		}
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0) throw new Error("probeTargets must name at least one address for the probe");
 		const bad = probeTargets.find((target) => typeof target !== "string" || !TARGET.test(target));
-		if (bad !== undefined) throw new Error(`the probe target ${JSON.stringify(bad)} is not host:port`);
+		if (bad !== undefined) throw new Error(`the probe target ${JSON.stringify(bad)} is not host:port or host:port/udp`);
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.#daemonImage = daemonImage;
@@ -881,7 +896,7 @@ export class ModalProvider implements ComputerProvider {
 			return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 		}
 		const report = probeOf(stdout);
-		if (report === undefined) return fail("refused", `the probe in ${name} wrote what is not its report: ${Buffer.from(stdout, "base64").toString("utf8").slice(0, 200)}`);
+		if ("not" in report) return fail("refused", `the probe in ${name} ${report.not}`);
 		return ok(report);
 	}
 
