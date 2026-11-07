@@ -14,6 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { REQUEST_COST } from "@parcha/pi-durable-agent/timeline";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
+import { decisionSpentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
 import { client, flowAgent, follow, letGo, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
@@ -340,4 +341,29 @@ test("a capped workflow's polled call held at its cap past its poll window is se
     assert.deepEqual([letGoFirst, run.status, run.error?.code ?? null], [letGoFirst, "completed", null]);
     assert.equal((await lines(calls)).filter((call) => call.path === "/v1/search").length, 1);
   }
+});
+
+test("a decision answered and billed whose booking a crash lost still counts on the next process: what the cap reads from the store is its receipt's cost, as live", async (t) => {
+  const calls = join(await scratch(t), "parallel-calls.jsonl");
+  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+  assert.equal((await api("POST", "/agents", flowAgent("booked-judge", judgeFlow("coi", "parallel")))).status, 201);
+  const started = await api("POST", "/agents/booked-judge/runs", { input: { doc: "Certificate of Incorporation of Example Widgets, Inc." }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  assert.equal((await view(api, runId)).status, "completed");
+  await letGo(data, runId);
+  const store = join(runDir(data, runId), "store", "run.sqlite");
+  // Live: the cap booked the decision at Parallel's list price.
+  const live = decisionSpentIn(store);
+  assert.equal(live, 0.001);
+  // The booking lost (the process died after the answer's receipt, before its booking was committed).
+  const db = new DatabaseSync(store);
+  try {
+    assert.ok(db.prepare("DELETE FROM entries WHERE record LIKE '%\"agentrun.decision_cost\"%'").run().changes > 0, "the booking was there");
+  } finally {
+    db.close();
+  }
+  assert.equal(decisionSpentIn(store), live, "the next process counts the decision from its receipt");
 });

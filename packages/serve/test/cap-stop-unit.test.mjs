@@ -39,8 +39,8 @@ test("budgetWaits keeps a refusal for good by its step's path, and the step's fa
   const stop = waits.stopped("/root/steps/0/items/0");
   assert.ok(stop instanceof CapStop, String(stop));
   assert.equal(stop.message, `spend_cap_reached: answer: ${refusal.words}`);
-  // A step whose request lost its node's context stops the run on the first refusal kept all the same.
-  assert.ok(waits.stopped("/root/steps/0/items/1") instanceof CapStop);
+  // A step whose request lost its node's context, running alone, stops the run on the first refusal kept all the same.
+  assert.ok(waits.stopped("/root/steps/0/items/1", true) instanceof CapStop);
   assert.equal(isItemFailure(stop), false, "a collecting map never takes it for an item's failure");
   assert.equal(isItemFailure(new EffectFailure("a tool's own failure", null)), true, "as it takes a tool's own");
 });

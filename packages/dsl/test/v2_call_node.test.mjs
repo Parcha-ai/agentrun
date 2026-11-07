@@ -246,3 +246,17 @@ test("runner: a call the host holds (deps.held) is not cut for the time held: it
     /exceeded its 1s deadline/,
   );
 });
+
+test("runner: a map's items each reach the host's deps.held at an execution path of their own, so what one item was held for never moves another's deadline", async () => {
+  const asked = [];
+  const mapped = { node: "map", label: "each", itemsPath: "plan.prompts", as: "jobs", resultPath: "job",
+    body: { node: "call", label: "submit", via: "tool", tool: "jobs.submit", args: { prompt: "{item}" }, out: "Submit", as: "job", deadline_s: 2 } };
+  const workflow = { v: 2, name: "t", schemas: { ...SCHEMAS, Plan: { type: "object", required: ["prompts"], properties: { prompts: { type: "array", items: { type: "string" } } } }, Jobs: { type: "array" } },
+    output: { schemaId: "Jobs", path: "jobs" }, root: { node: "chain", steps: [{ ...planNode }, mapped] } };
+  await runWorkflow(workflow, { question: "q" }, {
+    runNode: async () => ({ prompts: ["a", "b"] }),
+    held: (path) => (asked.push(path), 0),
+    runEffect: async () => ({ request_id: "r", status: "ok" }),
+  });
+  assert.deepEqual([...new Set(asked)].sort(), ["/root/steps/1/items/0/body", "/root/steps/1/items/1/body"]);
+});
