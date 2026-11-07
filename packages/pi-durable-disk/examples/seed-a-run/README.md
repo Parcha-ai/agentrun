@@ -118,7 +118,6 @@ ok: the seed ran once, on the new run: the store and the workspace started with 
 
 ## What it does not show
 
-A seed on an Archil disk is the same call with `mountToken` instead of `localRun`; a factory that runs on the claimed directory
-can also give the run its seed (`afterClaim` returning `seed`). pi-durable-agent seeds a run with an agent's definition and
-sign-ins this way. The [README](../../docs/reference.md#seeding-a-new-run) describes the timing and the supervisor's start grace for a
-long seed.
+A factory that runs on the claimed directory can also give the run its seed (`afterClaim` returning `seed`). pi-durable-agent
+seeds a run with an agent's definition and sign-ins this way. The [reference](../../docs/reference.md#seeding-a-new-run) describes
+the timing.

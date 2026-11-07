@@ -1,4 +1,4 @@
-// CLI unit tests: durations, usage errors (exit 2) and the API key rule. No Archil, no network.
+// CLI unit tests: durations and usage errors (exit 2). No disk, no network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -6,8 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
-import { instanceRunArgs, main, parseDuration, watchdogOwnsCgroup } from "../src/cli.ts";
+import { main, parseDuration, watchdogOwnsCgroup } from "../src/cli.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 
@@ -35,14 +34,10 @@ async function said(argv: string[]): Promise<{ code: number; err: string }> {
   }
 }
 
-// Each command up to its duration flags; the run id is not a safe segment, so a run that got past its flags stops there,
-// before it opens anything.
-const RUN = ["run", "--disk", "d", "--region", "r", "--id", "../not-safe", "--app", "a.ts"];
-const SUPERVISE = ["supervise", "--disk", "d", "--region", "r", "--id", "x", "--api-key-env", "PDA_TEST_NO_SUCH_KEY"];
-const UNIT_FLAGS: [string[], string][] = [
-  ...["park-threshold", "park-idle", "drain-timeout"].map((f) => [RUN, f] as [string[], string]),
-  ...["stop-timeout", "control-timeout", "lease-expiry", "stonith-timeout", "start-grace", "start-backoff-max", "token-grace", "every", "park-threshold"].map((f) => [SUPERVISE, f] as [string[], string]),
-];
+// A run up to its duration flags; its directory cannot be made, so a run that got past its flags stops there, before it
+// opens anything.
+const RUN = ["run", "--dir", "/dev/null/r1", "--app", "a.ts"];
+const UNIT_FLAGS: [string[], string][] = ["park-threshold", "park-idle", "drain-timeout"].map((f) => [RUN, f] as [string[], string]);
 
 test("every duration flag whose name carries no unit refuses a bare number, with the hint, before the command does anything", async () => {
   for (const [command, flag] of UNIT_FLAGS) {
@@ -54,11 +49,9 @@ test("every duration flag whose name carries no unit refuses a bare number, with
   }
 });
 
-test("a bare 0 is accepted only where 0 turns a feature off (--park-threshold, --start-grace, --start-backoff-max); -ms flags keep bare milliseconds", async () => {
-  for (const [command, flag] of [[RUN, "park-threshold"], [SUPERVISE, "park-threshold"], [SUPERVISE, "start-grace"], [SUPERVISE, "start-backoff-max"]] as [string[], string][]) {
-    assert.doesNotMatch((await said([...command, `--${flag}`, "0"])).err, /not a duration/, `${command[0]} --${flag} 0 turns it off`);
-  }
-  for (const [command, flag] of [[RUN, "drain-timeout"], [SUPERVISE, "every"], [SUPERVISE, "lease-expiry"]] as [string[], string][]) {
+test("a bare 0 is accepted only where 0 turns a feature off (--park-threshold); -ms flags keep bare milliseconds", async () => {
+  assert.doesNotMatch((await said([...RUN, "--park-threshold", "0"])).err, /not a duration/, "--park-threshold 0 turns it off");
+  for (const [command, flag] of [[RUN, "drain-timeout"], [RUN, "park-idle"]] as [string[], string][]) {
     assert.match((await said([...command, `--${flag}`, "0"])).err, /not a duration: "0": give a unit/, `${command[0]} --${flag} 0 is a bare number`);
     assert.doesNotMatch((await said([...command, `--${flag}`, "0s"])).err, /not a duration/, `${command[0]} --${flag} 0s behaves as before`);
   }
@@ -73,34 +66,18 @@ test("usage errors exit 2: no command, unknown command, unknown flag, missing re
   process.stderr.write = () => true;
   try {
     assert.equal(await main([]), 2);
-    assert.equal(await main(["fork"]), 2);
+    assert.equal(await main(["nope"]), 2);
     assert.equal(await main(["run", "--bogus"]), 2);
-    assert.equal(await main(["run", "--disk", "d"]), 2);
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x"]), 2, "run needs --app");
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--on-sigterm", "wait"]), 2, "--on-sigterm is resume or pause");
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--serve", "http"]), 2, "--serve takes a port");
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--park-threshold", "soon"]), 2);
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--serve", "0", "--serve-host", "0.0.0.0"]), 2, "off loopback, serve needs a token file");
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "x", "--app", "a.ts", "--serve", "0", "--serve-host", "0.0.0.0", "--serve-token-file", "/nonexistent"]), 2, "an unusable token file");
-    assert.equal(await main(["fork", "--disk", "d", "--region", "r", "--id", "x"]), 2, "fork needs --new-id");
-    assert.equal(await main(["supervise", "--disk", "d", "--region", "r", "--id", "x", "--api-key-env", "PDA_TEST_NO_SUCH_KEY"]), 2);
+    assert.equal(await main(["run", "--dir", "d"]), 2, "run needs --app");
+    assert.equal(await main([...RUN, "--on-sigterm", "wait"]), 2, "--on-sigterm is resume or pause");
+    assert.equal(await main([...RUN, "--serve", "http"]), 2, "--serve takes a port");
+    assert.equal(await main([...RUN, "--park-threshold", "soon"]), 2);
+    assert.equal(await main([...RUN, "--serve", "0", "--serve-host", "0.0.0.0"]), 2, "off loopback, serve needs a token file");
+    assert.equal(await main([...RUN, "--serve", "0", "--serve-host", "0.0.0.0", "--serve-token-file", "/nonexistent"]), 2, "an unusable token file");
+    assert.equal(await main(["status"]), 2, "status needs --dir");
   } finally {
     process.stderr.write = quiet;
   }
-});
-
-test("run refuses a run id that is not one safe path segment before it serves or opens anything", async () => {
-  const quiet = process.stderr.write;
-  let stderr = "";
-  process.stderr.write = (chunk: string | Uint8Array) => ((stderr += String(chunk)), true);
-  try {
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "../escape", "--app", "a.ts", "--serve", "0"]), 1);
-  } finally {
-    process.stderr.write = quiet;
-  }
-  const lines = stderr.trim().split("\n");
-  assert.equal(lines.length, 1, stderr);
-  assert.equal(JSON.parse(lines[0]!).error, "INVALID_ARGUMENT");
 });
 
 test("the executable runs through its bin path and prints usage", () => {
@@ -110,7 +87,7 @@ test("the executable runs through its bin path and prints usage", () => {
 });
 
 test("--help (alone, or after a command) prints the usage on stdout and exits 0", () => {
-  for (const args of [["--help"], ["supervise", "--help"], ["help"]]) {
+  for (const args of [["--help"], ["status", "--help"], ["help"]]) {
     const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
     assert.equal(r.status, 0, `${args.join(" ")}: ${r.stderr}`);
     assert.match(r.stdout, /usage:\n {2}pi-durable-disk run/);
@@ -147,11 +124,4 @@ test("the watchdog owns the cgroup only when /proc confirms the unit the holder 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("supervise --app is --run-arg=--app with an absolute path, ahead of the other run args", () => {
-  assert.deepEqual(instanceRunArgs({}), []);
-  assert.deepEqual(instanceRunArgs({ "run-arg": ["--heartbeat-ms=2000"] }), ["--heartbeat-ms=2000"]);
-  assert.deepEqual(instanceRunArgs({ app: "examples/app.ts", "run-arg": ["--heartbeat-ms=2000"] }), ["--app", resolve("examples/app.ts"), "--heartbeat-ms=2000"]);
-  assert.deepEqual(instanceRunArgs({ app: "/srv/app.js" }), ["--app", "/srv/app.js"]);
 });
