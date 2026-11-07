@@ -19,7 +19,8 @@ export { newestSettledInput, snapshotInputs } from "./serve.ts";
 // A host's proof that a door is the one it launched (a nonce handed on `run --door-nonce-fd`, answered at POST /door-proof).
 export { doorProof } from "./serve.ts";
 // One conversation's agent events, as pi-durable 1.1's watchEvents gave them, rebuilt on pi 1.5's observeCommits: the
-// door's GET /events and the harness's recordings read it until P5 moves them to conversation.watch.
+// door's GET /events and the harness's recordings read it until P5 moves them to conversation.watch. ./internals only,
+// no compatibility promise: pinned in test/fixtures/entries.json for review, and deleted with P5.
 export { watchEvents } from "./live-events.ts";
 export type { LiveEnd, LiveEvent, LiveEvents } from "./live-events.ts";
 export type { InputRecord } from "./serve.ts";
