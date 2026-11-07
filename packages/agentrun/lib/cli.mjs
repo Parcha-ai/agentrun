@@ -1,16 +1,24 @@
 // `npx @parcha/agentrun agents list`: the server's API from the terminal. Every command is an operation of the server's
-// OpenAPI document, read from the generated table (commands.generated.mjs); nothing here is written per command.
+// OpenAPI document, read from the generated table (commands.generated.mjs); nothing here is written per command. Waiting for
+// a run and following it live (runs start --wait, runs wait, runs timeline --follow) are follow.mjs's; the commands that
+// read a secret from stdin (login, logout, tool-keys set) are login.mjs's, and skill install is skill.mjs's.
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "./commands.generated.mjs";
+import { FLAGS, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
+import { SECRETS, guarded } from "./login.mjs";
+import { SKILL_INSTALL } from "./skill.mjs";
 
-export const NOUNS = new Set(["api", "help", ...COMMANDS.map((entry) => entry.command[0])]);
+/** The hand-written commands that run as they are given (`run`), beside the table's. */
+const LOCAL = [...SECRETS, SKILL_INSTALL];
+export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
 const GLOBAL = { "base-url": { type: "string" }, data: { type: "string" }, help: { type: "boolean", short: "h" } };
 const BODY = "--body JSON|@FILE|-";
+const ACCEPT = "application/json, */*";
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/;
 // A header value fetch takes: no line break or other control character, nothing outside Latin-1.
 const BAD_HEADER = /[\0-\x08\x0a-\x1f\x7f]|[^\0-\xff]/;
@@ -37,7 +45,7 @@ export function words(argv) {
 
 const HELP = () => {
   const groups = new Map();
-  for (const { command, summary } of COMMANDS) groups.set(command[0], command.length === 1 ? [summary] : [...(groups.get(command[0]) ?? []), command[1]]);
+  for (const { command, summary } of [...COMMANDS, WAIT, ...LOCAL]) groups.set(command[0], command.length === 1 ? [summary] : [...(groups.get(command[0]) ?? []), command[1]].sort());
   const width = Math.max(...[...groups.keys()].map((noun) => noun.length));
   return [
     "Usage: npx @parcha/agentrun <command> [args] [--base-url URL] [--data DIR]",
@@ -48,13 +56,22 @@ const HELP = () => {
     "",
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
     "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
-    "else api_key in the config file, else that server's own; it is never a flag and never printed.",
+    "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
+    "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun logout removes it.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
-    "server refused, 2 bad usage, 3 the server cannot be reached, 4 no token or the token was refused.",
+    "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",
+    "refused, or the config file, the server's record or its token file was refused. runs wait and runs start --wait",
+    "print the run once it ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed (it goes on),",
+    "8 it waits on a person (a question, its spend cap, a stopped turn, a paused workflow). runs timeline --follow prints",
+    "the timeline's pages as they come, one JSON object per line, until the run ends: 0 completed, 1 failed or cancelled.",
   ].join("\n");
 };
 
 const usageOf = (entry) => `agentrun ${entry.command.join(" ")}${entry.pathParams.map((name) => ` ${name.toUpperCase()}`).join("")}`;
+const helpOf = (entry, flags) => {
+  const width = Math.max(0, ...flags.map(([name]) => name.length));
+  return [`Usage: ${usageOf(entry)}${flags.length ? " [flags]" : ""}`, "", `${entry.summary}${entry.method ? ` (${entry.method} ${entry.path})` : ""}`, ...(flags.length ? ["", ...flags.map(([name, text]) => `  ${name.padEnd(width)}  ${text}`.trimEnd())] : [])].join("\n");
+};
 const defaultType = (types) => (types.includes("application/json") ? "application/json" : types.includes("*/*") ? "application/octet-stream" : types[0]);
 
 function commandHelp(entry) {
@@ -66,8 +83,9 @@ function commandHelp(entry) {
     flags.push([BODY, entry.secretBody ? "the body, from stdin or a file only: it holds a secret" : "the body, inline, from a file or from stdin; flags win over a JSON body's fields"]);
     flags.push(["--body-type TYPE", `the body's type: ${entry.bodyTypes.join(", ")} (default ${defaultType(entry.bodyTypes)}); any other than JSON is sent as given`]);
   }
-  const width = Math.max(0, ...flags.map(([name]) => name.length));
-  return [`Usage: ${usageOf(entry)}${flags.length ? " [flags]" : ""}`, "", `${entry.summary} (${entry.method} ${entry.path})`, ...(flags.length ? ["", ...flags.map(([name, text]) => `  ${name.padEnd(width)}  ${text}`.trimEnd())] : [])].join("\n");
+  const help = helpOf(entry, [...flags, ...(FLAGS[entry.operationId]?.help ?? [])]);
+  // The document's working body, ready to paste: single-quoted for a POSIX shell.
+  return entry.example === undefined ? help : `${help}\n\nExample:\n  ${usageOf(entry)} --body '${JSON.stringify(entry.example).replace(/'/g, "'\\''")}'`;
 }
 
 const nounHelp = (noun, entries) => [`Usage: agentrun ${noun} <verb> [args]`, "", ...entries.map((entry) => `  ${usageOf(entry).padEnd(40)}  ${entry.summary}`)].join("\n");
@@ -87,7 +105,8 @@ function readJson(file, text) {
 function privateFile(file) {
   let fd;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK: a FIFO planted there opens at once, and fstat refuses it, rather than the open waiting for a writer.
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (error.code === "ENOENT") return undefined;
     throw new Exit(4, `${file} ${error.code === "ELOOP" ? "is a link" : `cannot be read (${error.code})`}; refusing it.`);
@@ -113,17 +132,46 @@ const alive = (pid) => {
 
 const trim = (url) => url.replace(/\/+$/, "");
 
+/** A base URL as every command takes it: http or https, with no query, fragment, user or password, which would carry
+ *  the token elsewhere or swallow the path appended to it. `where` names it in the refusal; the URL itself is never
+ *  echoed, as it may hold a password. */
+function baseOf(given, where) {
+  const url = URL.canParse(given) ? new URL(given) : undefined;
+  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
+    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the API's base, ending /v2.`);
+  }
+  return trim(given);
+}
+
+const isBase = (url) => {
+  try {
+    return baseOf(url, ""), true;
+  } catch {
+    return false;
+  }
+};
+
 /** Where the request goes and the token it carries. A token goes only with the address it came with: the local
  *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
 function targetOf(values, env) {
   const data = resolve(values.data ?? join(homedir(), ".agentrun"));
   const configFile = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "config.json");
   const config = readJson(configFile, privateFile(configFile)) ?? {};
+  if (["base_url", "api_key"].some((field) => config[field] !== undefined && typeof config[field] !== "string")) {
+    throw new Exit(4, `${configFile} is not a CLI config (base_url and api_key, when there, are strings); refusing it.`);
+  }
   const recordFile = join(data, ".server.json");
   const record = readJson(recordFile, privateFile(recordFile));
+  // A record whose base_url baseOf refuses is refused as a malformed one is, exit 4: the file is wrong, not the usage.
+  if (record !== undefined && (typeof record?.base_url !== "string" || !isBase(record.base_url) || !Number.isInteger(record.pid) || record.pid <= 0)) {
+    throw new Exit(4, `${recordFile} is not a server record (base_url an http or https URL with no query, fragment, user or password, pid a positive whole number); refusing it.`);
+  }
   const stale = record && `The server recorded in ${recordFile} (pid ${record.pid}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.`;
-  const local = trim(record?.base_url ?? DEFAULT_BASE_URL);
-  const base = trim(values["base-url"] ?? env.AGENTRUN_BASE_URL ?? config.base_url ?? local);
+  const local = baseOf(record?.base_url ?? DEFAULT_BASE_URL, `base_url in ${recordFile}`);
+  const base = values["base-url"] !== undefined ? baseOf(values["base-url"], "--base-url")
+    : env.AGENTRUN_BASE_URL !== undefined ? baseOf(env.AGENTRUN_BASE_URL, "AGENTRUN_BASE_URL")
+    : config.base_url !== undefined ? baseOf(config.base_url, `base_url in ${configFile}`)
+    : local;
   let token = env.AGENTRUN_API_KEY || (config.base_url && base === trim(config.base_url) ? config.api_key : undefined);
   const isLocal = base === local;
   if (isLocal && record && !alive(record.pid)) throw new Exit(3, stale);
@@ -180,35 +228,94 @@ const refuseInline = (what, value) => {
   if (value !== undefined && value !== "-" && !value.startsWith("@")) throw usageError(`${what} carries a secret: pass the body on stdin (--body -) or in a file (--body @FILE), never on the command line.`);
 };
 
-/** The operation whose body carries a secret that `method` on `path` reaches, once the path is normalized as fetch
- *  normalizes it (`..`, `.`, their encoded forms, repeated slashes). */
-function secretAt(method, path) {
-  const pathname = new URL(`http://host/v2${path}`).pathname.replace(/\/{2,}/g, "/");
-  return COMMANDS.find((entry) => entry.secretBody && entry.method === method && new RegExp(`^/v2${entry.path.replace(/\{[^}]+\}/g, "[^/]+")}/?$`).test(pathname));
+/** A body refused inline for a request whose path ends like a secret route once resolved (`landed`, secretAt's): it may
+ *  be any command's (a home file at settings/tool-keys/x), but the guard fails closed, and says so. */
+const refuseLanded = (landed, value) => {
+  if (value !== undefined && value !== "-" && !value.startsWith("@")) throw usageError(`This request's path, with the base URL's, ends like the secret route ${landed.method} ${landed.path}, so its body is held as a secret: pass it on stdin (--body -) or from a file (--body @FILE), not on the command line.`);
+};
+
+/** The operation whose body carries a secret that `method` on `url` reaches, once its path is normalized as fetch
+ *  normalizes it (`..`, `.`, their encoded forms, repeated slashes): the operation's route at the end of the path,
+ *  whatever part of it the base URL holds. */
+function secretAt(method, url) {
+  const pathname = new URL(url).pathname.replace(/\/{2,}/g, "/");
+  const route = (entry) => new RegExp(`(?:^|/)${entry.path.slice(1).split(/\{[^}]+\}/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]+")}/?$`);
+  return COMMANDS.find((entry) => entry.secretBody && entry.method === method && route(entry).test(pathname));
 }
 
-async function send(target, request, io) {
-  const headers = { ...request.headers, authorization: `Bearer ${target.token}`, accept: "application/json, */*" };
-  if (request.body !== undefined) headers["content-type"] = request.type;
-  let response;
-  try {
-    response = await fetch(`${target.base}${request.path}`, { method: request.method, headers, ...(request.body !== undefined ? { body: request.body } : {}) });
-  } catch (error) {
+/** Requests to the target, each with its token (follow.mjs makes its own through one): `fetch(path, init)`, exit 3 for
+ *  a server not reached, a refused answer's body on stderr with its exit code, and JSON on stdout. */
+function clientOf(target, io) {
+  return {
+    io,
+    // The caller's headers, by name in any case; the default Accept only when they set none; the token last, always.
+    fetch: (path, { method = "GET", headers = {}, body, signal } = {}) => {
+      const sent = new Headers(headers);
+      if (!sent.has("accept")) sent.set("accept", ACCEPT);
+      sent.set("authorization", `Bearer ${target.token}`);
+      return fetch(`${target.base}${path}`, { method, signal, headers: sent, ...(body !== undefined ? { body } : {}) });
+    },
     // Only the cause's code: a fetch error's message can quote a header, the token's among them.
-    throw new Exit(3, target.unreachable ?? `Cannot reach the server at ${target.base} (${error.cause?.code ?? error.name}); ${START}.`);
+    unreachable: (error) => new Exit(3, target.unreachable ?? `Cannot reach the server at ${target.base} (${error?.cause?.code ?? error?.name}); ${START}.`),
+    refused(response, bytes) {
+      io.stderr.write(bytes.length ? bytes : `${response.status} ${response.statusText}`);
+      if (!bytes.length || bytes.at(-1) !== 10) io.stderr.write("\n");
+      return response.status === 401 || response.status === 403 ? 4 : 1;
+    },
+    print: (value) => io.stdout.write(`${io.stdout.isTTY ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`),
+  };
+}
+
+/** One request: `{ response, bytes }`, `{ code }` once it was refused (its error on stderr), or `{ late: true }` once
+ *  `signal`, when given, ended it first. */
+async function request(client, { method, path, headers, body, type, signal }) {
+  try {
+    const sent = new Headers(headers);
+    if (body !== undefined) sent.set("content-type", type);
+    const response = await client.fetch(path, { method, signal, headers: sent, body });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return response.ok ? { response, bytes } : { code: client.refused(response, bytes) };
+  } catch (error) {
+    if (signal?.aborted) return { late: true };
+    throw client.unreachable(error);
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!response.ok) {
-    io.stderr.write(bytes.length ? bytes : `${response.status} ${response.statusText}`);
-    if (!bytes.length || bytes.at(-1) !== 10) io.stderr.write("\n");
-    return response.status === 401 || response.status === 403 ? 4 : 1;
-  }
+}
+
+/** One request, its answer on stdout; the exit code. */
+async function send(client, req) {
+  const { response, bytes, code } = await request(client, req);
+  if (code !== undefined) return code;
+  const { io } = client;
   if (response.status === 204 || bytes.length === 0) return 0;
-  const json = !request.raw && JSON_TYPE.test(response.headers.get("content-type") ?? "") ? jsonOf(bytes) : undefined;
+  const json = !req.raw && JSON_TYPE.test(response.headers.get("content-type") ?? "") ? jsonOf(bytes) : undefined;
+  // A request that carried a secret (login.mjs): its copies cut from a JSON answer's values, or else from the text.
+  if (client.scrub) return json ? client.print(client.scrub.value(json.value)) : io.stdout.write(client.scrub.text(bytes.toString("utf8"))), 0;
   if (json && io.stdout.isTTY) io.stdout.write(`${JSON.stringify(json.value, null, 2)}\n`);
   else if (json) io.stdout.write(bytes.at(-1) === 10 ? bytes : Buffer.concat([bytes, Buffer.from("\n")]));
   else io.stdout.write(bytes);
   return 0;
+}
+
+/** `--timeout SECONDS` in milliseconds. */
+function timeoutOf(value) {
+  if (value === undefined) return undefined;
+  const seconds = coerce({ name: "timeout", type: "number" }, value);
+  if (seconds <= 0) throw usageError(`--timeout takes a number of seconds above 0, not ${value}`);
+  return seconds * 1000;
+}
+
+/** A run id goes whole into one path segment (encoded); one that fetch would read as no segment or a step up is none. */
+const runIdOk = (id) => typeof id === "string" && !["", ".", ".."].includes(id);
+
+/** `runs wait RUN_ID [--timeout SECONDS]`. */
+async function wait(argv, env, io) {
+  const { values, positionals } = parse(argv, { ...GLOBAL, timeout: { type: "string" } });
+  if (values.help) return io.stdout.write(`${helpOf(WAIT, WAIT.help)}\n`), 0;
+  const args = positionals.slice(WAIT.command.length);
+  if (args.length !== 1) throw usageError(`${helpOf(WAIT, WAIT.help)}\n\n${usageOf(WAIT)} takes 1 argument, given ${args.length}.`);
+  if (!runIdOk(args[0])) throw usageError(`${usageOf(WAIT)}: RUN_ID may not be empty, . or ..`);
+  const timeout = timeoutOf(values.timeout);
+  return waitRun(clientOf(targetOf(values, env), io), args[0], timeout);
 }
 
 const parse = (argv, options) => {
@@ -232,26 +339,37 @@ async function api(argv, env, io) {
   const segments = path.split(/[?#]/)[0].split("/").slice(1).map((segment) => segment.replace(/%2e/gi, "."));
   if (segments.some((segment, i) => segment === "." || segment === ".." || (segment === "" && i < segments.length - 1))) throw usageError("agentrun api: PATH may not hold a . or .. segment or an empty one (//).");
   const verb = method.toUpperCase();
-  const secret = secretAt(verb, path);
+  const secret = secretAt(verb, `http://host/v2${path}`);
   if (secret) refuseInline(`${verb} ${secret.path}`, values.body);
-  const headers = {};
+  // No prototype, so a header named __proto__ is a key of its own, not the object's prototype set.
+  const headers = Object.create(null);
   for (const line of values.header ?? []) {
     const at = line.indexOf(":");
     const name = line.slice(0, at).trim();
     if (at <= 0 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) throw usageError("--header takes 'NAME: VALUE'.");
     if (["authorization", "cookie"].includes(name.toLowerCase())) throw usageError(`--header cannot set ${name}: the token is never a flag.`);
+    // Node's fetch keeps its headers in a plain object and drops this one unsent: refused, so it is never lost unsaid.
+    if (name.trim().toLowerCase() === "__proto__") throw usageError("--header cannot send a header named __proto__: Node's fetch drops it.");
     checkHeader(name, line.slice(at + 1).trim());
     headers[name.toLowerCase()] = line.slice(at + 1).trim();
   }
   const body = values.body === undefined ? undefined : await readBody(values.body, io.stdin);
   const type = headers["content-type"] ?? (body !== undefined && jsonOf(body) ? "application/json" : "application/octet-stream");
-  return send(targetOf(values, env), { method: verb, path, headers, body, type }, io);
+  const target = targetOf(values, env);
+  // The base URL's own path counts too: --base-url .../v2/settings with PUT /tool-keys/exa reaches the secret route.
+  const landed = secretAt(verb, `${target.base}${path}`);
+  if (landed) refuseLanded(landed, values.body);
+  // A body bound for a secret route: an error's answer is never printed, and the body's values are cut from the rest.
+  const route = secret || landed;
+  const client = route ? guarded(clientOf, target, io, body, route.publicFields) : clientOf(target, io);
+  return send(client, { method: verb, path, headers, body, type });
 }
 
 async function command(entry, argv, env, io) {
   const options = { ...GLOBAL };
   for (const f of [...entry.query, ...entry.headers, ...entry.bodyFlags]) options[flag(f.name)] = { type: f.type === "boolean" ? "boolean" : "string" };
   if (entry.hasBody) Object.assign(options, { body: { type: "string" }, "body-type": { type: "string" } });
+  Object.assign(options, FLAGS[entry.operationId]?.options);
   const { values, positionals } = parse(argv, options);
   if (values.help) return io.stdout.write(`${commandHelp(entry)}\n`), 0;
   const args = positionals.slice(entry.command.length);
@@ -293,20 +411,58 @@ async function command(entry, argv, env, io) {
     body = JSON.stringify({ ...object, ...Object.fromEntries(fields) });
   }
   if (entry.bodyRequired && body === undefined) throw usageError(`${usageOf(entry)} needs a body: ${BODY}.`);
+  if (values.timeout !== undefined && !values.wait) throw usageError("--timeout goes with --wait.");
+  const timeout = timeoutOf(values.timeout);
   const search = query.size ? `?${query}` : "";
-  return send(targetOf(values, env), { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw }, io);
+  const target = targetOf(values, env);
+  const landed = !entry.secretBody && secretAt(entry.method, `${target.base}${path}`);
+  if (landed) refuseLanded(landed, values.body);
+  const client = entry.secretBody || landed ? guarded(clientOf, target, io, body, (entry.secretBody ? entry : landed).publicFields) : clientOf(target, io);
+  const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
+  if (values.follow) return followTimeline(client, req.path, headers);
+  if (!values.wait) return send(client, req);
+  // The start is bounded as the wait is: by --timeout, which the wait then has what is left of, else as one of the
+  // wait's requests is.
+  const began = Date.now();
+  const bound = timeout ?? REQUEST_MS;
+  const started = await request(client, { ...req, signal: AbortSignal.timeout(timerMs(bound)) });
+  if (started.late) {
+    const said = `The server did not answer the start within ${bound / 1000} s; it may have started the run: look for it with \`agentrun runs list --agent ${args[0]}\`.`;
+    if (timeout === undefined) throw new Exit(3, said);
+    return io.stderr.write(`${said}\n`), 1;
+  }
+  if (started.code !== undefined) return started.code;
+  const run = jsonOf(started.bytes)?.value;
+  if (!runIdOk(run?.run_id)) return io.stderr.write("The server's answer to the start names no usable run_id.\n"), 1;
+  return waitRun(client, run.run_id, timeout === undefined ? undefined : Math.max(1, timeout - (Date.now() - began)));
+}
+
+/** A hand-written command of LOCAL: its flags and arguments checked, then its `run`, with this module's custody of the
+ *  token (targetOf, BAD_HEADER), its requests (clientOf, request, send) and its secret-route guard (secretAt). */
+async function local(entry, argv, env, io) {
+  const { values, positionals } = parse(argv, { ...GLOBAL, ...entry.options });
+  if (values.help) return io.stdout.write(`${helpOf(entry, entry.help)}\n`), 0;
+  const args = positionals.slice(entry.command.length);
+  const count = entry.pathParams.length;
+  if (args.length !== count) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, send, secretAt, BAD_HEADER };
+  return entry.run({ values, args, env, io, cli });
 }
 
 async function run(argv, env, io) {
   const [noun, verb] = words(argv);
   if (noun === undefined || noun === "help") return io.stdout.write(`${HELP()}\n`), 0;
   if (noun === "api") return api(argv, env, io);
+  if (noun === WAIT.command[0] && verb === WAIT.command[1]) return wait(argv, env, io);
+  const own = LOCAL.find((e) => e.command[0] === noun && (e.command.length === 1 || e.command[1] === verb));
+  if (own) return local(own, argv, env, io);
   const entries = COMMANDS.filter((entry) => entry.command[0] === noun);
-  if (!entries.length) throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
+  const listed = [...entries, ...LOCAL.filter((e) => e.command[0] === noun), ...(noun === WAIT.command[0] ? [WAIT] : [])];
+  if (!listed.length) throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
   const entry = entries.find((e) => e.command.length === 1 || e.command[1] === verb);
   if (entry) return command(entry, argv, env, io);
-  if (verb === undefined) return io.stdout.write(`${nounHelp(noun, entries)}\n`), 0;
-  throw usageError(`agentrun ${noun} has no verb ${verb}.\n\n${nounHelp(noun, entries)}`);
+  if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;
+  throw usageError(`agentrun ${noun} has no verb ${verb}.\n\n${nounHelp(noun, listed)}`);
 }
 
 export async function main(argv, env = process.env, io = process) {

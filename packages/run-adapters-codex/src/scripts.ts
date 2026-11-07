@@ -10,6 +10,7 @@
 //    before the `exec`'s line could be in the rollout.
 // The proxy offers no `exec` while a cell runs and no parallel calls, so one script is live at a time. A model that writes an
 // `exec` anyway makes two live, and then a nested call cannot be told from the other's.
+import type { DriveContext } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "./host/process.js";
 import { parseLine } from "./rollout.js";
 
@@ -115,17 +116,28 @@ export interface NestedFact {
    *  safe tool's call that a crash cut off, which the note tells the model is safe to repeat. */
   told?: "completed" | "failed" | "interrupted" | "retryable" | "running";
   rollout?: RolloutNested;
+  /** The host parked the call for a person's approval (`parkedKey`'s record): it did not run, whatever its record says. */
+  parked?: true;
 }
 
-export type Settled = { kind: "completed"; text: string } | { kind: "failed"; text: string } | { kind: "interrupted" };
+export type Settled = { kind: "completed"; text: string } | { kind: "failed"; text: string } | { kind: "interrupted" } | { kind: "parked" };
 
-/** What a nested call came to. The store's record first, the rollout's completion second: both complete and agreeing, or
+/** The session's record that the host parked the call `callId` for a person's approval, so it did not run: what the call
+ *  was answered (the host's waiting text) reads as its outcome, and is none. */
+export const parkedKey = (callId: string): string => `parked:${callId}`;
+
+/** Records that the host parked `callId` (a host tool's or a remote MCP server's), before its answer is recorded: a parked
+ *  call is never told as completed, after a crash either. */
+export const markParked = (ctx: DriveContext, callId: string): Promise<unknown> => ctx.effect(parkedKey(callId), { name: "parked", replay: "safe", input: null }, async () => true);
+
+/** What a nested call came to. A call the host parked is `parked`, whatever else holds: it never ran. Else the store's record first, the rollout's completion second: both complete and agreeing, or
  *  one of them, is that outcome; both complete and disagreeing, or a call that started and has no end in either, is
  *  interrupted (its effect is unknown), and a failure the store marks interrupted is interrupted. They agree when the
  *  rollout holds what the bridge handed Codex for the stored text: the store's text held to the host's bound
  *  (`boundResult`), since the store keeps a result whole and Codex got its cut; or the stored text itself, as a session
  *  written before that bound holds it in both records. */
 export function settle(fact: NestedFact): Settled {
+  if (fact.parked) return { kind: "parked" };
   const { store, rollout } = fact;
   const stored = store?.status === "completed" ? ({ kind: "completed", text: store.text ?? "" } as const) : store?.status === "failed" && !store.interrupted ? ({ kind: "failed", text: store.text ?? "" } as const) : undefined;
   const rolled = rollout ? ({ kind: rollout.ok ? "completed" : "failed", text: rollout.text } as const) : undefined;
@@ -155,6 +167,7 @@ export function recoveryFacts<T>(execs: readonly string[], ties: readonly Nested
 
 const describeCall = (fact: NestedFact, label: string): string => {
   const settled = settle(fact);
+  if (settled.kind === "parked") return `${label} was waiting for a person's approval and did not run; it was not run again.`;
   if (settled.kind === "completed") return `${label} completed: ${quoted(settled.text)}. Its effect is done; it was not run again.`;
   if (settled.kind === "failed") return `${label} failed: ${quoted(settled.text)}. It was not run again.`;
   // Told as the recovery note of the same turn tells it, which reaches the model with this output: a safe tool's call a crash cut off.

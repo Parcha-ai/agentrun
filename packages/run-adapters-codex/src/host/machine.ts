@@ -4,6 +4,7 @@
 //    and otherwise an empty one of its own (`work`). Codex keeps nothing there (its state is in codex-home), and a
 //    tool-less Codex reads nothing there itself.
 //    A seed of files the host gives is in one of them at the start of every drive: written at acquire and after each wipe.
+//    So is Codex's bundled model catalog without its own apply_patch, when the host asks for it (`catalog`, ../catalog.ts).
 //  - A child's environment is an allowlist: PATH, LANG and TZ from this process, plus what the harness names (its homes,
 //    and the per-session proxy key). Nothing else is inherited, so no provider key, token or host secret reaches it.
 //  - A child's git stops at the session's directory and at a workspace's parent (GIT_CEILING_DIRECTORIES), and the host may start every child under its
@@ -18,12 +19,15 @@ import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { FileTail } from "@parcha/agentrun-kernel/process";
-import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
+import type { AcquireMachine, CallHooks, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
+import type { SessionMcp } from "@parcha/agentrun-kernel";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { codexPolicy, withWebSearches } from "./policy.js";
 import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
+import { CODEX_MCP_CLIENT, mcpServersConfig, recorded } from "../mcp.js";
+import { type CodexCommand, MODEL_CATALOG_FILE, patchlessCatalog } from "../catalog.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -77,11 +81,19 @@ export interface LocalMachineOptions {
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
+  /** The session's remote MCP servers (mcp.ts): each served at the proxy's `/mcp/<server>`, written in Codex's config,
+   *  and each call recorded in the drive's session before it is sent. */
+  mcp?: SessionMcp;
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
   /** Files one of the session's private directories holds at the start of every drive: written when the machine is
    *  acquired and again after every wipe, which the harness runs before it starts Codex. Its paths are checked here. */
   seed?: MachineSeed;
+  /** The binary the session runs, when its built-ins are off: Codex's own apply_patch, which then has no environment to run
+   *  in, is offered to no model. Its bundled catalog without it (../catalog.ts) is read once per binary, written in codex-home
+   *  with the seed and named in Codex's config (`configure`, `model_catalog_json`); one that can't be read is logged, and the
+   *  session runs on Codex's own. */
+  catalog?: CodexCommand;
 }
 
 /** A command and its arguments, as the machine starts it. */
@@ -221,8 +233,16 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         writeFileSync(path, file.bytes, { mode: file.mode ?? 0o600 });
       }
     };
+    // Read in a CODEX_HOME of its own, not the session's, before anything else of the session starts.
+    const own = join(dirs.cache, "codex-catalog");
+    if (options.catalog) mkdirSync(own, { recursive: true, mode: 0o700 });
+    const read = options.catalog ? await patchlessCatalog((spawnOptions) => start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), options.catalog, { home: dirs.home, tmp: dirs.tmp, own }, ctx.signal) : undefined;
+    const catalog = read?.bytes;
+    // A catalog that could not be read is never silent: the run is told why apply_patch stays listed (the machine's notes).
+    const notes = read?.why ? [read.why] : [];
     const seed = () => {
       if (options.seed) upload(options.seed.dir, seeded);
+      if (catalog) upload("codex-home", [{ path: MODEL_CATALOG_FILE, bytes: catalog }]);
     };
     // Before the proxy starts: a seed that cannot be written is refused with nothing left running.
     seed();
@@ -233,12 +253,14 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let announced: string | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
+    let calls: CallHooks | undefined;
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
         tools: options.proxy.tools,
+        ...(options.mcp ? { mcpTools: options.mcp.servers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)) } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(search ? { webSearch: "live" as const } : {}),
         announce: {
@@ -260,6 +282,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(price ? { price } : {}),
+      // The kernel's proxy mounts the session's MCP door for Codex's own client; each call is recorded first (recorded).
+      ...(options.mcp ? { mcp: { session: recorded(options.mcp, ctx, () => calls), client: CODEX_MCP_CLIENT } } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
@@ -278,8 +302,19 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelKey: key,
       announcedExec: () => announced,
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
-      ...(search ? { configure: (config: Record<string, TomlValue>) => void (config.web_search = "live") } : {}),
-      notes: [],
+      onCalls: (given) => void (calls = given),
+      ...(search || options.mcp || catalog ? {
+        configure: (config: Record<string, TomlValue>) => {
+          if (search) config.web_search = "live";
+          // Codex's bearer for the proxy's /mcp/<server> is the key it sends to the proxy's model route.
+          const keyEnv = ((config.model_providers as Record<string, Record<string, TomlValue>> | undefined)?.gateway?.env_key ?? "") as string;
+          if (options.mcp) config.mcp_servers = mcpServersConfig(options.mcp, proxy.url, keyEnv);
+          // Only with the built-ins off: with them on, apply_patch runs through the shell.
+          const features = config.features as Record<string, TomlValue> | undefined;
+          if (catalog && features?.shell_tool !== true && features?.unified_exec !== true) config.model_catalog_json = join(dirs["codex-home"], MODEL_CATALOG_FILE);
+        },
+      } : {}),
+      notes,
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-harness-codex: the session machine is closed");
         const proc = withoutTurnsAfterStop(start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), ctx.signal);

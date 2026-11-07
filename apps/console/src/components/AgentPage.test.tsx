@@ -20,7 +20,7 @@ const until = async (ok: () => boolean) => { for (let i = 0; i < 150 && !ok(); i
  *  it completes, which come once `release` is called. `reread` answers the run's record read again. */
 async function splitRun(reread: (done: Run) => Promise<Run> = async (done) => done) {
   const done = runFixture("run.completed.idle.1");
-  const running: Run = { ...done.run, status: "working", state: "working", ended_at: null, result: null, cost: null };
+  const running: Run = { ...done.run, status: "working", state: "working", ended_at: null, result: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null } };
   const first: TimelinePage = { ...done.page, status: "working", state: "working", rows: done.page.rows.slice(0, 3), final: false, next_after: 3 };
   const rest: TimelinePage = { ...done.page, reset: false, rows: done.page.rows.slice(3) };
   let release!: () => void;
@@ -37,7 +37,7 @@ type Answer = { run: Run } | { refused: string };
 /** Each recorded run's timeline by its run's id: an agent's latest run with one is followed through it. */
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
-const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+const endedPage = (r: Run): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
 type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
@@ -92,7 +92,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 describe("AgentPage", () => {
   it("shows a run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
-    const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
+    const unknown = { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null };
     const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, so_far_usd: 0.07, unpriced: 1 } }, { ...runs[1], cost: unknown }] });
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
     expect(links[0].textContent).toContain("so far $0.07 est. · 1 not priced");
@@ -121,7 +121,7 @@ describe("AgentPage", () => {
   it("opens on the Runs tab: the agent's runs, each a link to its run, with when, how long and a known cost", async () => {
     const runs = runsOf("invoice-checker");
     // A cost the server does not know is left out, never shown as $0.
-    const unknown = { ...runs[runs.length - 1], cost: null };
+    const unknown = { ...runs[runs.length - 1], cost: { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null } };
     const page = await open(agentFixture("invoice-checker"), { runs: [...runs.slice(0, -1), unknown] });
     expect(page.asked).toEqual(["agent invoice-checker", "runs invoice-checker"]);
     expect(page.tabs()).toEqual(["Runs", "Analytics"]);
@@ -196,7 +196,7 @@ describe("AgentPage", () => {
     // A recorded workflow run, paused; its timeline pages say it resumed, then paused again, and the read of the run
     // begun when it resumed answers only after that, with the record as it was while it worked.
     const done = runFixture("run.completed.idle.1");
-    const at = (status: Run["status"], state: Run["state"]): Run => ({ ...done.run, status, state, ended_at: null, result: null, cost: null });
+    const at = (status: Run["status"], state: Run["state"]): Run => ({ ...done.run, status, state, ended_at: null, result: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null } });
     const paused = at("paused", "idle");
     const pageOf = (r: Run, n: number): TimelinePage => ({ ...done.page, status: r.status, state: r.state, rows: done.page.rows.slice(0, n), final: false, next_after: n });
     const pages = [pageOf(paused, 1), pageOf(at("working", "working"), 2), pageOf(paused, 3)];
@@ -399,7 +399,7 @@ describe("AgentPage", () => {
   });
 
   it("demo: runs the agent at high effort from its page, then lists the run with its effort and shows the agent's analytics", async () => {
-    const started = { ...recorded<Run>("start.run").body, effort: "high" };
+    const started = { ...recorded<Run>("start.run").body, effort: "high" as const };
     const page = await open(agentFixture("invoice-checker"), { stats: async () => statsWith(ANALYTICS) });
     expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     await page.set(page.input(), "Check invoice INV-1050.");
@@ -525,15 +525,19 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
   });
 });
 
-// Where the agent runs, said with the rest of its current revision: its box, or the server (no place is the server's
-// default, the runner).
+// Where the agent runs, said with the rest of its current revision: its box, the server, or, with no place, the server's
+// default place (default_place, resolved at each run).
 describe("AgentPage, where it runs", () => {
-  it("says the box an agent runs in, or the server", async () => {
+  it("says the box an agent runs in, the server, or the server's default place", async () => {
     const base = agentFixture("invoice-checker");
     const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
     expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
     act(() => root?.unmount()); document.body.innerHTML = "";
-    expect((await open(base)).fact("Runs")).toBe("On the server");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const runner = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };
+    expect((await open(runner)).fact("Runs")).toBe("On the server");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(base)).fact("Runs")).toBe("Where this server's default place is");
   });
 });
 

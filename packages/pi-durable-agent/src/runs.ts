@@ -16,7 +16,7 @@ export { RUN_STORE_FILE };
 const DEFAULT_LEASE_MS = 6 * 60 * 60 * 1000;
 
 /** Where a run lives, in pi-durable-disk's run layout, so the run directory is one `pi-durable-disk run --dir` takes.
- *  pi-durable-disk adds `run.json`, `owner.lock` and `tmp/` (and `commands/` on a local directory) beside these. */
+ *  pi-durable-disk adds `tmp/` and `commands/` beside these, and keeps the run's record in its store. */
 export type RunPaths = {
   /** `<home>/runs/<runId>`. */
   dir: string;

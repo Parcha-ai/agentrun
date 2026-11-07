@@ -4,7 +4,7 @@
 import { join } from 'node:path';
 import { openClaimDir, openDurableRun } from '@parcha/pi-durable-disk';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { Type } from '@earendil-works/pi-ai';
+import { Type } from 'typebox';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { configure, createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool } from '@earendil-works/pi-durable';
@@ -60,15 +60,15 @@ const claim = (ref) => {
   let fence;
   return {
     ref, disk: ref.disk, root: directory, work: join(directory, 'work'), store: join(directory, 'store'),
-    reused: false, forced: false, timings: { mountMs: 0, verifyMs: 0 },
+   
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
-    async release() { return { via: 'archil' }; },
+    async release() { return { via: 'none' }; },
   };
 };
 const run = await openDurableRun({ disk: 'dsk-local', region: 'local', id: 'run-1' }, {
-  mountToken: 'unused', acquire: async ({ ref }) => claim(ref), claimDir: (root) => openClaimDir(root, { fstype: null }),
+  acquire: async ({ ref }) => claim(ref), claimDir: (root) => openClaimDir(root),
   harness: { registry, models },
 });
 const { harness } = run;

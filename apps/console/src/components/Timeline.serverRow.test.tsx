@@ -13,7 +13,7 @@ let host: HTMLElement;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 const at = (s: number) => `2026-11-05T10:00:0${s}.000Z`;
-const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
+const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
 const RESUME = "[tool approval] This answers your web_fetch call call_1 (arguments {\"url\":\"http://public.example/\"}), which waited for a person's approval; it is not a new message from them.";
 const rows: TimelineRow[] = [
   row(0, { kind: "user_message", summary: "You: Fetch the page" }),

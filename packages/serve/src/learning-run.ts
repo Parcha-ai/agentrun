@@ -16,17 +16,19 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
-import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
+import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { statusesOf } from "./learning-routes.js";
+import { cutStrings, redacted } from "./key-refusal.js";
 import { withoutFaux } from "./model.js";
+import { servedOnly } from "./served-only.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { notKept, said, STOPPED } from "./learning-words.js";
-import { ended, outcomeOf, outcomes, record } from "./usage.js";
+import { ended, lineNotesOf, type NoteFiles, notesLineOf, notesOf, type Outcome, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 import { REFLECT_REQUEST } from "./turns.js";
 
@@ -127,7 +129,9 @@ export function withLearning(rows: readonly TimelineEvent[], learning: Learning 
     tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: detail,
     learning: { state: learning.state, reason: learning.reason, detail },
   };
-  return [...rows, row];
+  // Only the served view makes it (servedOnly): learning that starts over (seeded, reflecting) drops it, even while a
+  // live process feeds the timeline.
+  return [...rows, servedOnly(row)];
 }
 
 /** How the runs that tried to learn fared, over the runs the analytics' `from`, `to` and `agent` pick (by when they
@@ -142,7 +146,8 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
     const at = Date.parse(row.startedAt);
     if (row.kind !== "agentic" || row.importedFrom || row.archivedAt || !(at >= from && at < to) || (filter.agent !== undefined && row.agent !== filter.agent)) continue;
     const learning = learningOf(row);
-    if (!learning) continue;
+    // A reason this server does not give (an older server's) is not counted, held or from the ledger alike.
+    if (!learning || (learning.reason !== null && !(LEARNING_REASONS as readonly string[]).includes(learning.reason))) continue;
     out.runs += 1;
     if (learning.state === "merged") out.merged += 1;
     else if (learning.state === "dropped") out.dropped[learning.reason ?? "unknown"] = (out.dropped[learning.reason ?? "unknown"] ?? 0) + 1;
@@ -159,11 +164,15 @@ const nameOf = (file: string, text: string) => {
 
 /** What run `run`'s end-of-run turn answered, and what the user said in the run, as beforeSettle keeps them: the whole
  *  text of each of the turn's assistant messages, in order (its notes may come in more than one), cut once past
- *  ANSWER_MAX, which the parser refuses; and each message the run was sent before the turn. */
+ *  ANSWER_MAX, which the parser refuses; and each message the person sent the run before the turn, whole, in order. */
 function turnOf(run: Run): Turn {
   const answer = [...(run.turnText ?? new Map<number, string>())].sort(([a], [b]) => a - b).map(([, text]) => text).filter(Boolean).join("\n\n");
-  const asked = run.rows.filter((row) => row.kind === "user_message" && row.agent_label !== LEARNING_LABEL && !reflects(run.meta.reflect, row.id)).map((row) => row.text ?? "");
-  return { answer: answer.length > ANSWER_MAX ? answer.slice(0, ANSWER_MAX + 1) : answer, asked };
+  // From the run's store, whole (heard.ts): a timeline row cuts a message at 2,000 characters. A trigger's input that
+  // its owner did not write is never what the user said: it goes apart, by its source.
+  const heard = [...(run.hearing?.heard ?? new Map())].filter(([id]) => !reflects(run.meta.reflect, id)).sort(([a], [b]) => a - b).map(([, said]) => said);
+  const asked = heard.filter((said) => said.source === undefined).map(({ text }) => text);
+  const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
+  return { answer: answer.length > ANSWER_MAX ? answer.slice(0, ANSWER_MAX + 1) : answer, asked, ...(triggered.length ? { triggered } : {}) };
 }
 
 /** One side of an agent's impact: how many runs, their median time to the answer, the median of their job's own cost
@@ -171,6 +180,24 @@ function turnOf(run: Run): Turn {
  *  grade), over the runs that learn whose learning cost is known. */
 export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number; median_learning_usd: number | null };
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
+/** Each note's count of runs that were given it and that read it, by its file, over runs' note files (usage.ts
+ *  notesOf, lineNotesOf): a held run's from its learning, an ended one's from its ledger line. A run counts a note
+ *  once each way. */
+export function noteRuns(runs: readonly (NoteFiles | null | undefined)[]): NoteRuns {
+  const out: NoteRuns = new Map();
+  for (const files of runs) {
+    if (!files) continue;
+    for (const key of ["given", "read"] as const) {
+      for (const file of new Set(files[key])) {
+        const counts = out.get(file) ?? { given: 0, read: 0 };
+        counts[key] += 1;
+        out.set(file, counts);
+      }
+    }
+  }
+  return out;
+}
+
 /** What a run's learning tells its impact (learning-run.ts ofAgent), from memory or from its ledger line: how it
  *  ended and when, how many notes it started from, when its answer was final and its costs; `grade_usd` once it ended
  *  (0 when nothing was graded), and `look_back_usd` 0 for a run that never looked back. */
@@ -230,6 +257,8 @@ export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The files a run was given and read (usage.ts notesOf, lineNotesOf), as one key. */
+const filesKey = (files: NoteFiles) => JSON.stringify(files);
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 /** A row of the run's that a person sees. Its rows never hold the reducer's quiet ones (runs.ts take). */
 const shows = (row: TimelineEvent) => row.kind !== "usage" && row.kind !== "phase";
@@ -277,8 +306,9 @@ export class LearningRuns {
   private readonly handed = new Map<string, Set<string>>();
   /** Aborted as the server closes: a grade's screen and grader stop, and leave the run's learning `proposed`. */
   private readonly stopping = new AbortController();
-  /** The runs whose learning's end is in the learning ledger (usage.ts): read at the start, and each one written since. */
-  private readonly recorded = new Set<string>();
+  /** The runs whose learning's end is in the learning ledger (usage.ts), each with the files its lines say it was given
+   *  and read (filesKey): read at the start, and each one written since. */
+  private readonly recorded = new Map<string, string>();
   /** By run: what its end-of-run turn wrote, being checked (proposeOnce), and its proposal, being graded (gradeOnce). */
   private readonly proposing = new Map<string, Promise<void>>();
   private readonly grading = new Map<string, Promise<void>>();
@@ -307,35 +337,50 @@ export class LearningRuns {
     const seeded = await this.seedFor(agentId);
     return async (started, at) => {
       let failed = "failed" in seeded ? seeded.failed : undefined;
+      // The notes its # Learned section names (learning.ts givenOf, as its pin keeps them): what it started with.
+      let given: NonNullable<Learning["given"]> = [];
       if ("seed" in seeded) {
         try {
           const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
-          // Its harness's requests going where a learned workflow's could not follow: it is offered none (fail closed).
-          const workflowsOff = revision.kind === "agentic" ? await learnedWorkflowsOff(revision.body.harness, this.hostEnv(), revision.body.model) : undefined;
-          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own, ...(workflowsOff ? { workflowsOff } : {}) });
+          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
+          given = pin.given ?? [];
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
-          if (pin.workflows_off) warn(started.runId, `starts without the workflows its agent learned (${(pin.workflows_left_out ?? []).join(", ")}): ${pin.workflows_off}`);
-          else for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget, or it holds a secret`);
+          for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget, or it holds a secret`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
           failed = said.stopped(STOPPED.notCopied);
         }
       }
+      await learningTestHooks.afterSeed?.(started.dir);
       const notes = "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0;
-      return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes, ...(given.length ? { given } : {}) } : { state: "dropped", reason: "seed_failed", detail: failed, at };
     };
   }
 
+  /** A start whose seed copy threw out of its pin (runs.ts start): its learning, in its own words, as a copy that failed
+   *  says it; the copy taken back. */
+  async copyThrew(started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string, error: Error): Promise<Learning> {
+    warn(started.runId, `starts with nothing learned: ${error.message}`);
+    await dropSeed(started.dir, started.workspace).catch(() => undefined);
+    return { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied), at };
+  }
+
   /** The run's serve.json holds `learning` now: the learning ledger's line for the run (usage.ts), once, when that
-   *  learning has ended. Never rejects: a line not written is written by the next save, or by the next start's pass. */
+   *  learning has ended; after it, a `notes` line each time the notes it was given or read are no longer what the
+   *  ledger says (a follow-up read another note), which counts neither the run nor its costs again. Never rejects: a
+   *  line not written is written by the next save, or by the next start's pass. */
   onSaved(run: Pick<Run, "id" | "agentId">, learning: Learning | null | undefined): Promise<void> {
     if (ended(learning)) this.handed.delete(run.id);
-    if (!ended(learning) || this.recorded.has(run.id)) return Promise.resolve();
-    this.recorded.add(run.id);
-    return record(this.options.agents.dir, outcomeOf(run.id, run.agentId, learning)).catch((error: Error) => {
-      this.recorded.delete(run.id);
-      warn(run.id, `its learning's end is not in the ledger yet: ${error.message}`);
+    if (!ended(learning)) return Promise.resolve();
+    const was = this.recorded.get(run.id);
+    const files = filesKey(notesOf(learning));
+    if (was === files) return Promise.resolve();
+    this.recorded.set(run.id, files);
+    return record(this.options.agents.dir, was === undefined ? outcomeOf(run.id, run.agentId, learning) : notesLineOf(run.id, run.agentId, learning)).catch((error: Error) => {
+      if (was === undefined) this.recorded.delete(run.id);
+      else this.recorded.set(run.id, was);
+      warn(run.id, `${was === undefined ? "its learning's end is" : "the notes it was given and read are"} not in the ledger yet: ${error.message}`);
     });
   }
 
@@ -379,7 +424,9 @@ export class LearningRuns {
    *  ran is finishing with its job's outcome, and nothing opens it again; when its process lives, the turn is asked again
    *  under the same request id, which it takes once, and waited for. */
   onAdopt(run: Run, live: boolean): void {
-    if (!reflecting(run)) return;
+    // A run its server hid (its browser sign-in unreadable, runs.ts) ends failed, saying why: its turn is never asked
+    // again, and its job's outcome never stands in for that end.
+    if (!reflecting(run) || run.meta.unshown) return;
     run.finishing = run.meta.reflect!.outcome;
     if (run.meta.error) run.error = { ...run.meta.error, retryable: false };
     if (live) void this.reflectTurn(run);
@@ -390,13 +437,16 @@ export class LearningRuns {
    *  so a follow-up that opens it again never changes what is checked. */
   async beforeSettle(run: Run, outcome: Status): Promise<void> {
     this.closeLearning(run, outcome);
-    if (awaitsPropose(run.meta)) {
+    const keeping = awaitsPropose(run.meta);
+    if (keeping) {
       await keepTurn(run.dir, turnOf(run)).catch((error: Error) => {
         warn(run.id, `what its end-of-run turn answered could not be kept: ${error.message}`);
         this.setLearning(run, "dropped", "propose_failed", said.stopped(STOPPED.notSetAside));
       });
     }
-    await this.noteUsed(run);
+    // Kept now, or never to be: the person's words, whole, are let go (a finished run is held for the server's life).
+    if (keeping || (run.meta.learning?.state !== "seeded" && run.meta.learning?.state !== "reflecting")) run.hearing = undefined;
+    await this.noteRead(run);
   }
 
   /** The run's end written, as it would be without learning: what its end-of-run turn wrote checked, then graded and
@@ -438,13 +488,13 @@ export class LearningRuns {
    *  merged, is checked or graded now, once; a learning end saved and not in the ledger (a server that went between the
    *  two) is written there. */
   recover(): (rows: readonly RunRow[]) => Promise<void> {
-    const inLedger = outcomes(this.options.agents.dir).catch(() => new Map<string, unknown>());
+    const inLedger = outcomes(this.options.agents.dir).catch(() => new Map<string, Outcome>());
     return async (rows) => {
-      for (const run of (await inLedger).keys()) this.recorded.add(run);
+      for (const [run, line] of await inLedger) this.recorded.set(run, filesKey(lineNotesOf(line)));
       for (const row of rows) {
         if (this.closing) return;
         if (row.state === "running" || row.importedFrom || row.kind !== "agentic") continue;
-        const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<Run["meta"]> | null;
+        const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<Run["meta"]> | null;
         const learning = isObject(meta?.learning) ? meta.learning : undefined;
         await this.onSaved({ id: row.id, agentId: row.agent }, learning);
         if (!awaitsPropose(meta) && learning?.state !== "proposed") continue;
@@ -493,6 +543,22 @@ export class LearningRuns {
     this.saved = undefined;
   }
 
+  /** Agent `agentId`'s run's `learning` as it reads now (learning.ts currentLearning): what it held for its owner's OK
+   *  checked against the folder's main (learning-routes.ts statusesOf, one read per commit of main). Its record stays as
+   *  the merge wrote it; one that held nothing is read as it is, with no read of the folder. */
+  async current(agentId: string, learning: Learning | undefined): Promise<Learning | undefined> {
+    if (!holdsForOk(learning)) return learning;
+    return currentLearning(learning, await statusesOf(this.options.agents.dir, agentId));
+  }
+
+  /** `rows` with their learning row as it reads now (current): its words from what it held, checked against main. */
+  async rowsNow(agentId: string, learning: Learning | undefined, rows: readonly TimelineEvent[]): Promise<TimelineEvent[]> {
+    const now = await this.current(agentId, learning);
+    if (now === learning || !now) return [...rows];
+    const [row] = withLearning([], now, this.shown()) as (TimelineEvent & { learning?: unknown })[];
+    return rows.map((one) => (one.kind === "learning" && row ? ({ ...one, summary: row.summary, text: row.text, learning: row.learning } as TimelineEvent) : one));
+  }
+
   /** A run's learning as its view shows it (learning.ts learningView), cut of the host's secrets now; `settled`, once
    *  the run has ended and settled, shows the notes it read. */
   view(learning: Learning | undefined, settled: boolean) {
@@ -514,7 +580,7 @@ export class LearningRuns {
   /** Agent `agentId`'s runs (`rows`, its own) as its learning view counts them, the ledger read once: how they fared
    *  (counts, less `runs`), and what learning changed (learningImpact), each run's learning from memory when the kernel
    *  holds it, else its end from its ledger line; never a run's files. */
-  async ofAgent(rows: readonly RunRow[], agentId: string): Promise<{ counts: Omit<ReturnType<typeof learningStats>, "runs">; impact: Impact }> {
+  async ofAgent(rows: readonly RunRow[], agentId: string): Promise<{ counts: Omit<ReturnType<typeof learningStats>, "runs">; impact: Impact; notes: NoteRuns }> {
     const ledger = await outcomes(this.options.agents.dir);
     const learningOf = (row: RunRow): ImpactLearning | null => {
       const held = this.kernel.held(row.id);
@@ -530,7 +596,14 @@ export class LearningRuns {
       return { ...rest, ...(over ? { grade_usd: learning.cost_usd ? learning.cost_usd.grade : 0 } : {}), ...(learning.answered_at !== undefined ? { look_back_usd } : over ? { look_back_usd: 0 } : {}) };
     };
     const { runs: _, ...counts } = learningStats(rows, { agent: agentId }, learningOf);
-    return { counts, impact: learningImpact(rows, learningOf) };
+    // Each note's runs: given it and read it, a held run's from memory, an ended one's from its ledger line.
+    const notes = noteRuns(rows.map((row) => {
+      const held = this.kernel.held(row.id);
+      if (held) return held.meta.learning ? notesOf(held.meta.learning) : null;
+      const line = ledger.get(row.id);
+      return line ? lineNotesOf(line) : null;
+    }));
+    return { counts, impact: learningImpact(rows, learningOf), notes };
   }
 
   // ---- the run's learning ---------------------------------------------------------------------------------------------
@@ -563,19 +636,19 @@ export class LearningRuns {
   }
 
   /** As the run settles, before its end is written: the notes its job read from its copy of the folder (notesRead), by
-   *  their names in its seed, kept with its learning (`used`), so a view or a list reads them from serve.json and never
+   *  their names in its seed, kept with its learning (`read`), so a view or a list reads them from serve.json and never
    *  from its rows again. Only a note the run started from counts: MEMORY.md, a file the run wrote there, and a note
-   *  not in its seed are not notes it used. Read again at each settle, a follow-up's reads with the rest. A seed that
+   *  not in its seed are not notes it read. Read again at each settle, a follow-up's reads with the rest. A seed that
    *  cannot be read leaves what was there, and says why. */
-  private async noteUsed(run: Run): Promise<void> {
+  private async noteRead(run: Run): Promise<void> {
     if (!run.meta.learning) return;
     const files = notesRead(run.meta.reflect, run.rows);
-    let used: NonNullable<Learning["used"]> = [];
+    let read: NonNullable<Learning["read"]> = [];
     if (files.length) {
       try {
         const pin = await readPin(run.dir);
         const names = new Map(pin ? activeOf(await seedAt(this.options.agents.dir, run.agentId, pin.seed)).map((note) => [note.file, note.name]) : []);
-        used = files.flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
+        read = files.flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
       } catch (error) {
         return warn(run.id, `which notes it read is not known: ${(error as Error).message}`);
       }
@@ -583,8 +656,8 @@ export class LearningRuns {
     // As the learning is now: nothing else changed it meanwhile, but its object may be a new one.
     const learning = run.meta.learning;
     if (!learning) return;
-    const { used: _, ...rest } = learning;
-    run.meta.learning = used.length ? { ...rest, used } : rest;
+    const { read: _, ...rest } = learning;
+    run.meta.learning = read.length ? { ...rest, read } : rest;
   }
 
   private dropLearning(run: Run, reason: LearningReason, detail: string): void {
@@ -611,7 +684,7 @@ export class LearningRuns {
     const after = run.lastEntry ?? Math.max(0, ...run.rows.map((row) => entryOf(row.id)).filter(Number.isInteger));
     run.meta.reflect = { outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
     // The job's error, kept for a restart: the turn's is never the run's.
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
+    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refused(run)), ...(run.error.details ? { details: cutStrings(run.error.details, (text) => redacted(text, this.refused(run))) as { reason: string } } : {}) };
     // Its answer is final now: when, and what its job cost, before the end-of-run turn spends any more.
     this.setLearning(run, "reflecting", null, said.reflecting, { answered_at: run.endedAt, job_cost_usd: this.kernel.costOf(run.rows) });
     this.kernel.mark(run);
@@ -696,7 +769,11 @@ export class LearningRuns {
    *  the run has ended. Never rejects: `proposed` or `dropped`, `propose_failed` for a fault. A server that goes
    *  meanwhile leaves it `reflecting` in serve.json, and the next start checks it again. */
   private proposeOnce(run: Run): Promise<void> {
-    if (!awaitsPropose(run.meta)) return Promise.resolve();
+    // A run hidden while this server can't read the browser sign-in it was handed (meta.unshown, runs.ts load): the pointer
+    // is not among the values refused, so a note that holds it would pass, be graded and reach every later run. Its
+    // learning is left as it is, unsaved (an ended run's hidden mark is this server's alone), for a server that reads the
+    // sign-in to check it.
+    if (!awaitsPropose(run.meta) || run.meta.unshown) return Promise.resolve();
     return once(this.proposing, run.id, () => this.propose(run));
   }
 
@@ -704,14 +781,14 @@ export class LearningRuns {
    *  gate allows, under the server's tool settings and the agent's own (tools.ts learnedDraftTools); `gated`, those set to
    *  ask or deny, which a draft that calls one is refused for. None for a revision not found, so a draft that names one is
    *  refused. */
-  private async draftTools(run: Run): Promise<{ tools: string[]; gated: Record<string, string> }> {
+  private async draftTools(run: Run): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default"> }> {
     const known = await this.options.agents.revision(run.agentId, run.revision);
     if (known?.revision.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools }, { permissionOf }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
+    const [{ learnedDraftTools }, { permissionFrom }, { readToolSettings }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./tool-plane.js")]);
     // The server's settings, beside the agent store, as the run's gate reads them, and the agent's own.
     const server = readToolSettings(this.options.agents.dir).settings;
     const agent = (known.revision.body.toolSettings ?? {}) as never;
-    return learnedDraftTools(known.revision.body.tools, (name) => permissionOf(name, server as never, agent));
+    return learnedDraftTools(known.revision.body.tools, (name) => permissionFrom(name, server as never, agent).permission, undefined, (name) => permissionFrom(name, server as never, agent).from);
   }
 
   private async propose(run: Run): Promise<void> {
@@ -743,7 +820,9 @@ export class LearningRuns {
    *  never asks the grader again; what it spent is in the ledger with the run's end. A server that closes mid-grade leaves the
    *  learning `proposed`, and its next start grades it. */
   private gradeOnce(run: Run): Promise<void> {
-    if (run.meta.learning?.state !== "proposed") return Promise.resolve();
+    // Not while the run is hidden (proposeOnce): its verdict's words are cut and its merge's message said over the values
+    // refused, which lack the pointer here.
+    if (run.meta.learning?.state !== "proposed" || run.meta.unshown) return Promise.resolve();
     return once(this.grading, run.id, () => withAgentGrade(this.options.agents.dir, run.agentId, () => this.grade(run)));
   }
 
@@ -772,7 +851,7 @@ export class LearningRuns {
         const { instructions, harness, model, thinking } = known.revision.body;
         const env = this.hostEnv();
         const gradeModel = gradeModelOf(env, this.options.gradeModel);
-        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
+        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { ...checkedOut, cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("error" in judged) {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);
@@ -825,11 +904,12 @@ export class LearningRuns {
   }
 
   /** What a run's learning refuses, and cuts from what it says: the secrets this server holds, wherever its launcher put
-   *  them, the keys saved on it, what each launch handed the run, and its own tokens. */
+   *  them, the keys saved on it, what each launch handed the run, every value its errors and answers never show
+   *  (runs.ts' `handed`: its browser sign-in's pointer among them, read back after a restart), and its own tokens. */
   private refused(run: Run): string[] {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? []), ...(own ? [own] : [])];
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? []), ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

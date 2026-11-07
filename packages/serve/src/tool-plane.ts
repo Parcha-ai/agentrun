@@ -19,6 +19,7 @@
 // harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
+import { blurbOf } from "./tool-blurbs.js";
 import { readFileSync } from "node:fs";
 import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
@@ -34,8 +35,7 @@ import { defaultPermission, isCatalogTool, isMcpTool, type Permission, PERMISSIO
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
  * table (tools.ts) and named the same on every harness that runs them. `web_search` and `web_fetch` resolve to a
- * provider (PROVIDERS); the rest are the kernel's own. Not capabilities: `fetch_page` (legacy: web_fetch's guarded fetch
- * with no provider behind it), the workflow call nodes' `pdf_pages` and `llm` (a workflow's call node names them, a grant
+ * provider (PROVIDERS); the rest are the kernel's own. Not capabilities: the workflow call nodes' `pdf_pages` and `llm` (a workflow's call node names them, a grant
  * never does), and a catalog's tools (`monid.*`, `mcp:<server>/<tool>`: catalog tools, which their catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
@@ -51,18 +51,12 @@ export type Capability = (typeof CAPABILITIES)[number];
 export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] } as const);
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
-/** Older names a revision may still grant, and the capability each one is: `fetch_page` runs web_fetch, under its own
- *  name, and resolves as web_fetch does. */
-export const LEGACY_NAMES: Readonly<Record<string, Pickable>> = Object.freeze({ fetch_page: "web_fetch" });
-/** The capability a granted name runs: its legacy target, else itself. */
-export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
-/** Every tool of serve's table (tools.ts) and its legacy names, by name, so this module needs no import of it: a test
- *  holds the two as one. */
-export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "fetch_page", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
+/** Every tool of serve's table (tools.ts), by name, so this module needs no import of it: a test holds the two as one. */
+export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
 /** The tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
  *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. The
  *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */
-export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fetch_page", "web_fetch", "web_search", "learned_workflow"];
+export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "web_fetch", "web_search", "learned_workflow"];
 /** The permissions `name` may be set to. */
 export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
@@ -71,7 +65,7 @@ export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];
 
 /** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a catalog tool (`monid.<tool>`,
  *  `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
 export type ToolSetting = { provider?: string; permission?: Permission; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
@@ -255,7 +249,7 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   // it runs is set), so its search resolves on that one.
   const model = tooling.workflow ? undefined : (tooling.model ?? hostModel(env, "default", harness));
   const plane: Plane = {};
-  const granted = tooling.tools.map(capabilityOf);
+  const granted = tooling.tools;
   for (const name of PICKABLE) {
     if (!granted.includes(name)) continue;
     const chosen = picked(name, settings, tooling.overrides);
@@ -439,15 +433,17 @@ export class ToolSettings {
  *  it resolves to on the agent's harness and model. */
 export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[]) {
   const plane = planeFor(env, agent, settings);
-  const rank = (name: string) => order.indexOf(capabilityOf(name)) + (name in LEGACY_NAMES ? 0.5 : 0);
+  const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
-    const capability = capabilityOf(name);
     const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never);
     const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
-    if (!Object.hasOwn(PROVIDERS, capability)) return { name, ...gate };
-    const pick = capability as Pickable;
+    // One short line for people (tool-blurbs.ts), as capabilities serves it.
+    const blurb = blurbOf(name);
+    const shown = { name, ...(blurb ? { blurb } : {}) };
+    if (!Object.hasOwn(PROVIDERS, name)) return { ...shown, ...gate };
+    const pick = name as Pickable;
     const own = agent.overrides?.[pick]?.provider;
     const server = settings[pick]?.provider;
-    return { name, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
+    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
   });
 }

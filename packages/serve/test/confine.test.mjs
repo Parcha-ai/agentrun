@@ -5,7 +5,7 @@ import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { answerFlow, follow, serve } from "./support.mjs";
+import { answerFlow, follow, runDir, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const NO_SHELL = "<harness>\n[error] Tool bash is not available\n</harness>";
@@ -13,7 +13,7 @@ const exists = (path) => stat(path).then(() => true, () => false);
 
 /** What each tool call of run `runId` was answered, in order, from its released store. */
 function answers(data, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
@@ -38,10 +38,10 @@ test("read, write and edit reach nothing outside work/: the tokens, the owner's 
   // Another run of the same agent, with a secret in its own work/.
   const other = await probed(api, data, "probe", []);
   await other.done();
-  const secret = join(data, "runs", other.runId, "work", "secret.txt");
+  const secret = join(runDir(data, other.runId), "work", "secret.txt");
   await writeFile(secret, "another run's secret");
   // And a secret in that run's tmp/, the one place besides work/ a run may read: its own, not another's.
-  const otherTmp = join(data, "runs", other.runId, "tmp", "secret.txt");
+  const otherTmp = join(runDir(data, other.runId), "tmp", "secret.txt");
   await mkdir(join(otherTmp, ".."), { recursive: true });
   await writeFile(otherTmp, "another run's temporary secret");
   const outside = join(data, "..", "outside.txt");
@@ -72,10 +72,10 @@ test("read, write and edit reach nothing outside work/: the tokens, the owner's 
   const control = [["write", { path: "inside.txt", content: "inside" }], ["read", { path: "inside.txt" }], ["read", { path: "../tmp/note.txt" }]];
   const run = await probed(api, data, "probe", [{ wait: go }, ...[...attempts, ...control].map(([tool, args]) => ({ tool, args }))]);
   // A link in the run's own work/ to the data directory's token, made before any call.
-  await symlink(join(data, ".token"), join(data, "runs", run.runId, "work", "link-to-token"));
+  await symlink(join(data, ".token"), join(runDir(data, run.runId), "work", "link-to-token"));
   // A file in the run's own tmp/, which its reads may reach (where a command's spilled output would be).
-  await mkdir(join(data, "runs", run.runId, "tmp"), { recursive: true });
-  await writeFile(join(data, "runs", run.runId, "tmp", "note.txt"), "note");
+  await mkdir(join(runDir(data, run.runId), "tmp"), { recursive: true });
+  await writeFile(join(runDir(data, run.runId), "tmp", "note.txt"), "note");
   await writeFile(go, "");
   const said = await run.done();
   assert.equal(said.length, attempts.length + control.length);
@@ -86,13 +86,13 @@ test("read, write and edit reach nothing outside work/: the tokens, the owner's 
     assert.equal(said[i].text, `<harness>\n[error] ${args.path}: outside the workspace\n</harness>`, `${tool} ${args.path}`);
   });
   assert.deepEqual(said.slice(attempts.length).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to inside.txt"], ["read", false, "inside"], ["read", false, "note"]], "the same run reads and writes inside work/, and reads its own tmp/");
-  assert.equal(await readFile(join(data, "runs", run.runId, "work", "inside.txt"), "utf8"), "inside");
+  assert.equal(await readFile(join(runDir(data, run.runId), "work", "inside.txt"), "utf8"), "inside");
   // Nothing outside changed, and nothing was made there.
   assert.deepEqual(await keys(), before);
   assert.equal(await readFile(secret, "utf8"), "another run's secret");
   assert.equal(await exists(join(data, "evil.txt")), false);
   assert.equal(await exists(outside), false);
-  assert.equal(await exists(join(data, "runs", run.runId, "tmp", "written.txt")), false);
+  assert.equal(await exists(join(runDir(data, run.runId), "tmp", "written.txt")), false);
   assert.equal(await readFile(otherTmp, "utf8"), "another run's temporary secret");
   const store = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
   t.after(() => store.close());

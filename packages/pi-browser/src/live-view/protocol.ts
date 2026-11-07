@@ -35,15 +35,17 @@ export type DialogAnswer = { type: "dialog"; accept: boolean; promptText?: strin
 export type ClientMessage = Hello | InputMessage | NavMessage | DialogAnswer;
 
 export type ServerMessage =
-  /** Sent once, after a valid hello. */
-  | { type: "ready"; drive: DriveState }
+  /** Sent once, after a valid hello. `readOnly`: the viewer watches and never drives (LiveViewOptions.readOnly); absent, it may drive. */
+  | { type: "ready"; drive: DriveState; readOnly?: true }
   | { type: "status"; drive: DriveState }
   /** The page shown: its address and title, sent when either changes and at every followed-page change. */
   | { type: "page"; url: string; title: string }
+  /** The browser has no page to show (one that starts with none, or whose last page closed): until a page opens there is nothing to draw. */
+  | { type: "no_page" }
   | { type: "dialog"; kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; defaultPrompt?: string }
   | { type: "dialog_closed" }
   /** One input or nav message was not delivered, and why. */
-  | { type: "held"; reason: "agent_acting" | "no_page" | "bad_message" | "busy" }
+  | { type: "held"; reason: "agent_acting" | "no_page" | "bad_message" | "busy" | "read_only" }
   | { type: "refused"; reason: RefusalReason }
   | { type: "ended"; reason: "released" | "browser_closed" };
 
@@ -77,6 +79,8 @@ export type StreamHandlers = {
    *  (the viewer is slow). No frame is kept after the handler returns, and none is ever written anywhere. */
   frame(jpeg: Buffer, page: { w: number; h: number }, ack: () => void): void;
   page(page: { url: string; title: string }): void;
+  /** The browser has no page to follow: none when the stream starts, or its last one closed. A page that opens next is announced by `page`. */
+  noPage?(): void;
   dialog(dialog: { kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; defaultPrompt?: string } | null): void;
   /** The browser's socket ended and was not asked to. */
   closed(): void;

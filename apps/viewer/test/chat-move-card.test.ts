@@ -1,6 +1,5 @@
 // The move card of the chat view: where a run moved between hosts at a host `handoff` line, the timeline holds one card there, read from fields only (the handoff's gen, point, n and
-// `from`, the next generation's `run.json` holder: its host label and its driver kind), worded as a move or, where the holder's label is the one it left, a reopening; never a kill, a restart
-// or a process; the holder's pid and boot id and the handoff's prose are never read; a `handoff.failed` draws nothing.
+// `from`), worded as a move; never a kill, a restart or a process; the handoff's prose is never read; a `handoff.failed` draws nothing.
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,20 +33,20 @@ async function moved(t: { after(fn: () => unknown): void }, options: Parameters<
   return { items, cards: items.filter((item): item is Extract<ChatItem, { kind: 'move' }> => item.kind === 'move') };
 }
 
-test('a move between hosts is one card at the handoff, in words from fields: after the point\'s effect and its ordinal, on the host it left, then where it went', async (t) => {
+test('a move between hosts is one card at the handoff, in words from fields: after the point\'s effect and its ordinal, on the host it left', async (t) => {
   const { cards, items } = await moved(t, D2);
-  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1 (daytona)', 'Moved to host-2 (daytona) from the same disk; the conversation goes on']]);
+  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1', 'Moved to another host from the same disk; the conversation goes on']]);
   // Between the last line of generation 1 and the first of generation 2: after what was recorded at or before the handoff, before what came next.
   const at = items.findIndex((item) => item.kind === 'move');
   const atOf = (item: ChatItem) => (item.kind === 'tool' ? (item.t0 ?? item.t1) : item.t) ?? 0;
   assert.ok(items.slice(0, at).every((item) => atOf(item) <= 10_000) && items.slice(at + 1).every((item) => atOf(item) > 10_000), 'in time order, at its handoff line');
 });
 
-test('where the holder\'s label is the one it left, the card says it reopened, never that it moved; the labels are the recorded ones, and an ordinal follows its number', async (t) => {
+test('one card per handoff, the labels the recorded ones, and an ordinal follows its number', async (t) => {
   const { cards } = await moved(t, D3);
   assert.deepEqual(cards.map((card) => [card.lead, card.text]), [
-    ['after the 1st hand over on host-1 (local)', 'Reopened on host-1 (local) from the same disk; the conversation goes on'],
-    ['after the 1st hand back on host-1 (local)', 'Reopened on host-1 (local) from the same disk; the conversation goes on'],
+    ['after the 1st hand over on host-1', 'Moved to another host from the same disk; the conversation goes on'],
+    ['after the 1st hand back on host-1', 'Moved to another host from the same disk; the conversation goes on'],
   ]);
   const ordinals = await moved(t, { ...D2, moves: [{ ...D2.moves[0]!, n: 2 }] });
   assert.match(ordinals.cards[0]!.lead, /^after the 2nd charge/);
@@ -57,16 +56,9 @@ test('where the holder\'s label is the one it left, the card says it reopened, n
   assert.match(eleventh.cards[0]!.lead, /^after the 11th charge/);
 });
 
-test('a tab is a driver kind (draft 47, amendment 2): the card names a move from the tab, and a driver that is no kind is dropped from the card', async (t) => {
-  const { cards } = await moved(t, { ...D2, gens: [{ host: 'host-1', driver: 'tab' }, { host: 'host-2', driver: 'modal' }] });
-  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1 (tab)', 'Moved to host-2 (modal) from the same disk; the conversation goes on']]);
-  const unknown = await moved(t, { ...D2, gens: [{ host: 'host-1', driver: 'a-machine-name' }, { host: 'host-2', driver: 'i-0a1b2c3d4e5f' }] });
-  assert.deepEqual(unknown.cards.map((card) => [card.lead, card.text]), [['after the 5th charge on host-1', 'Moved to host-2 from the same disk; the conversation goes on']], 'a value that is no driver kind (a name, an id) is never drawn');
-});
-
 test('a point that is not an effect kept drops the "after" clause, and nothing else is read from it', async (t) => {
   const { cards } = await moved(t, { ...D2, moves: [{ t: 10_000, point: 'model.request', n: 3 }] });
-  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['On host-1 (daytona)', 'Moved to host-2 (daytona) from the same disk; the conversation goes on']]);
+  assert.deepEqual(cards.map((card) => [card.lead, card.text]), [['On host-1', 'Moved to another host from the same disk; the conversation goes on']]);
 });
 
 test('a handoff.failed line draws no card, and a run with no handoff line draws none', async (t) => {
@@ -111,15 +103,15 @@ test('a run that moved before it recorded any chat keeps its card: one per hando
   const recording: Recording = { id: 'run', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), lines: parseLines(host.join('\n')), blobUrl: (sha) => (files[sha] ? `blobs/${files[sha]}` : undefined), blobType: () => undefined };
   const model = await extractChat(recording, async () => undefined);
   assert.equal(model.threads.length, 0, 'no conversation');
-  assert.deepEqual((model.moves ?? []).map((card) => card.text), ['Reopened on host-1 (local) from the same disk; the conversation goes on', 'Reopened on host-1 (local) from the same disk; the conversation goes on'], 'a card per handoff line, kept');
+  assert.deepEqual((model.moves ?? []).map((card) => card.text), ['Moved to another host from the same disk; the conversation goes on', 'Moved to another host from the same disk; the conversation goes on'], 'a card per handoff line, kept');
 });
 
 test('in Chrome: the chat view draws one card per handoff line, in words of a move, and none without one; the Muse layout draws none', IN_CHROME, async (t) => {
   const two = await served(t, { query: '', height: 900, edit: (dir) => movedRun(dir, D3) });
   await two.until(`!!d()?.querySelector('main#chat-root .thread')`, 'the chat view drawn');
   assert.deepEqual(await two.value(`[...d().querySelectorAll('.move-card')].map((card) => card.textContent)`), [
-    'after the 1st hand over on host-1 (local)Reopened on host-1 (local) from the same disk; the conversation goes on',
-    'after the 1st hand back on host-1 (local)Reopened on host-1 (local) from the same disk; the conversation goes on',
+    'after the 1st hand over on host-1Moved to another host from the same disk; the conversation goes on',
+    'after the 1st hand back on host-1Moved to another host from the same disk; the conversation goes on',
   ]);
   const none = await served(t, { query: '', height: 900 });
   await none.until(`!!d()?.querySelector('main#chat-root .thread')`, 'the chat view drawn');

@@ -99,3 +99,18 @@ test('a second start slower than the first start\'s bound still gives its page w
   t.after(() => rmSync(same, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }), { timeout: 10_000 });
   await assert.rejects(drivenPage('data:text/html,<p>never</p>', join(same, 'profile'), { launchMs: 2000, path: hungOnceChrome(same, 4), signal: t.signal }), /Chrome starting \(its DevToolsActivePort\): nothing after 2 s/);
 });
+
+// csp.test.ts:34 in #1902's merge group (11-07), and F38 (follow.test.ts:213, 11-05): one Runtime.evaluate that Chrome never
+// answered (sent as a navigation tore the old document down) failed the whole wait at the request bound, 10 s, though the
+// wait had 30 s. A poll whose reply does not come is a "not yet": the wait asks again, until its own bound.
+test('a poll whose reply never comes is asked again: a wait is on the page\'s state, not on one reply', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'chrome-bounds-'));
+  const page = await drivenPage('data:text/html,<title>polls</title>', join(dir, 'profile'), { requestMs: 1000, signal: t.signal });
+  t.after(() => page.close().finally(() => rmSync(dir, { recursive: true, force: true })), { timeout: 20_000 });
+  // The first poll's answer never settles, as a reply Chrome drops; the second is true.
+  assert.equal(await page.once('(window.polls = (window.polls ?? 0) + 1) === 1 ? new Promise(() => {}) : true', 'window.polls', 10_000, 'the second poll'), 2);
+  // A state that never comes still fails at the wait's own bound, and names it.
+  const started = Date.now();
+  await assert.rejects(page.once('new Promise(() => {})', 'true', 2500, 'a state that never comes'), /a state that never comes: not so after 2.5 s/);
+  assert.ok(Date.now() - started < 2500 + 1000 + 500, `within its bound and one request (${Date.now() - started} ms)`);
+});
