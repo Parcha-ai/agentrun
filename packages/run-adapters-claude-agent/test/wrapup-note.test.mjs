@@ -28,3 +28,39 @@ test('the note: one text block at the end of the last user message, every earlie
   assert.deepEqual(noted.messages.slice(0, -1), sent.messages.slice(0, -1), 'earlier messages unchanged');
   assert.deepEqual(noted.system, sent.system, 'the system prompt unchanged');
 });
+
+test('a request that ends with the CLI\'s system message (its environment note at a turn\'s start) keeps it last, untouched: the note is the last block of the user message before it, as the API takes a system message only before an assistant message or at the end', () => {
+  const env = { role: 'system', content: [{ type: 'text', text: 'The current date is 2026-11-07.' }] };
+  const reminder = { type: 'text', text: `<system-reminder>${NOTE}</system-reminder>` };
+  // A turn's first request: [user, system] -> [user + note, system] (a user message after the system one is refused, 400).
+  const start = { model: 'claude-main', messages: [{ role: 'user', content: 'Write the report.' }, env] };
+  assert.deepEqual(policy.addNote?.(structuredClone(start), NOTE).messages, [{ role: 'user', content: [{ type: 'text', text: 'Write the report.' }, reminder] }, env]);
+  // Tool results then the system message: the note after the results, in the same user message.
+  const results = { model: 'claude-main', messages: [...body().messages, env] };
+  const noted = policy.addNote?.(structuredClone(results), NOTE).messages;
+  assert.deepEqual(noted.at(-1), env, 'the system message stays last, as sent');
+  assert.deepEqual(noted.at(-2).content, [...body().messages.at(-1).content, reminder], 'the note is the last block of the last user message');
+  assert.deepEqual(noted.slice(0, -2), body().messages.slice(0, -1), 'earlier messages unchanged');
+  // After an answer: a user message of its own, still before the system message.
+  const answered = { model: 'claude-main', messages: [{ role: 'user', content: 'Hi.' }, { role: 'assistant', content: [{ type: 'text', text: 'Hello.' }] }, env] };
+  assert.deepEqual(policy.addNote?.(structuredClone(answered), NOTE).messages, [answered.messages[0], answered.messages[1], { role: 'user', content: [reminder] }, env]);
+});
+
+test('through the proxy, a turn\'s first request ([user, system]) is admitted at its bound with the note in it: the note\'s bytes over the bound of the body as the CLI sent it', async (t) => {
+  const { startModelProxy } = await import('@parcha/agentrun-kernel/host');
+  const asked = [];
+  const forwarded = [];
+  const notes = [NOTE];
+  const hooks = { beforeRequest: async (request) => void asked.push(request), afterRequest: async () => {}, note: () => notes.shift() };
+  const fetchUp = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{}', { headers: { 'content-type': 'application/json' } }));
+  const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, log: () => {}, fetch: fetchUp }, 'session-key');
+  t.after(() => proxy.close());
+  const start = { model: 'claude-main', max_tokens: 32_000, messages: [{ role: 'user', content: 'Write the report.' }, { role: 'system', content: [{ type: 'text', text: 'The current date is 2026-11-07.' }] }] };
+  const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(start) });
+  await res.text();
+  assert.equal(res.status, 200);
+  assert.deepEqual(forwarded[0].messages.map((m) => m.role), ['user', 'system'], 'sent with the system message last');
+  const [request] = asked;
+  assert.equal(request.noted, true, 'admitted as carrying the note');
+  assert.ok(request.inputTokensMax - request.inputTokensMaxWithoutNote >= Buffer.byteLength(`<system-reminder>${NOTE}</system-reminder>`, 'utf8'), `its bound counts the note's bytes: ${request.inputTokensMax} vs ${request.inputTokensMaxWithoutNote} without it`);
+});
