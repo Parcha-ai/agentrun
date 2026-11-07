@@ -1,0 +1,42 @@
+// A codex session's host port (AdapterSession.port): the session's one route for the host's own requests beside Codex's,
+// on a listener the session holds. It is up from the open, never handed to Codex, closed with the session or when the
+// host lets the session go (its signal), and a port asked for after that is refused, never started again.
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { connect } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { codexAdapter } from '@parcha/agentrun-harness-codex';
+
+process.env.AGENTRUN_CODEX_STANDIN = '1';
+
+const FAKE = fileURLToPath(new URL('./fake-app-server.mjs', import.meta.url));
+/** Whether a TCP connect to `url` is taken. */
+const listening = (url) => new Promise((resolve) => {
+  const { hostname, port } = new URL(url);
+  const socket = connect({ host: hostname, port: Number(port) }, () => { socket.destroy(); resolve(true); });
+  socket.on('error', () => resolve(false));
+});
+
+for (const how of ['close', 'signal']) {
+  test(`a codex session's host port is up from its open, for side keys only, and gone once ${how === 'close' ? 'the session closes' : 'the host lets it go'}: a port asked for after is refused, never started again`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentrun-codex-host-'));
+    const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), standIn: { command: process.execPath, args: [FAKE] } });
+    const store = memorySessionStore();
+    const spec = { key: 'run:r', label: 'r', system: [], tools: [], context: 'fresh' };
+    const letGo = new AbortController();
+    const session = await codex.open(spec, { writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: letGo.signal, onEvent: () => {} });
+    const port = session.port('learned_workflow');
+    assert.deepEqual([typeof port?.url, port?.model, port?.api], ['string', 'luna-test', 'openai-responses'], JSON.stringify(port));
+    assert.equal(await listening(port.url), true, 'up before any turn');
+    if (how === 'close') await session.close();
+    else letGo.abort(new Error('the run was cancelled'));
+    for (let i = 0; i < 100 && (await listening(port.url)); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(await listening(port.url), false, 'no listener outlives its session');
+    assert.equal(session.port('learned_workflow'), undefined, 'refused after, never started again');
+    if (how === 'signal') await session.close();
+  });
+}
