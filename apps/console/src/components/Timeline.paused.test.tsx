@@ -118,6 +118,24 @@ describe("the timeline, the pause row the server writes for a request the spend 
     expect(lis.some((li) => (li.textContent ?? "").includes("Paused at cap"))).toBe(false);
   });
 
+  it("says its words once: no chevron and no expand, since its text is its title", async () => {
+    const [li] = draws([pausedRow()]);
+    expect(li.querySelector(".lucide-chevron-right")).toBeNull();
+    const button = li.querySelector("button")!;
+    expect(button.disabled).toBe(true);
+    await act(async () => { button.click(); });
+    expect(li.querySelector("pre")).toBeNull();
+    expect((li.textContent ?? "").split(PAUSED_SAYS).length - 1).toBe(1);
+  });
+
+  it("a server phase row whose text says more than its title still opens it", async () => {
+    const more = row({ id: "p1:note", kind: "phase", origin: "server", summary: "Spent $0.01 so far", text: "Spent $0.01 so far: 2 model requests, 1 paid tool call." });
+    const [li] = draws([more]);
+    expect(li.querySelector(".lucide-chevron-right")).not.toBeNull();
+    await act(async () => { li.querySelector("button")!.click(); });
+    expect(li.querySelector("pre")?.textContent).toBe("Spent $0.01 so far: 2 model requests, 1 paid tool call.");
+  });
+
   it("a request that failed at the cap (kind error, no paused) is an error, in red, with no pause icon", () => {
     const failedAtCap = row({ summary: "Not sent: the next step needs at least $0.11, and this run's cap is $0.05." });
     const [li] = draws([failedAtCap]);
