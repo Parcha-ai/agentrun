@@ -1562,17 +1562,19 @@ export class Runs {
    *  it is; every one, live and forgotten, for `true` (handed several). `unreadable` when what it was handed can't be read
    *  back here: no vendor browser kept beside the mark, the sign-ins file can't be read, the pointer (or, for `true`,
    *  any of them) does not open under this server's seal key, or its hash matches none kept (a forgotten one dropped
-   *  past MAX_FORGOTTEN; for `true`, once any was dropped, since which it held is not known). */
+   *  past MAX_FORGOTTEN, or the sign-ins file gone); for `true`, once any was dropped, or when none is kept at all (the
+   *  sign-ins file gone, as an incomplete restore or a damaged disk leaves it, or holding none for its vendor): it was
+   *  handed some, and which it held is not known. Fails closed: a marked run is cut, or withheld, never served uncut. */
   private async handedPointers(agentId: string, browser: string | undefined, handed: true | string | undefined): Promise<{ refs: string[] } | "unreadable"> {
     const signIns = this.options.signIns;
-    if (handed === undefined || !signIns) return { refs: [] };
-    if (!browser) return "unreadable";
+    if (handed === undefined) return { refs: [] };
+    if (!signIns || !browser) return "unreadable";
     const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);
     const gone = await signIns.forgotten(agentId, browser).catch(() => "unreadable" as const);
     if (live === "unreadable" && handed === true) return "unreadable";
     if (gone === "unreadable" || (handed === true && (gone.unreadable || gone.dropped))) return "unreadable";
     const all = [...(typeof live === "object" ? [live.ref] : []), ...gone.refs];
-    if (handed === true) return { refs: all };
+    if (handed === true) return all.length ? { refs: all } : "unreadable";
     const match = all.find((ref) => pointerHash(ref) === handed);
     return match === undefined ? "unreadable" : { refs: [match] };
   }

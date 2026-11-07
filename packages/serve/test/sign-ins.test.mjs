@@ -1589,3 +1589,74 @@ test("a run handed several sign-ins (marked true) is cut of every forgotten one,
   assert.ok(!timeline.includes("I kept"), timeline);
   assert.equal((await api("GET", `/runs/${first.runId}`)).body.result?.final_answer ?? null, null);
 });
+
+/** A run of agent `alpha` that browsed signed in and ended repeating its sign-in's pointer, its server then closed: the
+ *  data directory, the run's id and the pointer. */
+async function echoedEnd(t, dir, log) {
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  await follow(first.api, runId, ["completed"], { deadlineMs: 60_000 });
+  await first.close();
+  return { data: first.data, runId, ref };
+}
+
+/** Marks run `runId` as handed `mark` and removes its agent's sign-ins file, as an incomplete restore or a damaged disk
+ *  would leave them. */
+async function signInsLost(data, runId, mark) {
+  const metaFile = join(runDir(data, runId), "serve.json");
+  const meta = JSON.parse(await readFile(metaFile, "utf8"));
+  assert.ok(meta.sign_in_handed, "it was handed one");
+  await writeFile(metaFile, `${JSON.stringify({ ...meta, ...(mark === undefined ? {} : { sign_in_handed: mark }) })}\n`);
+  await rm(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"));
+}
+
+test("an ended run handed several sign-ins (marked true) whose agent's sign-ins file is gone is withheld: none of its pointers can be read back to cut", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { data, runId, ref } = await echoedEnd(t, dir, log);
+  await signInsLost(data, runId, true);
+  const second = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const timeline = await servedCut(second.api, runId, ref);
+  assert.ok(!timeline.includes("I kept"), timeline);
+  assert.equal((await second.api("GET", `/runs/${runId}`)).body.result?.final_answer ?? null, null);
+  await second.close();
+  // A sign-ins file there that holds none for its vendor, live or forgotten: withheld the same.
+  await mkdir(join(homeOf(data, "alpha"), "sign-ins"), { recursive: true });
+  await writeFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), `${JSON.stringify({ format: "sign-ins/1", sign_ins: [] })}\n`);
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const again = await servedCut(api, runId, ref);
+  assert.ok(!again.includes("I kept"), again);
+});
+
+test("an ended run marked with its pointer's hash whose agent's sign-ins file is gone is withheld too: the hash matches nothing kept", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { data, runId, ref } = await echoedEnd(t, dir, log);
+  await signInsLost(data, runId, undefined);
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const timeline = await servedCut(api, runId, ref);
+  assert.ok(!timeline.includes("I kept"), timeline);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? null, null);
+});
+
+test("a run still going, marked true, whose agent's sign-ins file is gone is not taken up: it ends failed, saying why, and nothing it said is served", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { runId, ref } = await hiddenRun(t, dir, data, log);
+  await signInsLost(data, runId, true);
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const { last } = await follow(api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
+  for (const shown of [JSON.stringify(last), await servedCut(api, runId, ref)]) assert.ok(!shown.includes("I kept"), shown);
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.error?.message], ["failed", "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it."]);
+});

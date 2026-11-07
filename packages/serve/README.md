@@ -1093,11 +1093,11 @@ picks which one a run gets, never the model.
   way, its end kept. What a run was handed is read back by that mark alone: the pointer whose SHA-256 it is, live or
   forgotten since (below), or every one the agent keeps for a run handed several. A run with no mark was never handed
   one. When the marked pointer can't be read back (it does not open under this server's seal key, live or forgotten,
-  or it was forgotten and has since dropped out of the newest 32 kept; for a run handed several, once any was
-  dropped), the run is hidden or withheld as above. A run list's row for an ended run the server has not read (from
-  its row and `serve.json` alone) serves its error (its details too) and review cut the same way, or withholds them in
-  the same words, and withholds them when its `serve.json` is damaged. Its `held_by` still names a run that holds its
-  lease, as a held one does.
+  or it was forgotten and has since dropped out of the newest 32 kept; for a run handed several, once any was dropped,
+  or when the agent keeps none at all, its sign-ins file gone or holding none for that browser), the run is hidden or
+  withheld as above. A run list's row for an ended run the server has not read (from its row and `serve.json` alone)
+  serves its error (its details too) and review cut the same way, or withholds them in the same words, and withholds
+  them when its `serve.json` is damaged. Its `held_by` still names a run that holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
   pointer goes all the same. It is `409 sign_in_held` while a run holds the lease (`details.held_by`), and also while
