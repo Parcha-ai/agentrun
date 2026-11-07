@@ -1703,6 +1703,34 @@ test("a run still going handed several sign-ins, hidden while the seal key is mi
   assert.equal(JSON.parse(await readFile(metaFile, "utf8")).unshown, undefined, "shown again, and saved so");
 });
 
+test("a run still going whose serve.json is damaged keeps its agent's sign-in from being forgotten, held or not: forget reads the same answer the disk read gives", { timeout: 300_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await crashable(t, data);
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  await follow(first.api, (await first.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id, ["completed"], { deadlineMs: 60_000 });
+  await until(async () => (await first.api("GET", "/agents/alpha")).body.sign_ins, (list) => list[0]?.state === "ready");
+  // Its next revision has no browser; a run of it waits on a file this test never makes.
+  const edited = await first.api("PUT", "/agents/alpha/definition", { definition: { ...agent("alpha", { instructions: "Answer.", tools: [] }).definition, version: 2 } });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Pick a region once ${join(dir, "never")} exists.` } })).body.run_id;
+  await until(async () => (await first.api("GET", `/runs/${runId}`)).body.status, (status) => status === "working");
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = runRecordOf(data, runId);
+  t.after(() => { try { process.kill(holder.pid, "SIGKILL"); } catch {} });
+  await writeFile(join(runDir(data, runId), "serve.json"), "{\"title\": \"Pick");
+  // The next server reads it in (its revision has no browser, so it is taken up), and holds it: whether it was handed a
+  // sign-in went with its serve.json, as forget's read from disk would say of it.
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.ok(["queued", "working"].includes((await api("GET", `/runs/${runId}`)).body.status), "taken up, not ended");
+  assert.equal(storeRun(data, runId).state, "running");
+  const forgot = await api("DELETE", "/agents/alpha/sign-ins/default");
+  assert.deepEqual([forgot.status, forgot.body.error?.code, forgot.body.error?.details?.handed_to], [409, "sign_in_held", runId], JSON.stringify(forgot.body));
+});
+
 test("a mark that is not the shape a server writes (a legacy true, a single hash, anything malformed) fails closed: the run is withheld, never served uncut", { timeout: 360_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");

@@ -106,19 +106,26 @@ function handedMark(value: unknown): Handed | undefined {
   return MALFORMED;
 }
 
-/** What a run's serve.json at `path` says it was handed of its agent's sign-in (`sign_in_handed`), read from disk for a
- *  run this server does not hold: undefined for none, or no serve.json (a run never set up, never launched); MALFORMED for
- *  one that is there but can't be read or parsed, which may hold any. */
-async function handedOnDisk(path: string): Promise<Handed | undefined> {
+/** A run's serve.json at `path`, the one read every reader of it shares (load, forget's handedTo, a list row): `stored`,
+ *  what it holds when it is whole JSON of an object, else null; `damaged`, whether it is there but can't be read or
+ *  parsed (a damaged disk, a hand's edit), as told apart from not there (a run never set up, never launched). */
+async function readMeta(path: string): Promise<{ stored: Partial<RunMeta> | null; damaged: boolean }> {
   const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? undefined : null));
-  if (text === undefined) return undefined;
-  let stored: unknown;
+  if (text === undefined) return { stored: null, damaged: false };
+  let stored: unknown = null;
   try {
     stored = text === null ? null : JSON.parse(text);
   } catch {
     stored = null;
   }
-  return isObject(stored) ? handedMark(stored.sign_in_handed) : MALFORMED;
+  return isObject(stored) ? { stored: stored as Partial<RunMeta>, damaged: false } : { stored: null, damaged: true };
+}
+
+/** What a run's serve.json at `path` says it was handed of its agent's sign-in, read from disk for a run this server does
+ *  not hold: as load reads it, and MALFORMED for a serve.json that is damaged, as a held run's `damaged` reads. */
+async function handedOnDisk(path: string): Promise<Handed | undefined> {
+  const { stored, damaged } = await readMeta(path);
+  return damaged ? MALFORMED : handedMark(stored?.sign_in_handed);
 }
 
 /** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
@@ -287,6 +294,9 @@ type Served = { keys: string; input: unknown; out: unknown };
 const digestOf = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
 
 export type Run = {
+  /** Set at load when its serve.json was there but could not be read or parsed (readMeta): what it was handed is not
+   *  known, as forget reads of it from disk. */
+  damaged?: true;
   id: string;
   /** The values of the secrets each launch handed its process: what its errors never show, a key rotated since included. */
   handed?: Set<string>;
@@ -1169,10 +1179,10 @@ export class Runs {
   private async load(row: RunRow): Promise<Run> {
     this.onRunLoad?.(row.id);
     const dir = runDirIn(this.options.agents.dir, row.agent, row.id);
-    const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     // There, but not whole JSON of an object (a damaged disk, a hand's edit): what it kept is lost. Missing is no damage:
-    // a run whose server went down before it set the run up has none (notSetUp).
-    const damaged = stored === null ? existsSync(join(dir, RUN_META)) : !isObject(stored);
+    // a run whose server went down before it set the run up has none (notSetUp). Kept on the run (run.damaged), so
+    // forget reads of a held run what it reads from disk of one not held (handedTo).
+    const { stored, damaged } = await readMeta(join(dir, RUN_META));
     const trigger = triggerOf(stored);
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
@@ -1208,6 +1218,7 @@ export class Runs {
     if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
+    if (damaged) run.damaged = true;
     // Its browser's sign-in pointer, read back before anything of the run is read or held here: its rows, answers and
     // errors are cut of it from the first, though no launch of this server handed it one.
     const signIn = await this.peekSignIn(run);
@@ -2460,13 +2471,13 @@ export class Runs {
   /** The run of `agentId` still going (its row running) that was handed the sign-in whose pointer hashes to `hash`, or
    *  any sign-in when `hash` is undefined (a pointer that does not open here): forget waits for it (sign-ins.ts). From the
    *  run this server holds, else its serve.json: a run still going need not be held yet (a recovery under way, or one it
-   *  could not recover). One whose mark is MALFORMED, or whose serve.json is there but can't be read, counts: what it was
-   *  handed is not known. */
+   *  could not recover). One whose mark is MALFORMED, or whose serve.json is damaged (run.damaged for a held run, the same
+   *  answer the disk read gives), counts: what it was handed is not known. */
   async handedTo(agentId: string, hash: string | undefined): Promise<string | undefined> {
     for (const row of await this.options.agents.request(() => this.store.listRuns({ agent: agentId }))) {
       if (row.state !== "running") continue;
       const held = this.runs.get(row.id);
-      const handed = held ? held.meta.sign_in_handed : await handedOnDisk(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META));
+      const handed = held ? (held.damaged ? MALFORMED : held.meta.sign_in_handed) : await handedOnDisk(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META));
       if (handed !== undefined && (handed === MALFORMED || hash === undefined || handed.includes(hash))) return row.id;
     }
     return undefined;
@@ -3937,13 +3948,12 @@ export class Runs {
   async summaryOfRow(row: RunRow, versions: Map<string, number>, origin: string): Promise<Awaited<ReturnType<Runs["summary"]>>> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known, origin);
-    const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<RunMeta> | null;
+    const { stored: meta, damaged } = await readMeta(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META));
     const failed = STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null;
     const review = reviewOfRow(row, meta);
     // Its error and review are the run's words (its error can quote what it said; an escalation's reason is its own):
     // cut as its view's are, or withheld when the pointer they could hold can't be read back here.
-    const damaged = meta === null || !isObject(meta) ? existsSync(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META)) : false;
-    const shown = failed || review ? await this.rowShown(row.agent, isObject(meta) ? meta : null, damaged) : undefined;
+    const shown = failed || review ? await this.rowShown(row.agent, meta, damaged) : undefined;
     const say = (text: string) => (shown === "withheld" ? WITHHELD_SIGN_IN : shown!(text));
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, console_url: runLink(origin, row.id), revision: row.revision, kind: row.kind, sha: null,
