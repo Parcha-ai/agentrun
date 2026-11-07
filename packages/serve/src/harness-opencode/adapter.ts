@@ -167,27 +167,6 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
       const instructions = [...spec.system, ...(skills.length ? [skillsNote(skills)] : [])].join("\n\n");
       const effort = spec.effort ?? spec.thinking;
       let control: DriveControl | undefined;
-      // The session's host port (AdapterSession.port): the host's own requests beside OpenCode's (a learned workflow's
-      // node) on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price
-      // and the session's booking, io.models), on a listener the session holds: a drive's proxy closes with its drive, and
-      // an approved call runs before any turn. Side keys only; its policy object is its own. Closed with the session.
-      const hostPort = await startModelProxy({
-        policy: openCodePolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
-        hooks: io.models as never,
-        model: modelFor(spec),
-        origin: options.provider.origin,
-        credential: async () => (await options.provider.credential()) ?? "",
-        ...(options.price ? { price: options.price } : {}),
-        ...(options.log ? { log: options.log } : {}),
-        ...(options.fetch ? { fetch: options.fetch } : {}),
-      }, randomBytes(32).toString("base64url"));
-      let hostClosed = false;
-      const closeHost = async () => {
-        if (hostClosed) return;
-        hostClosed = true;
-        await hostPort.close().catch(() => {});
-      };
-      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       const harness = openCodeHarness({
         tools: tools.map(kernelTool),
         model: modelFor(spec),
@@ -262,6 +241,29 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
+      // The session's host port (AdapterSession.port): the host's own requests beside OpenCode's (a learned workflow's
+      // node) on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price
+      // and the session's booking, io.models), on a listener the session holds: a drive's proxy closes with its drive, and
+      // an approved call runs before any turn. Side keys only; its policy object is its own. Closed with the session.
+      // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
+      const hostPort = await startModelProxy({
+        policy: openCodePolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
+        hooks: io.models as never,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: options.price } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
+      if (io.signal.aborted) await closeHost();
       return {
         get state() { return state; },
         async send(text) {

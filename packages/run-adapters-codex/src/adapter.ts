@@ -198,30 +198,6 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(sessionDir(dir, "codex-home"), SKILLS_DIR), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const effort = spec.effort ?? spec.thinking;
-      // The session's host port (AdapterSession.port): the host's own requests beside Codex's (a learned workflow's node)
-      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price and the
-      // session's booking, io.models), but on a listener the session holds: a drive's machine closes its proxy when the
-      // drive ends (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side
-      // keys only: Codex never holds its key, and the policy's exec watch (announce) never sees these requests. Its policy
-      // object is its own, as a side call's should be. Closed with the session, or when the host lets the session go.
-      const search = options.webSearch === "live";
-      const hostPort = await startModelProxy({
-        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const } : {}) }),
-        hooks: io.models,
-        model: modelFor(spec),
-        origin: options.provider.origin,
-        credential: async () => (await options.provider.credential()) ?? "",
-        ...(options.price ? { price: search ? withWebSearches(options.price) : options.price } : {}),
-        ...(options.log ? { log: options.log } : {}),
-        ...(options.fetch ? { fetch: options.fetch } : {}),
-      }, randomBytes(32).toString("base64url"));
-      let hostClosed = false;
-      const closeHost = async () => {
-        if (hostClosed) return;
-        hostClosed = true;
-        await hostPort.close().catch(() => {});
-      };
-      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       const harnessOptions: CodexHarnessOptions = {
         tools: tools.map(kernelTool),
         builtins: false,
@@ -317,6 +293,32 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
+      // The session's host port (AdapterSession.port): the host's own requests beside Codex's (a learned workflow's node)
+      // on the session's route, built from the drive proxy's own pieces (the same policy, origin, credential, price and the
+      // session's booking, io.models), but on a listener the session holds: a drive's machine closes its proxy when the
+      // drive ends (a park ends the turn; a restart opens none), and an approved call runs before any turn. It serves side
+      // keys only: Codex never holds its key, and the policy's exec watch (announce) never sees these requests. Its policy
+      // object is its own, as a side call's should be. Closed with the session, or when the host lets the session go.
+      // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
+      const search = options.webSearch === "live";
+      const hostPort = await startModelProxy({
+        policy: codexPolicy({ model: modelFor(spec), tools: [], ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(search ? { webSearch: "live" as const } : {}) }),
+        hooks: io.models,
+        model: modelFor(spec),
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: search ? withWebSearches(options.price) : options.price } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      let hostClosed = false;
+      const closeHost = async () => {
+        if (hostClosed) return;
+        hostClosed = true;
+        await hostPort.close().catch(() => {});
+      };
+      io.signal.addEventListener("abort", () => void closeHost(), { once: true });
+      if (io.signal.aborted) await closeHost();
       return {
         get state() { return state; },
         async send(text) {
