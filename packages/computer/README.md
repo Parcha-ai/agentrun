@@ -83,7 +83,8 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
 - **The daemon's Go tests run without cgo, as computerd is built.** Go builds with cgo wherever it finds a C compiler,
   so a plain `go test ./...` makes test binaries that link cgo, and in one of those init refuses to start for cgo
   (ENOTSUP) alone. The test entry of `cmd/computerd` and `internal/daemon` (`internal/nocgo`, from `TestMain`) builds
-  such a package's test binary again with `CGO_ENABLED=0 go test -c`, runs it with the same arguments and
+  such a package's test binary again with `CGO_ENABLED=0 go test -c` and the `-tags` and `-ldflags` the first was
+  built with (read from its build info), runs it with the same arguments and
   environment, and exits with its code; a binary without cgo runs its tests itself, and a `-race` build (which needs
   cgo) skips the tests of the drop. On a host as another user the refusal for EPERM and both deadline tests run (init
   takes its deadline and refuses for the bounding set). The root path (`TestBecome...`, `TestUnprivilegedLeavesRoot...`)

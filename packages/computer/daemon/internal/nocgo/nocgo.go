@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"testing"
@@ -28,7 +29,7 @@ const ChildEnv = "AGENTRUN_NOCGO_CHILD"
 // Run runs m's tests in a test binary without cgo and returns the exit code. In a binary built without cgo, or with
 // -race (which needs cgo), it is m.Run(). In one with cgo it builds the same package's test binary again with
 // CGO_ENABLED=0 go test -c (the package from go list, run where go test runs a test binary: the package's directory),
-// runs it with the same arguments and environment and CGO_ENABLED=0, and returns its exit code. It never calls m.Run
+// with the -tags and -ldflags this binary was built with (its build info), runs it with the same arguments and environment and CGO_ENABLED=0, and returns its exit code. It never calls m.Run
 // then: no test runs in the binary with cgo.
 func Run(m *testing.M) int {
 	if !Cgo || Race {
@@ -99,7 +100,7 @@ func rerun(args []string) (int, error) {
 	}
 	defer os.RemoveAll(dir)
 	binary := filepath.Join(dir, filepath.Base(pkg)+".test")
-	build := []string{"test", "-c", "-o", binary}
+	build := append([]string{"test", "-c", "-o", binary}, buildFlags()...)
 	if mode := testing.CoverMode(); mode != "" {
 		build = append(build, "-covermode="+mode)
 	}
@@ -130,6 +131,21 @@ func rerun(args []string) (int, error) {
 		return 0, fmt.Errorf("running the test binary without cgo: %w", err)
 	}
 	return 0, nil
+}
+
+// buildFlags are the -tags and -ldflags this binary was built with, from its build info, for the rebuild to repeat.
+func buildFlags() []string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return nil
+	}
+	var flags []string
+	for _, setting := range info.Settings {
+		if (setting.Key == "-tags" || setting.Key == "-ldflags") && setting.Value != "" {
+			flags = append(flags, setting.Key+"="+setting.Value)
+		}
+	}
+	return flags
 }
 
 func workingDir() string {
