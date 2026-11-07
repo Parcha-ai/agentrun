@@ -95,8 +95,10 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
   ALL`, as 0:0 and 1000:1000, and the refusal without CAP_SETPCAP), and computerd's end at its deadline with the
   Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run as root in a container by hand.
 - `computerd probe [--connect <host:port>]...` prints one JSON line: the uid and gid it runs as, the kernel's release,
-  and which addresses a TCP connection reached, each tried for at most 3 s. A provider whose vendor reads nothing back
-  runs it through `exec.run` (below, Modal).
+  `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and sent nothing back)
+  and `results`, each target's `protocol`, `outcome` (`refused`, `accepted` or `answered`), `bytes` and `detail` in
+  words. A provider whose vendor reads nothing back runs it through `exec.run` (below, Modal), under the rule in
+  [Network none, read from inside](#network-none-read-from-inside-nothing-answers).
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
@@ -111,6 +113,38 @@ reports kind `linux` and groups `["exec", "files", "processes"]` (see [The proto
   and init exits 0. So every program that started gets SIGTERM before any SIGKILL. Connections stay open until init
   exits, so reads, waits and lists still answer. One shutdown serves all three.
 - A guard also ends its program when its control pipe from the daemon closes, so no program outlives the daemon.
+
+### Network none, read from inside: nothing answers
+
+Where a vendor reads no network policy back, `computerd probe` stands for one, and network none holds only when
+**nothing answers**: a target counts as reached only when bytes come back from it. One rule for every provider.
+
+- **Each target gets a request by its port**, so a server that waits for its client speaks: 443 a TLS 1.2
+  ClientHello, 80 an HTTP/1.0 `HEAD /`, 53 a DNS query for example.com over TCP (the probe's targets are TCP
+  connections; it sends no UDP), and any other port an HTTP `HEAD /` (the most common protocol where the client speaks
+  first; a server that speaks first, as SSH and SMTP do, answers whatever is sent). The ClientHello names the server
+  (SNI) only when the target's host is a name: an IP literal is no server name (RFC 6066, section 3), so
+  `1.1.1.1:443` gets none. The HTTP request's `Host` is the target's host.
+- **Bounds:** 3 s to connect, 3 s from the request to the answer, at most 4 KiB read per target, every target at once.
+- **Outcomes.** `refused`: no connection. `answered`: any byte came back, whatever it is: a ServerHello, a TLS alert
+  (a server that will not serve the hello still spoke), an HTTP status line, a DNS response with the query's id, a
+  banner, or bytes of no expected protocol (the detail says which). Only `answered` is `reached`, and a provider refuses
+  network none on any. `accepted`: a TCP connection, then nothing back within the bound, closed or held open.
+- **An accepted-but-silent connection is recorded, never refused and never hidden.** Some firewalls accept every
+  outbound connection first and decide after, closing a denied one with nothing sent back (E2B documents exactly this).
+  Such a connection shows that nothing came back, so it is not counted as reached. The provider keeps the computer and
+  names the targets in its read-back's words: `notes` on what `create` returns and on what `attach` finds, such as
+  `network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443`. `network(ref)` reads back
+  none.
+- **What it cannot show.** A silent accept proves no bytes came back, not that the request's bytes went nowhere: a
+  path that forwards outbound bytes and drops every reply (a one-way leak) reads the same from inside. The answered
+  check catches a path that carries traffic both ways, and nothing proves the one-way case from inside the computer.
+  The probe also shows its own targets are blocked, not every address.
+- **What it changes.** Only a provider that probes, on a vendor whose firewall accepts first, reads differently. Docker
+  reads its network back from `docker inspect` (`--network none` leaves no interface but `lo`, so a connection is
+  refused outright, which `test/docker/modal-commands.docker.test.mjs` pins with the probe itself); Daytona reads
+  `networkBlockAll` back from its API and runs no probe; Modal's live run with `blockNetwork` read back no TCP accept
+  at any target under the earlier accept-counts rule, so nothing it accepted is newly let through.
 
 ### Processes
 
@@ -558,15 +592,17 @@ of that slice, and the live conformance file waits for a key (below).
 - **Network.** `none` is `blockNetwork: true`; `open` passes no network field. Modal has no read-back of a sandbox's
   policy, so `networkReadBack` is false and the daemon's probe stands for one: `create`, `attach` and `network(ref)` run
   `computerd probe` through `exec.run`, as the computer's user, against public addresses (`1.1.1.1:443`,
-  `8.8.8.8:443`, `[2606:4700:4700::1111]:443`, or the `probeTargets` option). A computer with network none that
-  reaches any of them is terminated at create, refused by attach, and reads back as another network in words. This
-  shows those addresses are blocked, not every one. An allowlist is refused: Modal's CIDR allowlist (any protocol,
+  `8.8.8.8:443`, `[2606:4700:4700::1111]:443`, or the `probeTargets` option). A computer with network none that any of
+  them answers is terminated at create, refused by attach, and reads back as another network in words; one that only
+  accepted, sending nothing back, is kept, the targets named in `notes` (see
+  [Network none, read from inside](#network-none-read-from-inside-nothing-answers)). This shows those addresses are
+  blocked, not every one. An allowlist is refused: Modal's CIDR allowlist (any protocol,
   every port) and its domain allowlist (beta, TLS on 443 by SNI only) cannot be read back, so per ruling 9 an
   allowlist counts only once the live bypass cases pass. A change of network is refused: blockNetwork cannot be
   updated, and an allowlist only if one was set at create.
 - **The drift check** after create: `poll()` is null (it runs), `getTags()` reads back exactly the tags given, hello's
   version, os, arch (`amd64`), kind (`linux`) and exact groups match, and the probe's uid:gid is the computer's user, its kernel is
-  not gVisor's (`4.19.0-gvisor`), and with network none it reached nothing. A mismatch, an abort or a timeout
+  not gVisor's (`4.19.0-gvisor`), and with network none none of its targets answered. A mismatch, an abort or a timeout
   terminates the sandbox and refuses in words. The SDK reads back no runtime, image or size: the probe's kernel is the
   only runtime read-back, and image and sizes are what create recorded in a tag only the host's token writes.
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and

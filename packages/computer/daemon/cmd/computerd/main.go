@@ -9,8 +9,11 @@
 //	                    capability in any set and no_new_privs set, or refuses to start
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--connect <host:port>]...
-//	                    print one JSON line: this process's uid and gid, the kernel's release, and the addresses a TCP
-//	                    connection reached, each tried for at most 3 s
+//	                    print one JSON line: this process's uid and gid, the kernel's release, the addresses that
+//	                    answered (reached: bytes came back), those that accepted a TCP connection and sent nothing back
+//	                    (accepted), and each target's outcome (results). Each gets a request by its port (443 a TLS
+//	                    ClientHello, 80 an HTTP HEAD, 53 a DNS query over TCP, any other an HTTP HEAD), 3 s to connect
+//	                    and 3 s to answer, and at most 4 KiB is read
 //	computerd version   print the version
 //
 // Each exec.run and process.start starts itself again as `computerd guard`, with no other caller (see execrun.Guard).
@@ -64,7 +67,7 @@ func main() {
 		if !ok {
 			os.Exit(2)
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(probe.Run(targets, probe.DialTimeout)); err != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(probe.Run(targets, probe.ConnectBounds)); err != nil {
 			logger.Printf("probe: %v", err)
 			os.Exit(1)
 		}
