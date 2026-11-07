@@ -108,6 +108,19 @@ func (c *Conn) QueryPointer() (x, y int, err error) {
 	return int(int16(le.Uint16(r[16:]))), int(int16(le.Uint16(r[18:]))), nil
 }
 
+// LockMask is the Lock modifier's bit in State: Caps Lock, on.
+const LockMask = 0x2
+
+// State is the core keyboard and pointer state now: which modifiers are on, and which buttons are down (QueryPointer's
+// mask).
+func (c *Conn) State() (uint16, error) {
+	r, err := c.call(opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root))
+	if err != nil {
+		return 0, err
+	}
+	return le.Uint16(r[24:]), nil
+}
+
 // GetImage reads a rectangle of the root window as ZPixmap and converts it to RGBA through the visual's masks.
 func (c *Conn) GetImage(x, y, width, height int) (*image.RGBA, error) {
 	if width*height > MaxImagePixels {

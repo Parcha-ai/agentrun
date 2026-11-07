@@ -1,6 +1,7 @@
 // Package desktop is the daemon's X11 shim: screen.shot, screen.read and input.actions on the display computerd got
 // in DISPLAY, through the pure-Go client in package x11. Pixels come from GetImage on the root window, input from XTEST,
-// so a batch is one write and one round trip, with no program started for any action.
+// with no program started for any action: a batch is written as it runs, with one round trip after each action the
+// server may refuse, so a refused one stops the batch before the next.
 //
 // The display is reached when it is first asked for, and again after it goes: a provider may start its X server
 // through process.start after init is up. hello declares screen, input.pointer and input.keys only while the display
