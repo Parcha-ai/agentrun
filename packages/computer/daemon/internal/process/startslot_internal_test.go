@@ -35,6 +35,6 @@ func TestAQueuedStartEndsWhenItsRequestIsCancelled(t *testing.T) {
 
 // holdStartSlot takes the table's start slot, as a start stalled before its guard reported holds it.
 func holdStartSlot(t *Table) (release func()) {
-	t.startMu.Lock()
-	return t.startMu.Unlock
+	t.startSlot <- struct{}{}
+	return func() { <-t.startSlot }
 }

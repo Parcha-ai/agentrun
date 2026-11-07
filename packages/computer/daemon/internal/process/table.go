@@ -56,9 +56,10 @@ var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.
 // ended; a start into a full table drops the process that ended first once the new one runs, and is refused as limit
 // when all of them run.
 type Table struct {
-	opts    Options
-	startMu sync.Mutex
-	mu      sync.Mutex
+	opts Options
+	// startSlot holds one token while a start runs; a start waits for it in a select, so its cancellation ends the wait.
+	startSlot chan struct{}
+	mu        sync.Mutex
 	// procs is in start order, which is seq order.
 	procs   []*proc
 	lastSeq int64
@@ -71,7 +72,7 @@ func NewTable(opts Options) *Table {
 	if opts.MaxEntries <= 0 {
 		opts.MaxEntries = MaxEntries
 	}
-	return &Table{opts: opts}
+	return &Table{opts: opts, startSlot: make(chan struct{}, 1)}
 }
 
 type proc struct {
@@ -130,8 +131,12 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 			return StartResult{}, err
 		}
 	}
-	t.startMu.Lock()
-	defer t.startMu.Unlock()
+	select {
+	case t.startSlot <- struct{}{}:
+	case <-ctx.Done():
+		return StartResult{}, rpc.Errorf(rpc.KindAborted, "process.start was cancelled while another start was in progress")
+	}
+	defer func() { <-t.startSlot }()
 	if err := t.checkRoom(); err != nil {
 		return StartResult{}, err
 	}
@@ -195,7 +200,7 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 }
 
 // checkRoom refuses a start into a full table whose every process runs. It drops nothing: a start drops an ended
-// process only once its own program runs. Hold t.startMu, so that no start fills the room between the two.
+// process only once its own program runs. Hold the start slot, so that no start fills the room between the two.
 func (t *Table) checkRoom() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -219,7 +224,7 @@ func (t *Table) oldestEnded() int {
 }
 
 // dropOldestEnded takes the process that ended first out of a full table, for the caller to release once it has let
-// go of t.mu. Hold t.mu and t.startMu, after checkRoom: a process that has ended never runs again, so there is one.
+// go of t.mu. Hold t.mu and the start slot, after checkRoom: a process that has ended never runs again, so there is one.
 func (t *Table) dropOldestEnded() *proc {
 	if len(t.procs) < t.opts.MaxEntries {
 		return nil
