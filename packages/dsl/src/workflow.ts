@@ -315,6 +315,10 @@ export type WorkflowDeps = {
      *  a host that has none to fork refuses it. */
     context?: AgentContext;
   }) => Promise<unknown>;
+  /** How long, in milliseconds, the host has held the call at `executionPath` so far, from any origin (a pause for a raise
+   *  of the run's spend cap, which no deadline is for): a call node's deadline moves back by what this grows while its
+   *  attempt runs. Absent = nothing is held, and the deadline is the attempt's own. */
+  held?: (executionPath: string) => number;
   runEffect?: (params: {
     node: CallNode;
     schema?: Record<string, unknown>;
@@ -1876,6 +1880,11 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       const controller = new AbortController();
       const attemptMs = Math.max(1, Math.min(node.deadline_s * 1000, remainingMs <= 0 && deps.recovery ? Infinity : remainingMs));
       const attemptDeadlineMs = performance.now() + attemptMs;
+      // What the host holds this call for (deps.held: a pause for a raise of the run's spend cap) is not the call's own
+      // time: its deadline moves back by every millisecond held while the attempt runs.
+      const heldPath = executionPath(deps);
+      const heldAt = deps.held?.(heldPath) ?? 0;
+      const deadlineNow = () => attemptDeadlineMs + Math.max(0, (deps.held?.(heldPath) ?? 0) - heldAt);
       let settled: EffectSettlement | undefined;
       let unknownOutcome: EffectOutcomeUnknownError | undefined;
       let interruptionCheck: ReturnType<typeof setImmediate> | undefined;
@@ -1914,7 +1923,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
       let timer: LongTimer | undefined;
       const armDeadline = (ms: number) => {
         timer = setLongTimeout(() => {
-          const remainingMs = attemptDeadlineMs - performance.now();
+          const remainingMs = deadlineNow() - performance.now();
           if (remainingMs > 0) armDeadline(Math.ceil(remainingMs));
           else interrupt("deadline");
         }, ms);
@@ -1924,7 +1933,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         deps.onEvent?.({ type: "effect.attempt", label: node.label, detail: { via: node.via, attempt, idempotency_key: idempotencyKey } });
         Promise.resolve().then(() => {
           if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
-          if (controller.signal.aborted || performance.now() >= attemptDeadlineMs) {
+          if (controller.signal.aborted || performance.now() >= deadlineNow()) {
             throw new EffectFailure(`call node "${node.label}" deadline elapsed before effect admission`, "timeout");
           }
           return deps.runEffect!({ node: effectNode, schema, input, produces, attempt, idempotencyKey, signal: controller.signal, ...(Number.isFinite(attemptDeadlineMs) ? { deadlineAt: attemptDeadlineMs } : {}) });
@@ -1934,7 +1943,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         if (outcome.status === "rejected") throw outcome.reason;
         result = outcome.value;
         if (deps.signal?.aborted) throw deps.signal.reason ?? new Error("workflow aborted");
-        if (controller.signal.aborted || performance.now() >= attemptDeadlineMs) throw new EffectDeadlineExceededError(node.label, result);
+        if (controller.signal.aborted || performance.now() >= deadlineNow()) throw new EffectDeadlineExceededError(node.label, result);
         failed = false;
         lastError = undefined;
         break;
@@ -1976,21 +1985,25 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
   } else if (!node.poll || deps.syntheticEffects) {
     result = await executeOnce();
   } else {
-    const startedAt = deps.recovery?.pollStartedAt(node, undefined, executionPath(deps)) ?? Date.now();
-    const pollUntilMs = startedAt + node.poll.deadline_s * 1000;
+    // The poll window, read again at each check: a recovery run's is the driver's durable clock, which a host's hold moves
+    // back (holdPoll); else it starts now and moves back by what the host held the call (deps.held).
+    const startOf = (): number => deps.recovery?.pollStartedAt(node, undefined, executionPath(deps)) ?? firstStart + (deps.held?.(executionPath(deps)) ?? 0);
+    const firstStart = Date.now();
+    const startedAt = startOf();
+    const pollUntil = () => startOf() + node.poll!.deadline_s * 1000;
     // Each check sends one effect.poll. Outside a recovery run, a check that does not settle reports
     // null only once its wait ends inside the poll deadline, so a poll timeout, wherever it lands,
     // ends with one "deadline" event for the last check started.
     const pollDeadline = (iteration: number, elapsedMs: number) => deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: "deadline", elapsed_ms: elapsedMs } });
     for (let iteration = 1; ; iteration += 1) {
       try {
-        result = await executeOnce(pollUntilMs, deps.recovery ? undefined : iteration);
+        result = await executeOnce(pollUntil(), deps.recovery ? undefined : iteration);
       } catch (error) {
         if (!deps.recovery && error === pollTimeout) pollDeadline(iteration, Date.now() - startedAt);
         throw error;
       }
       if (!validator.Check(result)) throw invalid(result);
-      const elapsedMs = Date.now() - startedAt;
+      const elapsedMs = Date.now() - startOf();
       if (node.poll.fail_when && predicateMatches(node.poll.fail_when, result)) {
         deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: "fail_when", elapsed_ms: elapsedMs } });
         throw new EffectFailure(`call node "${node.label}" poll met fail_when after ${iteration} check(s): ${JSON.stringify(result).slice(0, 300)}`, null);
@@ -2016,7 +2029,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         throw error;
       }
       // A wait that wakes late, at or past the poll deadline, ends the poll before another check.
-      if (Date.now() >= pollUntilMs) {
+      if (Date.now() >= pollUntil()) {
         pollDeadline(iteration, elapsedMs);
         throw pollExceeded(iteration);
       }

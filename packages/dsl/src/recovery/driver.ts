@@ -1002,6 +1002,21 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       save();
     },
     /** The committed decision of the route at `executionPath`, if it was answered in an earlier process. */
+    /** Moves the poll window of the call node at `executionPath` back by `ms`, the time its host held the call (a pause
+     *  for a raise of the run's spend cap, which no deadline is for), durably: a later open reads the moved window, and
+     *  the next effect's check (wrapEffect) and the interpreter's poll start (pollStartedAt) take it. A node with no poll
+     *  window started, or no time held, moves nothing. `hold` names the hold (the host's id for it): one hold moves the
+     *  window once, however often a resume reports it again. */
+    holdPoll(executionPath: unknown, ms: number, hold: string): void {
+      const { tag, doc } = active();
+      const at = placed(executionPath, doc);
+      const key = `poll:${tag}:${at}`;
+      const once = `hold:${tag}:${at}:${hold}`;
+      if (snapshot.clocks[key] === undefined || snapshot.clocks[once] !== undefined || !(Number.isFinite(ms) && ms > 0)) return;
+      snapshot.clocks[key] += ms;
+      snapshot.clocks[once] = ms;
+      void save();
+    },
     routeDecision(executionPath: unknown): RouteDecision | undefined {
       const { frame, doc } = active();
       return frame.routes[placed(executionPath, doc)];

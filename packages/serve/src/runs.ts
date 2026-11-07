@@ -43,6 +43,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapMode, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
+import { BUDGET_PAUSE, budgetPausedIn, capStoppedIn, clearBudgetPause, raiseFinishes, writeRaisedCap } from "./budget.js";
 import { durationMs } from "./print.js";
 import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
@@ -92,6 +93,8 @@ const PROCESS_LOG = "process.log";
 const READY_TIMEOUT_MS = 45_000;
 /** How long a launched process whose door failed its proof has to exit on its own before it is stopped. */
 const DOOR_EXIT_WAIT_MS = 2_000;
+/** How often a raised workflow run waiting for a place to open again in tries again (finishRaise, waitForPlace). */
+const PLACE_RETRY_MS = 1_000;
 /** The reducer's live "Run started" and "Run finished" rows: a turn's edges, which no store entry makes on any harness,
  *  so a run's settled timeline never has them. Never served, live or settled, so no row a reader saw goes at the end. */
 const QUIET = /:run:(start|end)$/;
@@ -416,6 +419,10 @@ export type Run = {
   installing?: Promise<boolean>;
   /** It shows the install's row (its words, since `at`) while it waits for an install that runs. */
   installRow?: { at: string; words: string };
+  /** A raised workflow run whose process the pause let go, waiting for a place under the server's limits before it opens
+   *  again (finishRaise): its words, since `at`, shown as a row; queued meanwhile. Its pause's mark stays until it opens,
+   *  so a restart finishes the raise the same way. */
+  placeWait?: { at: string; words: string };
   /** It waits for its harness's install before a launch (harnessReady): takePlace counts it as holding a place until
    *  that launch, so nothing takes its place meanwhile. A cancel or an end lets the place go. */
   waitsInstall?: boolean;
@@ -555,7 +562,7 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -731,7 +738,22 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), least_cap_usd: r.leastCapUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd), overshoot_bound_usd: microUp(r.boundUsd ?? 0) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
+/** A workflow run paused at its cap (budget.ts): its step waits for a raise in its process, or with none (let go). */
+const budgetWaiting = (run: Run): boolean => run.kind === "workflow" && !!run.dir && existsSync(join(run.dir, BUDGET_PAUSE));
+/** A workflow run's pause at its cap, as its process wrote it: the refusal's words and figures, as an agentic run's
+ *  budgetPending serves them, and the node whose step waits. */
+const workflowBudgetPending = (run: Run): Pending | undefined => {
+  const mark = run.kind === "workflow" && run.dir ? budgetPausedIn(run.dir) : undefined;
+  if (!mark) return undefined;
+  const cap = run.meta.max_cost_usd ?? mark.cap_usd;
+  const figures = mark.spent_usd !== undefined && mark.needs_usd !== undefined
+    ? { spent_usd: micro(mark.spent_usd), needs_usd: micro(mark.needs_usd), ...(mark.least_cap_usd !== undefined ? { least_cap_usd: mark.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, mark.spent_usd, mark.needs_usd), overshoot_bound_usd: microUp(mark.bound_usd ?? 0) }
+    : {};
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: mark.at, node: mark.node };
+};
 /** The row a run shows while its harness installs for it (harness-install.ts), since `at`. */
+/** The row a raised workflow run shows while it waits for a place to open again in (finishRaise), since `at`. */
+export const placeRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "server:waiting-place", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 export const installRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 
 /** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
@@ -934,7 +956,10 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (run.finishing) return { status: run.finishing, state: "idle" };
   // A paused workflow run finishes what it has in flight and starts nothing new until it is resumed (pause.ts). A held run
   // read without its directory (a view built for a count) has no mark to read.
-  if (run.kind === "workflow") return run.dir && pausedIn(run.dir) ? { status: "paused", state: "idle" } : { status: run.working ? "working" : "queued", state: "working" };
+  // One paused at its cap waits for a raise (budget.ts): input_required and waiting, with or without its process.
+  // Raised, it waits for a place to open again in (finishRaise): queued, as a run not yet started is.
+  if (run.kind === "workflow" && run.placeWait && !run.cancel) return { status: "queued", state: "working" };
+  if (run.kind === "workflow") return budgetWaiting(run) ? { status: "input_required", state: "waiting" } : run.dir && pausedIn(run.dir) ? { status: "paused", state: "idle" } : { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
   if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
   // No rows is a run not shown yet (adopted, before its first snapshot), whatever an old stop says. Rows with no
@@ -1161,6 +1186,10 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** Raised workflow runs waiting for a place to open again in (finishRaise), tried again every PLACE_RETRY_MS. */
+  private placeWaiters = new Set<Run>();
+  private placeRetry: NodeJS.Timeout | undefined;
+  private placeRetrying = false;
   /** Set once `close` is done: the store is closed, so nothing settles after it. */
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
@@ -1571,7 +1600,9 @@ export class Runs {
     const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served);
     // While its harness installs, the run says so (a phase row of the server's, gone once it is installed).
     const installing = run.installRow ? [...rows, installRow(run.installRow)] : rows;
-    const view = withLearning(installing, run.meta.learning, this.learning.shown());
+    // While a raised run waits for a place to open again in, it says so (gone once it opens).
+    const placing = run.placeWait ? [...installing, placeRow(run.placeWait)] : installing;
+    const view = withLearning(placing, run.meta.learning, this.learning.shown());
     // Every row only this view makes, remembered by id, so the live path's keep never holds one once it is no longer made.
     servedOnlyIds(view, (run.madeHere ??= new Set()));
     if (run.log.sync(view, run.keep)) run.updatedAt = new Date().toISOString();
@@ -2177,7 +2208,7 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined ? "budget" : "question" });
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined || budgetWaiting(run) ? "budget" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
@@ -3042,7 +3073,10 @@ export class Runs {
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
-      const stalled = run.kind === "workflow" || (statusOf(run).status !== "input_required" && !raisedToGo(run));
+      // A workflow run paused at its cap that let its process go waits for a raise, which opens it again (raiseCap).
+      // One whose raise serve.json kept and a crash cut short: finished now (finishRaise opens it again), never left waiting.
+      if (run.kind === "workflow" && gone && budgetWaiting(run) && (await this.finishRaise(run, { settling: true }))) return this.refresh(run);
+      const stalled = run.kind === "workflow" ? !budgetWaiting(run) : statusOf(run).status !== "input_required" && !raisedToGo(run);
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
       // that let go cleanly to wait for its person released its sessions first, so its lease goes now.
@@ -3082,7 +3116,11 @@ export class Runs {
       const { escalation, escalatedAt } = await readWorkflowRun(at, { unlocked: true });
       run.meta.review = { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? summary };
     }
-    else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    else if (state === "failed") {
+      // Stopped by its cap for good (budget.ts CapStop: a step with no price, a spend no one knows): in the cap's words.
+      const capped = capStoppedIn(run.dir);
+      run.error = capped ? { code: SPEND_CAP_REACHED, message: capped.node ? `${capped.node}: ${capped.words}` : capped.words, retryable: false } : { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    }
     await this.readDecisionCost(run);
     return { outcome: STATUS_OF[state], state, summary };
   }
@@ -3472,6 +3510,7 @@ export class Runs {
     if (run.cancel || run.finishing || TERMINAL.has(statusOf(run).status)) throw this.finished(run);
     const from = run.meta.max_cost_usd;
     if (from === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
+    if (run.kind === "workflow") return this.raiseWorkflow(run, from, cap);
     const last = run.meta.cap_raised?.at(-1);
     const pause = pauseOf(run);
     const next = continuationOf(run);
@@ -3512,6 +3551,109 @@ export class Runs {
     const answered = pause !== undefined ? run.meta.cap_continue : undefined;
     if (!answered) return { resumed: false, ...(this.live(run) ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
     return { resumed: true, messageId: answered.message_id };
+  }
+
+  /** A workflow run's raise (budget.ts): serve.json keeps it first, as an agentic run's does, then `cap.json` tells the
+   *  run's process, whose step waiting at its cap is judged again under it, and a run whose process the pause let go is
+   *  opened again (its pause's mark taken away first, so its settle does not hold it) under the raised cap (CAP_ENV),
+   *  resuming from its journal. A raise while it works holds from its next check. The same raise again changes nothing. */
+  private async raiseWorkflow(run: Run, from: number, cap: number): Promise<{ resumed: boolean }> {
+    const last = run.meta.cap_raised?.at(-1);
+    // The same raise again (a retry): what the first saved is finished, whatever a crash cut it at (finishRaise).
+    if (Math.abs(cap - from) <= CAP_TOLERANCE && last && Math.abs(last.to - cap) <= CAP_TOLERANCE) {
+      await this.finishRaise(run);
+      this.refresh(run);
+      return { resumed: last.pause === "budget" };
+    }
+    if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
+    const paused = budgetWaiting(run);
+    const raised = [...(run.meta.cap_raised ?? []), { from, to: cap, at: new Date().toISOString(), ...(paused ? { pause: "budget" } : {}) }];
+    await this.saveMeta(run, () => ({ ...run.meta, max_cost_usd: cap, cap_raised: raised }));
+    run.meta.max_cost_usd = cap;
+    run.meta.cap_raised = raised;
+    await this.finishRaise(run);
+    this.refresh(run);
+    return { resumed: paused };
+  }
+
+  /** Finishes the raise serve.json keeps (`max_cost_usd`), in its steps' order, each one done again harmlessly: `cap.json`
+   *  takes it (a waiting process wakes on it), then a pause it answers (budget.json under a lower cap) is taken away and
+   *  its run, with no process, opened again under it. A raise, its retry and a restart's settle all finish it here, so a
+   *  crash between serve.json and the rest never leaves a raised run waiting for a raise. True when it took a pause away. */
+  private async finishRaise(run: Run, { settling = false }: { settling?: boolean } = {}): Promise<boolean> {
+    const cap = run.meta.max_cost_usd;
+    const mark = run.kind === "workflow" && run.dir ? budgetPausedIn(run.dir) : undefined;
+    if (cap === undefined || run.outcome || run.cancel) return false;
+    if (run.meta.cap_raised?.length) writeRaisedCap(run.dir, cap);
+    if (!raiseFinishes(cap, mark)) return false;
+    if (this.live(run)) return false;
+    // One finish at a time per run: a settle under way decides the run's next process (it may be reading the run as gone
+    // and launching), so a raise meanwhile leaves the launch to it and finishes again once it is through. Never two.
+    if (!settling && run.settles > 0) {
+      void run.settling?.then(() => this.finishRaise(run)).catch(() => undefined);
+      return true;
+    }
+    // A place under the server's limits first (max_concurrent_runs, the memory its harness takes), as every start takes
+    // one (takePlace): the pause let its place go. With none free the run waits for one, queued, its pause's mark kept,
+    // and opens once one frees (waitForPlace): never a process past the limits, never the raise refused or lost.
+    let release: () => void;
+    try {
+      release = await this.takePlace(run.harness);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "rate_limited") throw error;
+      this.waitForPlace(run, cap);
+      return true;
+    }
+    try {
+      // Read again: the place may have been waited for, and the run ended, cancelled, opened or finished meanwhile.
+      if (run.outcome || run.cancel || this.live(run) || !budgetPausedIn(run.dir)) return true;
+      this.placeWaiters.delete(run);
+      run.placeWait = undefined;
+      clearBudgetPause(run.dir);
+      await this.pinNeeds(run);
+      await this.pinSignIn(run);
+      this.launch(run);
+      this.show(run);
+      this.refresh(run);
+    } finally {
+      // Launched, it holds its place as a live run.
+      release();
+    }
+    return true;
+  }
+
+  /** A raised run that found no place: queued, saying it waits for one, and tried again every PLACE_RETRY_MS until it
+   *  opens (finishRaise), ends or is cancelled. */
+  private waitForPlace(run: Run, cap: number): void {
+    run.placeWait ??= { at: new Date().toISOString(), words: `The cap was raised to ${money(cap)}. The run opens again once this server has a free place for it: it is at its limit of runs at once, or of memory for them.` };
+    this.placeWaiters.add(run);
+    this.show(run);
+    this.refresh(run);
+    this.placeRetry ??= setInterval(() => void this.retryPlaces(), PLACE_RETRY_MS).unref();
+  }
+
+  private async retryPlaces(): Promise<void> {
+    if (this.placeRetrying) return;
+    this.placeRetrying = true;
+    try {
+      for (const run of [...this.placeWaiters]) {
+        if (this.closing) break;
+        if (run.outcome || run.cancel || run.finishing) {
+          this.placeWaiters.delete(run);
+          run.placeWait = undefined;
+          this.show(run);
+          this.refresh(run);
+          continue;
+        }
+        await this.finishRaise(run).catch((error: Error) => warn(run.id, `its raise is not finished yet: ${error.message}`));
+      }
+    } finally {
+      this.placeRetrying = false;
+      if (!this.placeWaiters.size || this.closing) {
+        clearInterval(this.placeRetry);
+        this.placeRetry = undefined;
+      }
+    }
   }
 
   /** Sends a raised run its pause's follow-up, under its id (the door takes one id once), at the run's cap now: as a
@@ -4030,7 +4172,7 @@ export class Runs {
       // Cut as its rows and answer are (shown): an error can quote what the run said, or a process's last line.
       error: status === "failed" ? this.servedRunError(run, run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : this.servedReview(run, reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt)),
-      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? workflowBudgetPending(run) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       // How its cap prices a request (cap.ts CapMode): its own, else expected; null with no cap.
       cap_mode: run.meta.max_cost_usd === undefined ? null : (run.meta.cap_mode ?? "expected"),
