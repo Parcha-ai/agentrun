@@ -137,12 +137,17 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
-  /** On another model than the session's: a client's side call (a title, a summary), never its turn's own. */
+  /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
+   *  host's own request beside the harness's (`host`). */
   side?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
   inputTokensMaxWithoutNote?: number;
+  /** A request the host sent beside the harness's own, on the session's own route (its model proxy, under a side key
+   *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
+   *  requests carry none, and it cannot send one that does: it holds only the session's key. */
+  host?: string;
 }
 
 /** What a paid request cost, once it completed. */
@@ -266,6 +271,23 @@ export interface AdapterSession {
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;
+  /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
+   *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
+   *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of
+   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. */
+  port?(label: string): SessionPort | undefined;
+}
+
+/** A session's model proxy, as the host reaches it for its own requests beside the harness's (AdapterSession.port). */
+export interface SessionPort {
+  /** The proxy's origin, on the loopback interface with a port of its own (ModelProxy.url). */
+  url: string;
+  /** The side key the request presents, as a bearer token. */
+  key: string;
+  /** The model the session's policy takes (its own id, as the harness sends it). */
+  model: string;
+  /** The API the proxy serves: Anthropic's Messages (claude-agent) or OpenAI's Responses (codex, opencode). */
+  api: "anthropic-messages" | "openai-responses";
 }
 
 export interface AdapterCapabilities {

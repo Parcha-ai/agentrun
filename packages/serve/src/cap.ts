@@ -406,10 +406,8 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
  *  end mark holds (HELD_FIELD), and one a crash cut (marked as sent, no answer, no end) at the figure its start mark
  *  holds (openFigures), each the worst case the cap held for it; without that figure either stays cut, at an unknown
  *  cost. A paid call settled at a charge it did not say, like one a crash cut, counts at the figure its mark holds. And
- *  this cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. `sides`: only the
- *  run's side requests (each marked with a label: a learned workflow's, a hosted search's), what a run on another
- *  harness spent beside its harness's own requests and its paid tools, which that harness's booking does not hold. */
-export function spentIn(storeFile: string, { sides = false }: { sides?: boolean } = {}): number | null {
+ *  this cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
+export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   // Fresh, read-only and lock-free (run-db.ts): its process may hold it.
   const entries: EntryLike[] = [];
@@ -422,7 +420,7 @@ export function spentIn(storeFile: string, { sides = false }: { sides?: boolean 
     rows.length = 0;
     for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
       const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
-      if (!sides || ([REQUEST_STARTED, REQUEST_ENDED, REQUEST_COST, REQUEST_COST_LATE].includes(entry.kind) && typeof (entry.data as { request?: unknown } | undefined)?.request === "string")) rows.push(entry);
+      rows.push(entry);
     }
   });
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
@@ -638,8 +636,7 @@ export function holdsInFlight() {
  *  model requests in flight are held at, at their worst case (`held`, read once `spent` is in; absent: none apart from
  *  `spent`), and the charge a call adds (`add`). Set by the run's cap, on pi (capModels) and on another harness
  *  (harness-app.ts); none without a cap. A run is one process, so one is set per process. `now`: the whole figure read at
- *  once, held requests included, with no wait for a cost still coming in; another harness sets it, for the run's own
- *  model requests beside the harness's (capModels' `joined`). */
+ *  once, held requests included, with no wait for a cost still coming in (another harness sets it). */
 export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void; now?(): number | null };
 let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
@@ -649,13 +646,10 @@ export const useSpend = (spend: RunSpend | undefined): void => {
   paidRoomRefusal = undefined;
 };
 
-/** Each paid call sent under the cap and not settled, at what it is held at; on another harness, each of the run's own
- *  model requests in flight too (capModels' `joined`). */
+/** Each paid call sent under the cap and not settled, at what it is held at. */
 const paidOpen = new Set<{ usd: number }>();
 /** What the paid calls under way are held at, together (0 when none is): the one figure every check of the run's cap
- *  adds to what the run has spent, a model request's (capModels, capBefore) and a paid call's (paidCall). On another
- *  harness the run's own model requests in flight (a learned workflow's, a hosted search's) are held here too, so the
- *  harness's check sees them. */
+ *  adds to what the run has spent, a model request's (capModels, capBefore) and a paid call's (paidCall). */
 export const paidHolds = (): number => [...paidOpen].reduce((sum, { usd }) => sum + usd, 0);
 
 /** A paid hold that outlives the paidCall that took it (a browser session's, browser-cost.ts), counted in paidHolds as a
@@ -670,11 +664,6 @@ export const keepHold = (usd: number): { usd: number; drop(): void } => {
 export const addSpend = (usd: number | null): void => runSpend?.add(usd);
 /** The run's cap, when it has one. */
 export const runCap = (): number | undefined => runSpend?.cap;
-/** On another harness, what the run's own model requests (capModels' `joined`) have cost: those of earlier processes
- *  (spentIn's `sides`) and this one's; null once one is unknown. 0 on pi, where the run's one capModels counts them. */
-let sidesSpent: number | null = 0;
-/** What sidesSpent says: the harness's check adds it to what its booking says the run spent (harness-app.ts). */
-export const sideSpend = (): number | null => sidesSpent;
 
 /** `call`, a paid tool's (`name`), under the run's cap, by the rule a model request keeps: refused, in words that name
  *  its price and the cap and never calling it, unless what the run has spent plus what the call is held at (`hold`: its
@@ -909,6 +898,8 @@ export type GuardRequest = {
    *  it was admitted with. */
   inFlight: readonly { inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number }[];
   inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number;
+  /** A request the run sends beside the harness's, on the session's route (ModelRequest.host): judged by the same rule. */
+  host?: string;
   /** The session's previous request on this model (Previous); none, the whole input uncached. */
   previous?: Previous;
 };
@@ -1000,13 +991,9 @@ export type WrapUp = { model: string; costs: number[]; sent: boolean; pending?: 
  *  by previousIn; its end as `now` read it when it settled here, else its own timestamp, which is when it began). Each
  *  request sent carries what it is held at (HELD_USD) and its bound (BOUND_USD) to the marks below, and one stopped
  *  before its end counts at most its hold.
- *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry.
- *  `joined`: the run is on another harness, whose spend is the run's one total, and these are the run's own requests
- *  beside the harness's (a learned workflow's, a hosted search's). Each is judged against that total as the harness
- *  sets it when its run opens (RunSpend.now: its booked requests, its paid tools' charges and its requests in flight,
- *  with sideSpend), unknown until then; held where the harness's check sees it (paidHolds); and its cost added to
- *  sideSpend, which starts at `spent` (what these cost in earlier processes: spentIn's `sides`). */
-export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, joined = false, mode = "expected", now = Date.now, wrapUp }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void>; joined?: boolean; mode?: CapMode; now?: () => number; wrapUp?: WrapUp } = {}): Promise<M> {
+ *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. On
+ *  another harness the run has no models of its own: every request goes through its session's proxy (port-models.ts). */
+export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, mode = "expected", now = Date.now, wrapUp }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void>; mode?: CapMode; now?: () => number; wrapUp?: WrapUp } = {}): Promise<M> {
   const [{ calculateCost, createAssistantMessageEventStream }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   /** When each answer settled here, by its timestamp (an answer keeps it when the run's store gives it back), the newest
@@ -1030,9 +1017,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     return previousOf(answer.usage, before?.input, ended.get(answer.timestamp) ?? answer.timestamp);
   };
   let held = 0;
-  if (joined) sidesSpent = spent;
-  /** What the run has spent, as this request's check reads it: on another harness the run's one total (`joined`). */
-  const spentNow = (): number | null => (joined ? (runSpend?.now?.() ?? null) : spent);
+  /** What the run has spent, as this request's check reads it. */
+  const spentNow = (): number | null => spent;
   // The run's spend as a paid tool's check reads it (installed below, useSpend): the requests in flight held at their
   // worst case apart from it (it adds the paid holds itself), and its charge joins the spend.
   const own: RunSpend = { cap, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) };
@@ -1047,7 +1033,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  transcript never holds the note, and no input is queued, so the run spends nothing after the model answers. */
   const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     const judged = judgeOne(model, context, options, simpleCall, turn);
-    if (!("hold" in judged) || !wrapUp || wrapUp.sent || wrapUp.pending || joined || !turn || model.id !== wrapUp.model) return judged;
+    if (!("hold" in judged) || !wrapUp || wrapUp.sent || wrapUp.pending || !turn || model.id !== wrapUp.model) return judged;
     const spentUsd = spentNow();
     // What is left as admission counted it: what was spent, and what requests and paid calls in flight are held at.
     // Nothing priced yet: the request at its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its hold.
@@ -1163,7 +1149,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  response) it is unknown, as is a cost that is not a number, from then on. */
   const count = (answer: Promise<AssistantMessage>, turn: boolean, worst?: number, stopped?: Stopped, attempts?: readonly Attempt[]) => {
     const plus = (sum: number | null, cost: unknown) => (sum !== null && typeof cost === "number" && Number.isFinite(cost) ? sum + cost : null);
-    const add = (cost: unknown) => void (joined ? (sidesSpent = plus(sidesSpent, cost)) : (spent = plus(spent, cost)));
+    const add = (cost: unknown) => void (spent = plus(spent, cost));
     // One rule (bookRequest), from how the request ended (piEnded) as its marks read it too.
     const at = (message: AssistantMessage) => message.stopReason === "aborted" ? (stopped && !anyAttemptLost(attempts) ? stopped(message) : worst)
       : bookRequest(piEnded(message, responseBegan.has(message), attempts), worst === undefined ? {} : { hold: worst }).usd;
@@ -1176,13 +1162,10 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     };
     return answer.then((message) => (endedNow(message), priced(message), add(at(message))), () => add(worst));
   };
-  /** Sends a request judged to fit at `worst` (its hold), holding that until `answer` settles: here, or on another harness
-   *  where its check sees it (`joined`: paidHolds). */
+  /** Sends a request judged to fit at `worst` (its hold), holding that until `answer` settles. */
   const admit = (turn: boolean, worst: number, stopped: Stopped, answer: () => Promise<AssistantMessage>, attempts?: readonly Attempt[]): Promise<AssistantMessage> => {
-    const hold = { usd: worst };
-    if (joined) paidOpen.add(hold);
-    else held += worst;
-    const release = () => void (joined ? paidOpen.delete(hold) : (held -= worst));
+    held += worst;
+    const release = () => void (held -= worst);
     let answered: Promise<AssistantMessage>;
     try {
       answered = answer();
@@ -1196,7 +1179,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   // A paid tool's check reads the spend, and the requests in flight held at their worst case apart from it (it adds the
   // paid holds itself), and its charge joins the spend. On another harness, the harness sets it as its run opens
   // (harness-app.ts).
-  if (!joined) useSpend(own);
+  useSpend(own);
   /** `options` with what the request is held at, its bound, its figure if it is stopped, and its attempts' record, for
    *  its marks: on an API the cap can watch, a fetch that records each attempt (`attempts`, undefined on one it cannot). */
   const carrying = <O>(options: O, { hold, bound, stopped }: Judged, attempts: Attempt[] | undefined): O => ({

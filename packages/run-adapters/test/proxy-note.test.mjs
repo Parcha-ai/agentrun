@@ -110,3 +110,32 @@ test('a request admitted carrying the note that the proxy then never sends (rele
   assert.deepEqual([p.asked[0]?.noted, p.forwarded.length], [true, 0], 'admitted carrying the note, and never sent');
   assert.deepEqual(p.booked.map((b) => b.ended), [{ end: 'nothing', label: 'never_left' }], 'booked as never having left');
 });
+
+test('a request the host sends beside the harness (a side key\'s, its host label) never takes the note: the note is never asked for on it, its body goes as sent, and it is admitted at its own bytes (its hold is its plain bound)', async (t) => {
+  // The session's own request as its client sent it, with no note to give: its plain measure.
+  const plain = await proxied(t, withNote, []);
+  await plain.send(client);
+  // A host with a note to give, and a request under a side key on the session's model.
+  const forwarded = [];
+  const asked = [];
+  const taken = [];
+  const hooks = {
+    beforeRequest: async (request) => (asked.push(request), undefined),
+    afterRequest: async () => {},
+    note: (model, request) => (taken.push([model, request]), NOTE),
+  };
+  const fetch = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{"usage":{}}', { status: 200, headers: { 'content-type': 'application/json' } }));
+  const p = await startModelProxy({ policy: withNote, model: 'main-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, log: () => {}, fetch }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  await new Promise((resolve) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${p.sideKey('learned_workflow')}` } }, (res) => { res.resume(); res.on('end', resolve); res.on('error', resolve); });
+    req.on('error', resolve);
+    req.end(JSON.stringify(client));
+  });
+  assert.deepEqual(taken, [], 'the note is never asked for on the host\'s request');
+  assert.equal(asked.length, 1, 'the host\'s request is admitted');
+  assert.deepEqual([asked[0].host, asked[0].noted, asked[0].inputTokensMaxWithoutNote], ['learned_workflow', undefined, undefined], 'admitted with its host label, carrying no note');
+  assert.equal(asked[0].inputTokensMax, plain.asked[0].inputTokensMax, 'admitted at its own bytes: the plain bound the session\'s own request has');
+  assert.deepEqual(forwarded, [client], 'its body goes as its client sent it, without the note');
+});
