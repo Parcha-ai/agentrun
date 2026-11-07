@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { open as openFile, rm, stat } from "node:fs/promises";
+import { open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -43,7 +43,7 @@ import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { capabilityOf, handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -52,9 +52,9 @@ import { RequestBounds } from "./bounds.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
-import type { HandedSignIn, SignIns } from "./sign-ins.js";
+import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS, VM_PROVIDER } from "./boxes.js";
@@ -95,11 +95,48 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-/** What a run's serve.json keeps of the sign-in pointer it was handed: its SHA-256, never the pointer. */
-const pointerHash = (ref: string): string => createHash("sha256").update(ref, "utf8").digest("hex");
+/** What a `sign_in_handed` the server did not write (anything but a non-empty array of SHA-256 hashes: a `true` or one
+ *  hash an older build wrote, or a damaged value) reads as: some pointer was handed, which one is not known, so the run is
+ *  hidden or withheld, never served uncut, and forget waits for it while it goes. */
+const MALFORMED = "malformed";
+type Handed = string[] | typeof MALFORMED;
+
+/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+ *  MALFORMED for any other value. */
+function handedMark(value: unknown): Handed | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value) && value.length && value.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return [...new Set(value as string[])];
+  return MALFORMED;
+}
+
+/** A run's serve.json at `path`, the one read every reader of it shares (load, forget's handedTo, a list row): `stored`,
+ *  what it holds when it is whole JSON of an object, else null; `damaged`, whether it is there but can't be read or
+ *  parsed (a damaged disk, a hand's edit), as told apart from not there (a run never set up, never launched). */
+async function readMeta(path: string): Promise<{ stored: Partial<RunMeta> | null; damaged: boolean }> {
+  const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? undefined : null));
+  if (text === undefined) return { stored: null, damaged: false };
+  let stored: unknown = null;
+  try {
+    stored = text === null ? null : JSON.parse(text);
+  } catch {
+    stored = null;
+  }
+  return isObject(stored) ? { stored: stored as Partial<RunMeta>, damaged: false } : { stored: null, damaged: true };
+}
+
+/** What a run's serve.json at `path` says it was handed of its agent's sign-in, read from disk for a run this server does
+ *  not hold: as load reads it, and MALFORMED for a serve.json that is damaged, as a held run's `damaged` reads. */
+async function handedOnDisk(path: string): Promise<Handed | undefined> {
+  const { stored, damaged } = await readMeta(path);
+  return damaged ? MALFORMED : handedMark(stored?.sign_in_handed);
+}
+
 /** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
  *  key changed or is missing, or the sign-ins file is damaged or can't be read). */
 export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
+/** Why a run going when its server started was stopped: its serve.json is there but can't be read or parsed, and with it
+ *  went which browser it ran on and whether it was handed its agent's sign-in, so its text can't be cut of the pointer. */
+export const UNREADABLE_RUN_META = "This server can't read the run's record (its serve.json is damaged or can't be read), so it can't tell whether the run was handed its agent's browser sign-in: the run was stopped, so nothing it says can show it.";
 /** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
 export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
 /** How soon a launch whose claim was refused tries again, at its first tries: a store another writer holds is let go of
@@ -195,11 +232,11 @@ type RunMeta = {
   /** Set when a server found the run going with a browser sign-in it could not read (its seal key changed): the run was
    *  stopped, and its store is never read for rows, which could repeat the pointer uncut. */
   unshown?: true;
-  /** Set once a launch handed the run its agent's browser sign-in: the SHA-256 of the pointer it was handed (never the
-   *  pointer), or `true` when that is not known (a run from before, or one handed two pointers). Only such a run's text
-   *  could repeat it, so only such a run is stopped and hidden when the sign-in can no longer be read; and a hidden one
-   *  is shown again only when the sign-in that opens is the very one it was handed. */
-  sign_in_handed?: true | string;
+  /** Set once a launch handed the run its agent's browser sign-in: the SHA-256 of each pointer it was handed (never a
+   *  pointer), one per pointer, in the order handed. Only such a run's text could repeat one, so only such a run is
+   *  stopped and hidden, or withheld, while any of them can't be read back; and a hidden one is shown again once every one
+   *  of them can, live or forgotten. MALFORMED for a value this server did not write (handedMark). */
+  sign_in_handed?: Handed;
   /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
    *  which ran on the runner. */
   place?: Place;
@@ -260,6 +297,9 @@ type Served = { keys: string; input: unknown; out: unknown };
 const digestOf = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
 
 export type Run = {
+  /** Set at load when its serve.json was there but could not be read or parsed (readMeta): what it was handed is not
+   *  known, as forget reads of it from disk. */
+  damaged?: true;
   id: string;
   /** The values of the secrets each launch handed its process: what its errors never show, a key rotated since included. */
   handed?: Set<string>;
@@ -286,6 +326,9 @@ export type Run = {
   log: RowLog;
   /** The run's rows as they come in (before the log names them), with each `ask_person` answer's waiting row. */
   rows: TimelineEvent[];
+  /** The reducer of its door's events that makes those rows (follow): the newest connection's once its snapshot is in,
+   *  the one before it until then. */
+  timeline?: ReturnType<typeof timelineReducer>;
   /** The person's messages the run took, and how each one's turn ended (turns.ts): its end is read from them. */
   turns: Turns;
   /** Its tool calls that waited for a person's approval, read from its store's entries, by id. */
@@ -1203,7 +1246,10 @@ export class Runs {
   private async load(row: RunRow): Promise<Run> {
     this.onRunLoad?.(row.id);
     const dir = runDirIn(this.options.agents.dir, row.agent, row.id);
-    const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
+    // There, but not whole JSON of an object (a damaged disk, a hand's edit): what it kept is lost. Missing is no damage:
+    // a run whose server went down before it set the run up has none (notSetUp). Kept on the run (run.damaged), so
+    // forget reads of a held run what it reads from disk of one not held (handedTo).
+    const { stored, damaged } = await readMeta(join(dir, RUN_META));
     const trigger = triggerOf(stored);
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
@@ -1223,7 +1269,7 @@ export class Runs {
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(isObject(stored?.tool_plane) ? { tool_plane: stored.tool_plane as Plane } : {}),
       ...(stored?.unshown === true ? { unshown: true as const } : {}),
-      ...(stored?.sign_in_handed === true || (typeof stored?.sign_in_handed === "string" && /^[0-9a-f]{64}$/.test(stored.sign_in_handed)) ? { sign_in_handed: stored.sign_in_handed as true | string } : {}),
+      ...(handedMark(stored?.sign_in_handed) ? { sign_in_handed: handedMark(stored?.sign_in_handed) } : {}),
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
@@ -1240,6 +1286,7 @@ export class Runs {
     if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
+    if (damaged) run.damaged = true;
     // Its browser's sign-in pointer, read back before anything of the run is read or held here: its rows, answers and
     // errors are cut of it from the first, though no launch of this server handed it one.
     const signIn = await this.peekSignIn(run);
@@ -1251,6 +1298,19 @@ export class Runs {
     const lives = adopted !== undefined && adopted.pid !== process.pid && holderLives(adopted);
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
+    // A run still going whose serve.json is damaged: the plane it ran on (kept there alone) and whether it was handed its
+    // agent's sign-in (sign_in_handed) went with it, so the pointer is not read back and its text could hold it uncut.
+    // Hidden as one whose sign-in does not open is, below, when its revision grants the browser or can't be read; one whose
+    // revision has none never had a browser, so was never handed a sign-in. Nothing is written over the damaged file here:
+    // its end writes serve.json anew, hidden, and until then each server finds it damaged and hides it again.
+    if (row.state === "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) {
+      run.error = { code: "run_failed", message: UNREADABLE_RUN_META, retryable: false };
+      run.meta.unshown = true;
+    }
+    // An ended run whose serve.json was damaged since: withheld as an ended run whose sign-in does not open is (below:
+    // no store read, no answer, output or error words), on the same terms. It ended as it ended: nothing is stopped or
+    // failed, and nothing is saved, so its words are shown again only once serve.json reads (each server decides anew).
+    if (row.state !== "running" && damaged && !row.importedFrom && !run.meta.unshown && (!run.tooling || run.tooling.tools.some((name) => capabilityOf(name) === "browser"))) run.meta.unshown = true;
     // A run still going whose agent's browser sign-in does not open under this server's seal key: whatever it said, or
     // says, could repeat the pointer, which nothing here can cut. Its rows are never read, and it ends failed, saying
     // why: a live process is stopped (below), one already gone is never opened again.
@@ -1270,7 +1330,8 @@ export class Runs {
     if (row.state !== "running" && signIn === "unreadable" && run.meta.sign_in_handed && !run.meta.unshown) run.meta.unshown = true;
     // Hidden under a key that did not open its sign-in, and that very sign-in opens again now (not one made since in its
     // place, which would not cut the pointer its rows hold): its rows are read, cut of it.
-    if (run.meta.unshown && typeof signIn === "object" && typeof run.meta.sign_in_handed === "string" && pointerHash(signIn.ref) === run.meta.sign_in_handed) {
+    // That very pointer, live or forgotten since, is read back (peekSignIn, by its hash).
+    if (run.meta.unshown && signIn === "read" && Array.isArray(run.meta.sign_in_handed)) {
       delete run.meta.unshown;
       // Unsaved, the next server finds it hidden and this same sign-in open, and shows it again as this one does.
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it is shown again is not saved: ${error.message}`));
@@ -1595,6 +1656,50 @@ export class Runs {
    *  no loopback address. */
   private shown(run: Run, text: string): string {
     return withoutLoopback(redacted(text, this.refusedValues(run)));
+  }
+
+  /** A run's error as its view and the run lists serve it: its message in shown()'s terms. */
+  private servedRunError<E extends { message: string; details?: unknown }>(run: Run, error: E): E {
+    return { ...error, message: this.shown(run, error.message), ...(error.details !== undefined ? { details: cutStrings(error.details, (text) => this.shown(run, text)) } : {}) };
+  }
+
+  /** A run's review as its view serves it: its reason (an escalation's own words) in shown()'s terms, or withheld as its
+   *  other words are while the run is hidden (meta.unshown), as a list row read from disk withholds it. */
+  private servedReview(run: Run, review: RunReview | null): RunReview | null {
+    return review && { ...review, reason: run.meta.unshown ? WITHHELD_SIGN_IN : this.shown(run, review.reason) };
+  }
+
+  /** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its serve.json's
+   *  `sign_in_handed`: none for a run with no mark (it was never handed one); else, for each hash it names, the live or
+   *  forgotten pointer whose SHA-256 it is. `unreadable` when what it was handed can't be read back here: a MALFORMED
+   *  mark, no vendor browser kept beside the mark, the sign-ins file can't be read, or any of its hashes matches no
+   *  pointer that opens (one under another seal key or none, one forgotten and dropped past MAX_FORGOTTEN, the sign-ins
+   *  file gone). Fails closed: a marked run is cut of every pointer it was handed, or withheld, never served uncut. Read
+   *  anew at each load: nothing caches this verdict, so a run withheld while its key was missing is shown once it opens. */
+  private async handedPointers(agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
+    const signIns = this.options.signIns;
+    if (handed === undefined) return { refs: [] };
+    if (handed === MALFORMED || !signIns || !browser) return "unreadable";
+    const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);
+    const gone = await signIns.forgotten(agentId, browser).catch(() => "unreadable" as const);
+    if (gone === "unreadable") return "unreadable";
+    const kept = [...(typeof live === "object" ? [live.ref] : []), ...gone.refs];
+    const refs = handed.map((hash) => kept.find((ref) => pointerHash(ref) === hash));
+    return refs.every((ref) => ref !== undefined) ? { refs: refs as string[] } : "unreadable";
+  }
+
+  /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
+   *  this server's secrets and tokens and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
+   *  when that can't be read back here, as a load would hide the run. */
+  private async rowShown(agentId: string, meta: Partial<RunMeta> | null, damaged = false): Promise<((text: string) => string) | "withheld"> {
+    // Its serve.json there but unreadable: what it was handed went with it (load hides such a run, its revision granting
+    // the browser; a list row, which reads no revision, withholds it whatever its revision).
+    if (damaged) return "withheld";
+    const browser = isObject(meta?.tool_plane) ? keptVendor(meta.tool_plane as Plane).browser : undefined;
+    const pointers = await this.handedPointers(agentId, browser, handedMark(meta?.sign_in_handed));
+    if (pointers === "unreadable") return "withheld";
+    const values = [...hostSecrets(process.env, this.options.storedKeys), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET), this.options.token, this.options.doorToken];
+    return (text) => withoutLoopback(redacted(text, values));
   }
 
   /** A run's answer as serve serves it: no held secret, never cut (redactedAnswer). Loopback addresses stay: an answer is
@@ -2170,9 +2275,13 @@ export class Runs {
         noteApprovals(run, entries);
         const redact = this.redactor(run);
         reducer.apply(events.map((e) => (Array.isArray(e.entries) ? { ...e, entries: redactGateMessages(e.entries, redact) } : e.entry !== undefined ? { ...e, entry: redactGateMessages([e.entry], redact)[0] } : e)) as never);
+        // The rows this connection makes, for a stop to read as over at once (stopTurn): only once its snapshot is in.
+        // Until then the last connection's reducer stands, whose rows the run shows; a new one has none yet.
+        if (event === "snapshot") run.timeline = reducer;
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
-        // as the settled read counts it, never one in flight.
-        if (!run.working && stopped(run)) reducer.idle();
+        // as the settled read counts it, never one in flight. Read so from the stop on (stopTurn), not from the turn's
+        // end reaching here: the run reads stopped from then. A message sent since (`submitted`) starts a turn of its own.
+        if (run.submitted === 0 && stopped(run)) reducer.idle();
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.
         const rows = reducer.rows();
@@ -2433,34 +2542,61 @@ export class Runs {
     // Its browser as this launch will find it (launch: a vendor whose key is gone since is unavailable, and gets none).
     const browser = run.meta.tool_plane && recheckPlane(run.meta.tool_plane, withSecrets(process.env, "all", this.options.storedKeys)).browser;
     const signIns = this.options.signIns;
-    run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
+    run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser, (handed) => this.keepHanded(run, handed)).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
+  }
+
+  /** That `run` is handed `signIn`, kept before it is (forRun's keep, under its agent's sign-ins lock, so no forget comes
+   *  between): false when that can't be saved, and the run is handed none. */
+  private async keepHanded(run: Run, signIn: HandedSignIn): Promise<boolean> {
     // Never shown in its errors, from now on: a server started since its launch has handed it nothing yet.
-    if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
-    // Kept, as a hash alone (`true` once it was handed another before): a later server that cannot read the sign-in
-    // knows this run's text could hold it, and which. Not kept, the run is handed none (it starts signed out): a run
-    // whose text could hold the pointer is always one a server knows.
+    if (signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(signIn.ref);
+    // Kept, as its hash alone beside those of any it was handed before: a later server that cannot read the sign-in knows
+    // this run's text could hold it, and which; and forget waits for the run (handedTo). Not kept, the run is handed none
+    // (it starts signed out): a run whose text could hold the pointer is always one a server knows.
     const before = run.meta.sign_in_handed;
-    const now = run.signIn && (before === undefined ? pointerHash(run.signIn.ref) : before === pointerHash(run.signIn.ref) ? before : true);
-    if (run.signIn && now !== before) {
-      run.meta.sign_in_handed = now as true | string;
-      await this.saveMeta(run).catch((error: Error) => {
-        if (before === undefined) delete run.meta.sign_in_handed;
-        else run.meta.sign_in_handed = before;
-        run.signIn = undefined;
-        warn(run.id, `its browser starts signed out: that it was handed a sign-in could not be saved (${error.message})`);
-      });
+    const hash = pointerHash(signIn.ref);
+    const now = before === undefined ? [hash] : before === MALFORMED || before.includes(hash) ? before : [...before, hash];
+    if (now === before) return true;
+    run.meta.sign_in_handed = now;
+    return this.saveMeta(run).then(() => true, (error: Error) => {
+      if (before === undefined) delete run.meta.sign_in_handed;
+      else run.meta.sign_in_handed = before;
+      warn(run.id, `its browser starts signed out: that it was handed a sign-in could not be saved (${error.message})`);
+      return false;
+    });
+  }
+
+  /** The run of `agentId` still going (its row running) that was handed the sign-in whose pointer hashes to `hash`, or
+   *  any sign-in when `hash` is undefined (a pointer that does not open here): forget waits for it (sign-ins.ts). From the
+   *  run this server holds, else its serve.json: a run still going need not be held yet (a recovery under way, or one it
+   *  could not recover). One whose mark is MALFORMED, or whose serve.json is damaged (run.damaged for a held run, the same
+   *  answer the disk read gives), counts: what it was handed is not known. */
+  async handedTo(agentId: string, hash: string | undefined): Promise<string | undefined> {
+    for (const row of await this.options.agents.request(() => this.store.listRuns({ agent: agentId }))) {
+      if (row.state !== "running") continue;
+      const held = this.runs.get(row.id);
+      const handed = held ? (held.damaged ? MALFORMED : held.meta.sign_in_handed) : await handedOnDisk(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META));
+      if (handed !== undefined && (handed === MALFORMED || hash === undefined || handed.includes(hash))) return row.id;
     }
+    return undefined;
   }
 
   /** The pointer of the sign-in a run this server loads was handed, among the values its rows, errors and answers never
    *  show: read only, with no lease taken (pinSignIn takes one at its next launch). `unreadable` when its agent keeps
    *  one that does not open under this server's seal key. */
-  private async peekSignIn(run: Run): Promise<"unreadable" | { ref: string } | undefined> {
-    const browser = run.meta.tool_plane?.browser;
+  private async peekSignIn(run: Run): Promise<"unreadable" | "read"> {
+    // Its plane's vendor as a launch reads it (keptVendor: a missing-key refusal an earlier server saved is that vendor).
+    const browser = run.meta.tool_plane && keptVendor(run.meta.tool_plane).browser;
     const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
-    if (peeked === "unreadable" || peeked === undefined) return peeked;
-    if (peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
-    return peeked;
+    // The agent's live pointer, which a launch of it may hand it next.
+    if (typeof peeked === "object" && peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
+    // What it was handed, forgotten since or not (sign-ins.ts Forgotten): a sign-in forgotten after the run ended, or
+    // replaced since, is still cut from what it said. A run with no mark was never handed one. `unreadable` when what it
+    // was handed can't be read back here (handedPointers), and the run is hidden (load).
+    const pointers = await this.handedPointers(run.agentId, browser, run.meta.sign_in_handed);
+    if (pointers === "unreadable") return pointers;
+    for (const ref of pointers.refs) if (ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(ref);
+    return "read";
   }
 
   /** Lets go of the save lease the run holds on its agent's sign-in, if any: at once when its process let its sessions go
@@ -2995,7 +3131,8 @@ export class Runs {
     // store keeps it for good, and a view of the run reads it back as its answer.
     const said = summary ?? (outcome === "completed" ? answerOfRun(run) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     const line = said ? redactedAnswer(said, this.refusedValues(run)) : said;
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
+    // Kept cut too, as its line is: a later server that can no longer read the pointer back serves it as kept.
+    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refusedValues(run)), ...(run.error.details ? { details: cutStrings(run.error.details, (text) => redacted(text, this.refusedValues(run))) as { reason: string } } : {}) };
     // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
     // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.
     const endedAt = (run.endedAt ??= new Date().toISOString());
@@ -3702,6 +3839,13 @@ export class Runs {
       this.refresh(run);
       return false;
     }
+    // The stopped turn is over from here, and the run reads stopped: a request it cut is a charge with no price
+    // (costsofar/1), never one in flight, before the turn's end reaches this server through the door's events.
+    if (run.timeline && run.submitted === 0 && stopped(run)) {
+      run.timeline.idle();
+      const rows = run.timeline.rows();
+      this.take(run, rows, keepCommitted(run.live, rows, run.timeline.isLive));
+    }
     this.refresh(run);
     return true;
   }
@@ -3892,8 +4036,9 @@ export class Runs {
       ended_at: endedAt,
       // An answer is served with no held secret in it, whole (key-refusal.ts redactedAnswer); the stored one stays as written.
       result: status === "completed" ? { output: run.kind === "workflow" && !run.meta.unshown ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
-      error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
-      review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
+      // Cut as its rows and answer are (shown): an error can quote what the run said, or a process's last line.
+      error: status === "failed" ? this.servedRunError(run, run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
+      review: endedAt === null ? null : this.servedReview(run, reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt)),
       pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? browserPending(run, this.redactor(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       // How its cap prices a request (cap.ts CapMode): its own, else expected; null with no cap.
@@ -3925,14 +4070,21 @@ export class Runs {
   async summaryOfRow(row: RunRow, versions: Map<string, number>, origin: string): Promise<Awaited<ReturnType<Runs["summary"]>>> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known, origin);
-    const meta = (await readJson(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META))) as Partial<RunMeta> | null;
+    const { stored: meta, damaged } = await readMeta(join(runDirIn(this.options.agents.dir, row.agent, row.id), RUN_META));
+    const failed = STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null;
+    const review = reviewOfRow(row, meta);
+    // Its error and review are the run's words (its error can quote what it said; an escalation's reason is its own):
+    // cut as its view's are, or withheld when the pointer they could hold can't be read back here.
+    const shown = failed || review ? await this.rowShown(row.agent, meta, damaged) : undefined;
+    const say = (text: string) => (shown === "withheld" ? WITHHELD_SIGN_IN : shown!(text));
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, console_url: runLink(origin, row.id), revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
       ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
-      error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
-      review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
+      // Withheld as load withholds a held run's: its code too, which can be the run's own (errorOfRow).
+      error: failed && (shown === "withheld" ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : { ...failed, message: say(failed.message), ...(failed.details ? { details: cutStrings(failed.details, say) as { reason: string } } : {}) }),
+      review: reviewAt(review && { ...review, reason: say(review.reason) }, row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(typeof meta?.max_cost_usd === "number" ? { overshoot_bound_usd: 0 } : {}), ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,
       // A run read from its row alone has ended: it waits on nothing.

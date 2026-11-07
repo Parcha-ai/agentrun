@@ -66,6 +66,10 @@ func Guards() []int {
 // afterAdmit and afterStarted are nil outside tests: they run in Start once it is let in, and once its program runs.
 var afterAdmit, afterStarted func(p Program)
 
+// afterGuardFork and beforeGuardWait are nil outside tests: the first runs in Start right after a guard's fork, before
+// it is recorded, with the registry's lock held; the second in follow, right before it reaps the guard.
+var afterGuardFork, beforeGuardWait func(guardPid int)
+
 // guardArgs is nil outside tests: what it returns for p follows GuardCommand in the guard's argv, so a test can start a
 // guard of its own making in the guard's place.
 var guardArgs func(p Program) []string
@@ -186,6 +190,9 @@ func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Gua
 	}
 	guards.Lock()
 	err = cmd.Start()
+	if err == nil && afterGuardFork != nil {
+		afterGuardFork(cmd.Process.Pid)
+	}
 	if err == nil {
 		guards.pids[cmd.Process.Pid] = true
 	}
@@ -228,7 +235,7 @@ func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Gua
 		return nil, startError(p.Argv[0], g.final.StartErrno, g.final.StartError)
 	}
 	code, signal := exitStatus(cmd.ProcessState)
-	return nil, fmt.Errorf("the guard for %s ended before it started the program (exit code %v, signal %q)", p.Argv[0], code, signal)
+	return nil, fmt.Errorf("the guard for %s ended before it reported the program's start (exit code %v, signal %q): the program may have killed it", p.Argv[0], code, signal)
 }
 
 // startTimedOut is Start's error when its context's deadline passed before the guard reported the program's pid. The
@@ -266,6 +273,9 @@ func (g *Guarded) follow(status *os.File, started chan<- struct{}) {
 		g.final, g.reported = s, true
 	}
 	_ = status.Close()
+	if beforeGuardWait != nil {
+		beforeGuardWait(g.guard.Process.Pid)
+	}
 	_ = g.guard.Wait()
 	guards.Lock()
 	delete(guards.pids, g.guard.Process.Pid)

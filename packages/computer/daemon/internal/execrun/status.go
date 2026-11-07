@@ -24,8 +24,12 @@ import (
 	"syscall"
 )
 
-// exitStatus is the exit code, or the name of the signal that ended the process, without SIG.
+// exitStatus is the exit code, or the name of the signal that ended the process, without SIG. With no state another
+// wait reaped the process first: init's shutdown, which sends SIGKILL to every process left before it reaps. So KILL.
 func exitStatus(state *os.ProcessState) (*int, string) {
+	if state == nil {
+		return nil, "KILL"
+	}
 	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 		return nil, signalName(ws.Signal())
 	}

@@ -1128,7 +1128,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/sign-ins/{key}": {
     delete: {
       operationId: "forgetSignIn", tags: ["agents"], summary: "Forget one of the agent's saved sign-ins",
-      description: "Deletes the browser vendor's object the sign-in points to (a Browserbase context, a Kernel profile), then the sealed pointer this server kept; GET /agents/{agent_id} lists it no more, and the agent's next run with the browser starts signed out, on a new one. Best effort at the vendor: a delete it does not answer, or refuses, is said in `removed[].message` (`at_vendor: not_deleted`), and the pointer is forgotten all the same. 404 for a key the agent has no sign-in under; 409 `sign_in_held` while a run holds its save lease (`details.held_by`), until that run ends.",
+      description: "Deletes the browser vendor's object the sign-in points to (a Browserbase context, a Kernel profile), then the sealed pointer this server kept; GET /agents/{agent_id} lists it no more, and the agent's next run with the browser starts signed out, on a new one. Best effort at the vendor: a delete it does not answer, or refuses, is said in `removed[].message` (`at_vendor: not_deleted`), and the pointer is forgotten all the same. 404 for a key the agent has no sign-in under; 409 `sign_in_held` while a run holds its save lease (`details.held_by`), and while a run it was handed is still going, its lease let go or not (`details.handed_to`: one waiting for its person, say), until that run ends: what that run says could repeat the pointer, and once it is forgotten a restarted server could not cut it from what the run shows. The message names the run, never the pointer.",
       parameters: [ref("parameters/AgentId"), { name: "key", in: "path", required: true, description: "The sign-in's key, as GET /agents/{agent_id} lists it (`default`).", schema: { type: "string" } }],
       responses: {
         "200": json({ type: "object", additionalProperties: false, required: ["key", "removed"], properties: { key: { type: "string" }, removed: { type: "array", items: { type: "object", additionalProperties: false, required: ["provider", "at_vendor"], properties: { provider: { type: "string" }, at_vendor: { enum: ["deleted", "not_deleted"] }, message: { type: "string" } } } } } }, "Forgotten: what was deleted at each vendor."),
@@ -1825,6 +1825,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   createFile.responses["415"] = ref("responses/UnsupportedMediaType");
   createFile["x-agentrun-serve-changed"] = { requestBody: "upload/2", parameters: "upload/2", responses: "upload/2" };
   changed.push("POST /files");
+  // A hidden run's files are refused, as its graph is: 403 forbidden while the server can't read its browser sign-in.
+  for (const path of ["/runs/{run_id}/files", "/runs/{run_id}/files/{path}"]) {
+    const files = (doc.paths[path] as Json).get as Json & { responses: Record<string, Json> };
+    files.description = `${String(files.description ?? "").trimEnd()}\nHere \`403 forbidden\` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): a page it saved signed in holds what it saw there, so none of its files is listed or read until the sign-in opens again.\n`;
+    const added = files.responses["403"] === undefined;
+    if (added) files.responses["403"] = ref("responses/Forbidden");
+    files["x-agentrun-serve-changed"] = { description: "signins/1", ...(added ? { responses: "signins/1" } : {}) };
+    changed.push(`GET ${path}`);
+  }
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
   const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;
@@ -1921,6 +1930,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     agent_not_runnable: NOT_RUNNABLE_DETAILS, system_file_forbidden: FORBIDDEN_DETAILS,
     auth_required: closed({ auth: { enum: ["bearer", "oauth"], description: "What the MCP server asks for: `oauth` when it names protected-resource metadata, else `bearer`." }, status: { enum: [401, 403] } }),
     upstream_failed: { type: "object", additionalProperties: false, properties: { status: { type: "integer", description: "The MCP server's HTTP status, when it answered one." } } },
+    sign_in_held: { type: "object", additionalProperties: false, minProperties: 1, maxProperties: 1, properties: { held_by: { type: "string", description: "The run that holds the sign-in's save lease." }, handed_to: { type: "string", description: "A run still going that was handed the sign-in (signins/1)." } } },
     wrong_origin: closed({ open: { type: "string", format: "uri", description: "Where to open the console to sign in: the address the authorization server sends the browser back to." } }),
   };
   const extensions: string[] = [];
