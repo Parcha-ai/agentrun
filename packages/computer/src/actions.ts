@@ -33,6 +33,9 @@ const GROUP_OF: Record<InputAction["type"], Group | "input"> = {
 	wait: "input",
 };
 
+/** The actions whose ms is a duration, checked by shapeOf and summed toward MAX_BATCH_WAIT_MS. */
+const TIMED: ReadonlySet<InputAction["type"]> = new Set(["wait", "hold", "long_press", "swipe", "pinch"]);
+
 /** Whether key is a name in KEYS or one printable ASCII character (0x21-0x7e). */
 export function isKey(key: unknown): boolean {
 	if (typeof key !== "string") return false;
@@ -127,8 +130,9 @@ export function checkActions(actions: unknown, groups: readonly Group[], { pixel
 		if (type === "key" && (given.repeat as number | undefined) !== undefined && (given.repeat as number) > MAX_KEY_REPEAT) {
 			return { index, kind: "limit", message: `action ${index}: repeat ${given.repeat} is over ${MAX_KEY_REPEAT}` };
 		}
-		// Every duration counts: wait and hold, and the ms of a long press, a swipe or a pinch.
-		if (given.ms !== undefined) {
+		// Every duration counts: wait and hold, and the ms of a long press, a swipe or a pinch. Only these five: shapeOf
+		// checks ms on them alone, so an ms on any other action (which may be negative) never enters the sum.
+		if (TIMED.has(type) && given.ms !== undefined) {
 			waited += given.ms as number;
 			if (waited > MAX_BATCH_WAIT_MS) return { index, kind: "limit", message: `the batch's durations reach ${waited} ms at action ${index}, over ${MAX_BATCH_WAIT_MS} ms` };
 		}
