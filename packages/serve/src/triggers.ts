@@ -43,7 +43,6 @@ export const MIN_EVERY_S = 60;
 export const MAX_EVERY_S = 366 * 86_400;
 export const SOURCE_KINDS = ["schedule", "webhook"] as const;
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
-export const OVERLAP = ["skip"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
 /** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start. */
 export const PAYLOAD_KEPT_BYTES = 16 * 1024;
@@ -101,25 +100,20 @@ type Firing = {
   /** A webhook firing's payload, cut to PAYLOAD_KEPT_BYTES, kept while it is due: what its run is given. */
   payload?: string;
 };
-/** `catchup_window_s`, `failures_in_a_row` and `disabled` came after the first version of the file: absent, they read
- *  as their defaults (settled). */
 type Trigger = {
   id: string; name: string; enabled: boolean; source: Source; target: Target; created_at: string; updated_at: string; next_at: string | null; firings: Firing[];
   /** The latest run its firings started, kept here and not only in the history, which drops its oldest firings: overlap
    *  reads it. */
   last_run_id?: string;
   /** Firings keyed by a caller's id (run now's Idempotency-Key, a webhook's webhook-id) that left the history, kept for
-   *  their key's day (IDEMPOTENCY_TTL_S), so a sender's retry answers its firing and never fires again. Read from
-   *  `run_now_kept` in a file an earlier build wrote. */
+   *  their key's day (IDEMPOTENCY_TTL_S), so a sender's retry answers its firing and never fires again. */
   kept_firings?: Firing[];
-  run_now_kept?: Firing[];
-  catchup_window_s?: number; failures_in_a_row?: number;
+  catchup_window_s: number; failures_in_a_row: number;
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
-  disabled?: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
+  disabled: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
 };
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
-const settled = (t: Trigger) => ({ overlap: "skip" as const, catchup_window_s: t.catchup_window_s ?? CATCHUP_WINDOW_S, failures_in_a_row: t.failures_in_a_row ?? 0, disabled: t.disabled ?? null });
 /** A run's provenance, kept in its serve.json: the trigger that started it, and the firing. */
 export type RunTrigger = { id: string; firing_key: string };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
@@ -294,7 +288,7 @@ const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s"];
 function wellFormed(t: unknown): t is Trigger {
   if (!isObject(t) || typeof t.id !== "string" || typeof t.name !== "string" || typeof t.enabled !== "boolean" || typeof t.created_at !== "string" || typeof t.updated_at !== "string") return false;
   if (!(t.next_at === null || instantOf(t.next_at) !== undefined) || !(t.last_run_id === undefined || typeof t.last_run_id === "string")) return false;
-  if (!(t.catchup_window_s === undefined || Number.isSafeInteger(t.catchup_window_s)) || !(t.failures_in_a_row === undefined || Number.isSafeInteger(t.failures_in_a_row)) || !(t.disabled === undefined || t.disabled === null || isObject(t.disabled))) return false;
+  if (!Number.isSafeInteger(t.catchup_window_s) || !Number.isSafeInteger(t.failures_in_a_row) || !(t.disabled === null || isObject(t.disabled))) return false;
   const { source, target } = t;
   if (!isObject(source) || !(source.kind === "webhook" || source.kind === "schedule")) return false;
   const timed = source.kind === "webhook" || (typeof source.cron === "string" ? typeof source.timezone === "string" : source.at !== undefined ? instantOf(source.at) !== undefined : Number.isSafeInteger(source.every_s) && instantOf(source.start_at) !== undefined);
@@ -302,7 +296,7 @@ function wellFormed(t: unknown): t is Trigger {
   if (!timed || !aimed) return false;
   const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual" || f.by === "webhook") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
   const list = (value: unknown) => value === undefined || (Array.isArray(value) && value.every(firing));
-  return Array.isArray(t.firings) && t.firings.every(firing) && list(t.kept_firings) && list(t.run_now_kept);
+  return Array.isArray(t.firings) && t.firings.every(firing) && list(t.kept_firings);
 }
 
 export class Triggers {
@@ -338,13 +332,6 @@ export class Triggers {
       const bad = doc.triggers.findIndex((t) => !wellFormed(t));
       if (bad >= 0) throw new Error(`its trigger at ${bad} is not one this server reads`);
       this.triggers = doc.triggers as Trigger[];
-      for (const t of this.triggers) {
-        if (t.run_now_kept) t.kept_firings = [...(t.kept_firings ?? []), ...t.run_now_kept];
-        delete t.run_now_kept;
-      }
-      // A trigger an earlier server wrote before trigger.failed existed has no failures_in_a_row: its failures were never
-      // to be told, so a first start that tells them does not send them late. The next write keeps the mark.
-      for (const t of this.triggers) if (t.failures_in_a_row === undefined) for (const f of t.firings) if (f.status === "failed") f.notified = true;
     } catch (error) {
       this.unreadable = (error as Error).message;
     }
@@ -557,7 +544,7 @@ export class Triggers {
     // A webhook trigger has no next time, so it is never here.
     if (source.kind === "webhook") return;
     const cron = "cron" in source ? cronOf(source) : undefined;
-    const windowMs = settled(trigger).catchup_window_s * 1000;
+    const windowMs = trigger.catchup_window_s * 1000;
     const first = Date.parse(trigger.next_at!);
     const last = latestBy(source, first, now, cron);
     // The times from first to last: an interval's counted on its grid, a cron line's walked, at most MISSED_COUNTED.
@@ -685,7 +672,7 @@ export class Triggers {
    *  queued (after the firing is written: a start finds one not yet queued and queues it, under the same webhook-id). */
   private failed(triggerId: string, key: string, error: { code: string; message: string }, also: Partial<Firing> = {}): void {
     this.settle(triggerId, key, { status: "failed", error, ...also }, (t, firing) => {
-      t.failures_in_a_row = settled(t).failures_in_a_row + 1;
+      t.failures_in_a_row += 1;
       if (t.failures_in_a_row < FAILURES_TO_PAUSE || !t.enabled) return;
       Object.assign(t, { enabled: false, next_at: null, disabled: { at: iso(this.clock.now()), reason: "auto_paused" } });
       firing.paused = true;
@@ -808,9 +795,11 @@ export class Triggers {
     return trigger;
   }
 
+  /** A trigger as the API answers it: its fields (openapi.ts TRIGGER), named one by one. A stored field outside them (an
+   *  earlier build's, as run_now_kept was, or the history) is never answered, whatever triggers.json holds. */
   private view(trigger: Trigger) {
-    const { firings, kept_firings: _, ...rest } = trigger;
-    return { ...rest, last_run_id: trigger.last_run_id ?? null, ...settled(trigger), last_firing: firings.length ? firingView(firings.at(-1)!) : null };
+    const { id, name, enabled, source, target, catchup_window_s, failures_in_a_row, disabled, next_at, created_at, updated_at, firings } = trigger;
+    return { id, name, enabled, source, target, catchup_window_s, failures_in_a_row, disabled, next_at, last_run_id: trigger.last_run_id ?? null, created_at, updated_at, last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 }
 

@@ -115,7 +115,8 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
   // any run starts (OpenCodePinMismatch, OpenCodeNotInstalled). A test's stand-in runs no OpenCode.
   if (options.standIn) {
     if (process.env.AGENTRUN_OPENCODE_STANDIN !== "1") throw new TypeError("opencode: a stand-in for OpenCode needs AGENTRUN_OPENCODE_STANDIN=1");
-    if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== "test") throw new TypeError("opencode: a stand-in for OpenCode runs only under a test runner");
+    // A test runner's own mark (node --test's NODE_TEST_CONTEXT), never NODE_ENV=test, which a production server can carry.
+    if (!process.env.NODE_TEST_CONTEXT) throw new TypeError("opencode: a stand-in for OpenCode runs only under a test runner");
   }
   const checked = options.standIn ? undefined : verifyOpenCode().path;
   const modelFor = (spec: SessionSpec): string => {

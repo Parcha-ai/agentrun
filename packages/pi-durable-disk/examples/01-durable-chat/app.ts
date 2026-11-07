@@ -50,7 +50,7 @@ async function transcript(conversation: Conversation): Promise<EntryRecord[]> {
 
 export default async function app(where: AppContext): Promise<AppOptions> {
   let generation = 0;
-  // The host's name as the supervisor gave it (`--host-name`), known once the run is open; this machine's until then.
+  // The holder's host as the run records it, known once the run is open; this machine's until then.
   let host = hostname();
   // The scripted model sees the whole transcript, so it can count the messages that came before this one.
   const reply: FauxResponseFactory = (context) => {

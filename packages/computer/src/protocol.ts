@@ -356,7 +356,10 @@ export interface ScreenShotParams {
 export interface ScreenShotResult {
 	/** The shot's id, for screen.read. */
 	id: string;
-	/** The PNG's bytes; data holds at most MAX_CHUNK_BYTES of it. */
+	/**
+	 * The PNG's bytes; data holds at most MAX_CHUNK_BYTES of it. The PNG is 8-bit and non-interlaced (gray, RGB, palette,
+	 * gray and alpha, or RGBA), as the conformance suite decodes it.
+	 */
 	size: number;
 	/** base64; read the rest with screen.read. */
 	data: string;

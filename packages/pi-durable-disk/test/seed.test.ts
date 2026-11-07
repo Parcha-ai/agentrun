@@ -37,7 +37,6 @@ function opener(root: string, seed?: RunSeed, claimOptions?: Parameters<typeof f
   const scripted = scriptedHarness();
   const open = () =>
     openDurableRun(ref, {
-      mountToken: "unused",
       acquire: async () => {
         claim.log.push("acquire");
         return claim;

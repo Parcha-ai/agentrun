@@ -347,7 +347,7 @@ link, and write through a temporary file renamed over the old one, keeping its m
 says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
 directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
 the first of them.
-`web_fetch` (and `fetch_page`, its legacy name), `web_search` and the `monid.*` tools stay on this server, and so do
+`web_fetch`, `web_search` and the `monid.*` tools stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
 way (`/proc/self/fd`). On a host without it (macOS), where a link swapped in mid-walk could still turn a write, a sandbox run's `work/` gets none of
@@ -836,10 +836,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
 `bash` and the background tools run only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
-sandbox place `read`, `write` and `edit` run in the box too. `fetch_page` is a legacy name for `web_fetch`: a
-revision, a model node or a call node that names it still saves and runs, and gets `web_fetch` under that name (the
-same Page with `via`, resolved as `web_fetch` is: the guarded fetch, Parallel only where picked). The table lists it no
-more.
+sandbox place `read`, `write` and `edit` run in the box too.
 
 A call tool that fails on its own (an unreadable PDF, a model's refusal) fails its call node; inside a `map` with
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
@@ -1324,7 +1321,13 @@ proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and h
 and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
 and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
-refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+refresh is refused with words and nothing is sent. A loopback MCP server is a development-only exception: its
+authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
+another loopback address, the IPv6 loopback, or a name for this machine in its place), on any port but this server's own; any other
+loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
+its own port. What that leaves: such an authorization server can still have this server send its sign-in and refresh
+requests to other ports on that same loopback host (a port Docker publishes there, say), blind, learning only the
+endpoint and its status, never a body. That is why the allowance is for development only. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
@@ -1335,7 +1338,9 @@ Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at,
 set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
 (one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
 alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
-and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
+and a preview, refresh or run says to sign in again in Settings → MCP servers. A launch's refresh waits at most 4 s a
+try, two tries, so an authorization server that does not answer holds a start's answer about 8 s at most; the run's
+call is then refused unsent, saying to try again. A token that expires during a run is not
 refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it. A server that stops aborts any
 refresh or code exchange under way and writes nothing after; if the authorization server had already rotated that
 refresh token, the next start reads `credential: "expired"` and asks for a sign-in again.
@@ -1412,6 +1417,9 @@ asked by default.
   run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
   row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
   (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
+  A PUT that names no `prices` keeps the saved ones, for the tools the server still lists at the same URL (a new URL
+  keeps none), so a save from any client never leaves a paid tool unmetered; `"prices": {}` clears them. A read lists
+  the tools no price meters as `not_metered`.
 - **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
@@ -1495,8 +1503,8 @@ run up, the firing reads `failed` ("The server stopped while setting up the run.
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
-no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. Overlap is `skip` alone:
-a firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
+no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
+firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
 because a firing queued behind a parked run would wait as long as the person does. A firing whose run is refused is `failed`, and a webhook set on this server
 gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
 `webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the
@@ -2412,8 +2420,10 @@ offered raise, `suggested_cap_usd`, is `spent_usd` + 10 × `needs_usd` rounded u
 cap, so a `PATCH` with it (below) resumes the run; it is absent with the other figures. The figures come from the refusal's own start mark, so a
 server started again says them too, shown as `cost.usd` is (to a millionth of a dollar), except `spent_usd` once the paused process is gone: the refusal counted requests
 still answering at what it held for them, so then it is the store's spend, when that is lower, and `suggested_cap_usd`
-follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, then a waiting row: "Waiting for you to raise the cap", and no more: the words are
-`pending.said`'s, which a client shows once. The
+follows it. The refusal's words (`said`) keep its own figures. Its timeline shows the refusal's row, the server's `phase` row "Paused at the run's cap" (`origin` server, its id
+ending `:note`, so it is no message) marked `paused` (never an `error` row; it stays once the cap is raised, as the
+run's history), then a waiting row: "Waiting for you to raise the
+cap", and no more: the words are `pending.said`'s, which a client shows once. The
 webhook's `run.needs_input` says `pending.kind: "budget"`. Its process is let go while it waits (SIGTERM: it drains and
 releases the run), so a paused run holds no place; a server started again reads it paused from its store. A paused
 process that does not let go within the drain timeout (`--drain-timeout`, 30 s by default) is killed, and the run ends

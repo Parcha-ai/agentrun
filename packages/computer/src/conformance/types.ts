@@ -99,6 +99,8 @@ export interface CaseContext {
 	fixture(): Promise<StartedFixture>;
 	/** fetch, as the run was given it; the global one by default. */
 	fetch(url: string, init?: { signal?: AbortSignal; method?: string }): Promise<{ status: number }>;
+	/** The run's clock: the wall clock by default. A case that waits on a vendor's timer reads time and waits through it. */
+	clock: Clock;
 	exec(argv: string[], extra?: Partial<ExecRunParams>, client?: ComputerClient): Promise<Ran>;
 	call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], client?: ComputerClient): Promise<DaemonMethods[M]["result"]>;
 	ok<T>(result: Result<T>, what: string): T;
@@ -202,4 +204,12 @@ export interface ConformanceOptions {
 	fixture?: string;
 	/** fetch for screen.stream; default the global one. */
 	fetch?: CaseContext["fetch"];
+	/** The clock lifetime.extend reads and waits on; default the wall clock. Tests give one their fakes share. */
+	clock?: Clock;
+}
+
+/** Time as a case reads it: now() in ms since the epoch, and a wait of ms on the same clock. */
+export interface Clock {
+	now(): number;
+	sleep(ms: number): Promise<void>;
 }

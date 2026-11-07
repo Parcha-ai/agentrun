@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { AppError, loadApp, type AppContext } from "../src/app.ts";
 import { main } from "../src/cli.ts";
 import { exitCodeFor } from "../src/errors.ts";
-import { TERMINAL_EXITS } from "../src/hosts/local-host.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-app-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -45,7 +44,6 @@ test("a missing module, no default function, a throwing one, or no options: AppE
     assert.ok(err instanceof AppError && err.code === "APP_FAILED" && message.test(err.message), `${name}: ${err}`);
     assert.equal(exitCodeFor(err), 1, name);
   }
-  assert.ok(!(TERMINAL_EXITS as readonly number[]).includes(1), "exit 1 is not terminal: Restart=on-failure retries it");
 });
 
 test("run with an app module that does not load: the factory runs once the claim is held, so it exits 1 there and lets the claim go (a second open is not held)", async () => {
