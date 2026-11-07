@@ -8,9 +8,10 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { exitCodeFor, HeldError } from "../src/errors.ts";
 import { localRun } from "../src/local-run.ts";
-import { assertStoreFree, openDurableRun } from "../src/run.ts";
+import { assertStoreFree, openDurableRun, RunError } from "../src/run.ts";
 import { readLocalRunStatus, RunRecordError } from "../src/index.ts";
 import { RUN_STATUS_TABLE } from "../src/internals.ts";
 import { scratchRoot, scriptedHarness, writeStoreRecord } from "./_run-support.ts";
@@ -227,6 +228,30 @@ describe("a run's record, in its store", () => {
       const bad = await openDurableRun(ref, options).then(() => null, (error: unknown) => error);
       assert.ok(bad instanceof RunRecordError && bad.code === "RUN_JSON_INVALID", `a string generation is refused, not added to: ${String(bad)}`);
       assert.equal(stored(), JSON.stringify(malformed), "the refused open left the record as it was");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a Harness closed before release() is refused in words, not fenced: setStatus() and release() reject with RELEASE_ORDER naming the order, and the next open takes the run", async () => {
+    const dir = scratchRoot("store-record-order");
+    const fenced: unknown[] = [];
+    try {
+      const scripted = scriptedHarness();
+      const options = { ...localRun(dir.root), harness: { models: scripted.models, registry: scripted.registry }, onFenced: (error: unknown) => void fenced.push(error) };
+      const run = await openDurableRun(ref, options);
+      await run.harness.close(ctx);
+      const isOrder = (what: string) => (error: unknown) =>
+        error instanceof RunError && error.code === "RELEASE_ORDER" && exitCodeFor(error) === 1 && error.message.startsWith(`${what} before closing the Harness:`) && /close the Harness only through release\(\)/.test(error.message);
+      await assert.rejects(run.setStatus("done", null), isOrder("setStatus()"));
+      await assert.rejects(run.release(), isOrder("release()"));
+      assert.deepEqual(fenced, [], "nothing fenced");
+      assert.equal(run.fenced, false);
+      const record = await readLocalRunStatus(dir.root);
+      assert.deepEqual([record?.status, record?.generation], ["running", 1], "the record stays as the open wrote it, as after a crash");
+      const next = await openDurableRun(ref, options);
+      assert.equal(next.generation, 2, "the next open takes the run");
+      await next.release();
     } finally {
       dir.remove();
     }

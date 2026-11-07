@@ -269,8 +269,8 @@ export async function session(options: { dir: string; input: Input; record?: str
     clearTimeout(patience);
     clearInterval(follow);
     clearInterval(meterTimer);
-    // The release writes the run's record in its store, then closes the Harness: closing the Harness first would leave
-    // the record nowhere to go.
+    // The release writes the run's record in its store, then closes the Harness: a Harness closed before it is refused
+    // (RELEASE_ORDER), since the record would have nowhere to go.
     await durable.release().catch(() => undefined);
   }
   const raw = (() => { try { return JSON.parse(readFileSync(join(options.dir, 'out', 'record.json'), 'utf8')).record as unknown; } catch { return null; } })();

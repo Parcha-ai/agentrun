@@ -75,9 +75,10 @@ of its name is installed. A tool that only reads can be marked `replay: "safe"` 
 rerun. Any other tool is an effect: its intent is committed before it starts, and after a crash the model is told the call
 was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" | "sleeping", detail)` records the run's
 status in its record, in the store; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
-run's commands and runs the barrier; its record (a run still `running` is `paused`) is written in the store first. So
-end a run with `run.release()` alone: an app that closes the Harness itself and then releases leaves the record nowhere to
-go, and the release fences (exit 75). The instance ends after its release: returning from `onOpen` after `await run.release()` is enough (the examples call `process.exit(0)`, which is fine too). A module that is missing
+run's commands and runs the barrier; its record (a run still `running` is `paused`) is written in the store first. Closing
+the Harness closes the store, so close the Harness only through `run.release()`: after an app closes the Harness itself,
+`setStatus()` and `release()` refuse with `RunError` `RELEASE_ORDER` ("release() before closing the Harness: …", exit 1),
+nothing is fenced, and the record stays as the open wrote it, as after a crash. The instance ends after its release: returning from `onOpen` after `await run.release()` is enough (the examples call `process.exit(0)`, which is fine too). A module that is missing
 or throws, or an `onOpen` that rejects, is `AppError` (exit 1; a module that fails lets the claim go first). A `beforeResume` that rejects
 fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
 store the Harness was opened over as four reads (`scanConversations`, `scanTasks`, `scanDocuments`, `document`) with no

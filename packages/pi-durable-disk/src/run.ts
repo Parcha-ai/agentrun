@@ -26,11 +26,12 @@ export const STORE_FILE = "run.sqlite";
 export { RUN_STATUS_TABLE };
 export { EXIT_DATAERR, EXIT_SOFTWARE };
 
-export type RunErrorCode = "INVALID_ARGUMENT" | "STORE_HEAD_UNREADABLE" | "RUN_RELEASED";
+export type RunErrorCode = "INVALID_ARGUMENT" | "STORE_HEAD_UNREADABLE" | "RUN_RELEASED" | "RELEASE_ORDER";
 
 /**
- * Bad options, a call on a released run, or a store whose head cannot be read (STORE_HEAD_UNREADABLE: the run is marked
- * `failed` and released, exit 70).
+ * Bad options, a call on a released run, `setStatus()` or `release()` after the Harness was closed outside `release()`
+ * (RELEASE_ORDER), or a store whose head cannot be read (STORE_HEAD_UNREADABLE: the run is marked `failed` and released,
+ * exit 70).
  */
 export class RunError extends PdaError {
   constructor(code: RunErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -291,11 +292,18 @@ export async function storeHead(store: StoreHeadSource): Promise<number> {
 
 /**
  * `storage` with `before` run ahead of every commit (it may throw to refuse it), every resolved commit's sequence
- * reported to `after` and every rejected commit's error to `failed`; everything else delegates unchanged.
+ * reported to `after`, every rejected commit's error to `failed`, and its close to `closing`; everything else delegates
+ * unchanged.
  */
-function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Seq): void; failed(error: unknown): void }): Storage {
+function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Seq): void; failed(error: unknown): void; closing?(): void }): Storage {
   return new Proxy(storage, {
     get(target, key) {
+      if (key === "close" && hooks.closing) {
+        return (context: Context) => {
+          hooks.closing!();
+          return target.close(context);
+        };
+      }
       if (key === "commit") {
         return async (writes: readonly StorageWrite[], context: Context) => {
           hooks.before();
@@ -482,8 +490,9 @@ class Lease {
   }
 
   /** `storage` reporting to the claim: a commit is refused once the run is fenced, and a FencedError from one fences it. */
-  observe(storage: Storage): Storage {
+  observe(storage: Storage, closing?: () => void): Storage {
     return observeCommits(storage, {
+      ...(closing ? { closing } : {}),
       before: () => {
         if (this.#fence) throw this.#fence.error;
       },
@@ -622,6 +631,8 @@ class Run implements DurableRun {
   #harness: Harness | undefined;
   #releasing: Promise<void> | undefined;
   #released = false;
+  /** The Harness closed the store outside release(): its record has nowhere to go. */
+  #closedFirst = false;
 
   constructor(lease: Lease, env: RunEnv, options: OpenDurableRunOptions<ToolRegistration>, context: Context) {
     this.ref = lease.ref;
@@ -673,7 +684,9 @@ class Run implements DurableRun {
       const row = await database.get<{ record: string }>(`SELECT record FROM ${RUN_STATUS_TABLE} WHERE id = 1`);
       lease.fromStore(row ? parseRunRecord(row.record) : undefined);
     });
-    const storage = lease.observe(this.#store!.storage);
+    const storage = lease.observe(this.#store!.storage, () => {
+      if (this.#releasing === undefined) this.#closedFirst = true;
+    });
     // openDurableRun refused an open without Harness options (here or from afterClaim) before this runs.
     this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness!, env: this.env }, this.#context));
     // This incarnation's record, written under the store's lock.
@@ -704,11 +717,25 @@ class Run implements DurableRun {
 
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
     if (!this.#lease.fenced && (this.#released || this.#releasing)) throw new RunError("RUN_RELEASED", `run ${this.ref.id} is released`);
+    this.#assertOrder("setStatus()");
     // What the run committed is durable before a status says where it stands: the status is a commit of the store,
     // synced after it. A fenced run's store takes no write: a fenced run syncs nothing.
     await this.#lease.setStatus(status, detail, options);
     await this.#keepStatus(this.#lease.record);
     if (!this.#lease.fenced) await syncNow(this.#store!, BARRIER.runStatus);
+  }
+
+  /**
+   * The record is written in the store, and closing the Harness closes the store: a Harness closed outside release()
+   * leaves the record nowhere to go. Refused in words (RELEASE_ORDER), with nothing fenced and the record as the open
+   * wrote it, as after a crash.
+   */
+  #assertOrder(what: string): void {
+    if (!this.#closedFirst) return;
+    throw new RunError(
+      "RELEASE_ORDER",
+      `${what} before closing the Harness: run ${this.ref.id}'s Harness was closed first, and its store with it, so its record cannot be written. close the Harness only through release(), which writes the record and then closes it`,
+    );
   }
 
   /** The run's record, written in its store (its one row of RUN_STATUS_TABLE); a failed write fences. */
@@ -723,6 +750,11 @@ class Run implements DurableRun {
   release(): Promise<void> {
     if (this.#released) return Promise.resolve();
     if (this.#lease.fenced) return Promise.reject(this.#lease.fencedBy);
+    try {
+      this.#assertOrder("release()");
+    } catch (error) {
+      return Promise.reject(error);
+    }
     this.#releasing ??= this.#release();
     return this.#releasing;
   }
