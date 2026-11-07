@@ -61,8 +61,12 @@ export type FauxAction =
   /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
    *  turn interrupted, with no stop asked for, ends it so). */
   | { end: true; usd?: number | null; turn?: TurnStatus }
-  /** The request fails: the turn ends failed. */
+  /** The request fails: the provider answers an error status before any event (booked so), and the turn ends failed. */
   | { fail: string }
+  /** The provider does not answer this request: an error status before any event (`status`), our stop after part of it
+   *  streamed (`stopped`), or the connection lost once it left (`lost`). It is booked as such, and the client goes on to
+   *  its next action, as a CLI sends a request again. */
+  | ({ unanswered: "status" | "stopped" | "lost" } & FauxRequest)
   /** The process stops here: nothing resolves until the session's signal aborts. */
   | { hang: true }
   /** The harness halts the drive with this reason (a spend cap, a mirror it cannot keep): the turn ends failed, naming it. */
@@ -194,7 +198,16 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             // write it into the body: filed, for a test to see.
             const limit = ticket ? ticket.outputTokensMax : undefined;
             await append(FAUX_RECORDS.request, { index, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
-            if ("fail" in action) return await end("failed", action.fail);
+            if ("fail" in action) {
+              await io.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket || undefined, { end: "nothing", label: "status" });
+              return await end("failed", action.fail);
+            }
+            if ("unanswered" in action) {
+              const how = action.unanswered;
+              await io.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: how === "status" ? 0 : null }, ticket || undefined,
+                how === "status" ? { end: "nothing", label: "status" } : how === "stopped" ? { end: "stopped", streamedTokens: 10 } : { end: "lost", label: "error_after", began: true });
+              continue;
+            }
             // Held in flight, admitted and not answered, until the file it waits for exists (or the turn is stopped).
             if ("until" in action && typeof action.until === "string") await untilExists(action.until, signal);
             const tokens = "tokens" in action && action.tokens ? action.tokens : { input: 10, output: 5 };

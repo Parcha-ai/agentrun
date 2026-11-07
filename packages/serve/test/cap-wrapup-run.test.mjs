@@ -393,3 +393,47 @@ test("claude-agent on the faux harness: the request that carries the note is hel
   const noteUsd = (Buffer.byteLength(note, "utf8") * 100) / 1e6;
   assert.ok(Math.abs(holds[0] - plain - noteUsd) < 1e-9, `held ${holds[0]}: the plain $${plain} and the note's ${Buffer.byteLength(note, "utf8")} bytes ($${noteUsd})`);
 });
+
+/** A claude-agent run on input-priced faux (output free) under `cap`, its harness scripted by `instructions`, followed
+ *  until it rests. */
+const inputPricedRun = async (t, id, instructions, cap) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent(id, { harness: "claude-agent", instructions }))).status, 201);
+  const runId = (await api("POST", `/agents/${id}/runs`, { input: { content: "go" }, max_cost_usd: cap })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  return { api, data, runId };
+};
+
+for (const how of ["status", "stopped"]) {
+  test(`claude-agent on the faux harness: a request carrying the note that the provider does not answer (${how === "status" ? "an error status before any event" : "stopped after it streamed"}) is not told: the request sent again carries it, and one row says so, in its words`, { timeout: 180_000 }, async (t) => {
+    const { api, data, runId } = await inputPricedRun(t, `unanswered-${how}`, `Wrap up with the carrier unanswered (${how}).`, 0.29);
+    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+    const rows = (await rowsOf(api, runId)).map((row) => row.text);
+    await letGo(data, runId);
+    const carried = noteRequests(data, runId);
+    assert.deepEqual(carried.map(([request]) => request), [0, 1], "the request sent again carries the note: the first was never answered");
+    assert.deepEqual(rows, [carried[1][1]], "one row, in the words of the request that was answered");
+  });
+}
+
+test("claude-agent on the faux harness: a note told in an answered request is never told again, though its row was lost: the process opened again rebuilds the row from the request's own record", { timeout: 240_000 }, async (t) => {
+  const { api, data, runId } = await inputPricedRun(t, "told-row-lost", "Wrap up, then a follow-up due by its least.", 0.29);
+  await letGo(data, runId);
+  assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$0.29")], "turn 1's request carried the note");
+  // The row lost, as a commit that failed would leave it.
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 5_000 });
+  try {
+    const rows = db.prepare("SELECT rowid AS at, record FROM entries ORDER BY rowid").all().filter((row) => JSON.parse(row.record).kind === "agentrun.cap_wrapup");
+    assert.equal(rows.length, 1, "one row to lose");
+    db.prepare("DELETE FROM entries WHERE rowid = ?").run(rows[0].at);
+  } finally {
+    db.close();
+  }
+  // The follow-up's request is due by its least ($0.15, over half of the $0.28 left) if the note was never told.
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).status, 202);
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const rows = (await rowsOf(api, runId)).map((row) => row.text);
+  await letGo(data, runId);
+  assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.29")]], "not told again");
+  assert.deepEqual(rows, [WRAP_UP_FIRST("$0.29")], "the row rebuilt, in the words told");
+});
