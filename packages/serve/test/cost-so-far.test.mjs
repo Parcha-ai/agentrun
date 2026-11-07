@@ -49,6 +49,57 @@ test("pi: a follow-up stopped mid-answer reads what the run cost so far and 1 ch
   assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: first, unpriced: 1 });
 });
 
+/** The server's read of its runs' event streams (each door's `/events`, fetched in this process), held from `hold()`
+ *  until `release()`: what the door says after that point reaches the server only then. */
+function heldEvents(t) {
+  const real = globalThis.fetch;
+  let gate;
+  globalThis.fetch = async (input, init) => {
+    const res = await real(input, init);
+    if (!String(input instanceof Request ? input.url : input).includes("/events?") || !res.body) return res;
+    const reader = res.body.getReader();
+    const body = new ReadableStream({
+      async pull(controller) {
+        const { value, done } = await reader.read();
+        // Checked once the chunk is here: a read already waiting when the hold came is held too.
+        while (gate) await gate.promise;
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+      cancel: (reason) => reader.cancel(reason),
+    });
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  };
+  const release = () => {
+    const held = gate;
+    gate = undefined;
+    held?.resolve();
+  };
+  t.after(() => {
+    release();
+    globalThis.fetch = real;
+  });
+  return { hold: () => void (gate = Promise.withResolvers()), release };
+}
+
+test("pi: a stop's cost reads unknown plus what is known so far as soon as the run reads stopped, before the turn's end reaches the server; never the known sum", async (t) => {
+  const events = heldEvents(t);
+  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const { runId, first } = await piFollowUpInFlight(api, "stop-early");
+  // From here the door's events (the turn's end, the stop's end mark) wait: the run reads stopped from the stop alone.
+  events.hold();
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.state], ["input_required", "idle"]);
+  assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, first, 1], JSON.stringify(run.cost));
+  assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: first, unpriced: 1 });
+  // And once they arrive, the same.
+  events.release();
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const after = await view(api, runId);
+  assert.deepEqual([after.cost.usd, after.cost.so_far_usd, after.cost.unpriced], [null, first, 1], JSON.stringify(after.cost));
+});
+
 test("pi: a run cancelled mid-request reads what it cost so far and 1 charge with no price, on the run, and on its list row from a server started anew", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const options = { data: join(dir, "agents"), port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" };
