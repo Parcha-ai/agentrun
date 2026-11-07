@@ -104,6 +104,11 @@ const SAYS_PATH = new Set(["write", "edit"]);
 const textOf = (content: unknown): string =>
   Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
 
+/** A result's image blocks (pi-ai's `ImageContent`: read's image in a box), as HostTool's `images`: the harness sends
+ *  them with the text, where `textOf` alone would drop them. */
+const imagesOf = (content: unknown): { mimeType: string; data: string }[] =>
+  Array.isArray(content) ? content.flatMap((block) => (block && typeof block === "object" && block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? [{ mimeType: block.mimeType, data: block.data }] : [])) : [];
+
 
 /** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
  *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
@@ -157,7 +162,8 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
         const works = typeof work === "string" ? [work, realOf(work)] : [];
         const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
         results.set(callId, answer);
-        return answer;
+        const images = imagesOf(given.content ?? given.output);
+        return images.length ? { ...answer, images } : answer;
       },
     };
     return [host];

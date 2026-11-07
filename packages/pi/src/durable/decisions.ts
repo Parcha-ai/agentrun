@@ -86,13 +86,13 @@ export type DecisionRow = {
 };
 
 /** The old form: one session document whose `receipts` list is rewritten at every commit. Read, and written only in a store that holds it. */
-const DecisionsDoc = defineDoc<{ receipts: JsonValue[] }>({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: "session", initial: () => ({ receipts: [] }) });
+const DecisionsDoc = defineDoc<{ receipts: JsonValue[] }>({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: "session", initial: () => ({ receipts: [] }), checkpointWhen: () => false });
 /** The keyed form: one document per row, of the same kind, keyed by the row's place in the run's rows (`keyOf`), written once. The
  *  document's value is exactly the row. */
-const DecisionRowDoc = defineDocFamily<JsonObject, null>({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: "session", family: true, initial: () => ({}) });
+const DecisionRowDoc = defineDocFamily<JsonObject, null>({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: "session", family: true, initial: () => ({}), checkpointWhen: () => false });
 /** How many rows the keyed form holds: its next key. A few bytes, so rewriting it at every commit costs the same at every count. */
 export const DECISION_COUNT_DOC = "agentrun.decisions.count";
-const DecisionCountDoc = defineDoc<{ count: number }>({ kind: DECISION_COUNT_DOC, version: 1, scope: "session", initial: () => ({ count: 0 }) });
+const DecisionCountDoc = defineDoc<{ count: number }>({ kind: DECISION_COUNT_DOC, version: 1, scope: "session", initial: () => ({ count: 0 }), checkpointWhen: () => false });
 /** A keyed row's key: its place, zero-padded so the keys sort in commit order. */
 export const decisionKey = (place: number): string => String(place).padStart(8, "0");
 

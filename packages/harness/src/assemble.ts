@@ -49,7 +49,7 @@ export function nodeTools(offered: readonly ToolRegistration[], node: { label: s
 }
 
 /** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
-const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
+const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }), checkpointWhen: () => false });
 
 /** The run's id when nothing names one, and the key its workflow's task and journal are kept under. A demo's run is keyed by the demo's name (the place's `paths.id`), so two demos never share a run. */
 export const RUN_KEY = 'reference';

@@ -15,7 +15,7 @@
 // Parallel is asked through the run's one client (web-fetch.ts), on the key the server handed the run's process: a 401
 // or 403 to either web tool stops both for the rest of the run. No request is retried. Each is a paid request, held by
 // the run's cap and booked as the call's cost at Parallel's price (paid-calls.ts): one the cap refuses answers its words.
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { clip, TITLE_CAP } from "./web-fetch-direct.js";
