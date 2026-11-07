@@ -6,8 +6,7 @@ import type { RunBrowser } from "@/lib/v2";
 
 /** The run's browser, read from GET /v2/runs/{id}/browser and read again every `every` ms while the run is live, and once
  *  more after it ends (a session is released at the end). Null until the first read, and for a run whose browser the
- *  console can't show, which is read no more: `off`, or a server with no such route (404) or that refuses this caller
- *  (401, 403). A failed read
+ *  console can't show, which is read no more: `off`, or a caller the route refuses (401, 403). Any other failed read
  *  keeps the last answer, so a page being watched isn't torn down by one bad poll. Nothing about the answer is logged. */
 export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, live: boolean, every = 3000): RunBrowser | null {
   const [now, setNow] = useState<RunBrowser | null>(null);
@@ -30,7 +29,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, liv
         setNow((prev) => (prev && prev.state === next.state && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer)) ? prev : next));
       } catch (e) {
         if (!alive) return;
-        if (e instanceof ClientError && [401, 403, 404].includes(e.status)) { setGone(true); setNow(null); return; }
+        if (e instanceof ClientError && [401, 403].includes(e.status)) { setGone(true); setNow(null); return; }
       }
       if (alive && live) timer = setTimeout(() => void once(), every);
     };
