@@ -11,7 +11,7 @@ import { startServe } from "../dist/index.js";
 import { agent, client, flowAgent, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_SERVE_BUDGET_HOLD_MS", "AGENTRUN_SERVE_TEST_PLACE_RETRY_MS"];
 const SETTLED = ["input_required", "completed", "failed", "cancelled"];
 const ENDED = ["completed", "failed", "cancelled"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -224,4 +224,18 @@ test("a server that closes while a raise holds its place keeps the run's pause o
   const next = client(second.baseUrl, second.token);
   const status = await statusWithin(next, runId, ENDED, 60_000);
   assert.deepEqual([kept, status], [true, "completed"], "the pause stayed on disk through the close, and the next server opened the raised run");
+});
+
+test("the place queue's test-only retry has no effect outside a test runner, and is capped at a minute within one", async () => {
+  const { placeRetryMs, PLACE_RETRY_ENV } = await import("../dist/runs.js");
+  assert.equal(PLACE_RETRY_ENV, "AGENTRUN_SERVE_TEST_PLACE_RETRY_MS");
+  // A server's environment: the variable set by mistake, no test runner. The queue is tried every second.
+  assert.equal(placeRetryMs({ [PLACE_RETRY_ENV]: "30000" }), 1_000);
+  assert.equal(placeRetryMs({ [PLACE_RETRY_ENV]: "30000", NODE_ENV: "production" }), 1_000);
+  // NODE_ENV=test alone is no test runner: a production server can carry it.
+  assert.equal(placeRetryMs({ [PLACE_RETRY_ENV]: "30000", NODE_ENV: "test" }), 1_000);
+  // Under a test runner (node --test sets NODE_TEST_CONTEXT).
+  assert.equal(placeRetryMs({ [PLACE_RETRY_ENV]: "30000", NODE_TEST_CONTEXT: "child-v8" }), 30_000);
+  assert.equal(placeRetryMs({ [PLACE_RETRY_ENV]: "600000", NODE_TEST_CONTEXT: "child-v8" }), 60_000, "capped");
+  assert.equal(placeRetryMs({ NODE_TEST_CONTEXT: "child-v8" }), 1_000, "unset: every second");
 });

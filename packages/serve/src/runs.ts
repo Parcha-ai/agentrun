@@ -718,6 +718,16 @@ export function refreshDelayMs(env: NodeJS.ProcessEnv = process.env): number {
   const ms = Number(env[REFRESH_DELAY_ENV]);
   return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
 }
+/** For tests only: how often a raised run waiting for a place is tried again (waitForPlace), in place of PLACE_RETRY_MS. */
+export const PLACE_RETRY_ENV = "AGENTRUN_SERVE_TEST_PLACE_RETRY_MS";
+/** The place queue's retry, in ms: PLACE_RETRY_MS unless the server runs under a test runner (node --test's
+ *  NODE_TEST_CONTEXT; NODE_ENV=test alone is none, as a production server can carry it), so a value set by mistake in a
+ *  server changes nothing; within one, PLACE_RETRY_ENV's value, at most a minute. */
+export function placeRetryMs(env: NodeJS.ProcessEnv = process.env): number {
+  if (!env.NODE_TEST_CONTEXT) return PLACE_RETRY_MS;
+  const ms = Number(env[PLACE_RETRY_ENV]);
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 60_000) : PLACE_RETRY_MS;
+}
 /** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
 const CONTINUE_TRIES = 3;
 const CONTINUE_RETRY_MS = [1_000, 3_000];
@@ -3739,7 +3749,7 @@ export class Runs {
     this.placeWaiters.add(run);
     this.show(run);
     this.refresh(run);
-    this.placeRetry ??= setInterval(() => void this.retryPlaces(), PLACE_RETRY_MS).unref();
+    this.placeRetry ??= setInterval(() => void this.retryPlaces(), placeRetryMs()).unref();
   }
 
   /** Whether a raise that took a place has nothing to open now: the server is closing (the mark stays, for the next
