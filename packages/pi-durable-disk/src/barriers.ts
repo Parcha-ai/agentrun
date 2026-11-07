@@ -47,7 +47,7 @@ export const BARRIERS = {
   kernelEffectIntent: {
     store: "run-journal",
     site: "serve/src/sessions.ts",
-    via: { file: "run-adapters/src/kernel/drive.ts", text: "await writer.sync?.()" },
+    via: { file: "run-adapters/src/kernel/drive.ts", text: "await writer.sync()" },
     status: "active",
     proof: "packages/serve/test/barriers-box-loss.test.mjs",
     why: "a kernel effect (claude-agent, codex, opencode) that is not replay-safe: its start record, before it runs",
@@ -56,7 +56,7 @@ export const BARRIERS = {
     store: "run-journal",
     site: "serve/src/harness-app.ts",
     status: "active",
-    proof: null,
+    proof: "packages/serve/test/side-request-box-loss.test.mjs",
     why: "a non-pi harness's model request: its start mark and bound, before it is sent",
   },
   modelRequestStarted: {
@@ -176,12 +176,12 @@ export const NORMAL_PRECONDITIONS = {
     what: "a fenced run's status write skips its barrier, so it fails with the fence's own error, as at FULL (run.test.ts)",
   },
   kernelSyncRequired: {
-    done: false,
-    what: "the kernel's run-journal writer must have `sync`: an effect with no barrier to call is refused, not run (drive.ts passes a writer without one)",
+    done: true,
+    what: "the kernel's run-journal writer has `sync` (SessionWriter requires it): an effect with no barrier to call is refused, not run",
   },
   endToEndBoxLoss: {
-    done: false,
-    what: "a box-loss test through the real chokepoints (the tool gate, the kernel drive, the side-request mark) on a NORMAL run's store, not only ordering tests",
+    done: true,
+    what: "a box-loss test through the real chokepoints on a NORMAL run's store: the tool gate and the kernel drive (serve's barriers-box-loss.test.mjs), the side-request mark (side-request-box-loss.test.mjs)",
   },
   retryMarkSynced: {
     done: false,
@@ -197,7 +197,7 @@ export const NORMAL_PRECONDITIONS = {
   },
   barrierProofs: {
     done: false,
-    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof); sideRequestStarted, runStatus and runRelease have none yet (null)",
+    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof); runStatus and runRelease have none yet (null)",
   },
 } as const satisfies Record<string, { readonly done: boolean; readonly what: string }>;
 

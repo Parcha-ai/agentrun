@@ -26,6 +26,8 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
           if (holders.get(key) !== holder) throw new SessionFenced(key);
           sessions.set(key, [...(sessions.get(key) ?? []), ...structuredClone(records as SessionRecord[])]);
         },
+        // Memory has no box to lose: every append is as durable as it gets.
+        sync: async () => {},
       };
     },
     keys: () => [...sessions.keys()],
