@@ -20,6 +20,17 @@ export class SessionFenced extends Error {
   }
 }
 
+/** A host's stop for a turn parked on a call that waits for a person (`ModelPortOptions.stopped`): it ends the turn and
+ *  refuses new requests until the park lets go, but it is no stop of the booking itself, so a paid request whose cost
+ *  can't be recorded meanwhile still stops it. */
+export class TurnParked extends Error {
+  readonly code = "TURN_PARKED";
+  constructor(message: string) {
+    super(message);
+    this.name = "TurnParked";
+  }
+}
+
 /** A node that delivered no record. `final` says a second attempt would end the same way, so a recovery driver gives
  *  it none: the runner's own bounds (the turn cap, no progress, a refusal) are final; an abort, a timeout or a model
  *  error is not. */
