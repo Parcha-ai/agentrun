@@ -286,6 +286,27 @@ describe("the barriers table, held to the source", () => {
     assert.deepEqual(violations(t, "FULL", code), []);
   });
 
+  it("a regular expression is code: a `//` or a quote inside one starts no comment and no string, so a real call beside it counts and a commented one after it does not", () => {
+    const t: Table = {
+      barriers: {
+        here: { store: "s", site: "x/src/a.ts", status: "active", why: "", via: { file: "x/src/a.ts", text: "if (hook) await persist(hook);" } },
+        ghost: { store: "s", site: "x/src/a.ts", status: "active", why: "" },
+      },
+      stores: { s: { opens: ["x/src/a.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
+    };
+    const lines = [
+      "openArchilStore(f);",
+      "const slashes = /\\/\\//; await syncNow(store, BARRIER.here); if (hook) await persist(hook);",
+      'const quote = /"/; // await syncNow(store, BARRIER.ghost);',
+      "const tick = /'/; const done = \"ok\";",
+    ];
+    const code = withoutComments(lines.join("\n")).split("\n");
+    assert.deepEqual(code.slice(0, 2), lines.slice(0, 2), "a `//` inside a regular expression is no comment: the call and the via line beside it are code");
+    assert.equal(code[2]!.trimEnd(), 'const quote = /"/;', "a quote inside a regular expression opens no string: the comment after it is blanked");
+    assert.equal(code[3], lines[3]);
+    assert.deepEqual(violations(t, "FULL", new Map([["x/src/a.ts", lines.join("\n")]])), ["ghost: active, but x/src/a.ts has no syncNow(…, BARRIER.ghost)"]);
+  });
+
   it("reads code only: a barrier call or an opener inside a comment neither counts nor trips it, and a string keeps its slashes", () => {
     const t: Table = { barriers: { here: { store: "s", site: "x/src/a.ts", status: "active", why: "" } }, stores: { s: { opens: ["x/src/a.ts"], synchronous: "FULL", effects: "barriers", what: "" } } };
     const files = new Map([
