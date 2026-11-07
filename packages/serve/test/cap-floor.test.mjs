@@ -90,7 +90,9 @@ test("pi: a floor is its revision's: a new revision has none until its own first
   await follow(api, first.body.run_id, SETTLED);
   assert.ok((await api("GET", "/agents/floor-rev")).body.cap_floor, "the first revision's run measured it");
   // New instructions: another first request, so the old floor is not this revision's.
-  assert.equal((await api("PUT", "/agents/floor-rev/definition", { definition: { ...agent("floor-rev").definition, instructions: "Answer in one line." } })).status, 200);
+  const { version: _, ...definition } = (await api("GET", "/agents/floor-rev")).body.definition;
+  const revised = await api("PUT", "/agents/floor-rev/definition", { definition: { ...definition, instructions: "Answer in one line." } });
+  assert.equal(revised.status, 200, JSON.stringify(revised.body));
   assert.equal((await api("GET", "/agents/floor-rev")).body.cap_floor, undefined, "no floor on the new revision yet");
   const small = await api("POST", "/agents/floor-rev/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.02 });
   assert.equal(small.status, 202, `the new revision's first run is never refused: ${JSON.stringify(small.body)}`);

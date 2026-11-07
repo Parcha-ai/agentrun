@@ -40,7 +40,7 @@ import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decisions.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapMode, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
+import { BOUND_FIELD, CAP_ENV, CAP_MODE_ENV, CAP_MODES, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapMode, FIT_TOLERANCE, floorIn, type FloorMark, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
@@ -1474,6 +1474,16 @@ export class Runs {
 
   private storeFile(run: Run): string {
     return join(run.dir, "store", "run.sqlite");
+  }
+
+  /** The run's floor (cap.ts FloorMark), its first turn request's as its process measured it; undefined when it has
+   *  none, or its store does not read (a run being removed). */
+  floorOf(run: Run): FloorMark | undefined {
+    try {
+      return floorIn(this.storeFile(run));
+    } catch {
+      return undefined;
+    }
   }
 
   /** The run's rows from its store, opened read-only; only once its claim is released. An agentic run's rows are its

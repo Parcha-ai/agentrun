@@ -1491,6 +1491,19 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       },
       "x-agentrun-serve": "serve/1",
     },
+    cap_floor: {
+      type: "object", additionalProperties: false, required: ["least_usd", "typical_usd", "model", "measured_at", "by_effort"],
+      description: "The least a spend cap (`max_cost_usd`) must be for one model request of the agent's current revision, as that revision's newest run measured it: the run's first request, sent or refused at its cap, priced in its process by the cap's own rule. The figures are its input-free part, a lower bound for any run: a run's own message adds its bytes at the model's input price, and a create at the same effort whose cap is under that run's least is refused (422 input_invalid, `fields[0].reason` `below_least`, `details.least_cap_usd`, `details.least_usd`, `details.typical_usd`). Absent until a run of this revision measures one: prices resolve only in a run's process, so the server computes none before a run, and the revision's first run is never refused (a cap too small for it pauses at step 0 once, and that pause records the floor). Absent for a workflow agent, and from an older server. A client shows it as measured on this agent's last run, and shows nothing when it is absent.",
+      properties: {
+        least_usd: { type: "number", minimum: 0, description: "The hard minimum: the first request's input and least output (1,024 tokens, plus its thinking's least on a model that thinks) at the model's price, the figure the cap refuses that request below." },
+        typical_usd: { type: "number", minimum: 0, description: "The advice: the first request's input and a typical answer (4,096 output tokens, at most what it asks) at the model's price." },
+        model: { type: "string", description: "The model the figures were priced on, as the run's process named it." },
+        effort: { type: "string", description: "The thinking level the measuring run ran at." },
+        measured_at: { type: "string", format: "date-time", description: "When the measuring run started." },
+        by_effort: { type: "object", additionalProperties: { type: "object", additionalProperties: false, required: ["least_usd", "typical_usd"], properties: { least_usd: { type: "number", minimum: 0 }, typical_usd: { type: "number", minimum: 0 } } }, description: "The newest figures measured at each thinking level, by level: only the levels a run measured." },
+      },
+      "x-agentrun-serve": "serve/1",
+    },
   },
   Capabilities: {
     learning: {

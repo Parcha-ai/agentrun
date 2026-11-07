@@ -17,7 +17,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
+import { capBefore, capModels, capModeOf, capOf, cliFloor, costsIn, piFloor, spentIn, wrapUpSentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
@@ -128,18 +128,23 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const priced = onHarness && revision.body.harness === "claude-agent" && !fauxModels ? claudePriceModel(env, model!) : model;
   /** The session's port, once the harness's run is made (adapterRun): read at each request. */
   let sessionPort: ((label: string) => SessionPort | undefined) | undefined;
-  const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root));
+  const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
+  // The effort a run's floor is measured at (cap.ts FloorMark): the run's own, else the thinking level it runs at.
+  const floorEffort = process.env[EFFORT_ENV] || thinkingLevel;
+  // The process's first turn request records its floor (cap.ts FloorMark) on its start mark, capped or not, sent or
+  // refused: a create reads the agent's newest one (cap-floor.ts).
+  const floor = onHarness ? undefined : await piFloor(floorEffort);
+  const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root), { ...(floor ? { floor } : {}) });
   // The wrap-up on pi (cap.ts WrapUp): near its cap the run's own model is told once, under this cap, to finish. Not on
   // another harness: its guard tells the harness's model (harness-app.ts).
   const storeFile = join(where.store, RUN_STORE_FILE);
   const wrapUp = cap === undefined || onHarness || !model ? undefined : { model: model.modelId, costs: costsIn(storeFile, model.modelId), sent: wrapUpSentIn(storeFile, cap), record: marked!.wrapUp };
   const models = onHarness
     ? await portModels(() => sessionPort?.(LEARNED_WORKFLOW_TOOL), priced ? (chosen.models.getModel(priced.provider, priced.modelId) as never) : undefined)
-    : cap === undefined ? marked!.models : await capModels(marked!.models, cap, spentIn(storeFile), { unpriced: chosen.unpriced, refused: marked!.refused, mode, ...(wrapUp ? { wrapUp } : {}) });
+    : cap === undefined ? marked!.models : await capModels(marked!.models, cap, spentIn(storeFile), { unpriced: chosen.unpriced, refused: marked!.refused, mode, ...(wrapUp ? { wrapUp } : {}), ...(floor ? { floor } : {}) });
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
   // on another harness, the session's port, for a learned workflow's call node.
   searchOn(models as never);
-  const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   // The run's place, as its start resolved and kept it (serve.json): in a box, its coding tools run there (run-box.ts).
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
@@ -207,10 +212,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The run's cap, checked before each of the session's requests (the harness's and the run's own beside them): the
     // same ceiling rule as pi's (cap.ts), at the price `priced` names (above).
     const guard = await capBefore(cap, chosen.models.getModel(priced!.provider, priced!.modelId) as never, { listed: !chosen.unpriced.has(priced!.modelId), mode });
+    // The run's floor (cap.ts FloorMark), at the same price: its first harness request's, capped or not (harness-app.ts).
+    const floorOf = await cliFloor(chosen.models.getModel(priced!.provider, priced!.modelId) as never, { listed: !chosen.unpriced.has(priced!.modelId), effort: floorEffort });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
-    const { door, onOpen, port } = adapterRun(make, harness, spec, BACKGROUND, cap, learnedTool ? [...named, LEARNED_WORKFLOW_TOOL] : named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate, learnedTool ? [learnedTool] : []);
+    const { door, onOpen, port } = adapterRun(make, harness, spec, BACKGROUND, cap, learnedTool ? [...named, LEARNED_WORKFLOW_TOOL] : named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate, learnedTool ? [learnedTool] : [], floorOf);
     // The run's own model requests beside the harness's go through the session's proxy, booked on its records (port-models.ts).
     sessionPort = port;
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).

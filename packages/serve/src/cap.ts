@@ -59,6 +59,9 @@ export const FIT_TOLERANCE = 1e-12;
 /** The option a request's hold rides on from the cap to its marks (request-start.ts): what the cap held for it, its
  *  expected cost (its worst case under strict). A symbol, so no provider ever sends it. */
 export const HELD_USD = Symbol.for("agentrun.serve.held_usd");
+/** The key a request's options carry its floor under (FloorMark, the process's first turn request's), for its start
+ *  mark (FLOOR_FIELD, request-start.ts). */
+export const FLOOR = Symbol.for("agentrun.serve.floor");
 /** The option a request's bound rides on to its start mark (request-start.ts, as BOUND_FIELD): the most a cache miss can
  *  make it cost beyond its hold (its input uncached less its input expected; 0 under strict). A symbol, as HELD_USD. */
 export const BOUND_USD = Symbol.for("agentrun.serve.bound_usd");
@@ -549,6 +552,21 @@ export function costsIn(storeFile: string, model: string): number[] {
     return message?.model === model && message.stopReason !== "error" && message.stopReason !== "aborted" && typeof total === "number" && Number.isFinite(total) && total > 0 ? [total] : [];
   });
 }
+/** The run's floor (FloorMark): the first start mark in its store that carries one (FLOOR_FIELD), its first turn
+ *  request's, sent or refused; undefined when none does (a run from before floors were measured, or one that never
+ *  sent a turn request). */
+export function floorIn(storeFile: string): FloorMark | undefined {
+  if (!existsSync(storeFile)) return undefined;
+  // Only the start marks that carry one, read by SQLite itself: an agent's read looks at several runs' stores.
+  const marks = readRunDbSync(storeFile, false, (db) => db.prepare(`SELECT json_extract(record, '$.data.${FLOOR_FIELD}') AS floor FROM entries WHERE json_extract(record, '$.kind') = ? AND json_extract(record, '$.data.${FLOOR_FIELD}') IS NOT NULL ORDER BY rowid`).all(REQUEST_STARTED) as { floor: string }[]);
+  for (const { floor: text } of marks) {
+    let floor: Partial<FloorMark> | undefined;
+    try { floor = JSON.parse(text) as Partial<FloorMark>; } catch { continue; }
+    const figures = [floor.inputTokens, floor.leastUsd, floor.typicalUsd, floor.inputUsdPerToken];
+    if (typeof floor.model === "string" && figures.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)) return floor as FloorMark;
+  }
+  return undefined;
+}
 /** Whether the run was told its wrap-up under `cap` already (a CAP_WRAPUP entry of that cap): once per cap, across its
  *  processes; a raise's new cap re-arms it. */
 export function wrapUpSentIn(storeFile: string, cap: number): boolean {
@@ -735,6 +753,41 @@ function outputBound(model: Pick<Model<Api>, "maxTokens" | "contextWindow" | "co
   return [model.cost, ...(model.cost?.tiers ?? [])].every((rates) => rates?.output === 0) ? 0 : undefined;
 }
 
+/** The field of a run's first turn request's start mark (REQUEST_STARTED) that holds its floor (FloorMark). */
+export const FLOOR_FIELD = "floor";
+/** What a run's first turn request needed, priced in the run's process by admission's own rule (requestPrice, with no
+ *  previous request: a first request has none, so its input is all fresh under either cap mode): `leastUsd`, its input
+ *  and least output (the figure the cap refuses it below), and `typicalUsd`, its input and WRAP_UP_STEP0_ANSWER_TOKENS of
+ *  output (at most what it asks); `inputTokens`, its input bound, and `inputUsdPerToken`, what one more token of fresh
+ *  input adds to both, so a run with another input is priced from it exactly (the price is linear in fresh input);
+ *  `model`, the id it was priced on; `effort`, the thinking level its process ran at. A create reads the newest one of
+ *  its agent (cap-floor.ts) and refuses a cap under the least. */
+export type FloorMark = { model: string; effort?: string; inputTokens: number; leastUsd: number; typicalUsd: number; inputUsdPerToken: number };
+/** A first request's floor: `input` tokens (its bound), `asked` and `least` output, and `feeUsd`, priced at `price`. */
+export function floorFigures(price: (input: InputParts, output: number) => number, model: string, { input, asked, least, feeUsd = 0 }: { input: number; asked: number; least: number; feeUsd?: number }, effort?: string): FloorMark {
+  const priced = requestPrice(price, input, undefined, 0, "expected", feeUsd);
+  return { model, ...(effort ? { effort } : {}), inputTokens: input, leastUsd: priced.cost(least), typicalUsd: priced.cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked)), inputUsdPerToken: price({ cached: 0, fresh: 1 }, 0) - price({ cached: 0, fresh: 0 }, 0) };
+}
+/** The output a request on another harness asks and needs at least, as admission reads them (capBefore): what it asks,
+ *  at most the model's ceiling `output`, and its least (1,024 tokens, or what its body says it needs), at most that. */
+const cliOutputs = (output: number, { outputTokensAsked, outputTokensLeast }: { outputTokensAsked?: number; outputTokensLeast?: number }) => {
+  const asked = Math.min(outputTokensAsked ?? output, output);
+  return { asked, least: Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked) };
+};
+/** A request on another harness as its floor (FloorMark), priced at `model`'s price as admission prices it; undefined
+ *  for a model the cap cannot price (`listed: false`, no output ceiling) and for an input that was not measured. */
+export type FloorOf = (request: { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number }) => FloorMark | undefined;
+export async function cliFloor(model: Model<Api> | undefined, { listed = true, effort }: { listed?: boolean; effort?: string } = {}): Promise<FloorOf> {
+  const output = model && listed ? outputBound(model) : undefined;
+  if (model === undefined || output === undefined) return () => undefined;
+  const price = priceOf((await import("@earendil-works/pi-ai")).calculateCost, model);
+  return (request) => {
+    if (!(typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax))) return undefined;
+    const { asked, least } = cliOutputs(output, request);
+    return floorFigures(price, model.id, { input: request.inputTokensMax, asked: output === 0 ? 0 : asked, least: output === 0 ? 0 : least }, effort);
+  };
+}
+
 /** A request's input tokens, bounded above: one per UTF-8 byte of what is sent (a byte-level tokenizer never takes
  *  fewer than one byte a token, and an image's base64 is far more bytes than its tokens), plus `overhead`, what the
  *  provider adds server-side that the body does not hold. The same bound on every harness. */
@@ -869,6 +922,43 @@ export function leastOutput(model: Pick<Model<Api>, "api" | "reasoning">, thinki
   return ANSWER_TOKENS_LEAST + (BUDGET_APIS.has(model.api) ? THINKING_BUDGET_LEAST : budgetOf(thinking));
 }
 
+type SimpleOptions = typeof import("@earendil-works/pi-ai/api/simple-options");
+type PiOptions = { maxTokens?: number; reasoning?: string; thinkingBudgets?: Record<string, number> } & Record<PropertyKey, unknown>;
+/** What a pi request would send as it stands, thinking included, at most the model's `ceiling` (outputBound, above 0):
+ *  pi-ai clamps its maxTokens (or the model's) to what its context leaves, and on an API whose thinking takes a budget
+ *  adds the budget to it (`asked`); and the least it may be limited to (`least`, leastOutput), at most that. `simpleCall`:
+ *  through streamSimple or completeSimple, whose thinking pi-ai turns into a budget or an effort. Admission (capModels)
+ *  and a run's floor (piFloor) read it, so the two never differ. */
+export function piOutputs(simple: SimpleOptions, model: Model<Api>, context: Context, options: PiOptions | undefined, simpleCall: boolean, ceiling: number) {
+  const transcript = context as unknown as Parameters<SimpleOptions["clampMaxTokensToContext"]>[1];
+  const thinking = simpleCall && model.reasoning && options?.reasoning ? (options.reasoning as Parameters<SimpleOptions["thinkingBudgetForLevel"]>[0]) : undefined;
+  // Adaptive thinking (pi-ai's current Claude models on Anthropic's API) takes no budget: pi-ai sends the request's
+  // maxTokens as is, and the model thinks within them as it sees fit: at any level, none included, on a model with
+  // mid-conversation effort, else when given a level.
+  const compat = model.api === "anthropic-messages" && model.reasoning ? model.compat as { forceAdaptiveThinking?: boolean; supportsMidConvoEffort?: boolean } | undefined : undefined;
+  const adaptive = compat?.supportsMidConvoEffort === true || (compat?.forceAdaptiveThinking === true && thinking !== undefined);
+  const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api) && !adaptive;
+  const base = simple.clampMaxTokensToContext(model, transcript, options?.maxTokens ?? ceilingTokens(model));
+  const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
+  const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
+  return { thinking, adaptive, budgeted, asked, least };
+}
+/** A pi request as its floor (FloorMark): its input bound and fee (requestParts, `overhead` as admission's), what it asks
+ *  and needs at least (piOutputs), at its model's price. Undefined for a model with no output ceiling whose output is
+ *  priced, and for an input that cannot be measured: admission refuses those under a cap, and they have no floor. */
+export type PiFloorOf = (model: Model<Api>, context: Context, options: PiOptions | undefined) => FloorMark | undefined;
+export async function piFloor(effort?: string, overhead: (model: Model<Api>, context: Context) => number | undefined = piOverhead): Promise<PiFloorOf> {
+  const [{ calculateCost }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
+  const partsOf = requestParts(overhead);
+  return (model, context, options) => {
+    const ceiling = outputBound(model);
+    const parts = ceiling === undefined ? undefined : partsOf(model, context);
+    if (ceiling === undefined || parts === undefined) return undefined;
+    const { asked, least } = ceiling === 0 ? { asked: 0, least: 0 } : piOutputs(simple, model, context, options, true, ceiling);
+    return floorFigures(priceOf(calculateCost, model), model.id, { input: parts.input, asked, least, feeUsd: parts.feeUsd }, effort);
+  };
+}
+
 /** The cap of a run on another harness, before each of its requests: the runner's booking says what the run has spent
  *  (its session, across processes) and which of its requests are still in flight, each with what it was admitted at;
  *  the model proxy says each request's input bound (`inputTokensMax`, inputBound of its body; undefined when the body
@@ -925,8 +1015,8 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
    *  is typically answered in at step 0 (WRAP_UP_STEP0_ANSWER_TOKENS, at most what it asks). */
   const pricedOf = ({ inputTokensMax, outputTokensAsked, outputTokensLeast, previous }: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">) => {
     const priced = requestPrice(price, inputTokensMax!, previous, now(), mode);
-    const asked = Math.min(outputTokensAsked ?? output, output);
-    return { priced, asked, least: Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked), step0: Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked) };
+    const { asked, least } = cliOutputs(output, { outputTokensAsked, outputTokensLeast });
+    return { priced, asked, least, step0: Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked) };
   };
   const measured = (request: { inputTokensMax?: number }) => typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax);
   return {
@@ -991,7 +1081,7 @@ export type WrapUp = { model: string; costs: number[]; sent: boolean; record(dat
  *  before its end counts at most its hold.
  *  `refused` (markRequests') writes the start mark of a refused model request before pi writes its error entry. On
  *  another harness the run has no models of its own: every request goes through its session's proxy (port-models.ts). */
-export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, mode = "expected", now = Date.now, wrapUp }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures) => Promise<void>; mode?: CapMode; now?: () => number; wrapUp?: WrapUp } = {}): Promise<M> {
+export async function capModels<M extends Models>(models: M, cap: number, spent: number | null, { unpriced = new Set<string>(), overhead = piOverhead, refused: markRefused, mode = "expected", now = Date.now, wrapUp, floor: floorOf }: { unpriced?: ReadonlySet<string>; overhead?: (model: Model<Api>, context: Context) => number | undefined; refused?: (figures?: RefusalFigures, floor?: FloorMark) => Promise<void>; mode?: CapMode; now?: () => number; wrapUp?: WrapUp; floor?: PiFloorOf } = {}): Promise<M> {
   const [{ calculateCost, createAssistantMessageEventStream }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   /** When each answer settled here, by its timestamp (an answer keeps it when the run's store gives it back), the newest
@@ -1078,19 +1168,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // A model whose output costs nothing and names no ceiling: nothing to limit, only its input and fee to fit. Its least
     // admission is that figure, its input at its price after the previous request, and no output (the wrap-up's least).
     if (ceiling === 0) return cost(0) <= left + FIT_TOLERANCE ? { hold: cost(0), bound: bound(0), stopped: () => cost(0), least: cost(0) } : refusedAt(holding, 0);
-    // What the request would send as it stands, thinking included: pi-ai clamps its maxTokens (or the model's) to what its
-    // context leaves, and on an API whose thinking takes a budget adds the budget to it.
-    const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
-    const thinking = simpleCall && model.reasoning && options?.reasoning ? (options.reasoning as Parameters<typeof simple.thinkingBudgetForLevel>[0]) : undefined;
-    // Adaptive thinking (pi-ai's current Claude models on Anthropic's API) takes no budget: pi-ai sends the request's
-    // maxTokens as is, and the model thinks within them as it sees fit: at any level, none included, on a model with
-    // mid-conversation effort, else when given a level.
-    const compat = model.api === "anthropic-messages" && model.reasoning ? model.compat as { forceAdaptiveThinking?: boolean; supportsMidConvoEffort?: boolean } | undefined : undefined;
-    const adaptive = compat?.supportsMidConvoEffort === true || (compat?.forceAdaptiveThinking === true && thinking !== undefined);
-    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api) && !adaptive;
-    const base = simple.clampMaxTokensToContext(model, transcript, options?.maxTokens ?? ceilingTokens(model));
-    const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
-    const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
+    const { thinking, adaptive, budgeted, asked, least } = piOutputs(simple, model, context, options, simpleCall, ceiling);
     const most = mostOutput(cost, least, asked, left);
     if (most === undefined) return refusedAt(holding, least);
     // The reasoning a stop leaves unseen: a model's reasoning streams as a summary or not at all (the Responses API; Claude
@@ -1119,7 +1197,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const clamp = { tokens: most, leftUsd: Math.round(left * 1e6) / 1e6, capUsd: cap };
     if (!budgeted) return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, least: leastUsd, options: { ...options, maxTokens: most, [CLAMP]: clamp } };
     const level = simple.clampReasoning(thinking)!;
-    const budget = Math.min(simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets), most - ANSWER_TOKENS_LEAST);
+    // `budgeted` holds only with a thinking level (piOutputs).
+    const budget = Math.min(simple.thinkingBudgetForLevel(thinking!, options?.thinkingBudgets), most - ANSWER_TOKENS_LEAST);
     return { hold: cost(most), bound: bound(most), stopped: stoppedAt(most), typical, least: leastUsd, options: { ...options, maxTokens: most - budget, thinkingBudgets: { ...options?.thinkingBudgets, [level]: budget }, [CLAMP]: clamp } };
   };
   const refusal = (model: Model<Api>, why: string): AssistantMessage => ({
@@ -1169,19 +1248,24 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   useSpend(own);
   /** `options` with what the request is held at, its bound, its figure if it is stopped, and its attempts' record, for
    *  its marks: on an API the cap can watch, a fetch that records each attempt (`attempts`, undefined on one it cannot). */
-  const carrying = <O>(options: O, { hold, bound, stopped }: Judged, attempts: Attempt[] | undefined): O => ({
-    ...options, [HELD_USD]: hold, [BOUND_USD]: bound, [STOPPED_USD]: stopped,
+  const carrying = <O>(options: O, { hold, bound, stopped }: Judged, attempts: Attempt[] | undefined, floor?: FloorMark): O => ({
+    ...options, [HELD_USD]: hold, [BOUND_USD]: bound, [STOPPED_USD]: stopped, ...(floor ? { [FLOOR]: floor } : {}),
     // null on an API the cap cannot watch: its marks read a failure before any event as lost.
     ...(attempts ? { [ATTEMPTS]: attempts, fetch: recordingFetch(attempts, (options as { fetch?: typeof fetch } | undefined)?.fetch, (options as { signal?: AbortSignal } | undefined)?.signal) } : { [ATTEMPTS]: null }),
   }) as O;
   const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (unwatched(model.api) ? undefined : []);
+  // The process's first turn request carries its floor (FloorMark) to its start mark, sent or refused: measured on the
+  // context as the run made it, before any wrap-up note.
+  let floorDue = floorOf !== undefined;
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): AssistantMessageEventStream => {
+      const floor = floorDue ? floorOf?.(model, context, options) : undefined;
+      floorDue = false;
       const judged = judge(model, context, options, simpleCall, true);
       if ("hold" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
-        admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts, floor))).result(), attempts);
         return events!;
       }
       const refused = createAssistantMessageEventStream();
@@ -1189,7 +1273,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       // Its own start mark first, so pi's error entry for it answers that mark, never an earlier request a stop or a crash
       // cut. A mark that cannot be written still ends the request: spentIn leaves refusals out either way.
       void Promise.resolve()
-        .then(() => markRefused?.(judged.figures))
+        .then(() => markRefused?.(judged.figures, floor))
         .catch(() => undefined)
         .then(() => {
           refused.push({ type: "error", reason: "error", error: message });

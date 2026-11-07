@@ -56,6 +56,7 @@ import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
+import { belowLeast, capFloorView, FLOOR_RUNS, type MeasuredRun } from "./cap-floor.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
@@ -1435,11 +1436,32 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? (body.cap_mode as CapMode) : revision.kind === "agentic" ? (revision.body.capMode as CapMode | undefined) : undefined;
     const place = resolvePlace(revision.body.place as Place | undefined, fallbackPlace(revision.kind, revision.kind === "agentic" ? (revision.body.tools ?? []) : []));
     await runnable(revision, place, { capped: cap !== undefined });
+    // A cap under the least its first request needs, by the agent's newest run measured at this effort, is refused here,
+    // with both figures, rather than started to pause at step 0 with nothing done (cap-floor.ts). None measured: started.
+    if (cap !== undefined && revision.kind === "agentic") {
+      const refused = belowLeast(cap, await measuredRuns(entry.agent.id, revision), input, typeof body.effort === "string" ? body.effort : undefined);
+      if (refused) throw refused;
+    }
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, learningSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
     return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+  }
+
+  /** The newest runs (FLOOR_RUNS of them) of the agent's revision `revision` that measured a floor (cap.ts FloorMark),
+   *  newest first, each with its input, the effort it was asked for and when it started. Only that revision's: another
+   *  one's instructions, skills or tools (its MCP servers') make another first request. A workflow has none. */
+  async function measuredRuns(agentId: string, revision: Revision): Promise<MeasuredRun[]> {
+    if (revision.kind !== "agentic") return [];
+    const rows = (await agents.request(() => agents.store.listRuns({ agent: agentId, revision: revision.id }))).filter((row) => row.kind === "agentic").sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, FLOOR_RUNS);
+    const measured: MeasuredRun[] = [];
+    for (const row of rows) {
+      const run = await runs.get(row.id);
+      const mark = run ? runs.floorOf(run) : undefined;
+      if (run && mark) measured.push({ mark, input: run.meta.input, at: row.startedAt, ...(run.meta.effort ? { effort: run.meta.effort } : {}) });
+    }
+    return measured;
   }
 
   /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
@@ -1957,7 +1979,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
-        return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools }, { etag: etagOf(entry) });
+        // The least a cap must be for one request of its current revision, as its newest runs measured it (cap-floor.ts).
+        const floor = entry.revision ? capFloorView(await measuredRuns(entry.agent.id, entry.revision)) : undefined;
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools, ...(floor ? { cap_floor: floor } : {}) }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);

@@ -44,7 +44,7 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
 import type { McpGateway } from "./mcp-gateway.js";
-import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapGuard, capToolSpend, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, paidHolds, takePaidRefusal, typicalCost, useSpend, wrapUpDue, wrapUpWords } from "./cap.js";
+import { BOUND_FIELD, CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, CAP_TOLERANCE, type CapGuard, capToolSpend, FLOOR_FIELD, type FloorMark, type FloorOf, holdsInFlight, type Previous, previousOf, type RefusalFigures, refusalFields, type RunSpend, paidHolds, takePaidRefusal, typicalCost, useSpend, wrapUpDue, wrapUpWords } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -183,6 +183,7 @@ export function adapterRun(
   stopRecord?: StopRecord,
   gate?: RunGate,
   extra: readonly ToolRegistration[] = [],
+  floorOf?: FloorOf,
 ): AdapterRun {
   const plane = planeOf(process.env);
   // The web tools' Parallel key, when one resolves to Parallel, read as the run's app loads, before its process starts
@@ -198,6 +199,10 @@ export function adapterRun(
   let capRefused = false;
   // A refusal for room's figures, for its start mark (cap.ts RefusalFigures).
   let refusedFigures: RefusalFigures | undefined;
+  // The process's first harness request's floor (cap.ts FloorMark), sent or refused, for its start mark (FLOOR_FIELD):
+  // its input as its client sent it, before any note. A side call or a host request is never it.
+  let floorDue = floorOf !== undefined;
+  let refusedFloor: FloorMark | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
@@ -206,7 +211,7 @@ export function adapterRun(
   // The session's previous request on each model, as the cap prices the next one by it (cap.ts Previous): each admitted
   // request's input bound and bound, from the guard (one slot: admissions run one at a time) to its start, by turn, until
   // it answers with its usage. In this process only: a new process prices its first request with nothing cached.
-  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number; side?: true; host?: true } | undefined;
+  let admittedNext: { model: string; inputTokensMax?: number; boundUsd: number; side?: true; host?: true; floor?: FloorMark } | undefined;
   const sentOf = new Map<number, { model: string; inputTokensMax?: number; side?: true; host?: true }>();
   const previous = new Map<string, Previous>();
   // The run's spend as a paid tool's check reads it (useSpend, set at the open): a paid call refused under it pauses the
@@ -267,6 +272,9 @@ export function adapterRun(
     const noted = (request as { noted?: unknown }).noted === true;
     const plainInput = (request as { inputTokensMaxWithoutNote?: unknown }).inputTokensMaxWithoutNote;
     let withoutNote = false;
+    const side = (request as { side?: unknown }).side === true;
+    const floor = floorDue && !byCancel && !side && !host ? floorOf?.({ inputTokensMax: noted && typeof plainInput === "number" ? plainInput : request.inputTokensMax, ...(request.outputTokensAsked === undefined ? {} : { outputTokensAsked: request.outputTokensAsked }), ...(request.outputTokensLeast === undefined ? {} : { outputTokensLeast: request.outputTokensLeast }) }) : undefined;
+    if (!byCancel && !side && !host) floorDue = false;
     let answer: ReturnType<typeof judge> | { refuse: string; spentUsd?: number; needsUsd?: number; leastCapUsd?: number };
     if (byCancel) answer = { refuse: CANCELLED };
     else if (paid) answer = { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd, leastCapUsd: paid.figures.leastCapUsd };
@@ -282,16 +290,16 @@ export function adapterRun(
       // A note this request carried was never sent: the next request that can take it is told, with what is left then.
       // Only this request's: another one refused (a side call) leaves a note taken for a request still to be admitted.
       if (noted) wrap.taken = undefined;
+      refusedFloor = byCancel ? undefined : floor;
       refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" && typeof answer.leastCapUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd, leastCapUsd: answer.leastCapUsd, ...("boundUsd" in answer && typeof answer.boundUsd === "number" && answer.boundUsd > 0 ? { boundUsd: answer.boundUsd } : {}) } : undefined;
       return answer;
     }
     inFlight.admitted(answer?.holdUsd);
-    const side = (request as { side?: unknown }).side === true;
     // The bound its `previous` is read against for the next request on its model: the body as its client sent it, without
     // the note (the note goes after the client's content, in this request alone, so the next request's cached prefix is the
     // client's body). Its hold above is what it sends, the note included. A host request is marked: it is never `previous`.
     const inputTokensMax = noted && typeof plainInput === "number" ? plainInput : request.inputTokensMax;
-    admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}), ...(host ? { host: true as const } : {}) } : undefined;
+    admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}), ...(host ? { host: true as const } : {}), ...(floor ? { floor } : {}) } : undefined;
     if (!answer) return undefined;
     // Admitted carrying the note: it is sent, once per cap, and its row says so. Only the admission of the request that
     // carries it settles the note taken: a side call admitted between its take and that admission (the proxy reads the
@@ -532,7 +540,7 @@ export function adapterRun(
       // ends without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
       // The runner awaits this before the request is sent, and the mark is synced first, so a lost box never loses the
       // mark of a request that went. A mark that fails refuses the request.
-      return later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }) } }))))
+      return later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...bound, ...(event.host === undefined ? {} : { host: event.host }), ...(admitted?.floor ? { [FLOOR_FIELD]: admitted.floor } : {}) } }))))
         .then(() => syncNow(run?.store, BARRIER.sideRequestStarted));
     } else {
       open.delete(event.turn);
@@ -742,7 +750,9 @@ export function adapterRun(
           }
           const unsent = refused !== undefined && capRefused;
           const figures = unsent ? refusedFigures : undefined;
+          const refusedAt = unsent ? refusedFloor : undefined;
           refusedFigures = undefined;
+          refusedFloor = undefined;
           refused = undefined;
           capRefused = false;
           const pending = open.size > 0;
@@ -753,7 +763,7 @@ export function adapterRun(
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
               // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
-              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...refusalFields(figures) } });
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...refusalFields(figures), ...(refusedAt ? { [FLOOR_FIELD]: refusedAt } : {}) } });
               await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
             }
             const data: TurnEndData = {
