@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/app-server.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 004-names
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import type { LineChannel } from './host/process.js';
 
 /**

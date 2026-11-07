@@ -1,34 +1,27 @@
-// The provenance of copied code, checked offline: this tree passes, and each planted break goes red.
+// The provenance of copied code, checked offline: this tree passes, and each planted break goes red. The port froze on
+// 2026-11-07, so what is checked is the record and each copy's header, never a pristine upstream file (none is kept).
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { appendFile, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { PRISTINE_DIR, UPSTREAM_FILE } from './upstream-attribution.mjs';
-import { budgetLines, budgetProblems } from './port-durable-harness.mjs';
-import { changedLines, gitBlob, provenanceProblems } from './vendor-durable-harness.mjs';
+import { provenanceProblems } from './vendor-durable-harness.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const packageDir = join(root, 'packages', 'run-adapters');
 const scratch = await mkdtemp(join(tmpdir(), 'agentrun-provenance-'));
 after(() => rm(scratch, { recursive: true, force: true }));
 
-test('every copied or matched file in this tree matches its recorded upstream blob and carries its header', async (t) => {
-  for (const [name, least] of [['run-adapters', 7], ['run-adapters-codex', 6]]) {
+test('every recorded file in this tree is there and carries its header, and no pristine upstream copy is kept', async () => {
+  for (const name of ['run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex']) {
     const dir = join(root, 'packages', name);
     assert.deepEqual(await provenanceProblems(dir), [], name);
     const upstream = JSON.parse(await readFile(join(dir, UPSTREAM_FILE), 'utf8'));
-    assert.ok(Object.keys(upstream.files).length >= least, name);
-    // A copy's change against upstream stays small enough to review by eye (the largest are inbox.ts, which drops a
-    // function, and the Codex harness.ts, whose imports and messages name AgentRun's host layer): its own patches under
-    // 60 lines, and the fixes it offers upstream under 20 more (port-durable-harness.mjs budgetLines). A matched-interface
-    // file is not a copy, so it has no such count.
-    assert.deepEqual(Object.entries(upstream.files).filter(([, r]) => r.kind === 'interfaces matched').map(([p]) => p).sort(), name === 'run-adapters' ? ['src/kernel/errors.ts', 'src/kernel/types.ts'] : [], name);
-    const budget = await budgetLines(dir);
-    for (const [path, { ours, offer }] of Object.entries(budget)) t.diagnostic(`${name}/${path}: ${ours} lines its own, ${offer} offered upstream`);
-    assert.deepEqual(await budgetProblems(dir), [], `each copy in ${name} changes few lines against upstream: ${JSON.stringify(budget)}`);
+    assert.ok(Object.keys(upstream.files).length > 0, name);
+    assert.equal(await stat(join(dir, PRISTINE_DIR)).then(() => true, () => false), false, `${name} keeps no pristine copies`);
+    assert.equal(await stat(join(dir, 'vendor/durable-harness/port')).then(() => true, () => false), false, `${name} keeps no port patches`);
   }
 });
 
@@ -44,12 +37,6 @@ test('an executable copy keeps its #! line first and its header after it', async
   assert.ok((await provenanceProblems(dir)).some((p) => p.includes('fake-app-server.mjs')));
 });
 
-test('the git blob is git\'s own', async () => {
-  const file = join(scratch, 'blob.txt');
-  await writeFile(file, 'hello\n');
-  assert.equal(gitBlob(Buffer.from('hello\n')), execFileSync('git', ['hash-object', file], { encoding: 'utf8' }).trim());
-});
-
 test('each planted break goes red', async () => {
   let made = 0;
   const copy = async (plant) => {
@@ -59,39 +46,19 @@ test('each planted break goes red', async () => {
     return dir;
   };
   const tail = 'src/process/tail.ts';
-  const pristine = (dir) => join(dir, PRISTINE_DIR, 'packages/harness-process/src/tail.ts');
+  const record = async (dir, change) => {
+    const file = join(dir, UPSTREAM_FILE);
+    const upstream = JSON.parse(await readFile(file, 'utf8'));
+    change(upstream);
+    await writeFile(file, JSON.stringify(upstream));
+  };
   const planted = {
-    'a pristine copy changed by a byte': async (dir) => appendFile(pristine(dir), ' '),
-    'a pristine copy missing': async (dir) => rm(pristine(dir)),
+    'a recorded copy missing': async (dir) => rm(join(dir, tail)),
     'a copy without its header': async (dir) => writeFile(join(dir, tail), (await readFile(join(dir, tail), 'utf8')).split('\n').slice(3).join('\n')),
-    'a header naming another upstream file': async (dir) => writeFile(join(dir, tail), (await readFile(join(dir, tail), 'utf8')).replace('packages/harness-process/src/tail.ts', 'packages/harness-process/src/inbox.ts')),
+    'a header naming another upstream file': async (dir) => writeFile(join(dir, tail), (await readFile(join(dir, tail), 'utf8')).replace('packages/harness-process/src/tail.ts', 'packages/harness-process/src/other.ts')),
     'a copy without its "Changed by Parcha" line': async (dir) => writeFile(join(dir, tail), (await readFile(join(dir, tail), 'utf8')).replace('// Changed by Parcha, ', '// ')),
-    'a recorded sha256 that is not the file\'s': async (dir) => {
-      const file = join(dir, UPSTREAM_FILE);
-      const upstream = JSON.parse(await readFile(file, 'utf8'));
-      upstream.files[tail].sha256 = '0'.repeat(64);
-      await writeFile(file, JSON.stringify(upstream));
-    },
-    'a matched-interface file without its header': async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).split('\n').slice(3).join('\n')),
-    'a matched declaration renamed in our file': async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).replace('export interface EffectRecord ', 'export interface EffectRow ')),
-    'a matched-interface record naming no declarations': async (dir) => {
-      const file = join(dir, UPSTREAM_FILE);
-      const upstream = JSON.parse(await readFile(file, 'utf8'));
-      upstream.files['src/kernel/errors.ts'].declarations = [];
-      await writeFile(file, JSON.stringify(upstream));
-    },
-    // A matched declaration changed in place, its name kept.
-    "a matched interface member's type changed": async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).replace(/(export interface EffectRecord \{[\s\S]*?)attempt: number;/, '$1attempt: string;')),
-    'a member upstream does not have added to a matched interface': async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).replace('export interface EffectRecord {', 'export interface EffectRecord {\n  owner: string;')),
-    "a matched class's body changed": async (dir) => writeFile(join(dir, 'src/kernel/errors.ts'), (await readFile(join(dir, 'src/kernel/errors.ts'), 'utf8')).replace('this.name = "EffectFailure";', 'this.name = "Failure";')),
+    'a record with no sha256': async (dir) => record(dir, (upstream) => void delete upstream.files[tail].sha256),
+    'a record at another commit': async (dir) => record(dir, (upstream) => void (upstream.commit = '0'.repeat(40))),
   };
   for (const [name, plant] of Object.entries(planted)) assert.ok((await provenanceProblems(await copy(plant))).length > 0, `${name} was not caught`);
-});
-
-test('a comparison that cannot run fails closed: a missing or erroring diff is an error, never zero changed lines', async () => {
-  await assert.rejects(changedLines(packageDir, { diff: join(scratch, 'no-such-diff') }), /diff/);
-  // A program that exits with an error (not diff's 1 for "the files differ").
-  await assert.rejects(changedLines(packageDir, { diff: process.execPath }), /diff/);
-  // diff itself still counts: a copy that differs is not an error.
-  assert.ok(Object.values(await changedLines(packageDir)).some((n) => n > 0));
 });

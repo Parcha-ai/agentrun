@@ -329,6 +329,16 @@ export function adapterRun(
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
+  // The session's open while it is under way, and whether the door's close has come: a session that lands after the
+  // close is closed then (closeOnce), never left open by a process that is going.
+  let opening: Promise<AdapterSession> | undefined;
+  let closing = false;
+  const closedSessions = new WeakSet<AdapterSession>();
+  const closeOnce = async (it: AdapterSession | undefined) => {
+    if (!it || closedSessions.has(it)) return;
+    closedSessions.add(it);
+    await it.close();
+  };
   let opened: Promise<void> | undefined;
   let openedDone: () => void = () => {};
   opened = new Promise((resolve) => (openedDone = resolve));
@@ -800,6 +810,17 @@ export function adapterRun(
       await stopping;
       return "aborted";
     },
+    // The process is letting the run go (the door's stop, busy or idle, after its abort): the session closes, which stops
+    // the harness's own processes (its CLI, its app-server), so none outlives this one.
+    async close() {
+      closing = true;
+      if (session) return closeOnce(session);
+      // An open still under way is stopped where the adapter can stop it (its signal), and the session it lands with is
+      // closed here, within the door's bound, or by the open itself once it lands (above).
+      stop.abort();
+      await closeOnce(await opening?.catch(() => undefined));
+    },
+    harness,
     busy: () => turn !== undefined,
   };
 
@@ -915,7 +936,10 @@ export function adapterRun(
         if (call.callId) results.set(call.callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true });
         return result;
       } };
-      session = await adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      opening = adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      session = await opening;
+      // The door closed while it opened (the process is going): this session is closed now, and nothing goes on in it.
+      if (closing) return void (await closeOnce(session).catch(() => undefined));
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of

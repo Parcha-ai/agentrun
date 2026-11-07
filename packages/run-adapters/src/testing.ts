@@ -7,6 +7,9 @@ import { abortedOutcome, SessionHalt } from "./kernel/halt.js";
 import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
 
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
+/** The model proxy's own parts, for tests of a provider policy and of the proxy: the host API (./host) keeps only what a
+ *  harness runs. */
+export { inputTokensMaxOf, matchRoute, parseStrict, reportedCostOf } from "./host/proxy.js";
 
 /** A session store in memory: what one run's store holds, across the processes a test plays. Each `open` of a key
  *  counts one more holder at once, and a writer appends only while its count is the newest. */
@@ -80,12 +83,12 @@ export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. */
   script: (spec: SessionSpec) => FauxAction[];
-  /** Whether the faux harness can fork (default false). */
-  fork?: boolean;
   /** Problems `check` reports for a spec. */
   refuse?: (spec: SessionSpec) => string[];
   /** How long `open` takes, ignoring the session's signal, as a slow harness start does (default 0). */
   openDelayMs?: number;
+  /** Told each session closed, by its key. */
+  onClose?: (key: string) => void;
 }
 
 export interface FauxAdapter extends AgentAdapter {
@@ -103,14 +106,13 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
   const stats = { requests: 0, calls: [] as string[], opened: [] as { key: string; state: SessionState }[], closed: [] as string[] };
   const adapter: FauxAdapter = {
     id: "faux",
-    version: "0.0.0",
     get requests() { return stats.requests; },
     get calls() { return stats.calls; },
     get opened() { return stats.opened; },
     get closed() { return stats.closed; },
-    capabilities: () => ({ fork: options.fork ?? false }),
+    capabilities: () => ({}),
     check: (spec) => [
-      ...(spec.context === "fork" && !options.fork ? ["the faux harness cannot fork a session"] : []),
+      ...(spec.context === "fork" ? ["the faux harness cannot fork a session"] : []),
       ...(options.refuse?.(spec) ?? []),
     ],
     async open(spec, io) {
@@ -261,7 +263,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
-        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); },
+        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); options.onClose?.(spec.key); },
       };
       return session;
     },

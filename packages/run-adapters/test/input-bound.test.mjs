@@ -10,7 +10,7 @@ import { createHarnessRunner, modelPortFor } from '@parcha/agentrun-kernel';
 import * as host from '@parcha/agentrun-kernel/host';
 
 const { ProxyRefusal, startModelProxy } = host;
-import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { fauxAdapter, inputTokensMaxOf, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const KEY = 'session-key-for-tests';
 /** One paid route; `overhead` is what the provider adds for this body, as the policy says. */
@@ -95,9 +95,9 @@ test("a policy whose server-side input cannot be read leaves inputTokensMax unde
     assert.equal(before.length, 1, 'the host is still asked');
     assert.ok('inputTokensMax' in before[0] && before[0].inputTokensMax === undefined, `unmeasured for ${overhead}: ${JSON.stringify(before[0])}`);
   }
-  assert.equal(host.inputTokensMaxOf?.(policyWith(), {}, '{"a":"é"}'), 10, 'inputTokensMaxOf measures UTF-8 bytes');
+  assert.equal(inputTokensMaxOf(policyWith(), {}, '{"a":"é"}'), 10, 'inputTokensMaxOf measures UTF-8 bytes');
   // Only a policy with no hook at all adds nothing; a hook that answers undefined or null has not measured.
-  assert.deepEqual([host.inputTokensMaxOf?.(policyWith(() => undefined), {}, '{}'), host.inputTokensMaxOf?.(policyWith(() => null), {}, '{}'), host.inputTokensMaxOf?.(policyWith(), {}, '{}')], [undefined, undefined, 2]);
+  assert.deepEqual([inputTokensMaxOf(policyWith(() => undefined), {}, '{}'), inputTokensMaxOf(policyWith(() => null), {}, '{}'), inputTokensMaxOf(policyWith(), {}, '{}')], [undefined, undefined, 2]);
 });
 
 test("an undefined overhead is the policy's word that the body has no input bound: the proxy sends it with inputTokensMax undefined, never 0 or the body's bytes, and reports no failure; null or a throw is still reported", async (t) => {
@@ -107,11 +107,11 @@ test("an undefined overhead is the policy's word that the body has no input boun
   assert.ok('inputTokensMax' in before[0] && before[0].inputTokensMax === undefined, JSON.stringify(before[0]));
   const said = [];
   const say = (message) => said.push(message);
-  assert.equal(host.inputTokensMaxOf(policyWith(() => undefined), {}, '{"a":"é"}', say), undefined);
+  assert.equal(inputTokensMaxOf(policyWith(() => undefined), {}, '{"a":"é"}', say), undefined);
   assert.deepEqual(said, [], 'no bound is an answer, not a failure');
-  for (const overhead of [() => null, () => { throw new Error('unreadable'); }]) assert.equal(host.inputTokensMaxOf(policyWith(overhead), {}, '{}', say), undefined);
+  for (const overhead of [() => null, () => { throw new Error('unreadable'); }]) assert.equal(inputTokensMaxOf(policyWith(overhead), {}, '{}', say), undefined);
   assert.equal(said.length, 2, 'a figure that could not be read is reported');
-  assert.equal(host.inputTokensMaxOf(policyWith(() => 0), {}, '{"a":"é"}', say), 10, 'a 0 is a figure: the bytes alone');
+  assert.equal(inputTokensMaxOf(policyWith(() => 0), {}, '{"a":"é"}', say), 10, 'a 0 is a figure: the bytes alone');
 });
 
 test("providerInputOverhead holds each provider's figures in one place: Anthropic's tool-use prompt and per-image maximum, and OpenAI's per-image maximum", () => {
