@@ -73,6 +73,9 @@ export const settleIn = (record: Ledger["record"] | undefined, store: SyncTarget
   holdStore = store;
 };
 
+/** The run's journal a hold is synced in (settleIn), for another barrier before a paid effect: browser-cost.ts'. */
+export const runJournal = (): SyncTarget | undefined => holdStore;
+
 /** A paid call's hold (TOOL_STARTED, at what the cap holds it at), written by `write` (the call's own commit), then the
  *  run journal's barrier (pi-durable-disk barriers.ts, paidToolHold): the hold is on disk before the call is sent, so a
  *  box loss never leaves a sent call the cap does not count. Every paid call writes its hold here: a paid request
