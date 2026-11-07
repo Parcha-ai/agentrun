@@ -267,8 +267,7 @@ the run's files go to. It gives back:
   `mounts` (Docker, as bind mounts); every other provider refuses a spec with any as `unsupported`.
 - `@parcha/pi-transport/sync`: the safe extractor (`extractTar`, `openExtractor`, `removeEntries`) and the sync layer
   (`seedDir`/`pullDir`, `seedAgentHome`/`pullAgentHome`, `HOST_OWNED_HOME`), each answering with a receipt.
-- Not in the seam: `@parcha/pi-transport/home` (its checkpoint vault and store checks included), `./launch` and
-  `./place`. Serve imports none of them; they are deprecated and removed in 0.1.0-beta.31.
+- Not in the seam: `./launch`. Serve does not import it; it is deprecated, to be removed.
 - Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
@@ -289,7 +288,7 @@ the run's files go to. It gives back:
   (`packages/serve/src/coding-tools.ts`) is the boxed coding source: on the runner pi's `read`, `write` and `edit`; in a
   box those and `bash`, each call on pi-transport's `boxEnv` over the run's box. pi's tool table and the other
   harnesses' `hostTools` both take it, and the tool plane's permission gate wraps it. `agentWorkDir(runDir, place)`
-  (`place.ts`) is the run's `work/` as its tools see it: `<runDir>/work` on the runner, `/run/agentrun/run/work` in a
+  (`place.ts`) is the run's `work/` as its tools see it: `<runDir>/work` on the runner, `/workspace` in a
   box. The box's lifecycle and mounts are `packages/serve/src/run-box.ts` (`runBox`, `boxMounts`, `mountSource`,
   `destroyRunBoxes`, `sweepRunBoxes`), labelled `agentrun.run=<id>`; pi-transport's `endLeftCommands` kills what a
   crashed run's process left running.
@@ -355,7 +354,7 @@ or a real `docker` on `PATH` for a server under test.
 7. **Boxed tools**: `boxed-tools.test.mjs` and `run-box.test.mjs` pass. A sandbox run's `bash` `printf hi > out.txt`
    shows in `GET /v2/runs/{id}/files` on pi, claude-agent and codex; the box's environment is `LANG`, `HOME=/tmp` and
    its `PATH`, with no key or token; every `docker run` has `--network none`, `--user` the server's uid:gid, one
-   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; a run request naming `place` is a 422 and
+   `--mount` of `work/` at `/workspace` and only `NAME=value` envs; a run request naming `place` is a 422 and
    makes no run; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
    and nothing is bound; the box is destroyed at completion, cancel and archive, adopted by its label after a crash
    (the left command killed), and swept at start once its run has ended.

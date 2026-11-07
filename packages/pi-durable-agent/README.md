@@ -853,28 +853,19 @@ replaced (`seed.prior`). It acts only while that start is still the run's (its r
 touches only leases exactly as it set them, so an undo retried after the run id was prepared again, or after the run went
 on, changes nothing and returns `{ undone: false }`.
 
-Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
+Binding the seed to pi-durable-disk looks like this (a host's code, not part of this package). A home on a local
+directory needs no `access`: the package reads its own files.
 
 ```js
-import { openDurableRun, readReleased, withClaim } from "@parcha/pi-durable-disk";
-import { carryBack, prepareRun, seedRun } from "@parcha/pi-durable-agent";
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
+import { carryBack, prepareRun, runPaths, seedRun } from "@parcha/pi-durable-agent";
 
-const access = {
-  claim: (fn) => withClaim({ control, disk, region, path: "agent" }, ({ root }) => fn(root)),
-  runStore: async (run) => {
-    const { bytes } = await readReleased({ control, path: run.path }, "store/run.sqlite", { sqlite: true });
-    const file = join(tmp, `${run.runId}.sqlite`);
-    await writeFile(file, bytes);
-    return file;
-  },
-};
-
-const seed = await prepareRun(home, { host: "worker-1", sha, access });
-const run = await openDurableRun({ disk, region, id: seed.runId }, { harness, seed: (dir) => seedRun(dir, seed) });
-// (a run that will never start: await undoPrepare(home, seed, { access }) gives its leases back)
+const seed = await prepareRun(home, { host: "worker-1", sha });
+const run = await openDurableRun({ disk: "local", region: "local", id: seed.runId }, { ...localRun(runPaths(home, seed.runId).dir), harness, seed: (dir) => seedRun(dir, seed) });
+// (a run that will never start: await undoPrepare(home, seed) gives its leases back)
 // ... the run works, then:
 await run.release();
-await carryBack(home, { runId: seed.runId }, { outcome: "completed", access });
+await carryBack(home, { runId: seed.runId }, { outcome: "completed" });
 ```
 
 `seed` runs inside the first claim of a new run, before its Harness opens the store; a throw fails the open with
