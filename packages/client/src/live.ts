@@ -13,6 +13,9 @@ export interface WaitOptions {
 }
 
 export interface FollowOptions {
+  /** How long the stream may stay silent, waiting on the server, before it counts as a dropped connection and is
+   *  reconnected (default 45000: three of its 15 s keepalives missed). */
+  idleMs?: number;
   /** Start after this change number (the timeline's `next_after`). */
   after?: number;
   /** Resume after this event id, as a reconnect does; wins over `after`. */
@@ -148,6 +151,8 @@ export async function* followRun(send: Send, baseUrl: string, runId: string, opt
   const id = segmentOf(runId, "runId", false);
   const { after, signal } = options;
   if (after !== undefined && (!Number.isInteger(after) || after < 0)) throw new AgentRunUsage("after must be a whole number, 0 or more.");
+  const idleMs = wholeMs(options.idleMs ?? IDLE_MS);
+  if (options.idleMs !== undefined && !(Number.isFinite(options.idleMs) && options.idleMs > 0)) throw new AgentRunUsage("idleMs must be a number of milliseconds above 0.");
   if (options.lastEventId !== undefined && !/^\d+$/.test(options.lastEventId)) throw new AgentRunUsage("lastEventId must be an event id the server sent: digits only.");
   const path = `/runs/${id}/timeline${after !== undefined ? `?after=${after}` : ""}`;
   let last = options.lastEventId;
@@ -161,7 +166,7 @@ export async function* followRun(send: Send, baseUrl: string, runId: string, opt
     let timer: ReturnType<typeof setTimeout> | undefined;
     const heard = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => silent.abort(new Error("stream_silent")), IDLE_MS);
+      timer = setTimeout(() => silent.abort(new Error("stream_silent")), idleMs);
     };
     heard();
     try {

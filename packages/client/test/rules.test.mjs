@@ -237,3 +237,78 @@ test("a download comes back byte for byte, as bytes or as the Response", async (
   const response = await client.home.read("a", "all.bin", undefined, { stream: true });
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
 });
+
+test("a body cut after a 2xx is tried again for a GET and a download, and a POST's is unreachable with a code", async (t) => {
+  const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+  const cut = (res, type, whole) => {
+    res.writeHead(200, { "content-type": type, "content-length": String(whole.length) });
+    res.write(whole.subarray(0, Math.floor(whole.length / 2)));
+    setTimeout(() => res.destroy(), 20);
+  };
+  const tries = {};
+  const server = await listener(t, (req, res) => {
+    const n = (tries[req.url] = (tries[req.url] ?? 0) + 1);
+    if (req.url === "/v2/agents") return n === 1 ? void cut(res, "application/json", Buffer.from(JSON.stringify({ agents: [], next_cursor: null }))) : json(200, { agents: [], next_cursor: null });
+    if (req.url === "/v2/runs/r1/files/all.bin") return n === 1 ? void cut(res, "application/octet-stream", bytes) : [200, { "content-type": "application/octet-stream" }, bytes];
+    return void cut(res, "application/json", Buffer.from(JSON.stringify({ run_id: "r1", status: "queued" })));
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  assert.deepEqual(await client.agents.list(), { agents: [], next_cursor: null });
+  assert.equal(tries["/v2/agents"], 2, "the cut list was tried again");
+  assert.deepEqual(Buffer.from(await client.runs.readFile("r1", "all.bin")), bytes);
+  assert.equal(tries["/v2/runs/r1/files/all.bin"], 2, "and the cut download");
+  const started = await thrown(client.runs.start("a", { input: {} }));
+  assert.ok(started instanceof AgentRunUnreachable, String(started));
+  assert.match(started.cause, /^[A-Za-z0-9_]+$/);
+  assert.equal(tries["/v2/agents/a/runs"], 1, "a start with no key is sent once");
+  assert.ok(!printed(started).includes(KEY));
+});
+
+test("oauthStart with scopes gets the sign-in URL byte for byte, and only the client secret is cut", async (t) => {
+  const secret = `cs-${randomBytes(8).toString("hex")}`;
+  const server = await listener(t, (req) => {
+    const body = JSON.parse(req.body.toString("utf8"));
+    const authorization_url = `https://auth.example.com/authorize?client_id=${body.client_id}&scope=${body.scopes.map(encodeURIComponent).join("%20")}&state=xyz`;
+    return json(200, { authorization_url, echo: body.client_secret });
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  const answer = await client.mcpServers.oauthStart("docs", { url: "https://mcp.example.com/mcp", scopes: ["read", "write"], client_id: "abc", client_secret: secret });
+  assert.equal(answer.authorization_url, "https://auth.example.com/authorize?client_id=abc&scope=read%20write&state=xyz");
+  assert.equal(answer.echo, "[hidden]");
+});
+
+test("runs.follow does not restart a healthy stream while its reader is busy with a page", async (t) => {
+  const first = page({ next_after: 1, rows: [{ id: "a" }] });
+  const second = page({ next_after: 2, rows: [{ id: "b" }], status: "completed", final: true });
+  const server = await listener(t, (req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`id: 1\nevent: rows\ndata: ${JSON.stringify(first)}\n\n`);
+    const keepalive = setInterval(() => res.write(": keepalive\n\n"), 100);
+    setTimeout(() => (clearInterval(keepalive), res.end(`id: 2\nevent: rows\ndata: ${JSON.stringify(second)}\n\nevent: end\ndata: {"reason":"terminal"}\n\n`)), 1500);
+    res.on("close", () => clearInterval(keepalive));
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  const pages = [];
+  for await (const p of client.runs.follow("r1", { idleMs: 400 })) {
+    pages.push(p);
+    if (pages.length === 1) await new Promise((resolve) => setTimeout(resolve, 900));
+  }
+  assert.deepEqual(pages, [first, second]);
+  assert.equal(server.requests.length, 1, "one connection: the reader's own pause is no silence of the server's");
+});
+
+test("runs.follow waits out a gateway's Retry-After before it reconnects", async (t) => {
+  const done = page({ status: "completed", final: true });
+  const at = [];
+  const server = await listener(t, (req, res) => {
+    at.push(Date.now());
+    if (at.length === 1) return json(503, { error: { code: "unavailable" } }, { "retry-after": "1" });
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`id: 1\nevent: rows\ndata: ${JSON.stringify(done)}\n\nevent: end\ndata: {"reason":"terminal"}\n\n`);
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  const pages = [];
+  for await (const p of client.runs.follow("r1")) pages.push(p);
+  assert.deepEqual(pages, [done]);
+  assert.ok(at[1] - at[0] >= 1000, `it waited the gateway's second: ${at[1] - at[0]} ms`);
+});
