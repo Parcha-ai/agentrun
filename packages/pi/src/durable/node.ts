@@ -21,6 +21,7 @@ import { deliveredRecord } from "./record-tool.js";
  *  and whether its owner closed it without a record. */
 export const NodeIndex = defineDocFamily<{ conversation: number | null; digest: string | null; startedMs: number | null; closed: boolean }, null>({
   kind: "agentrun.nodes", version: 1, scope: "session", family: true, initial: () => ({ conversation: null, digest: null, startedMs: null, closed: false }),
+  checkpointWhen: () => false,
 });
 
 /** Where a node's conversation lives and who writes there: a workflow task's runtime, a tool call's api, or the

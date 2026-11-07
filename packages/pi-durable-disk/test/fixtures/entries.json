@@ -4,6 +4,7 @@
       "ARCHIL_SCOPED",
       "AppError",
       "ArchilCodingTools",
+      "BARRIER",
       "BOX_MODES",
       "BoxUnavailableError",
       "CLAIM_UNMOUNTED",
@@ -60,6 +61,7 @@
       "requestRun",
       "revoke",
       "serveRun",
+      "syncNow",
       "takeOver",
       "watchParking",
       "withClaim"
@@ -77,6 +79,7 @@
       "ArchilHost",
       "ArchilPlaceOptions",
       "ArchilStore",
+      "BarrierName",
       "BeforeResume",
       "BoxMode",
       "BusyState",
@@ -182,6 +185,8 @@
       "StoreReads",
       "SuperviseErrorCode",
       "SupervisorControl",
+      "SyncTarget",
+      "Synchronous",
       "TokenUser",
       "UnheldHook",
       "UnheldRun",
@@ -192,6 +197,7 @@
   },
   "./lease": {
     "values": [
+      "BARRIER",
       "BOX_MODES",
       "BoxUnavailableError",
       "ClaimError",
@@ -204,6 +210,7 @@
       "FencedDatabase",
       "FencedError",
       "HeldError",
+      "JOURNAL_SYNCHRONOUS",
       "LeaseLapsedError",
       "OWNER_LOCK",
       "PROFILE_PRAGMAS",
@@ -223,12 +230,14 @@
       "openRunLease",
       "ownWriteFenced",
       "storeHead",
+      "syncNow",
       "watchParking"
     ],
     "types": [
       "AcquireOptions",
       "ArchilHost",
       "ArchilStore",
+      "BarrierName",
       "BoxMode",
       "BusyState",
       "Claim",
@@ -260,16 +269,22 @@
       "RunSeedDir",
       "RunStatus",
       "StoreHeadSource",
+      "SyncTarget",
+      "Synchronous",
       "Unmounted"
     ]
   },
   "./internals": {
     "values": [
+      "BARRIERS",
       "Confinement",
       "LABEL_FLEET",
       "LABEL_RUN",
+      "NORMAL_PRECONDITIONS",
       "RUN_JSON",
       "RUN_STATUS_TABLE",
+      "STORES",
+      "SYNCHRONOUS_LEVEL",
       "confineTestHooks",
       "createRunDir",
       "doorProof",
@@ -290,6 +305,8 @@
       "unmountClaim"
     ],
     "types": [
+      "BarrierRow",
+      "BarrierStatus",
       "InputRecord",
       "Pin",
       "PinSpec",
@@ -297,7 +314,9 @@
       "ProcessOrigin",
       "ProcessSnapshot",
       "ProcessTable",
-      "RootName"
+      "RootName",
+      "StoreId",
+      "StoreRow"
     ]
   }
 }

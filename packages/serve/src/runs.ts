@@ -913,6 +913,20 @@ export function statusOf(run: Run): { status: Status; state: State } {
   return { status: "working", state: "idle" };
 }
 
+/** A run's first message's origin as its serve.json keeps it. A run with a trigger (`trigger`, read from the same file)
+ *  always has a trigger's: the kept one when it names that trigger and has the owner its source makes it (true for a
+ *  schedule alone), else that trigger's with owner false, so a forged or lost origin never reads as the person's or the
+ *  owner's. A run with none keeps none. */
+function inputOriginOf(stored: unknown, trigger: RunTrigger | null): MessageOrigin | undefined {
+  if (trigger === null) return undefined;
+  const origin = originOf(stored);
+  if (origin?.kind === "trigger" && origin.trigger_id === trigger.id && origin.owner === (origin.source === "schedule")) return origin;
+  // owner false is the point; the source is a best-effort label: the stored one when it is a known source other than a
+  // schedule's, else "webhook".
+  const source = origin?.kind === "trigger" && origin.source !== "schedule" ? origin.source : "webhook";
+  return { kind: "trigger", trigger_id: trigger.id, source, owner: false };
+}
+
 /** The trigger a serve.json says started its run, as read back: `{id, firing_key}`, or null. */
 function triggerOf(meta: Partial<RunMeta> | null): RunTrigger | null {
   const trigger = meta?.trigger as unknown;
@@ -1209,8 +1223,9 @@ export class Runs {
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
       ...(isObject(stored?.approvals) ? { approvals: stored.approvals as Record<string, ApprovalAnswer> } : {}),
       ...(trigger ? { trigger } : {}),
-      // Its first message's origin, for a relaunch that sends it again: kept only as an origin the Timeline reads.
-      ...(originOf(stored?.input_origin) ? { input_origin: originOf(stored?.input_origin) } : {}),
+      // Its first message's origin, for a relaunch that sends it again: its own trigger's, never the person's or the
+      // owner's unless it holds up (inputOriginOf).
+      ...(inputOriginOf(stored?.input_origin, trigger) ? { input_origin: inputOriginOf(stored?.input_origin, trigger) } : {}),
     };
     // A turn's origin a server before this one set is not known to be the turn running now: it goes.
     await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
