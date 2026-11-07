@@ -328,8 +328,13 @@ export function personHands(options: {
         if (joined === "gone") continue;
         return joined;
       }
-      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now(), until: now() + holdMs, turns: Promise.resolve() };
-      ledger.ready = options.personTime(what, holdMs / 1000, { pauses, tag, from: ledger.since }).then(
+      // The first hold covers holdMs, or less: an ask taken up near its expiry (`reach`, a restarted process's adopt) holds
+      // only what is left of it, and one at or past it holds nothing (its expiry is written as it is taken up).
+      const start = now();
+      const span = reach === undefined ? holdMs : Math.min(holdMs, reach - start);
+      if (span <= 0) return undefined;
+      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: start, until: start + span, turns: Promise.resolve() };
+      ledger.ready = options.personTime(what, span / 1000, { pauses, tag, from: ledger.since }).then(
         (hold) => {
           // Let go meanwhile (close): the hold goes, and nothing is held again.
           if (!("refused" in hold) && (closed || ledgers.get(tag) !== ledger)) {

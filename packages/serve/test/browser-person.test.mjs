@@ -557,3 +557,38 @@ test("an ask record in the old shape (named by the request id alone) is no ask: 
   t.after(() => person.close());
   assert.equal(await person.handoff.outcome(old), "expired");
 });
+
+test("a process that takes up an ask near its expiry holds the person's time only through that expiry: with 2 minutes left it holds 2 minutes, not 15, and a cap with 5 minutes of room takes it", async (t) => {
+  const root = await scratch(t);
+  const before = hands(root);
+  const asked = await before.person.handoff.request(ask(21, "ar-run-21-1"));
+  before.person.close();
+  // The next process, 13 minutes into the ask's 15: a cap with room for 5 minutes of the person's time.
+  const seconds = [];
+  const person = personHands({
+    root, gates: () => ({ give: () => false }), now: () => Date.now() + 13 * 60_000, pollMs: 60_000, note: async () => {},
+    personTime: async (_what, s) => (seconds.push(s), s > 300 ? { refused: "spend_cap_reached: 5 minutes of room" } : { drop() {} }),
+  });
+  t.after(() => person.close());
+  assert.equal(await person.handoff.outcome(asked.interactionId), "pending");
+  await sleep(5);
+  assert.equal(seconds.length, 1, JSON.stringify(seconds));
+  assert.ok(seconds[0] > 110 && seconds[0] <= 120, `held ${seconds[0]} s, the 2 minutes left`);
+  assert.equal(await person.handoff.outcome(asked.interactionId), "pending", "not ended at the cap: what it holds fits the room left");
+});
+
+test("a process that takes up an ask already past its expiry holds none of the person's time", async (t) => {
+  const root = await scratch(t);
+  const before = hands(root);
+  const asked = await before.person.handoff.request(ask(22, "ar-run-22-1"));
+  before.person.close();
+  const seconds = [];
+  const person = personHands({
+    root, gates: () => ({ give: () => false }), now: () => Date.now() + 16 * 60_000, pollMs: 60_000, note: async () => {},
+    personTime: async (_what, s) => (seconds.push(s), { drop() {} }),
+  });
+  t.after(() => person.close());
+  await person.handoff.outcome(asked.interactionId);
+  await sleep(5);
+  assert.deepEqual(seconds, [], "nothing held at or past its expiry");
+});
