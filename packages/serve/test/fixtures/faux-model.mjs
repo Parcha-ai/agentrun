@@ -254,6 +254,10 @@ export default function reply(context, faux) {
   // answered in a run of its own.
   const held = /Hold the answer until (\S+)\./.exec(first)?.[1];
   if (held) return users.length > 1 ? faux.message("Answer 2.") : untilExists(held).then(() => faux.message("Answer 1."));
+  // Holds its answer until the file exists, then answers as the default does, echoing the message: what the message held
+  // reaches the answer too (timeline-trigger-secret.test.mjs).
+  const echoed = /Hold, then echo, until (\S+)\./.exec(first)?.[1];
+  if (echoed) return untilExists(echoed).then(() => faux.message(`On ${last}: done.`));
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   // An answer of nothing: one empty thinking block and one empty text block, a stop with no tool call.
   if (first.includes("Answer with nothing")) return faux.message([faux.thinking(""), faux.text("")]);
