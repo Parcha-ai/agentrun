@@ -187,13 +187,13 @@ describe("the run page's Browser tab", () => {
   });
 
   /** The page, rendered again with `run` changed (it ends) while the reads go on; `reads()` counts them. */
-  async function moving(read: () => Promise<RunBrowser>) {
+  async function moving(read: () => Promise<RunBrowser>, first: Run = working) {
     let reads = 0;
     const counted = async () => { reads += 1; return read(); };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     const show = (run: Run) => act(async () => { root!.render(createElement(RunDetail, { run, agentName: "browsing", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readBrowser: counted, browserEvery: 20, tab: "browser" } as never)); });
-    await show(working);
+    await show(first);
     await settle();
     const section = () => host.querySelector('section[aria-label="Browser"]')?.textContent ?? "";
     return { host, show, section, reads: () => reads, frame: () => host.querySelector("iframe") };
@@ -220,6 +220,31 @@ describe("the run page's Browser tab", () => {
     expect(p.frame()).toBeNull();
     expect(p.section()).toContain("The browser closed when the run ended.");
     expect(p.reads(), "no read after the end").toBe(atEnd);
+  });
+
+  it("a paused workflow is not over: its live browser keeps its iframe and is read on; once the run ends it shows closed and nothing more is read", async () => {
+    const paused = { ...working, kind: "workflow", status: "paused", state: "idle" } as Run;
+    const p = await moving(async () => ({ state: "live", viewer: VIEWER }), paused);
+    const before = p.reads();
+    await settle(150);
+    expect(p.frame(), "a pause blocks new work, and the browser can stay open").not.toBeNull();
+    expect(p.frame()!.getAttribute("src")).toBe(FRAMED(VIEWER));
+    expect(p.section()).not.toContain("The browser closed when the run ended.");
+    expect(p.reads(), "it is read on while paused").toBeGreaterThan(before);
+    await p.show({ ...paused, status: "completed", ended_at: "2026-11-05T09:12:00Z" } as Run);
+    const atEnd = p.reads();
+    await settle(150);
+    expect(p.frame()).toBeNull();
+    expect(p.section()).toContain("The browser closed when the run ended.");
+    expect(p.reads(), "no read after the end").toBe(atEnd);
+  });
+
+  it("a paused workflow with no page open waits for the browser, never says it closed with the run", async () => {
+    const paused = { ...working, kind: "workflow", status: "paused", state: "idle" } as Run;
+    const p = await moving(async () => ({ state: "none" }), paused);
+    await settle(80);
+    expect(p.section()).toContain("Waiting for the browser");
+    expect(p.section()).not.toContain("closed when the run ended");
   });
 
   it("off while the run is going hides the tab, and the next read still comes: the run's process may still open a browser with the key it launched with", async () => {

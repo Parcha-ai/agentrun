@@ -114,10 +114,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
   // The run's browser: a tab of its own while it has one (not `off`), "live" in its name while a page is open.
-  // The run can still open a browser while it is queued or working, or waits on its question with its process held: read
-  // the browser again while it can, and once when it no longer can (the session it held is released at its end).
-  const browserOpens = view.live || (run.status === "input_required" && run.state === "waiting");
-  const browser = useRunBrowser(readBrowser, browserOpens, browserEvery);
+  // The run can still open a browser while it is queued or working, waits on its question with its process held, or is a
+  // paused workflow (a pause blocks new work; its session can stay open). It is read until the run is over (completed,
+  // failed, cancelled): an ended run has nothing to watch.
+  const browserOpens = view.live || (run.status === "input_required" && run.state === "waiting") || run.status === "paused";
+  const browser = useRunBrowser(readBrowser, !view.final, browserEvery);
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 

@@ -4,14 +4,14 @@ import { ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
 import type { RunBrowser } from "@/lib/v2";
 
-/** The run's browser, read from GET /v2/runs/{id}/browser and read again every `every` ms while the run is live. Null
- *  until the first answer, and while it is `off`. `off` is read from the server's keys now, but a running run's process
- *  holds the key it launched with and may still open a browser, so a live run is read on; a caller the route refuses
- *  (401, 403) is read no more. An ended run has nothing to watch: it is not read again, and a browser it showed reads as
- *  closed (none), whatever the last read said. A page opened on an ended run reads once, to know whether it had one. Any
- *  other failed read keeps the last answer, so a page being watched isn't torn down by one bad poll. Nothing about the
- *  answer is logged. */
-export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, live: boolean, every = 3000): RunBrowser | null {
+/** The run's browser, read from GET /v2/runs/{id}/browser and read again every `every` ms while the run is `going`: not
+ *  over (completed, failed, cancelled), so a paused or waiting run is read on too. Null until the first answer, and while
+ *  it is `off`. `off` is read from the server's keys now, but a going run's process holds the key it launched with and may
+ *  still open a browser, so it is read on; a caller the route refuses (401, 403) is read no more. An ended run has
+ *  nothing to watch: it is not read again, and a browser it showed reads as closed (none), whatever the last read said.
+ *  A page opened on an ended run reads once, to know whether it had one. Any other failed read keeps the last answer, so
+ *  a page being watched isn't torn down by one bad poll. Nothing about the answer is logged. */
+export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, going: boolean, every = 3000): RunBrowser | null {
   const [now, setNow] = useState<RunBrowser | null>(null);
   const [gone, setGone] = useState(false);
   // The newest reader, so a page that passes a new function each render doesn't restart the reads.
@@ -22,7 +22,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, liv
   const has = !!read;
   useEffect(() => {
     if (!has || gone) return;
-    if (!live && answered.current) { setNow((prev) => (prev ? { state: "none" } : prev)); return; }
+    if (!going && answered.current) { setNow((prev) => (prev ? { state: "none" } : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const once = async () => {
@@ -32,21 +32,21 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, liv
         answered.current = true;
         if (next.state === "off") {
           setNow(null);
-          if (!live) { setGone(true); return; }
+          if (!going) { setGone(true); return; }
         }
         // An ended run's browser is closed, whatever it last said.
-        else if (!live) setNow({ state: "none" });
+        else if (!going) setNow({ state: "none" });
         // A same answer keeps the same object, so a live viewer's iframe is not touched by a poll.
         else setNow((prev) => (prev && prev.state === next.state && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer)) ? prev : next));
       } catch (e) {
         if (!alive) return;
         if (e instanceof ClientError && [401, 403].includes(e.status)) { setGone(true); setNow(null); return; }
       }
-      if (alive && live) timer = setTimeout(() => void once(), every);
+      if (alive && going) timer = setTimeout(() => void once(), every);
     };
     void once();
     return () => { alive = false; clearTimeout(timer); };
-  }, [has, live, every, gone]);
+  }, [has, going, every, gone]);
   return now;
 }
 
@@ -58,8 +58,8 @@ export function BrowserPanel({ runId, browser, opens, followUp }: {
   /** The run whose browser this is: only a viewer under its own path is framed. */
   runId: string;
   browser: RunBrowser;
-  /** Whether the run can still open a browser: queued, working, or waiting on its question with its process (and any
-   *  session) held. Otherwise `none` is a browser that closed with the run, never one to wait for. */
+  /** Whether the run can still open a browser: queued, working, waiting on its question with its process (and any
+   *  session) held, or a paused workflow. Otherwise `none` is a browser that closed with the run, never one to wait for. */
   opens: boolean;
   /** Whether the ended run takes a follow-up: its turn runs in a new process, whose browser tool opens a new session if
    *  the agent uses it (serve's tools.ts, the live view handed over per session as the process opens one). */
