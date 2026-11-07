@@ -150,3 +150,36 @@ test("the watch of a paused workflow stats its pause each round and reads it onl
   await sleep(1_500);
   assert.deepEqual([count(live, "stat"), count(live, "read")], after, "nothing after the server closed");
 });
+
+test("the watch of a paused workflow adds no abort listener per round: each round's wait takes its own back when its timer fires, so a long pause holds no more listeners than a short one", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "60000" }, KEYS);
+  // Each live abort listener on each signal in this process (the server runs in it), kept by the signal's own add and
+  // remove; one that fires goes with its signal's abort, so only signals not aborted are read.
+  const listening = new Map();
+  const { addEventListener: add, removeEventListener: remove } = EventTarget.prototype;
+  Object.defineProperty(AbortSignal.prototype, "addEventListener", { configurable: true, writable: true, value(type, listener, options) {
+    if (type === "abort" && listener) (listening.get(this) ?? listening.set(this, new Set()).get(this)).add(listener);
+    return add.call(this, type, listener, options);
+  } });
+  Object.defineProperty(AbortSignal.prototype, "removeEventListener", { configurable: true, writable: true, value(type, listener, options) {
+    if (type === "abort") listening.get(this)?.delete(listener);
+    return remove.call(this, type, listener, options);
+  } });
+  t.after(() => {
+    delete AbortSignal.prototype.addEventListener;
+    delete AbortSignal.prototype.removeEventListener;
+  });
+  const counts = () => new Map([...listening].filter(([signal]) => !signal.aborted).map(([signal, set]) => [signal, set.size]));
+  const { api } = await serve(t, { faux: PRICED });
+  assert.equal((await api("POST", "/agents", flowAgent("listened", twoNodes()))).status, 201);
+  const runId = (await api("POST", "/agents/listened/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body.run_id;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.kind, "budget");
+  // Paused, its process held: the watch goes round every half second.
+  await sleep(1_000);
+  const before = counts();
+  await sleep(4_000);
+  const grown = [...counts()].map(([signal, size]) => size - (before.get(signal) ?? 0));
+  assert.ok(Math.max(0, ...grown) <= 1, `about eight rounds add no listeners to any signal: grown by ${JSON.stringify(grown.filter((n) => n > 0))}`);
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+});
