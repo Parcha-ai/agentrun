@@ -64,3 +64,25 @@ test('through the proxy, a turn\'s first request ([user, system]) is admitted at
   assert.equal(request.noted, true, 'admitted as carrying the note');
   assert.ok(request.inputTokensMax - request.inputTokensMaxWithoutNote >= Buffer.byteLength(`<system-reminder>${NOTE}</system-reminder>`, 'utf8'), `its bound counts the note's bytes: ${request.inputTokensMax} vs ${request.inputTokensMaxWithoutNote} without it`);
 });
+
+test('a title or summary call on the session\'s own model (no small model set, so the CLI sends it on the main one) takes no note: only the turn\'s answer request, which offers the session\'s tools, takes it', async (t) => {
+  const { startModelProxy } = await import('@parcha/agentrun-kernel/host');
+  const own = anthropicPolicy({ model: 'claude-main', tools: ['lookup'] });
+  const forwarded = [];
+  const notes = [NOTE];
+  const hooks = { beforeRequest: async () => {}, afterRequest: async () => {}, note: () => notes.shift() };
+  const fetchUp = async (_url, init) => (forwarded.push(JSON.parse(init.body)), new Response('{}', { headers: { 'content-type': 'application/json' } }));
+  const proxy = await startModelProxy({ policy: own, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, log: () => {}, fetch: fetchUp }, 'session-key');
+  t.after(() => proxy.close());
+  const post = async (sent) => {
+    const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(sent) });
+    await res.text();
+    return res.status;
+  };
+  // The CLI's title call: the session's model, a short prompt, no tools.
+  const title = { model: 'claude-main', max_tokens: 512, messages: [{ role: 'user', content: [{ type: 'text', text: 'Write a 5-10 word title for this conversation.' }] }] };
+  const turn = { ...body(), max_tokens: 32_000, tools: [{ name: 'mcp__hands__lookup', description: 'Look up a thing.', input_schema: { type: 'object', properties: {} } }] };
+  assert.deepEqual([await post(title), await post(turn)], [200, 200], 'both forwarded');
+  const carries = (sent) => JSON.stringify(sent.messages.findLast((message) => message.role === 'user').content).includes(NOTE);
+  assert.deepEqual(forwarded.map(carries), [false, true], 'the title call goes as the CLI sent it; the turn\'s request carries the note');
+});
