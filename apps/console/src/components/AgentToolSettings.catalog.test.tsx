@@ -24,12 +24,15 @@ const tool = (name: string, inForce?: "allow" | "ask" | "deny") => ({ name, desc
 const github = (inForce?: "allow" | "ask" | "deny"): McpServer => ({ name: "github", url: "https://mcp.example.test/mcp", auth: { type: "bearer" }, credential: "sealed", tools: [tool("list_issues", inForce), tool("create_issue", inForce)], protocol: "2026-07-28" });
 const definition = (tools: string[], toolSettings?: Record<string, unknown>) => ({ id: "triage", version: 1, name: "Triage", instructions: "Triage.", harness: "pi", skills: [], tools, ...(toolSettings ? { tool_settings: toolSettings } : {}) });
 // The agent as GET /agents/{id} reads it: its saved tools, each with the permission in force.
-const read = (tools: string[], toolSettings?: Record<string, unknown>): Agent => ({
+// An MCP tool's entry is as serve's agentTools gives it: `inForce` with the agent's own layer, its default the server's.
+const read = (tools: string[], toolSettings?: Record<string, unknown>, mcp: { inForce: "allow" | "ask" | "deny"; server: "allow" | "ask" | "deny" } = { inForce: "ask", server: "ask" }): Agent => ({
   agent_id: "triage", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: definition(tools, toolSettings),
-  tools: tools.filter((t) => GATES.some((g) => g.name === t)).map((name) => ({ name, permission: "allow", permission_from: "default", default_permission: "allow", permissions: ALL })),
+  tools: tools.map((name) => (GATES.some((g) => g.name === name)
+    ? { name, permission: "allow", permission_from: "default", default_permission: "allow", permissions: ALL }
+    : { name, permission: mcp.inForce, permission_from: "agent", default_permission: mcp.server, permissions: ALL })),
 } as Agent);
 
-async function open(server: McpServer, toolSettings?: Record<string, unknown>) {
+async function open(server: McpServer, toolSettings?: Record<string, unknown>, saved: { tools: string[]; mcp: { inForce: "allow" | "ask" | "deny"; server: "allow" | "ask" | "deny" } } = { tools: ["read", "web_fetch"], mcp: { inForce: "ask", server: "ask" } }) {
   const puts: { definition: { tools: string[]; tool_settings?: Record<string, unknown> } }[] = [];
   const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
   const fetch = (async (url: string, init?: RequestInit) => {
@@ -39,8 +42,8 @@ async function open(server: McpServer, toolSettings?: Record<string, unknown>) {
       puts.push(body);
       return json(200, { ...read(body.definition.tools, body.definition.tool_settings), revision: "r2", revisions: 2 }, { etag: '"r2"' });
     }
-    if (path === "/v2/agents/triage") return json(200, read(["read", "web_fetch"], toolSettings), { etag: '"r1"' });
-    if (path.startsWith("/v2/agents/triage/revisions")) return json(200, { revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-07T10:00:00Z", kind: "agentic", definition: definition(["read", "web_fetch"], toolSettings) }], next_cursor: null });
+    if (path === "/v2/agents/triage") return json(200, read(saved.tools, toolSettings, saved.mcp), { etag: '"r1"' });
+    if (path.startsWith("/v2/agents/triage/revisions")) return json(200, { revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-07T10:00:00Z", kind: "agentic", definition: definition(saved.tools, toolSettings) }], next_cursor: null });
     if (path === "/v2/settings/mcp-servers") return json(200, { servers: [server] });
     return json(404, { error: { code: "not_found", message: path, retryable: false } });
   }) as typeof globalThis.fetch;
@@ -99,6 +102,14 @@ describe("the Tools step, an MCP tool ticked and not saved yet", () => {
     await page.choose("mcp:github/list_issues", "allow");
     await page.save();
     expect(page.puts.at(-1)?.definition.tool_settings).toEqual({ "mcp:github/*": { permission: "deny" }, "mcp:github/list_issues": { permission: "allow" } });
+  });
+
+  it("a saved MCP tool's row falls back to the agent's own setting for its MCP server too, and the agent's own key for the tool wins over it", async () => {
+    // Saved: the agent denies every github tool and allows list_issues alone; the server's own default for it is ask.
+    const page = await open(github("ask"), { "mcp:github/*": { permission: "deny" }, "mcp:github/list_issues": { permission: "allow" } }, { tools: ["read", "web_fetch", "mcp:github/list_issues", "mcp:github/create_issue"], mcp: { inForce: "deny", server: "ask" } });
+    expect(page.shown("mcp:github/list_issues")?.value).toBe("allow");
+    expect(page.row("mcp:github/list_issues")!.textContent).toContain("default: deny");
+    expect(page.shown("mcp:github/create_issue")).toEqual({ value: "deny", label: "deny (default)" });
   });
 
   it("a server whose read gives no permission (an older one): the row waits for the save, as before", async () => {
