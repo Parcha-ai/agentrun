@@ -9,7 +9,7 @@
 //
 // The agent asks: pi-browser holds the session for a person and calls `request`, which holds the person's time the same
 // way (refused, the tool's result says why), writes the ask's pending record in the run's directory, outside work/
-// (BROWSER_ASK_DIR/<id>.json, 0600 in 0700: the session's tag, the instruction, the done-when condition, when it was asked
+// (BROWSER_ASK_DIR/<id>.json, its id a digest of the session's tag and the model's request id, 0600 in 0700: the session's tag, the instruction, the done-when condition, when it was asked
 // and when it expires; never the live view's link or token), and commits a waiting row ("Waiting for you: <instruction>").
 // The server reads the record: the run is input_required/waiting with `pending.kind` browser, and run.needs_input fires.
 // The owner answers POST /v2/runs/{id}/browser/hand-back, which writes `<id>.answer.json` once (the first answer wins);
@@ -42,14 +42,18 @@ export type PendingAsk = { id: string; tag: string; instruction: string; complet
 /** `reason`: why, for the agent, when the run's cap ended the ask (kept with the answer, so a restart still tells it). */
 type Answer = { outcome: AskOutcome; at: string; reason?: string };
 
-const ID = /^[A-Za-z0-9_-]{22}$/;
+/** An ask's id: 32 characters (askIdOf). A record named otherwise (an earlier build's 22, named by the request id alone,
+ *  shared across sessions) is no ask: never read, shown, answered or taken up. */
+const ID = /^[A-Za-z0-9_-]{32}$/;
 const TAG = /^[A-Za-z0-9._:-]{1,200}$/;
 const OUTCOMES: readonly string[] = ["done", "cancelled", "expired"];
 /** What the person sees of an instruction or a condition, at most. */
 const MAX_TEXT = 2000;
 
-/** The ask's id: pi-browser's request id is the model's, so the file is named by a digest of it, never by it. */
-export const askIdOf = (requestId: string): string => createHash("sha256").update(requestId).digest("base64url").slice(0, 22);
+/** The ask's id: pi-browser's request id is the model's, so the file is named by a digest of it, never by it; and of the
+ *  session's tag with it, since two conversations of one run (each its own session) may pick the same request id, and
+ *  each ask is its session's own: its instruction, its answer, its take-over. */
+export const askIdOf = (sessionTag: string, requestId: string): string => createHash("sha256").update(`${sessionTag}\n${requestId}`).digest("base64url").slice(0, 32);
 
 /** Whether `at` is this user's alone, and not a link: a directory (0700) or a file (0600). */
 const ownAlone = (at: Stats, dir: boolean): boolean => (dir ? at.isDirectory() : at.isFile()) && !at.isSymbolicLink() && (at.mode & 0o077) === 0 && (!process.getuid || at.uid === process.getuid());
@@ -128,7 +132,7 @@ function asksIn(runDir: string): Array<{ ask: PendingAsk; answer?: Answer }> {
   if (!dir) return [];
   const found: Array<{ ask: PendingAsk; answer?: Answer }> = [];
   for (const name of readdirSync(dir)) {
-    const id = /^([A-Za-z0-9_-]{22})\.json$/.exec(name)?.[1];
+    const id = /^([A-Za-z0-9_-]{32})\.json$/.exec(name)?.[1];
     const ask = id ? pendingOf(readOwn(dir, name), id) : undefined;
     if (!ask) continue;
     const answer = answerOf(readOwn(dir, `${ask.id}.answer.json`));
@@ -494,11 +498,12 @@ export function personHands(options: {
         },
       };
     },
-    /** pi-browser's HandoffPort. Idempotent by request id: a rerun finds its ask's record. The live view's link it is handed
-     *  is never kept. */
+    /** pi-browser's HandoffPort. Idempotent by session and request id: a rerun on the same session finds its ask's record;
+     *  another session's ask with the same request id is its own. The live view's link it is handed is never kept. */
     handoff: {
       async request(ask: { requestId: string; sessionTag: string; instruction: string; completionCondition: string }): Promise<{ interactionId: string } | { refused: string }> {
-        const id = askIdOf(ask.requestId);
+        if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
+        const id = askIdOf(ask.sessionTag, ask.requestId);
         if (settled.has(id) || open.has(id)) return { interactionId: id };
         const dir = askDir(options.root, true);
         if (!dir) return { refused: "the run's directory for a hand-over is not this server's alone" };
@@ -508,7 +513,6 @@ export function personHands(options: {
           await reshow(id);
           return { interactionId: id };
         }
-        if (!TAG.test(ask.sessionTag)) return { refused: "the session's tag is not one this server takes" };
         // A take-over of the same session holds the person's time already: the ask shares it.
         const user = `ask:${id}`;
         const refused = await acquire(ask.sessionTag, user, "handing the browser to you", true, now() + holdMs);
@@ -532,7 +536,10 @@ export function personHands(options: {
         return { interactionId: id };
       },
       async outcome(interactionId: string): Promise<"pending" | AskOutcome | { outcome: AskOutcome; reason: string }> {
-        const answered = (ID.test(interactionId) && settle(interactionId)) || "pending";
+        // An id of no shape this build makes (an earlier build's, named by the request id alone) names no ask here: gone, so
+        // the agent's wait ends (it may ask again), never polled forever or matched to another session's record.
+        if (!ID.test(interactionId)) return "expired";
+        const answered = settle(interactionId) || "pending";
         // Ended at the cap: the agent is told so, in the cap's words.
         const words = capped.get(interactionId);
         return answered === "expired" && words !== undefined ? { outcome: answered, reason: words } : answered;

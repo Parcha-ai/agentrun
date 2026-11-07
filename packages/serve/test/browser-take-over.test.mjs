@@ -33,7 +33,8 @@ const filesUnder = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e
   const path = join(dir, entry.name);
   return entry.isDirectory() ? filesUnder(path) : entry.isFile() ? [[path, readFileSync(path)]] : [];
 });
-const askIdOf = (requestId) => createHash("sha256").update(requestId).digest("base64url").slice(0, 22);
+/** An ask's id, as browser-person.ts makes it: a digest of its session's tag and the model's request id. */
+const askIdOf = (sessionTag, requestId) => createHash("sha256").update(`${sessionTag}\n${requestId}`).digest("base64url").slice(0, 32);
 
 /** A signed-in owner's server with the fake browser, and a run of `faux` started (with `cap`, if any) and come to
  *  input_required with its session open and its viewer handed over. `env`: more of the run's environment. */
@@ -202,10 +203,15 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   assert.deepEqual(needs?.data.pending, { kind: "browser" }, "run.needs_input says the run waits on the browser");
 
   // The record is the run's directory's alone (0600 in 0700, outside work/): its bytes are in no other file, and nothing the
-  // API serves names its id. (pi-browser's own store keeps the id, a digest of the model's request id, to resume its wait.)
-  const id = askIdOf(ASK.request_id);
-  const recordFile = join(runFolder(w.server.data, w.runId), "browser-ask", `${id}.json`);
+  // API serves names its id. (pi-browser's own store keeps the id, a digest of the session's tag and the model's request
+  // id, to resume its wait.)
+  const askFolder = join(runFolder(w.server.data, w.runId), "browser-ask");
+  const named = readdirSync(askFolder).filter((name) => /^[A-Za-z0-9_-]{32}\.json$/.test(name));
+  assert.equal(named.length, 1, JSON.stringify(readdirSync(askFolder)));
+  const recordFile = join(askFolder, named[0]);
   const record = readFileSync(recordFile, "utf8").trim();
+  const id = askIdOf(JSON.parse(record).tag, ASK.request_id);
+  assert.equal(named[0], `${id}.json`, "named by its session and request id");
   assert.deepEqual([statSync(recordFile).mode & 0o777, statSync(join(recordFile, "..")).mode & 0o777], [0o600, 0o700]);
   assert.deepEqual(Object.keys(JSON.parse(record)).sort(), ["asked_at", "completion_condition", "expires_at", "id", "instruction", "tag"], "no live view link, no token");
   assert.deepEqual(filesUnder(w.server.data).filter(([, bytes]) => bytes.includes(record)).map(([path]) => path), [recordFile]);

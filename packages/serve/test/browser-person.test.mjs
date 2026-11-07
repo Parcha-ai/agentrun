@@ -520,3 +520,40 @@ test("an ask's words are redacted before they are cut to their bound: a held val
   const record = readFileSync(join(root, "browser-ask", `${asked.interactionId}.json`), "utf8");
   for (let k = 4; k <= value.length; k += 1) assert.ok(!record.includes(value.slice(0, k)), `no prefix of the held value (${k} chars) in the record`);
 });
+
+test("two conversations that ask with the same request id, each on its own session, are two asks: each shows its own instruction, gets its own answer, and ends its own take-over", async (t) => {
+  const root = await scratch(t);
+  const ended = [];
+  const { person } = hands(root, { gates: (tag) => ({ give: (why) => { ended.push([tag, why]); return true; } }) });
+  t.after(() => person.close());
+  const same = "00000000-0000-4000-8000-000000000009";
+  const first = await person.handoff.request({ requestId: same, sessionTag: "ar-run-9-1", instruction: "Sign in on the first", completionCondition: "the first is signed in" });
+  await sleep(5);
+  const second = await person.handoff.request({ requestId: same, sessionTag: "ar-run-9-2", instruction: "Sign in on the second", completionCondition: "the second is signed in" });
+  assert.notEqual(second.interactionId, first.interactionId, "two asks, not one shared");
+  assert.equal(openAsk(root)?.instruction, "Sign in on the second", "the second shows its own instruction");
+  assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "cancelled", first: true });
+  assert.equal(await person.handoff.outcome(second.interactionId), "cancelled");
+  assert.equal(await person.handoff.outcome(first.interactionId), "pending", "the first still waits for its own answer");
+  assert.deepEqual(ended, [["ar-run-9-2", "answered"]], "only the second's session's take-over ended");
+  assert.equal(openAsk(root)?.instruction, "Sign in on the first");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await person.handoff.outcome(first.interactionId), "done");
+  assert.deepEqual(ended, [["ar-run-9-2", "answered"], ["ar-run-9-1", "answered"]]);
+});
+
+test("an ask record in the old shape (named by the request id alone) is no ask: it is never shown, answered, or matched to a session", async (t) => {
+  const root = await scratch(t);
+  const { mkdirSync } = await import("node:fs");
+  const { createHash } = await import("node:crypto");
+  mkdirSync(join(root, "browser-ask"), { mode: 0o700 });
+  const old = createHash("sha256").update("00000000-0000-4000-8000-000000000008").digest("base64url").slice(0, 22);
+  writeFileSync(join(root, "browser-ask", `${old}.json`), `${JSON.stringify({ id: old, tag: "ar-run-8-1", instruction: "Old", completion_condition: "old", asked_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() })}\n`, { mode: 0o600 });
+  assert.equal(openAsk(root), undefined);
+  assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-8-1" }], "waiting"), undefined);
+  assert.equal(answerAsk(root, "done"), undefined, "nothing to answer");
+  // A process that resumes a wait on that old id hears it is gone, never waits on it forever.
+  const { person } = hands(root);
+  t.after(() => person.close());
+  assert.equal(await person.handoff.outcome(old), "expired");
+});
