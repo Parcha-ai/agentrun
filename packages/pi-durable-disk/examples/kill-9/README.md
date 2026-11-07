@@ -73,7 +73,7 @@ The file tools refuse a path that resolves outside `work/` (`..`, an absolute pa
 
 ## What it does not show
 
-A run on a local directory has no fence: the directory is the claim, and only this machine's owner lock keeps a second
+A run on a local directory has no fence: the directory is the claim, and only the store's own lock keeps a second
 process off it. It guards one machine, and survives the process dying, not the machine; a run that survives a host being
 lost lives on a disk, as [01-durable-chat](../01-durable-chat/) does. The model is scripted, so it never chooses to run the
 command again by itself; what the example shows is that the *harness* does not, whatever the model asks next. A real

@@ -32,11 +32,14 @@ export interface CliIo {
 	dockerTimeoutMs?: number;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider docker|<module.js> [--image <image>] [--only <group|case>,...] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider docker|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
   --provider  docker, or a module that exports createProvider() (and, for the drift case, createDriftedProvider())
   --image     the image every computer starts from (default debian:bookworm-slim)
-  --only      run only these groups (health, exec, files, process, provider, drift) or case ids; a run that leaves
-              Core cases out is partial: no Core verdict, and exit 3 when every case that ran passed
+  --only      run only these groups (health, exec, files, process, provider, drift, screen, input, touch, apps,
+              lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
+              every case that ran passed
+  --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
+              desktop, the fixture APK for an Android phone
   --json      print the report as JSON
 exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
@@ -47,6 +50,7 @@ interface Args {
 	provider: string;
 	image: string;
 	only?: string[];
+	fixture?: string;
 	json: boolean;
 	help: boolean;
 }
@@ -63,6 +67,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		if (flag === "--provider") args.provider = value();
 		else if (flag === "--image") args.image = value();
 		else if (flag === "--only") args.only = value().split(",").map((part) => part.trim()).filter(Boolean);
+		else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--json") args.json = true;
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
@@ -75,7 +80,14 @@ function parse(argv: string[], cases: Case[]): Args {
 			throw new Usage(`--only: ${name} is neither a group (${groups.join(", ")}) nor a case id`);
 		}
 	}
-	return { provider: args.provider, image: args.image ?? "debian:bookworm-slim", ...(args.only ? { only: args.only } : {}), json: args.json, help: false };
+	return {
+		provider: args.provider,
+		image: args.image ?? "debian:bookworm-slim",
+		...(args.only ? { only: args.only } : {}),
+		...(args.fixture ? { fixture: args.fixture } : {}),
+		json: args.json,
+		help: false,
+	};
 }
 
 /** The provider a module makes, and its drifted twin when it offers one. */
@@ -134,6 +146,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			image: args.image,
 			cases,
 			...(args.only ? { only: args.only } : {}),
+			...(args.fixture ? { fixture: resolve(io.cwd ?? process.env.INIT_CWD ?? process.cwd(), args.fixture) } : {}),
 			...(signal ? { signal } : {}),
 			...(target.drifted ? { drifted: target.drifted } : {}),
 			...(onResult ? { onResult } : {}),

@@ -7,12 +7,12 @@ const NOW = new Date("2026-11-06T12:00:00.000Z");
 const at = (ms) => new Date(NOW.getTime() + ms);
 
 /** A provider that lists `computers` ({name, deadline}) and records every list and release. */
-function fakeProvider(computers, { lifetime = "janitor", failRelease = [], listed } = {}) {
+function fakeProvider(computers, { lifetime = "janitor", failRelease = [], listed, maxLifetimeMs = 30 * 86_400_000 } = {}) {
 	const calls = [];
 	const provider = {
 		id: "fake",
 		version: "0",
-		capabilities: () => ({ lifetime, network: ["none"], isolation: "container", os: "linux", daemon: ["exec"] }),
+		capabilities: () => ({ kind: "linux", lifetime, network: ["none"], isolation: "container", os: "linux", daemon: "pid1", groups: ["exec"], maxLifetimeMs }),
 		async list(labels, context) {
 			calls.push(["list", labels, context?.signal instanceof AbortSignal]);
 			if (listed) return listed;
@@ -146,4 +146,24 @@ test("sweep() refuses a now that is not a time, with no call", async () => {
 		assert.equal(swept.error.code, "invalid");
 	}
 	assert.deepEqual(calls, []);
+});
+
+test("sweep() counts a deadline more than maxLifetimeMs past now as unreadable, and deletes it; a minute of skew is kept", async () => {
+	const hour = 3_600_000;
+	const { provider } = fakeProvider(
+		[
+			{ name: "at-cap", deadline: at(hour) },
+			{ name: "skewed", deadline: at(hour + 59_000) },
+			{ name: "past-cap", deadline: at(hour + 61_000) },
+			{ name: "far", deadline: at(365 * 86_400_000) },
+		],
+		{ maxLifetimeMs: hour },
+	);
+	const swept = await sweep(provider, { now: NOW });
+	assert.deepEqual(swept, { ok: true, value: { deleted: ["past-cap", "far"], kept: 2 } });
+});
+
+test("sweep() of a provider that declares no maxLifetimeMs keeps a far deadline: no over-cap line it cannot read", async () => {
+	const { provider } = fakeProvider([{ name: "far", deadline: at(365 * 86_400_000) }], { maxLifetimeMs: null });
+	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: [], kept: 1 } });
 });

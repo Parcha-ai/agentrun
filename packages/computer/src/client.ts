@@ -2,6 +2,7 @@
 import type { Readable, Writable } from "node:stream";
 import {
 	CANCEL_METHOD,
+	type ComputerClient,
 	type DaemonErrorKind,
 	type DaemonMethod,
 	type DaemonMethods,
@@ -49,7 +50,7 @@ function fromReply(error: ReplyError): ComputerError {
  * $/cancelRequest and returns `aborted` at once; the daemon still ends what the call started. When the stream ends,
  * every pending and later call fails with `gone`. A line that is not a reply to a pending call is dropped.
  */
-export class DaemonClient {
+export class DaemonClient implements ComputerClient {
 	readonly #writable: Writable;
 	readonly #readable: Readable;
 	readonly #pending = new Map<number, (result: Result<unknown>) => void>();

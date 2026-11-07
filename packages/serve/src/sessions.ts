@@ -1,8 +1,8 @@
 // A run's harness sessions (the run adapters' SessionStore) kept in the run's own durable store, so a run on any harness
 // resumes from what its process left there. Each session key is a conversation of the run's Harness, named by a
 // `session.key` entry on the root conversation; each record is an entry of it, appended through the Harness's commit.
-// Two fences hold a session to one writer: across processes the run's lease (a process whose lease lapsed has its
-// commit refused, FencedError), and within one the newest `open` of a key, checked inside the commit that appends.
+// Two fences hold a session to one writer: across processes the run's claim (a fenced process has its commit refused,
+// FencedError), and within one the newest `open` of a key, checked inside the commit that appends.
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type Cursor, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-kernel";
@@ -49,12 +49,12 @@ export function durableSessions(harness: Harness, context: Context, store?: Sync
     return out;
   };
 
-  /** One commit, refused as SessionFenced when the run's lease is gone. */
+  /** One commit, refused as SessionFenced once the run is fenced. */
   const commit = async <T>(key: string, change: (tx: Tx) => Promise<T>): Promise<T> => {
     try {
       return await harness.commit(change, context);
     } catch (error) {
-      // The lease's refusal can come as the cause of the Harness's own error.
+      // The fence's refusal can come as the cause of the Harness's own error.
       for (let at: unknown = error; at; at = (at as { cause?: unknown }).cause) if (at instanceof FencedError || at instanceof SessionFenced) throw new SessionFenced(key);
       throw error;
     }

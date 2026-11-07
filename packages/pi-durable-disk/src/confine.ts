@@ -1,5 +1,5 @@
 // Containment of the in-process file operations. pi's read, write and edit run in the loop's process with host
-// fs calls and no containment, so an agent can name `../store/run.sqlite`, `../run.json` or `../owner.lock` and corrupt
+// fs calls and no containment, so an agent can name `../store/run.sqlite` or `../commands` and corrupt
 // its own durable store or claim; a sandbox that confines commands (an app's own) does not cover them. Every path an operation names is
 // resolved to the file the kernel would reach (symlinks followed, a missing tail kept) and refused unless it lies in the
 // workspace, or, for reads, in a read-only root.

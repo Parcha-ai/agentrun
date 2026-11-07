@@ -22,9 +22,18 @@
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type Conversation, type Session, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { SessionCharge } from "@parcha/pi-browser";
+import type { BeforeCreate } from "@parcha/pi-browser/durable";
 import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { BARRIER, syncNow } from "@parcha/pi-durable-disk";
 import { addSpend, keepHold, paidCall, runCap, SPEND_CAP_REACHED } from "./cap.js";
+import { runJournal } from "./paid-calls.js";
 import { forModel } from "./result.js";
+
+/** The run journal's record of a browser session about to be created at its provider: its tag (pi-browser's, which a
+ *  reconcile finds the vendor's session by), its conversation and the hold its call keeps for it (`held_usd`, null with
+ *  no cap). Written with pi-browser's own `creating` record and synced (barriers.ts browserSessionOpen) before the vendor
+ *  is asked, so a box loss never leaves a session billed that no record in the store names. */
+export const BROWSER_SESSION_OPEN = "agentrun.browser_session_open";
 
 /** List prices by pi-browser provider name (`provider.name`): Browserbase's (pi-browser's LIST_PRICES), $0.12 an hour with
  *  a one-minute minimum; Kernel's headless browser, about $0.06 an hour billed by the second; a local Chrome (`cdp`), free. */
@@ -227,6 +236,16 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     } as ToolRegistration;
   }
 
+  /** pi-browser's `beforeCreate`: the session's open recorded in the run's journal (BROWSER_SESSION_OPEN) beside its
+   *  `creating` record, and the journal synced (barriers.ts browserSessionOpen) before the vendor's session is created.
+   *  A sync that fails throws, and pi-browser creates nothing. */
+  const opening: BeforeCreate = async (open) => {
+    const hold = [...calls.values()].find((c) => c.cid === open.conversationId)?.hold;
+    const data = { tag: open.tag, conversation: open.conversationId, provider, held_usd: hold ? hold.usd : null };
+    await open.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_SESSION_OPEN, data })));
+    await syncNow(runJournal(), BARRIER.browserSessionOpen);
+  };
+
   /** The cap's refusal as the call's error, and the conversation's session let go, so it runs no longer. */
   async function refuse(why: string, api: ToolExecutionApi, context: Context) {
     await release({ id: api.conversationId, commit: api.commit.bind(api) } as never, context).catch(() => undefined);
@@ -276,5 +295,5 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     carried.set(tag, [...(carried.get(tag) ?? []), { hold: keepHold(microUsd(usdOf((to - from) / 1000))), from, to }]);
   }
 
-  return { onCharge, watch, reopened, capped, personTime, carry, stretch };
+  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch };
 }

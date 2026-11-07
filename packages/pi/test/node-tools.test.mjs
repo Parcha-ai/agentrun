@@ -18,7 +18,7 @@ test('an agent node in a run is offered exactly the tools it names, Stagehand-sh
 
   // What the root had for a node to inherit: its rules, the learning section, and every tool of its extensions.
   assert.ok(root.json.includes(ROOT_RULES) && root.json.includes(LEARNED));
-  assert.deepEqual(root.tools.map((tool) => tool.name), ['learn', 'snapshot', 'run', 'screenshot', 'browser_read', 'fetch_page', 'answer', 'agentrun']);
+  assert.deepEqual(root.tools.map((tool) => tool.name), ['learn', 'snapshot', 'run', 'screenshot', 'browser_read', 'read_page', 'answer', 'agentrun']);
 
   // The node: the tools it names, in its order, then submit; each Stagehand-shaped one with the parameters the host defined.
   assert.deepEqual(node.tools.map((tool) => tool.name), [...NODE_TOOLS, 'submit']);

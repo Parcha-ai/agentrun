@@ -126,7 +126,7 @@ export const juryWorkflow = {
   root: {
     node: "chain",
     steps: [
-      { node: "call", label: "fetch-storefront", via: "tool", tool: "fetch_page", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+      { node: "call", label: "fetch-storefront", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
       {
         node: "parallel", label: "jury",
         branches: [
@@ -199,7 +199,7 @@ export const merchantWorkflow = {
   root: {
     node: "chain",
     steps: [
-      { node: "call", label: "fetch-storefront", via: "tool", tool: "fetch_page", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+      { node: "call", label: "fetch-storefront", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
       { node: "code", label: "candidate-codes", code: "(s) => ({ codes: [{ mcc: '5993', name: 'Cigar stores and stands' }, { mcc: '5999', name: 'Miscellaneous retail' }, { mcc: '5912', name: 'Drug stores and pharmacies' }, { mcc: '5441', name: 'Candy, nut and confectionery stores' }] })", as: "mcc" },
       { node: "pick", label: "pick-mcc", provider: "jev", itemsPath: "mcc.codes", describe: "{item.mcc} {item.name}", instructions: "Which merchant category code fits what this storefront sells?", state: { merchant: "{merchant}", page_text: "{page.text}" }, allowNone: true, as: "code" },
       { node: "judge", label: "prohibited-goods", provider: "parallel", model: "fast", state: { merchant: "{merchant}", url: "{url}" }, out: "Prohibited", as: "risk" },

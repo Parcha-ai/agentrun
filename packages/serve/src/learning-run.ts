@@ -18,7 +18,6 @@ import { join, posix } from "node:path";
 import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
 import { type AnalyticsFilter, type Revision, runDirIn, type RunRow, type StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
 import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
@@ -343,22 +342,28 @@ export class LearningRuns {
       if ("seed" in seeded) {
         try {
           const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
-          // Its harness's requests going where a learned workflow's could not follow: it is offered none (fail closed).
-          const workflowsOff = revision.kind === "agentic" ? await learnedWorkflowsOff(revision.body.harness, this.hostEnv(), revision.body.model) : undefined;
-          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own, ...(workflowsOff ? { workflowsOff } : {}) });
+          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
           given = pin.given ?? [];
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
-          if (pin.workflows_off) warn(started.runId, `starts without the workflows its agent learned (${(pin.workflows_left_out ?? []).join(", ")}): ${pin.workflows_off}`);
-          else for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget, or it holds a secret`);
+          for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget, or it holds a secret`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
           failed = said.stopped(STOPPED.notCopied);
         }
       }
+      await learningTestHooks.afterSeed?.(started.dir);
       const notes = "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0;
       return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes, ...(given.length ? { given } : {}) } : { state: "dropped", reason: "seed_failed", detail: failed, at };
     };
+  }
+
+  /** A start whose seed copy threw out of its pin (runs.ts start): its learning, in its own words, as a copy that failed
+   *  says it; the copy taken back. */
+  async copyThrew(started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string, error: Error): Promise<Learning> {
+    warn(started.runId, `starts with nothing learned: ${error.message}`);
+    await dropSeed(started.dir, started.workspace).catch(() => undefined);
+    return { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied), at };
   }
 
   /** The run's serve.json holds `learning` now: the learning ledger's line for the run (usage.ts), once, when that

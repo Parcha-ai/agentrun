@@ -85,7 +85,8 @@ export type SessionSettingsSupport = { proxies: boolean; verified: boolean; geol
 
 export type LiveView = { fullscreen: string | null; framed: string | null; pages: Array<{ id: string | null; url: string | null; title: string | null; fullscreen: string | null }> };
 export type Recording = { id: string; startedAt: string | null; durationS: number | null };
-export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null };
+/** `downloading`: the browser is still writing it; it is listed so the caller can say so, and is not read. */
+export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null; downloading?: true };
 
 export type FetchRequest = { url: string; format: "markdown" | "raw"; proxies: boolean };
 export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; usage?: ToolUsage };

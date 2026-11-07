@@ -256,7 +256,7 @@ function loggedEnv(c: Claim): RunEnv {
   });
 }
 
-/** Open `ref` on `disk` with `harness`; fences are collected (no exit), every run.json write logged in the claim's log. */
+/** Open `ref` on `disk` with `harness`; fences are collected (no exit), every status write logged in the claim's log. */
 export function openOn(
   disk: LocalDisk,
   ref: RunRef,
@@ -264,17 +264,21 @@ export function openOn(
   extra: Partial<OpenDurableRunOptions> & { fenced?: unknown[] } = {},
 ): Promise<DurableRun> {
   let claim: FakeClaim | undefined;
-  return openDurableRun(ref, {
+  const opened = openDurableRun(ref, {
     acquire: async () => (claim = disk.acquire(ref) as FakeClaim),
     claimDir: localClaimDir,
     harness,
     env: loggedEnv,
     onFenced: (error) => void extra.fenced?.push(error),
-    persist: async (root, text, signal) => {
-      claim?.log.push(`run.json ${JSON.parse(text).status}`);
-      const { persistRecord } = await import("../src/status.ts");
-      await (extra.persist ?? persistRecord)(root, text, signal);
-    },
-    ...Object.fromEntries(Object.entries(extra).filter(([k]) => k !== "persist" && k !== "fenced")),
+    ...Object.fromEntries(Object.entries(extra).filter(([k]) => k !== "fenced")),
+  });
+  return opened.then((run) => {
+    const setStatus = run.setStatus.bind(run);
+    return Object.assign(run, {
+      setStatus: async (...args: Parameters<DurableRun["setStatus"]>) => {
+        await setStatus(...args);
+        claim?.log.push(`status ${args[0]}`);
+      },
+    });
   });
 }

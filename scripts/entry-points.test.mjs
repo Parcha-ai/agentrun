@@ -31,6 +31,7 @@ const reviewed = new Map([
   ['packages/pi-durable-agent/test/serve-store.test.mjs', childScript],
   ['packages/pi-durable-agent/test/serve.test.mjs', childScript],
   ['packages/pi-durable-disk/test/commands.test.ts', childScript],
+  ['packages/pi-durable-disk/test/place.test.ts', childScript],
   ['packages/pi-vision/test/durable-providers.test.mjs', childScript],
   ['packages/pi-vision/test/node-env.test.mjs', childScript],
   ['packages/pi/test/signin-entry.test.mjs', childScript],
