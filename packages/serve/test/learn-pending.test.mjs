@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CAPS } from "../dist/learn/check.js";
 import { currentLearning } from "../dist/learning.js";
+import { pendingTestHooks } from "../dist/learning-routes.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -214,6 +215,45 @@ for (const act of ["approve", "retire"]) {
     assert.deepEqual(record.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }]);
   });
 }
+
+test("a held note that replaces an older one keeps saying so once approved: the run reads it as learned with what it replaces, as a merge that held nothing says it", { timeout: 180_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data, port } = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
+  const origin = `http://127.0.0.1:${port}`;
+  const SHORT = note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\n");
+  await made(api, learner("replacer", { instructions: "Answer the question.\nGrade: pending answer-in-short-tables.md.", plan: [["answer-in-short-tables.md", SHORT]] }));
+  // The folder made by a first run (whose note replaces one not there yet, so it keeps nothing); then the note it
+  // replaces, active on main.
+  await ended(api, await started(api, "replacer"));
+  const repo = repoOf(data, "replacer");
+  writeFileSync(join(repo, "answer-in-tables.md"), TABLES);
+  writeFileSync(join(repo, "MEMORY.md"), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables");
+  git(repo, ["add", "--", "answer-in-tables.md", "MEMORY.md"]);
+  git(repo, ["commit", "-q", "-m", "an older note"]);
+  const runId = await started(api, "replacer");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  assert.equal(view.learning.detail, "Waiting for your OK: Answer in short tables.");
+  const cookie = cookieOf(await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } }));
+  const etag = (await api("GET", "/agents/replacer/learning/files/answer-in-short-tables.md")).headers.get("etag");
+  assert.equal((await call(port, { method: "POST", path: "/v2/agents/replacer/learning/files/answer-in-short-tables.md/approve", headers: { ...json, cookie, origin, "if-match": etag }, body: {} })).status, 200);
+  const after = (await api("GET", `/runs/${runId}`)).body.learning;
+  assert.deepEqual(after.learned, [{ file: "answer-in-short-tables.md", name: "Answer in short tables", supersedes: ["answer-in-tables.md"] }]);
+  assert.equal(after.detail, "Learned: Answer in short tables (replaces 1 older note)");
+  assert.equal((await api("GET", `/runs/${runId}/learning`)).body.detail, after.detail);
+});
+
+test("a run's whole learning reads no folder unless its merge held something for the owner's OK", { timeout: 150_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("plain", { plan: [["answer-in-tables.md", TABLES]] }));
+  const merged = await started(api, "plain");
+  await ended(api, merged);
+  const reads = pendingTestHooks.reads;
+  assert.equal((await api("GET", `/runs/${merged}/learning`)).status, 200);
+  assert.equal((await api("GET", `/runs/${merged}`)).status, 200);
+  assert.equal(pendingTestHooks.reads, reads, "a merge that held nothing reads no status");
+});
 
 test("what a run held reads as it stands on main now: a skill approved since is the run's, its pending gone; one retired is said no more; a run whose every item was retired says so; still pending, it waits; no status read, as written", () => {
   const held = { state: "merged", reason: null, detail: "stored", at: "2026-11-07T00:00:00Z", pending: [{ file: "a.md", name: "A" }], skills: [{ file: "skills/s/SKILL.md", name: "s", pending: true }], workflows: [{ file: "workflows/w/workflow.json", name: "w", pending: true }] };
