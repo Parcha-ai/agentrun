@@ -20,7 +20,7 @@ import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/p
 import { AsyncLocalStorage } from "node:async_hooks";
 import { BUDGET_HOLD_ENV, BUDGET_HOLD_MS, budgetWaits, type StepAt } from "./budget.js";
 import { capBefore, capModels, capModeOf, capOf, costsIn, type CapRefusal, capRefusals, DECISION_COST, decisionSpentIn, runSpendNow, spentIn, wrapUpSentIn } from "./cap.js";
-import { cappedDecisions } from "./decision-cap.js";
+import { askedBefore, cappedDecisions } from "./decision-cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
@@ -448,7 +448,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       const resume = gated(where.root, (args: Parameters<typeof recovery.resume>) => recovery.resume(...args));
       // Under a cap, each decision is held before the driver admits it (a route the driver answers from what it decided
       // sends nothing), each step counts in flight, and a call node's deadline leaves out what it waited for a raise.
-      const judge = capped && deps.runJudge ? capped.before(deps.runJudge, (params) => params.kind === "route" && driver.routeDecision(params.executionPath as never) !== undefined) : deps.runJudge;
+      // A request the driver answers from what an earlier process did (a route it decided, a request it admitted and that
+      // did not fail, which escalates unsent) holds nothing and never waits for a raise (askedBefore).
+      const judge = capped && deps.runJudge ? capped.before(deps.runJudge, (params) => askedBefore(driver as never, params)) : deps.runJudge;
       return { deps: {
         ...deps, runEffect: stepped(deps.runEffect && (failing(deps.runEffect as never, (path, ms, hold) => driver.holdPoll(path, ms, hold)) as never)), runNode: stepped(gate(capStopped(deps.runNode)), true), runJudge: stepped(gate(judge)), onEvent,
         ...(waits ? { held: (path: string) => waits.held(path) } : {}),

@@ -68,6 +68,15 @@ async function catalogPrice(priced: { priceOf(model: string): Promise<DecisionMo
   }
 }
 
+/** Whether the durable driver answers `params`'s request from what it holds, sending nothing, so the request holds and
+ *  waits for nothing: a route it decided, or a request an earlier process admitted that did not fail (asked and never
+ *  answered: the driver escalates it unsent, dsl with-recovery). */
+export const askedBefore = (driver: { routeDecision(executionPath: never): unknown; decisionRequests(): Record<string, { status: string }> }, params: JudgeParams): boolean => {
+  if (params.kind === "route" && driver.routeDecision(params.executionPath as never) !== undefined) return true;
+  const asked = params.decisionId === undefined ? undefined : driver.decisionRequests()[params.decisionId];
+  return asked !== undefined && asked.status !== "failed";
+};
+
 /** A request's hold, or why it has none (its words, no raise sends it). */
 export type DecisionHold = { usd: number; basis: string } | { unpriced: string };
 
