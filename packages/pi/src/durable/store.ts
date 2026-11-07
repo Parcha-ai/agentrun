@@ -52,14 +52,14 @@ const checkpointWhen = (_value: unknown, _ops: unknown, info: { deltasSinceBase:
 const DriverDoc = defineDocFamily<DriverRecord, null>({ kind: "agentrun.driver", version: 1, scope: "session", family: true, checkpointWhen,
   initial: () => ({ binding: null, inputs: null, generation: 0, revision: 0, state: null, notes: [], effects: [] }) });
 const EffectDoc = defineDocFamily<EffectRecord, null>({ kind: "agentrun.effects", version: 1, scope: "session", family: true,
-  initial: () => ({ driver: "", name: "", argsHash: "", status: "unknown", session: null, result: null }) });
+  initial: () => ({ driver: "", name: "", argsHash: "", status: "unknown", session: null, result: null }), checkpointWhen: () => false });
 /** A map item's record as the driver writes it, whole; `driver` is empty only for one never written. */
 type ItemDocRecord = Record<string, Json> & { driver: string; effects: string[] };
 const ItemDoc = defineDocFamily<ItemDocRecord, null>({ kind: "agentrun.items", version: 1, scope: "session", family: true,
-  initial: () => ({ driver: "", effects: [] }) });
+  initial: () => ({ driver: "", effects: [] }), checkpointWhen: () => false });
 /** A state by its digest; `sha256` is empty only for one never written. */
 const StateDoc = defineDocFamily<{ driver: string; sha256: string; state: Json }, null>({ kind: "agentrun.states", version: 1, scope: "session", family: true,
-  initial: () => ({ driver: "", sha256: "", state: null }) });
+  initial: () => ({ driver: "", sha256: "", state: null }), checkpointWhen: () => false });
 
 /** A draft made to hold `value` whole: every field set, every other field removed. */
 function replaceWhole(draft: Record<string, unknown>, value: Record<string, unknown>): void {

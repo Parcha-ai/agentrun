@@ -40,7 +40,7 @@ export type StoreDeps = {
 };
 
 export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack, stopped: stoppedHook }: StoreDeps) {
-  const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }) });
+  const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }), checkpointWhen: () => false });
 
   /** One state change: the record and the open-session inventory move in the same commit. */
   async function move(tx: Tx, row: InventoryRow, next: Move): Promise<void> {

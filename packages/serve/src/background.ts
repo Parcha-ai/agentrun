@@ -25,7 +25,7 @@
 // The run's end ends them (endBackground, from the server's settle, before the box is pulled and destroyed): TERM to
 // each running group, KILL after 3 s, and an `ended` mark (with its display copy beside the log, in the run's files).
 import type { Context } from "@earendil-works/chord";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { BoxProvider } from "@parcha/pi-transport";

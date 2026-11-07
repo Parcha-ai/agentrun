@@ -2,7 +2,7 @@
 // package.
 import fs from "node:fs";
 import path from "node:path";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineDoc, defineExtension, defineTool } from "@earendil-works/pi-durable";
 
 const Custody = defineDoc({ kind: "leaky.custody", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ note: "" }) });

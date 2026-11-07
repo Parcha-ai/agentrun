@@ -1557,7 +1557,8 @@ A trigger's input, a started run's first message or a firing's message, is the t
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
 never by its payload (true for a schedule, fired on time or by hand; false for a webhook, its body empty or not). The
 model reads the very text it did; the run's timeline shows it as a `phase` row, "Trigger <its id>: <its first line>",
-with `origin: "trigger"`, never as "You: ...", and what the run learns reads it as the trigger's.
+with `origin: "trigger"` and `trigger: {id, source, owner}` (so a client labels it by its source without reading the
+summary), never as "You: ...", and what the run learns reads it as the trigger's.
 
 A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
 each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
