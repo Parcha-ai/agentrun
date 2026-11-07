@@ -88,6 +88,8 @@ export function script(spec) {
   if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
   // The wrap-up due only after a turn's one request ($0.40): the next turn's first request is the first that can take it.
   if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4 }, { say: "Second.", usd: 0.01 }];
+  // One call that ends before its answer is paid, on a store slow to write (the tests' ROOT_WRITE_DELAY_ENV).
+  if (/Write once on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
   // One answer that writes, calls, writes again and calls again, both calls ending before it is paid (Claude Code's
   // cost comes in after its response), then the closing answer.
   if (/Write between two calls\./.test(text)) return [{ calls: [{ say: "First I write a.md.", call: "write", args: { path: "a.md", content: "alpha" } }, { say: "Then b.md.", call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote both.", usd: 0.002 }];

@@ -59,6 +59,14 @@ export { BOOKED } from "./turn-end.js";
 export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
+/** For tests only: how long each of a harness run's root writes waits first, as on a store slow to write; only under a
+ *  test runner (node --test's NODE_TEST_CONTEXT), at most a second. */
+export const ROOT_WRITE_DELAY_ENV = "AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS";
+export function rootWriteDelayMs(env: NodeJS.ProcessEnv = process.env): number {
+  if (!env.NODE_TEST_CONTEXT) return 0;
+  const ms = Number(env[ROOT_WRITE_DELAY_ENV]);
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
+}
 /** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
 export { MESSAGE, MESSAGE_END } from "./turn-end.js";
 /** A turn's end on the root (turn-end.ts): the message it took, the session's own outcome (`completed`, `interrupted`,
@@ -357,7 +365,9 @@ export function adapterRun(
   let writing = Promise.resolve();
   const later = (work: () => Promise<void>) => (writing = writing.then(work, work));
 
-  const commit = <T>(change: (tx: Tx) => Promise<T>) => run!.harness.commit(change, context);
+  // A test's seam (ROOT_WRITE_DELAY_ENV): each root write waits first, as on a store slow to write. None outside a test runner.
+  const slowWrites = rootWriteDelayMs();
+  const commit = <T>(change: (tx: Tx) => Promise<T>) => (slowWrites ? new Promise<void>((resolve) => setTimeout(resolve, slowWrites)).then(() => run!.harness.commit(change, context)) : run!.harness.commit(change, context));
 
   /** A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
    *  own (one of `writes`, the flush's commit), so the run's spend counts it, once; any other is a duplicate. */

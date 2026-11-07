@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { agent, follow, runDir, serve } from "./support.mjs";
+import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 // Under the faux harness claude-agent and codex run one path (the id is only a label), so codex stands for both.
@@ -117,5 +117,23 @@ for (const on of ["claude-agent", "codex"]) {
     assert.equal(entries[later - 1]?.kind, "agentrun.request_continued", "the later text and call are marked as the answer's continuation");
     // Each call above its result, in the rows a reader sees.
     for (const use of rows.filter((r) => r.kind === "tool_use")) assert.ok(rows.findIndex((r) => r.kind === "tool_result" && r.tool_use_id === use.tool_use_id) > rows.indexOf(use), shown);
+  });
+}
+
+for (const on of ["claude-agent", "codex"]) {
+  test(`${on}: on a store slow to write, a call that ends before its answer is paid: one request for that answer at its known cost, and the call above its result`, async (t) => {
+    withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    assert.equal((await api("POST", "/agents", agent("slow-store", { harness: on, instructions: "Write once on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
+    const started = await api("POST", "/agents/slow-store/runs", { input: { content: "Write alpha to a.md." } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const runId = started.body.run_id;
+    const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 30_000 });
+    assert.deepEqual([last.status, last.final], ["completed", true], `${last.status}/${last.state}`);
+    const usage = rows.findLast((r) => r.kind === "usage")?.usage;
+    assert.deepEqual([usage?.requests, usage?.usd], [2, 0.003], `two requests at their known cost: ${JSON.stringify(usage)}`);
+    assert.equal((await api("GET", `/runs/${runId}`)).body.cost?.usd, 0.003, "the run's cost is known");
+    const use = rows.find((r) => r.kind === "tool_use");
+    assert.ok(use && rows.findIndex((r) => r.kind === "tool_result" && r.tool_use_id === use.tool_use_id) > rows.indexOf(use), JSON.stringify(rows.map((r) => [r.seq, r.kind, r.summary])));
   });
 }
