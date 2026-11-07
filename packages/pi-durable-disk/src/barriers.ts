@@ -220,8 +220,8 @@ export const NORMAL_PRECONDITIONS = {
     what: "a pi request's lost attempt is marked ended at its hold before pi-ai's retry is sent (serve/src/request-start.ts:121), but that mark is not synced: a lost box can drop it while the retry goes out",
   },
   holdRefusedUnsynced: {
-    done: false,
-    what: "a paid call refused after its hold was written (serve/src/paid-calls.ts:81-84, a sync that fails) and a model request ended unsent after its start mark (modelRequestStarted) leave their refusal or unsent end unsynced",
+    done: true,
+    what: "a paid call's hold and a model request's start mark are not written when there is no run store to sync, and a sync that fails after one is answered in the store, a hold by its $0 settle and a start mark by its unsent end, after it in the WAL, so any later sync that keeps one keeps the other (serve/test/hold-refused.test.mjs)",
   },
   browserSessionBarrier: {
     done: false,
