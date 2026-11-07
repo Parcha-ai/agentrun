@@ -64,9 +64,29 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 	it("attaches by the container's name, its whole id and its first 12 digits", async () => {
 		assert.match(ref.name, /^computer-[0-9a-f]{12}$/);
 		assert.match(ref.id, /^[0-9a-f]{64}$/);
-		assert.deepEqual(await provider.attach({ id: ref.name }), { ok: true, value: ref });
-		assert.deepEqual(await provider.attach({ id: ref.id }), { ok: true, value: ref });
-		assert.deepEqual(await provider.attach({ id: ref.id.slice(0, 12) }), { ok: true, value: ref });
+		for (const id of [ref.name, ref.id, ref.id.slice(0, 12)]) {
+			const attached = await provider.attach({ id });
+			assert.equal(attached.ok, true, JSON.stringify(attached));
+			assert.deepEqual({ id: attached.value.id, name: attached.value.name }, ref, id);
+			assert.equal(attached.value.spec.network, "none", id);
+			assert.equal(attached.value.spec.image, "alpine:3.20", id);
+			assert.match(attached.value.spec.user, /^\d+:\d+$/, id);
+			assert.notEqual(attached.value.spec.user.split(":")[0], "0", `${id}: the provider's default user is not root`);
+		}
+	});
+
+	it("attach to a computer that asked for root reports user 0:0, with its network, image and sizes", async () => {
+		const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", user: "0", memoryMb: 256, labels: { [RUN_LABEL]: run, role: "root" } });
+		assert.equal(created.ok, true, JSON.stringify(created));
+		made.push(created.value.name);
+		for (const target of [{ id: created.value.name }, { labels: { [RUN_LABEL]: run, role: "root" } }]) {
+			const attached = await provider.attach(target);
+			assert.equal(attached.ok, true, JSON.stringify(attached));
+			const { spec } = attached.value;
+			assert.deepEqual([spec.user, spec.network, spec.image, spec.memoryMb, spec.cpus, spec.pids, spec.workdir], ["0:0", "none", "alpine:3.20", 256, 2, 1024, "/work"]);
+			assert.ok(spec.deadline instanceof Date && spec.deadline.getTime() > Date.now(), String(spec.deadline));
+		}
+		docker("rm", "--force", "--volumes", created.value.name);
 	});
 
 	it("reads the Docker host's enforcement: every limit, and seccomp", async () => {

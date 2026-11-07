@@ -45,9 +45,8 @@ export const driftCases: Case[] = [
 		async (t) => {
 			const drifted = await t.drifted();
 			const labels = { ...t.runLabels, [CASE_LABEL]: "drift" };
-			const created = await drifted.create(t.spec({ labels }));
+			const created = await t.attempt(t.spec({ labels }), drifted);
 			if (created.ok) {
-				t.track(created.value, drifted);
 				let connected: Awaited<ReturnType<typeof drifted.connect>>;
 				try {
 					connected = await drifted.connect(created.value);
