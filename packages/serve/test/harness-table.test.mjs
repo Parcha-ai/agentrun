@@ -3,6 +3,7 @@
 // client and proxy policy), one providerFor by wire. A test's stand-in is a table entry (HARNESS_TABLE_ENV), never a
 // branch in serve. Each module is imported by name inside its test, so a build without it fails each test on its own.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -100,4 +101,16 @@ test("pi's gateway takes the one base rule (provider.ts gatewayBase): a base its
   }
   const ok = await runModels({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/api/v1", AGENT_MODEL: "team/model", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}`, AGENT_MODEL_PRICE: "1,1" }, undefined);
   assert.equal(ok.models.getModel(ok.model.provider, ok.model.modelId).baseUrl, "http://127.0.0.1:4000/api/v1", "one trailing /v1 off, then the API under <base>/v1");
+});
+
+test("each module of the provider, model and table cycle loads first in a fresh process: the table's built-in entries never read a wire's settings before they exist", () => {
+  // A child of a test runner that inherits NODE_TEST_CONTEXT runs as that runner's child; this one is a plain process.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  for (const name of ["provider.js", "model.js", "harness-table.js"]) {
+    const url = new URL(`../dist/${name}`, import.meta.url).href;
+    const loaded = spawnSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(url)});`], { env, encoding: "utf8", timeout: 60_000 });
+    assert.equal(loaded.status, 0, `dist/${name} imported first exits 0: ${loaded.stderr}`);
+    assert.doesNotMatch(loaded.stderr, /ReferenceError/, `dist/${name} imported first throws no ReferenceError`);
+  }
 });
