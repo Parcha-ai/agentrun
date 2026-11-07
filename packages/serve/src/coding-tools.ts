@@ -48,16 +48,15 @@ export type BoxedEnv = { env(context: Context, note?: (summary: string) => Promi
 
 /** A call's answer with what `box` has to tell the model first, once (its box replaced since the run's last process),
  *  asked once the box is had: its first line, in the output an answer with no content of its own is made of, and a text
- *  part before each model field the tool gives (content, output). */
+ *  part before the answer's `output` blocks. */
 export async function withBoxNote<T>(box: Pick<BoxedEnv, "replaced">, output: (chunk: string) => void, call: () => Promise<T>): Promise<T> {
   const note = box.replaced?.();
   if (!note) return call();
   output(`${note}\n`);
   const result = await call();
-  // Before each of the answer's model fields it gives: content, and output, which pi 1.2 and later reads.
-  const fields = result as { content?: unknown; output?: unknown } | null;
-  const told = (blocks: unknown) => (Array.isArray(blocks) ? [{ type: "text", text: note }, ...blocks] : blocks);
-  return fields && (Array.isArray(fields.content) || Array.isArray(fields.output)) ? { ...result, ...(Array.isArray(fields.content) ? { content: told(fields.content) } : {}), ...(Array.isArray(fields.output) ? { output: told(fields.output) } : {}) } : result;
+  // Before the answer's model blocks, under `output` (pi's result key).
+  const fields = result as { output?: unknown } | null;
+  return fields && Array.isArray(fields.output) ? { ...result, output: [{ type: "text", text: note }, ...fields.output] } : result;
 }
 
 /** A failed call's error with what the file environment said, where pi's message gives only its code (edit's "Error
