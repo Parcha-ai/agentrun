@@ -81,7 +81,7 @@ func TestArgvIsNeverAShell(t *testing.T) {
 func TestTimeoutKillsTheWholeGroup(t *testing.T) {
 	start := time.Now()
 	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "sleep 60 & echo $!; wait"}, Timeout: 300 * time.Millisecond})
-	if !res.TimedOut || res.ExitCode != nil || res.Signal != "SIGTERM" {
+	if !res.TimedOut || res.ExitCode != nil || res.Signal != "TERM" {
 		t.Fatalf("want timed out by SIGTERM, got %+v", res)
 	}
 	if time.Since(start) > 2*time.Second {
@@ -94,7 +94,7 @@ func TestTimeoutEscalatesToSIGKILL(t *testing.T) {
 	start := time.Now()
 	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "trap '' TERM; sleep 60 & echo $!; wait"}, Timeout: 200 * time.Millisecond})
 	elapsed := time.Since(start)
-	if !res.TimedOut || res.Signal != "SIGKILL" || elapsed < 2*time.Second || elapsed > 30*time.Second {
+	if !res.TimedOut || res.Signal != "KILL" || elapsed < 2*time.Second || elapsed > 30*time.Second {
 		t.Fatalf("want SIGKILL 2 s after SIGTERM, got %+v after %v", res, elapsed)
 	}
 	gone(t, pidOf(t, res.Stdout))
@@ -238,7 +238,7 @@ func TestADoubleForkedSetsidChildDoesNotOutliveTheRun(t *testing.T) {
 
 func TestADoubleForkedSetsidChildDoesNotOutliveATimeout(t *testing.T) {
 	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", escape(t.TempDir(), true) + "; sleep 60"}, Timeout: 500 * time.Millisecond})
-	if !res.TimedOut || res.Signal != "SIGTERM" {
+	if !res.TimedOut || res.Signal != "TERM" {
 		t.Fatalf("want timed out by SIGTERM, got %+v", res)
 	}
 	gone(t, escapee(t, res.Stdout))
@@ -271,7 +271,7 @@ func TestARelativePathEntryIsFoundInCwd(t *testing.T) {
 
 func TestASignalDeathIsReportedByName(t *testing.T) {
 	res := run(t, execrun.Spec{Argv: []string{"sh", "-c", "kill -USR1 $$"}})
-	if res.ExitCode != nil || res.Signal != "SIGUSR1" || res.TimedOut {
+	if res.ExitCode != nil || res.Signal != "USR1" || res.TimedOut {
 		t.Fatalf("want ended by SIGUSR1, got %+v", res)
 	}
 }

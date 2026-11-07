@@ -10,7 +10,7 @@ type Stored = { callId: string; type: LearnType; text: string; evidence: string[
 type CandidatesState = { byCall: Record<string, Stored>; order: string[] };
 
 /** The run's candidates, one per `learn` call id, in the order they were first noted. */
-export const CandidatesDoc = defineDoc<CandidatesState>({ kind: "learn.candidates", version: 1, scope: "session", initial: () => ({ byCall: {}, order: [] }) });
+export const CandidatesDoc = defineDoc<CandidatesState>({ kind: "learn.candidates", version: 1, scope: "session", initial: () => ({ byCall: {}, order: [] }), checkpointWhen: () => false });
 
 /** The run's candidates, in the order it noted them. A Harness is a valid `target`. */
 export async function collectCandidates(target: Pick<Session, "snapshot">, context: Context = BACKGROUND_CONTEXT): Promise<Candidate[]> {
