@@ -4,14 +4,15 @@
 // package and talks to the server through its API alone. An edge is a manifest dependency, or a quoted string in source
 // that names a workspace package (an import, export-from, import(), require, import.meta.resolve, or a constant passed to
 // one) or a relative path that lands in another package, or, in a surface, the name of one of the server's own data files.
-// Tests, fixtures, vendor, dist and comments are not read, and neither is devDependencies (build and test time only) nor backtick text (it
-// is prose far more often than an import). Today's wrong edges are EXCEPTIONS, each with its count, reason and fix:
+// Tests, fixtures, vendor and dist are not read, nor devDependencies (build and test time only); source is read by TypeScript's
+// parser, so only real string literals count (never a comment, a regular expression or template text). Today's wrong edges are EXCEPTIONS, each with its count, reason and fix:
 // a new wrong edge fails, and so does an exception that no longer occurs in full, so the table only shrinks.
 // `node scripts/check-direction.mjs` exits non-zero with the problems (`--list` prints every wrong edge, excepted or not);
 // check-direction.test.mjs runs it on this tree and on planted breaks.
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { isMain } from './is-main.mjs';
 
 /** Every workspace directory (packages/* and apps/*) has exactly one layer here. */
@@ -115,62 +116,21 @@ async function serverFiles(root, layers) {
   return names;
 }
 
-/** `text` with every line comment and block comment blanked to spaces (newlines kept, so line numbers hold); strings
- *  and template text are kept whole, so a `//` inside a quoted URL stays. A commented-out import is not an edge. */
-export function withoutComments(text) {
-  let out = '';
-  let quote = null;
-  let last = '';
-  let before = '';
-  let word = '';
-  for (let i = 0; i < text.length; i += 1) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (quote) {
-      out += c;
-      if (c === '\\') { out += next ?? ''; i += 1; }
-      else if (c === quote || (c === '\n' && quote !== '`')) quote = null;
-      continue;
-    }
-    if (c === '/' && (next === '/' || next === '*')) {
-      const end = next === '/' ? text.indexOf('\n', i) : text.indexOf('*/', i + 2);
-      const stop = end === -1 ? text.length : next === '/' ? end : end + 2;
-      out += text.slice(i, stop).replace(/[^\n]/g, ' ');
-      i = stop - 1;
-      continue;
-    }
-    // A slash where an expression may start opens a regular expression (after a name, a number or a closing bracket it
-    // is a division): its text is copied whole, so a `/*` or `//` inside it is never read as a comment.
-    // A postfix `++` or `--` ends an operand, so the slash after it divides.
-    const postfix = (last === '+' || last === '-') && before === last;
-    if (c === '/' && !postfix && (last === '' || '([{,;:=!&|?+-*%<>~^'.includes(last) || REGEX_AFTER.has(word))) {
-      let j = i + 1;
-      let inClass = false;
-      for (; j < text.length && text[j] !== '\n'; j += 1) {
-        if (text[j] === '\\') { j += 1; continue; }
-        if (text[j] === '[') inClass = true;
-        else if (text[j] === ']') inClass = false;
-        else if (text[j] === '/' && !inClass) break;
-      }
-      out += text.slice(i, j + 1);
-      i = j;
-      before = last;
-      last = '/';
-      word = '';
-      continue;
-    }
-    if (c === '"' || c === "'" || c === '`') quote = c;
-    out += c;
-    if (/\s/.test(c)) continue;
-    word = /[\w$]/.test(c) ? (/[\w$]/.test(last) ? word + c : c) : '';
-    before = last;
-    last = c;
-  }
+
+/** Every string literal in a source file, read by TypeScript's own parser, so comments, regular expressions and template
+ *  text are never mistaken for one: { value, line }. */
+function literalsIn(file, text) {
+  const kind = file.endsWith('.json') ? ts.ScriptKind.JSON : /\.[cm]?tsx$/.test(file) ? ts.ScriptKind.TSX
+    : /\.[cm]?ts$/.test(file) ? ts.ScriptKind.TS : /\.jsx$/.test(file) ? ts.ScriptKind.JSX : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind);
+  const out = [];
+  const visit = (node) => {
+    if (ts.isStringLiteral(node)) out.push({ value: node.text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
   return out;
 }
-
-/** Words after which a slash opens a regular expression, not a division. */
-const REGEX_AFTER = new Set(['return', 'typeof', 'case', 'void', 'in', 'of', 'delete', 'new', 'throw', 'yield', 'await', 'else']);
 
 const lineOf = (text, index) => text.slice(0, index).split('\n').length;
 
@@ -190,17 +150,16 @@ export async function edges(root, layers = LAYERS) {
       }
     }
     for (const file of await sourceFiles(join(root, dir))) {
-      const text = withoutComments(await readFile(file, 'utf8'));
+      const text = await readFile(file, 'utf8');
       const rel = posix(relative(root, file));
-      // A quoted run with no space or quote in it: a module specifier, a path or a file name. Prose apostrophes pair
-      // across spaces, so they never match.
-      for (const match of text.matchAll(/(['"])([^'"\s]+)\1/g)) {
-        const value = match[2];
+      // A string with no space in it: a module specifier, a path or a file name. Prose has spaces, so it never matches.
+      for (const { value, line } of literalsIn(file, text)) {
+        if (!value || /\s/.test(value)) continue;
         let to;
         if (/^\.\.?\//.test(value)) to = owner(resolve(dirname(file), value));
         else if (surfaces.has(dir) && dataFiles.has(value)) to = layers.server[0];
         else to = byName.get(value) ?? byName.get(value.split('/').slice(0, value.startsWith('@') ? 2 : 1).join('/'));
-        if (to && to !== dir) found.push({ file: rel, line: lineOf(text, match.index), from: dir, to, via: value });
+        if (to && to !== dir) found.push({ file: rel, line, from: dir, to, via: value });
       }
     }
   }

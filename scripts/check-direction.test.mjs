@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { directionProblems, withoutComments } from './check-direction.mjs';
+import { directionProblems } from './check-direction.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = await mkdtemp(join(tmpdir(), 'agentrun-direction-'));
@@ -103,7 +103,6 @@ test('comments are not edges: a commented-out import, or a comment quoting a pac
   assert.match(kept[0], /^packages\/k\/src\/a\.ts:1: /);
   const reason = ['why', 'the fix'];
   assert.deepEqual(await check({ 'packages/k/src/a.ts': "import { serve } from '@x/v';\n// import { other } from '@x/v';\n" }, [['packages/k/src/a.ts', 'packages/v', 1, ...reason]]), []);
-  assert.equal(withoutComments("a // b\n'c // d'"), "a     \n'c // d'");
 });
 
 test('a regular expression is not a comment: an import after /[/*]/ is still an edge, and a division is not a regex', async () => {
@@ -112,11 +111,8 @@ test('a regular expression is not a comment: an import after /[/*]/ is still an 
   assert.match(hidden[0], /^packages\/k\/src\/a\.ts:2: /);
   const slashes = await check({ 'packages/k/src/a.ts': "const url = /https?:\\/\\//;\nimport '@x/v';\n" });
   assert.equal(slashes.length, 1, slashes.join('; '));
-  assert.equal(withoutComments('const half = total / 2; // a note\nconst r = /a\\/b/;'), 'const half = total / 2;          \nconst r = /a\\/b/;');
-  assert.equal(withoutComments('return /[/*]/.test(x) /* gone */;'), 'return /[/*]/.test(x)           ;');
 });
 
 test('a division after a postfix ++ or -- is not a regular expression, so the comment after it is still a comment', async () => {
   assert.deepEqual(await check({ 'packages/k/src/a.ts': "let count = 4;\nconst ratio = count++ / 2; // import '@x/v';\nconst less = count-- / 2; /* import '@x/v'; */\n" }), []);
-  assert.equal(withoutComments("n++ / 2; // x"), "n++ / 2;     ");
 });
