@@ -9,8 +9,7 @@ import { elapsed } from "./runGraph";
 import { rowDetail, rowFailed } from "./timeline";
 import type { TimelineRow } from "./v2";
 
-/** `pending` (a newer server's): the run kept a note that waits for the owner's OK before any run reads it. */
-export type LearningState = "seeded" | "reflecting" | "proposed" | "merged" | "dropped" | "pending";
+export type LearningState = "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
 export type NoteType = "user" | "feedback" | "project" | "reference";
 /** `pending` (a newer server's): a note that changes what the agent trusts or skips (a site it trusts, an approval it
  *  skips, where money or data goes). No run reads it until the owner approves it. */
@@ -131,7 +130,7 @@ export const pendingBy = (l: RunLearning | undefined): NoteRef[] => refs(l?.pend
 const fileRefs = (raw: unknown): LearnedFileRef[] => refs<LearnedFileRef>(raw);
 export const skillsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? fileRefs(l.skills) : []);
 export const workflowsBy = (l: RunLearning | undefined): LearnedFileRef[] => (l?.state === "merged" ? fileRefs(l.workflows) : []);
-export const waitsForOk = (l: RunLearning | undefined) => pendingBy(l).length > 0 || l?.state === "pending";
+export const waitsForOk = (l: RunLearning | undefined) => pendingBy(l).length > 0;
 /** The skills and workflows an agent learned, as a list the server sent: whole items only, none from an older server. */
 export const learnedItems = (raw: unknown): LearnedItem[] => (Array.isArray(raw) ? raw.filter((x): x is LearnedItem => !!x && typeof x === "object" && typeof (x as LearnedItem).name === "string" && typeof (x as LearnedItem).file === "string" && typeof (x as LearnedItem).etag === "string") : []);
 /** "1 skill", "2 workflows". */
@@ -312,15 +311,15 @@ export function shortTitle(title: string, max = 40): string {
  *  "Learning: " prefix. Every other row is as it was. learningSteps calls it on each row it leaves as a row, and on each
  *  line of the look-back it folds. */
 export function learningLabel(row: TimelineRow): TimelineRow {
-  if (row.kind === LEARNING) return { ...row, kind: "Learning", agent_label: null };
-  if (row.kind === "user_message" && row.agent_label === LEARNING) return { ...row, kind: "Learning", agent_label: null, summary: row.summary.replace(/^Learning:\s*/, "") };
+  if (row.kind === LEARNING) return { ...row, agent_label: null };
+  if (row.kind === "user_message" && row.agent_label === LEARNING) return { ...row, kind: LEARNING, agent_label: null, summary: (row.summary ?? "").replace(/^Learning:\s*/, "") };
   return row;
 }
 /** The label the server puts on every row of a run's learning, and the kind of the row that says how it ended. */
-const LEARNING = "learning";
+const LEARNING = "learning" as const;
 
 /** How far a run's learning has got: it only moves forward, so of two reads the further one is the newer. */
-const STAGE: Record<string, number> = { seeded: 0, reflecting: 1, proposed: 2, merged: 3, dropped: 3, pending: 3 };
+const STAGE: Record<string, number> = { seeded: 0, reflecting: 1, proposed: 2, merged: 3, dropped: 3 };
 const stage = (l: RunLearning | undefined) => (l ? STAGE[l.state] ?? 0 : -1);
 /** The learning a timeline row of kind `learning` carries (`learning`: its state, reason and words), when it does. */
 const rowLearning = (row: TimelineRow | undefined): RunLearning | undefined => {
@@ -342,10 +341,6 @@ export function lookedBack(l: RunLearning | undefined): string {
     const said = [...(kept.length ? [`kept ${notes(kept.length)} (${names(kept)})`] : []), ...(waits.length ? [`${lowerFirst(waitWords(waits.length))} (${names(waits)})`] : [])];
     return said.length ? `Looked back: ${said.join("; ")}` : `Looked back. ${l.detail?.trim() || "It kept what it learned."}`;
   }
-  if (l.state === "pending") {
-    const waits = pendingBy(l);
-    return `Looked back: ${lowerFirst(waitWords(waits.length))}${waits.length ? ` (${names(waits)})` : ""}`;
-  }
   if (dropKind(l.reason) === "nothing") return "Looked back: nothing new to keep";
   // The server's sentence as it is (its own words say what was not kept, a skill or a draft with it): never trimmed.
   return `Looked back: ${dropWords(l)}`;
@@ -355,9 +350,10 @@ export function lookedBack(l: RunLearning | undefined): string {
  *  unless that is the line again. */
 function foldedRow(row: TimelineRow): string {
   const r = learningLabel(row);
-  const line = rowFailed(r) ? `${r.summary} (failed)` : r.summary;
+  const summary = r.summary ?? "";
+  const line = rowFailed(r) ? `${summary} (failed)` : summary;
   const detail = rowDetail(r)?.trimEnd();
-  return detail && detail.trim() !== r.summary.trim() ? `${line}\n${detail.replace(/^(?=.)/gm, "  ")}` : line;
+  return detail && detail.trim() !== summary.trim() ? `${line}\n${detail.replace(/^(?=.)/gm, "  ")}` : line;
 }
 
 /** A run's timeline rows as its page shows them, with its end-of-run look-back as ONE step. Every row labelled
@@ -376,8 +372,9 @@ export function learningSteps(rows: readonly TimelineRow[], learning?: RunLearni
   const said = stage(fromRow) > stage(learning ?? undefined) ? fromRow : learning && { ...learning, detail: learning.detail ?? fromRow?.detail ?? end?.summary };
   const first = looked[0]!;
   const step: TimelineRow = {
-    id: first.id, seq: first.seq, timestamp: first.timestamp, ...(first.created_at ? { created_at: first.created_at } : {}),
-    kind: "Learning", agent_label: null, tool_name: null, summary: lookedBack(said ?? undefined),
+    id: first.id, seq: first.seq, timestamp: first.timestamp, created_at: first.created_at,
+    kind: LEARNING, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null,
+    summary: lookedBack(said ?? undefined),
     text: [...looked, ...(end ? [end] : [])].map(foldedRow).join("\n"),
   };
   return rows.flatMap((r) => (r === first ? [step] : r.agent_label === LEARNING || r.kind === LEARNING ? [] : [r]));

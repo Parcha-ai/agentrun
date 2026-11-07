@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { issuesFor, ownSettings, providerHelp, providerLabel, resolution, toolChoices, withProvider } from "./toolSettings";
+import type { ToolSettings } from "./v2";
 
 // capabilities.tools as the server lists them: a capability with a provider choice carries its providers (the built-in
 // default first), the server's pick, the default, and what it resolves to per harness; the rest carry none.
@@ -26,7 +27,7 @@ describe("tool settings", () => {
   });
 
   it("a provider equal to the layer's default is no setting, a reset takes the row back, and the settings are never changed", () => {
-    const start = { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "parallel" } };
+    const start: ToolSettings = { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "parallel" } };
     expect(withProvider(start, "web_search", "auto", "auto")).toEqual({ web_fetch: { provider: "parallel" } });
     expect(withProvider(start, "web_fetch", undefined, "kernel")).toEqual({ web_search: { provider: "exa-keyless" } });
     expect(withProvider({}, "web_search", "parallel", "auto")).toEqual({ web_search: { provider: "parallel" } });

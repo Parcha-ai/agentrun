@@ -9,12 +9,13 @@ import { decisionRows } from "../dist/decision-rows.js";
 import { agentFolderOf, homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { REQUEST_EXAMPLES } from "../dist/openapi.js";
+import { REQUEST_EXAMPLES, RUN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, LEARN, learner, made, started } from "./learn-support.mjs";
 import { agent, FAUX, flowAgent, follow, serve } from "./support.mjs";
+import { fakeClock, schedule } from "./trigger-support.mjs";
 
 const VENDORED = JSON.parse(await readFile(new URL("../src/openapi/agentrun-v2.openapi.json", import.meta.url), "utf8"));
 const METHODS = ["get", "put", "post", "delete", "patch", "head", "options", "trace"];
@@ -218,6 +219,8 @@ test("the contract's operations are as vendored; this server's own are added and
       };
       inner(property, `${at}.${field}`);
       delete schema.properties[field];
+      // One this server always sends is required beside the contract's (RUN_FIELDS_SENT): taken out with it.
+      if (schema.required?.includes(field)) schema.required = schema.required.filter((name) => name !== field);
       marked.push(`${at}.${field}`);
     }
   };
@@ -604,4 +607,29 @@ test("the not-metered counts are this server's own fields: TimelineUsage.not_met
     assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
   }
   assert.equal(doc.components.schemas.UsageLine.properties.unpriced_runs?.type, "integer");
+});
+
+test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {
+  const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-10-31T12:00:00Z") });
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  for (const name of ["Run", "RunSummary"]) for (const field of RUN_FIELDS_SENT) assert.ok(doc.components.schemas[name].required.includes(field), `${name}.${field} is required`);
+  await made(api, agent("nightly"));
+  const runId = await started(api, "nightly");
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  const listed = (await api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
+  for (const [what, value] of [["a run", run], ["a list's run", listed]]) for (const field of RUN_FIELDS_SENT) assert.ok(value && field in value, `${what} holds ${field}`);
+
+  const answer = doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema;
+  const write = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;
+  for (const [source, filled] of [[{ cron: "30 1 * * *" }, "timezone"], [{ every_s: 600 }, "start_at"]]) {
+    const body = schedule("nightly", source);
+    assert.deepEqual(schemaProblems(doc, write, body), [], `a write may leave ${filled} out`);
+    const created = await api("POST", "/triggers", body);
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(typeof created.body.source[filled], "string", `the server fills ${filled} in`);
+    const read = (await api("GET", `/triggers/${created.body.id}`)).body;
+    assert.deepEqual(schemaProblems(doc, answer, read), [], JSON.stringify(read));
+    const { [filled]: _, ...without } = read.source;
+    assert.notDeepEqual(schemaProblems(doc, answer, { ...read, source: without }), [], `an answer without ${filled} is not the document's`);
+  }
 });
