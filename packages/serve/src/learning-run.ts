@@ -21,7 +21,7 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, currentLearning, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, currentLearning, detailShown, dropSeed, holdsForOk, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, LEARNING_REASONS, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
 import { statusesOf } from "./learning-routes.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
@@ -538,9 +538,8 @@ export class LearningRuns {
    *  checked against the folder's main (learning-routes.ts statusesOf, one read per commit of main). Its record stays as
    *  the merge wrote it; one that held nothing is read as it is, with no read of the folder. */
   async current(agentId: string, learning: Learning | undefined): Promise<Learning | undefined> {
-    const held = learning?.state === "merged" && ((Array.isArray(learning.pending) && learning.pending.length > 0) || [...(learning.skills ?? []), ...(learning.workflows ?? [])].some((item) => item?.pending));
-    if (!held) return learning;
-    return currentLearning(learning!, await statusesOf(this.options.agents.dir, agentId));
+    if (!holdsForOk(learning)) return learning;
+    return currentLearning(learning, await statusesOf(this.options.agents.dir, agentId));
   }
 
   /** `rows` with their learning row as it reads now (current): its words from what it held, checked against main. */

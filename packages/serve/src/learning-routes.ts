@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { agentFolderOf, readJson } from "./files.js";
-import { agentFolder, changedOrder, checkOut, currentLearning, detailShown, git, line, mainOf, type NoteRuns, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, changedOrder, checkOut, currentLearning, holdsForOk, type ItemStatus, detailShown, git, line, mainOf, type NoteRuns, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -351,15 +351,15 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
 /** For tests: how many times a folder's statuses were read (once per commit of its main). */
 export const pendingTestHooks = { reads: 0 };
 /** By agent: its folder's main commit and each learned item's status there. */
-const statusBy = new Map<string, { sha: string; status: ReadonlyMap<string, string> }>();
-const statusReads = new Map<string, Promise<ReadonlyMap<string, string>>>();
+const statusBy = new Map<string, { sha: string; status: ReadonlyMap<string, ItemStatus> }>();
+const statusReads = new Map<string, Promise<ReadonlyMap<string, ItemStatus>>>();
 
 /** Each learned item's status on agent `agentId`'s folder's main, by file (a note's; a skill's SKILL.md; a workflow
  *  draft's workflow.json, as its README.md says it), as the learning view reads them (notesAt, learnedAt): `active`,
- *  `pending`, `superseded` or `retired`. Read once per commit of main (a list asks for many runs): the commit is
+ *  `pending`, `superseded` or `retired`, with what a note supersedes. Read once per commit of main (a list asks for many runs): the commit is
  *  resolved each time, the folder only when it moved. A folder never made holds none; one that cannot be read is
  *  undefined. */
-export async function statusesOf(data: string, agentId: string): Promise<ReadonlyMap<string, string> | undefined> {
+export async function statusesOf(data: string, agentId: string): Promise<ReadonlyMap<string, ItemStatus> | undefined> {
   try {
     const { home, repo } = await placeOf(data, agentId);
     // A folder never made (no .git) holds nothing yet. One whose .git git cannot read (an invalid repository, git
@@ -375,7 +375,7 @@ export async function statusesOf(data: string, agentId: string): Promise<Readonl
     if (!reading) {
       pendingTestHooks.reads += 1;
       reading = Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha)]).then(([{ notes }, { skills, workflows }]) => {
-        const status = new Map<string, string>([...notes.map((note): [string, string] => [note.file, note.status]), ...[...skills, ...workflows].map((item): [string, string] => [item.file, item.status])]);
+        const status = new Map<string, ItemStatus>([...notes.map((note): [string, ItemStatus] => [note.file, { status: note.status, supersedes: note.supersedes }]), ...[...skills, ...workflows].map((item): [string, ItemStatus] => [item.file, { status: item.status }])]);
         statusBy.set(agentId, { sha, status });
         return status;
       });
@@ -393,7 +393,7 @@ export async function statusesOf(data: string, agentId: string): Promise<Readonl
  *  undefined (the caller shows no count). */
 export async function pendingCount(data: string, agentId: string): Promise<number | undefined> {
   const status = await statusesOf(data, agentId);
-  return status === undefined ? undefined : [...status.values()].filter((value) => value === "pending").length;
+  return status === undefined ? undefined : [...status.values()].filter((value) => value.status === "pending").length;
 }
 
 /** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
@@ -693,7 +693,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
  *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
 export async function runLearning(run: Run, shown: Shown, secrets: readonly string[], data: string) {
   // What it held for its owner's OK as it reads now (learning.ts currentLearning); its record stays as the merge wrote it.
-  const learning = run.meta.learning && currentLearning(run.meta.learning, await statusesOf(data, run.agentId));
+  const learning = holdsForOk(run.meta.learning) ? currentLearning(run.meta.learning, await statusesOf(data, run.agentId)) : run.meta.learning;
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
   const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;

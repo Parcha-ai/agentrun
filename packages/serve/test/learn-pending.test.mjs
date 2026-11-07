@@ -257,7 +257,7 @@ test("a run's whole learning reads no folder unless its merge held something for
 
 test("what a run held reads as it stands on main now: a skill approved since is the run's, its pending gone; one retired is said no more; a run whose every item was retired says so; still pending, it waits; no status read, as written", () => {
   const held = { state: "merged", reason: null, detail: "stored", at: "2026-11-07T00:00:00Z", pending: [{ file: "a.md", name: "A" }], skills: [{ file: "skills/s/SKILL.md", name: "s", pending: true }], workflows: [{ file: "workflows/w/workflow.json", name: "w", pending: true }] };
-  const now = (status) => currentLearning(held, new Map(Object.entries(status)));
+  const now = (status) => currentLearning(held, new Map(Object.entries(status).map(([file, value]) => [file, { status: value }])));
   assert.deepEqual(now({ "a.md": "pending", "skills/s/SKILL.md": "pending", "workflows/w/workflow.json": "pending" }), held, "all still wait");
   const approved = now({ "a.md": "active", "skills/s/SKILL.md": "active", "workflows/w/workflow.json": "retired" });
   assert.deepEqual([approved.pending, approved.learned, approved.skills, approved.workflows], [undefined, [{ file: "a.md", name: "A", supersedes: [] }], [{ file: "skills/s/SKILL.md", name: "s" }], []]);

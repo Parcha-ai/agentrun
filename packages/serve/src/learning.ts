@@ -153,15 +153,24 @@ export function notesView({ state, given, read: opened, learned, pending, skills
   const [kept, drafts] = [files(skills), files(workflows)];
   return { ...(started.length ? { given: started } : {}), ...(read.length ? { read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}), ...(kept.length ? { skills: kept } : {}), ...(drafts.length ? { workflows: drafts } : {}) };
 }
+/** A learned item's status on main (a note's front matter, a skill's SKILL.md, a draft's README.md), with what a note
+ *  supersedes. */
+export type ItemStatus = { status: string; supersedes?: readonly string[] };
+/** Whether a run's learning held anything for its owner's OK: a merge with a held note, skill or draft. Only such a
+ *  run's reads check main (currentLearning). */
+export const holdsForOk = (learning: Learning | undefined): learning is Learning =>
+  learning?.state === "merged" && ((Array.isArray(learning.pending) && learning.pending.length > 0) || [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].some((item) => item?.pending));
+
 /** A merged run's learning as it reads now: what it held for the owner's OK checked against each item's status on
  *  main now (`status`, by file: a note's, a skill's SKILL.md, a draft's workflow.json). Still pending, it waits; approved
  *  (active), it is learned, as a merge that held nothing says it; retired or gone, it is no longer said. The record keeps
  *  what the merge wrote; only its reads change. No status (the folder unread): as written. */
-export function currentLearning(learning: Learning, status: ReadonlyMap<string, string> | undefined): Learning {
+export function currentLearning(learning: Learning, status: ReadonlyMap<string, ItemStatus> | undefined): Learning {
   if (!status || learning.state !== "merged") return learning;
-  const of = (file: unknown) => (typeof file === "string" ? status.get(file) : undefined);
+  const of = (file: unknown) => (typeof file === "string" ? status.get(file)?.status : undefined);
   const held = Array.isArray(learning.pending) ? learning.pending : [];
-  const approved = held.filter((note) => of(note?.file) === "active").map(({ file, name }) => ({ file, name, supersedes: [] as string[] }));
+  // An approved note replaces what its front matter on main says it supersedes, as a merge that held nothing says it.
+  const approved = held.filter((note) => of(note?.file) === "active").map(({ file, name }) => ({ file, name, supersedes: [...(status.get(file)?.supersedes ?? [])] }));
   const files = (list: LearnedFile[] | undefined) => (Array.isArray(list) ? list.flatMap((item) => (!item?.pending || of(item.file) === "pending" ? [item] : of(item.file) === "active" ? [{ file: item.file, name: item.name }] : [])) : list);
   const { pending: _pending, learned, skills, workflows, ...rest } = learning;
   const waits = held.filter((note) => of(note?.file) === "pending");
