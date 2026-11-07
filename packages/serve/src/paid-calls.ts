@@ -17,8 +17,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { BARRIER, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
-import { JOURNAL_SYNCHRONOUS } from "@parcha/pi-durable-disk/lease";
+import { BARRIER, JOURNAL_SYNCHRONOUS, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { paidCall } from "./cap.js";
 
 /** Parallel's published prices (https://docs.parallel.ai/getting-started/pricing, read 2026-11-03): a `fast` search

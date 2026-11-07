@@ -24,6 +24,8 @@ export type { ArchilStore, Fence, FencedDatabase, Profile, StoreFencedError, Syn
 // The barrier: what a site calls once a commit must be durable before the run goes on (barriers.ts).
 export { BARRIER, syncNow } from "./barriers.ts";
 export type { BarrierName, SyncTarget } from "./barriers.ts";
+// The run journal's `synchronous` level: with no store open to sync, a commit is durable only when it is FULL.
+export { JOURNAL_SYNCHRONOUS } from "./store.ts";
 
 // The app contract: what `--app` names.
 export { AppError } from "./app.ts";
