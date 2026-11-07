@@ -476,7 +476,7 @@ export const anthropicRefusal = (models: { getProvider(id: string): object | und
  *  for an Anthropic model; every other provider runs as it does without the setting. Never throws. */
 export async function providerModels(env: NodeJS.ProcessEnv) {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  // With the models serve lists beside pi-ai's catalog (local-models.ts): OpenRouter's particle-1.
+  // With the prices serve sets over pi-ai's catalog (local-models.ts): OpenRouter's particle-1 at its list price.
   const models = withLocalModels(builtinModels({ authContext: authContextOf(env) }));
   if (!env.ANTHROPIC_BASE_URL) return models;
   const [{ gatewayBase }, { createProvider }, { anthropicMessagesApi }] = await Promise.all([import("./adapters.js"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
