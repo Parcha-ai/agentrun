@@ -452,12 +452,12 @@ core health    hello ping unknown-method kind-consistent    ✓ 4
 core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
-core screen    screenshot-size                              - 1
-  - screen.screenshot-size: the provider does not declare screen
-...
 full lifetime  extend                                       - 1
   - lifetime.extend: the provider has no extend()
-core PASS 53/53 · 9 Core cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+optional screen screenshot-size                              - 1
+  - screen.screenshot-size: the provider does not declare screen
+...
+core PASS 53/53 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
@@ -519,8 +519,9 @@ A case needs groups (declared by both `capabilities().groups` and hello), networ
 provider method (`extend`, `stream`, declared by being there). When a Core case needs what its kind requires and the
 provider or the computer lacks it, the case fails in words: `a desktop computer with daemon pid1 must declare screen:
 the provider does not declare screen`. Any other need that is not declared skips the case with the reason, never
-fails it, and names it in `undeclared`; a Core case skipped so is out of Core's count, and the verdict says how many
-(`9 Core cases skipped, not declared`). Any other skip of a Core case (no fixture given, no way to observe a touch)
+fails it, and names it in `undeclared`; a Core case skipped so is not Core for this kind of computer: the report lists
+it under `optional`, never under `core`, it is out of Core's count, and the verdict says how many (`9 optional cases
+skipped, not declared`). Any other skip of a Core case (no fixture given, no way to observe a touch)
 is not a pass, so Core does not pass.
 
 The cases that check what input did read a fixture's own log, with no model. `--fixture <path>` (`fixture` from code)
