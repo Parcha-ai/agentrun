@@ -18,6 +18,7 @@ import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
 import { keyShaped } from "./secret-cut.js";
+import { servedSkill } from "./learn/skills.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
@@ -551,7 +552,11 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // harness.
   // The id as the provider's endpoint names it (codexProvider, as codexOf takes it): OpenRouter's is the whole slug.
   const provider = codexProvider(env, needs.model, "opencode");
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : {}) });
+  // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
+  // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
+  // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
+  const skills = needs.skills?.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 /** The model proxy a faux harness's session serves (FauxOptions.proxy): the policy, origin, credential and price `harness`'s

@@ -137,3 +137,31 @@ test("an opencode run gets the skill its agent learned as OpenCode's own: named 
   // What the model got back, in OpenCode's next request: the learned SKILL.md.
   assert.ok(gw.seen.slice(1).some((body) => JSON.stringify(body.input ?? []).includes(RULE)), "the read returns the learned SKILL.md to the model");
 });
+
+test("an opencode run lists each of its skills by its real description: one written with CRLF line ends and one whose description is folded (`description: >`) read as a prompt reads them", { timeout: 120_000, skip: noSetpriv }, async (t) => {
+  const gw = await gateway(t, () => said("OpenCode answered."));
+  const dir = await scratch(t);
+  const standIn = join(dir, "opencode-stand-in.mjs");
+  await copyFile(OPENCODE_STAND_IN, standIn);
+  envFor(t, {
+    AGENTRUN_OPENCODE_STANDIN: "1",
+    AGENTRUN_SERVE_OPENCODE_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }),
+    AGENT_MODEL_BASE_URL: gw.origin,
+    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL_API_KEY: GATEWAY_KEY,
+    AGENT_MODEL_PRICE: "1,2,0.5",
+  });
+  const { api } = await serve(t, { faux: undefined });
+  const skills = {
+    "crlf-skill/SKILL.md": "---\r\nname: crlf-skill\r\ndescription: Written on a machine with CRLF line ends.\r\n---\r\nKeep each line short.\r\n",
+    "folded-skill/SKILL.md": "---\nname: folded-skill\ndescription: >\n  Folded over two lines,\n  read as one.\n---\nCheck the units first.\n",
+  };
+  const created = await api("POST", "/agents", { ...agent("described", { harness: "opencode", instructions: "Answer the question.", skills: Object.keys(skills).map((path) => path.split("/")[0]) }), skills });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const run = await api("POST", "/agents/described/runs", { input: { content: "Answer." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await ended(api, run.body.run_id);
+  const input = JSON.stringify(gw.seen[0]?.input ?? []);
+  assert.ok(input.includes("- crlf-skill: Written on a machine with CRLF line ends."), `the CRLF skill's description: ${input}`);
+  assert.ok(input.includes("- folded-skill: Folded over two lines, read as one."), `the folded description, read as one line: ${input}`);
+});
