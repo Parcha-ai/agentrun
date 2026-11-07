@@ -94,21 +94,29 @@ test("a map's items wait for a raise at paths of their own: holding item 0 leave
   await held1;
 });
 
-test("a decision's hold is kept in the run's store before its request can be sent, and one that sent nothing is booked at $0, so no later process counts its hold", async (t) => {
+test("a request the driver escalates without asking keeps no hold; one its provider refuses unbilled is booked at $0 after its hold; a hold that cannot be kept sends nothing", async (t) => {
   t.after(() => useSpend(undefined));
   useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  const { DecisionProviderError } = await import("@parcha/agentrun-dsl");
   const seen = [];
   const { waits } = fakeWaits();
-  const capped = cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected",
-    book: async (data) => void seen.push(["book", data.decision, data.usd]), keep: async (data) => void seen.push(["keep", data.decision, data.usd]) });
-  const judge = capped.before(async () => (seen.push(["send"]), "escalated"), () => false);
-  assert.deepEqual(await outcome(judge, params({ provider: "parallel", model: undefined })), ["sent", "escalated"]);
-  assert.deepEqual(seen, [["keep", "d-1", 0.001], ["send"], ["book", "d-1", 0]]);
-  // A hold that cannot be kept sends nothing.
-  const refused = cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected", book: async () => undefined, keep: async () => { throw new Error("disk full"); } });
+  const make = (keep) => cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected",
+    book: async (data) => void seen.push(["book", data.decision, data.usd]), keep });
+  const keeping = async (data) => void seen.push(["keep", data.decision, data.usd]);
+  // Escalated by the driver (asked by an earlier process): the settling judge is never asked, so nothing is kept or booked.
+  const escalating = make(keeping);
+  assert.deepEqual(await outcome(escalating.before(async () => "escalated", () => false), params({ provider: "parallel", model: undefined })), ["sent", "escalated"]);
+  assert.deepEqual(seen.splice(0), []);
+  // Refused unbilled by its provider: kept, then booked at $0, so no later process counts the hold.
+  const refusing = make(keeping);
+  const judge = refusing.settling(async () => { throw new DecisionProviderError("rate_limited", "too many"); });
+  assert.deepEqual(await outcome(refusing.before(judge, () => false), params({ provider: "parallel", model: undefined })), ["threw", "DecisionProviderError", "rate_limited"]);
+  assert.deepEqual(seen.splice(0), [["keep", "d-1", 0.001], ["book", "d-1", 0]]);
+  // A hold that cannot be kept: nothing is sent.
   let sent = 0;
-  assert.deepEqual(await outcome(refused.before(async () => ((sent += 1), "answered"), () => false), params({ provider: "parallel", model: undefined })), ["threw", "DecisionProviderError", "connection"]);
-  assert.equal(sent, 0);
+  const full = make(async () => { throw new Error("disk full"); });
+  const unsent = await outcome(full.before(full.settling(async () => ((sent += 1), { answers: {}, cost_usd: 0.001 })), () => false), params({ provider: "parallel", model: undefined }));
+  assert.deepEqual([unsent, sent, seen], [["threw", "DecisionProviderError", "connection"], 0, []]);
 });
 
 test("a decision's hold is kept only once the driver has admitted its request, right before the send, so a crash before the admission leaves no hold for the next process to count", async (t) => {

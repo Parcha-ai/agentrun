@@ -9,9 +9,11 @@
 //     reports, at the hold when it reports none or the request failed after it may have been sent (chargedCost), and lets
 //     it go when nothing was sent. What it counted is booked in the run's store as a DECISION_COST entry, which a later
 //     process reads back (cap.ts decisionSpentIn), so the cap counts every decision once, across a resume.
-//   - Before a request is sent, its hold is kept in the run's store (DECISION_HOLD, committed before the driver admits
-//     it); one that ends with nothing charged is booked at $0. A hold with no booking after it is a request whose
-//     process died while it was out: the next process counts it at its hold, never $0 (decisionSpentIn).
+//   - Once the driver has admitted a request (committed, and flushed before the judge is asked), and right before it is
+//     sent, its hold is kept in the run's store (DECISION_HOLD, one awaited commit); one that ends with nothing charged
+//     is booked at $0. A hold with no booking after it is a request whose process died while it may have been out: the
+//     next process counts it at its hold, never $0, unless a receipt names its charge (decisionSpentIn). A process that
+//     dies before the admission keeps no hold, so nothing unsent is ever counted.
 // The hold, per request, with its input bound one token per UTF-8 byte of its state and questions (cap.ts inputBound's
 // rule) and DECISION_IMAGE_TOKENS for each image:
 //   - Parallel: its list price for one request (PARALLEL_LIST_PRICE_USD), which is what it is booked at.
@@ -122,7 +124,7 @@ export function cappedDecisions({ providers, waits, mode, book, keep }: {
   keep: (data: { call: string; decision: string | null; usd: number }) => Promise<void>;
 }) {
   /** Each request's hold, taken by `before` and settled by `settling`, by the params object both are handed. */
-  const tickets = new WeakMap<object, { ticket: PaidTicket; usd: number; call: string; decision: string | null; settled: boolean }>();
+  const tickets = new WeakMap<object, { ticket: PaidTicket; usd: number; call: string; decision: string | null; name: string; settled: boolean }>();
   const stepOf = (params: JudgeParams): StepAt => ({ label: params.label, path: params.executionPath ?? null });
   return {
     /** Before the admission: the hold taken, or a wait for a raise, or the run stopped. `replayed` says whether the
@@ -147,23 +149,12 @@ export function cappedDecisions({ providers, waits, mode, book, keep }: {
           return waits.stop(held.refused, stepOf(params));
         }
         const call = `${params.label}@${params.executionPath ?? ""}${params.item ? `#${params.item.index}` : ""}`;
-        const entry = { ticket: held.ticket, usd: hold.usd, call, decision: params.decisionId ?? null, settled: false };
-        // The hold is kept in the store before the request can be sent: a process that dies with it out leaves it
-        // counted at its hold by the next one. A hold that cannot be kept sends nothing.
-        try {
-          await keep({ call, decision: entry.decision, usd: hold.usd });
-        } catch (cause) {
-          held.ticket.drop();
-          throw new DecisionProviderError("connection", `${name} was not sent: its hold under the run's cap could not be kept in the run's store (${(cause as Error)?.message ?? cause}).`, { unsent: true, cause });
-        }
-        tickets.set(params, entry);
+        tickets.set(params, { ticket: held.ticket, usd: hold.usd, call, decision: params.decisionId ?? null, name, settled: false });
         try {
           return await next(params);
         } finally {
-          // A request the driver answered without asking (one asked by an earlier process escalates), or that its provider
-          // refused unbilled, sent nothing: its hold goes, and it is booked at $0, so no later process counts the hold.
+          // A request the driver answered without asking (one asked by an earlier process escalates) sent nothing.
           held.ticket.drop();
-          if (!entry.settled) await book({ call, decision: entry.decision, usd: 0 }).catch(() => undefined);
         }
       };
     },
@@ -172,6 +163,16 @@ export function cappedDecisions({ providers, waits, mode, book, keep }: {
       return async (params) => {
         const held = tickets.get(params);
         if (!held) return judge(params);
+        // Here the driver has admitted the request (dsl with-recovery: committed and flushed before this judge is asked),
+        // and nothing is sent yet: its hold is kept in the run's store, one awaited commit right before the send. A process
+        // that dies from here, the request maybe out, leaves it counted at its hold by the next one (decisionSpentIn); one
+        // that died before the admission kept none. A hold that cannot be kept sends nothing, and the driver marks the
+        // request failed, so the next process asks it again.
+        try {
+          await keep({ call: held.call, decision: held.decision, usd: held.usd });
+        } catch (cause) {
+          throw new DecisionProviderError("connection", `${held.name} was not sent: its hold under the run's cap could not be kept in the run's store (${(cause as Error)?.message ?? cause}).`, { unsent: true, cause });
+        }
         const settle = async (usd: number | null) => {
           held.settled = true;
           held.ticket.settle(usd);
@@ -187,6 +188,8 @@ export function cappedDecisions({ providers, waits, mode, book, keep }: {
           const charged = chargedCost(error);
           if (charged !== undefined) await settle(charged);
           else if (!unbilled(error)) await settle(null);
+          // Unbilled, it charged nothing: booked at $0, so no later process counts its hold.
+          else await book({ call: held.call, decision: held.decision, usd: 0 }).catch(() => undefined);
           throw error;
         }
       };
