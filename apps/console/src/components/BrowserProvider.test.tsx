@@ -84,7 +84,7 @@ describe("an agent's browser pick in its editor", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: choices, step: "tools", onSave: async (fields: AgentFields) => { saves.push(fields); return null; } })));
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    const select = () => host.querySelector<HTMLButtonElement>('section[aria-label="Tool settings"] tr[data-tool="browser"] button[aria-haspopup=listbox]')!;
+    const select = () => host.querySelector<HTMLButtonElement>('section[aria-label="Tool settings"] tr[data-tool="browser"] button[aria-haspopup=listbox][aria-label="browser provider"]')!;
     return { host, saves, select };
   }
 

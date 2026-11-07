@@ -33,7 +33,7 @@ async function open(agent: Agent, { providerChoices = choices, editorCaps = caps
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`section[aria-label="Tool settings"] tr[data-tool="${tool}"]`);
-  const select = (tool: string) => row(tool)!.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!;
+  const select = (tool: string) => row(tool)!.querySelector<HTMLButtonElement>(`button[aria-haspopup=listbox][aria-label="${tool} provider"]`)!;
   const choose = async (tool: string, provider: string) => {
     await pick(select(tool), provider);
   };
@@ -141,7 +141,7 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent: agentWith(), caps, providerChoices: choices, step: "tools", onSave: async (fields: AgentFields) => { saves.push(fields); await held; return null; } })));
-    const select = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!;
+    const select = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!.querySelector<HTMLButtonElement>('button[aria-haspopup=listbox][aria-label="web_search provider"]')!;
     const choose = async (p: string) => { await pick(select(), p); };
     await choose("parallel");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save/.test((b.textContent ?? "").trim()))!.click(); });
@@ -165,7 +165,7 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     const onSave = async (fields: AgentFields) => { saves.push(fields); if (saves.length === 1) { await held; render(after); } return null; };
     act(() => render(before));
     const row = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!;
-    const select = () => row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!;
+    const select = () => row().querySelector<HTMLButtonElement>('button[aria-haspopup=listbox][aria-label="web_search provider"]')!;
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     const choose = async (p: string) => { await pick(select(), p); };
     const click = async (label: RegExp) => { await act(async () => { [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()))!.click(); }); };
