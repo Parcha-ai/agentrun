@@ -5,6 +5,7 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Agent } from "@/lib/agentForm";
+import { agentsByName } from "@/lib/agents";
 import type { Client } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
@@ -313,7 +314,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
   // The instants the hints say: the ones the save sends (a time left alone keeps the instant it was read with).
   const atInstant = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
   const startInstant = draft.startAt ? instantKept(draft.startAt, draft.read?.startAt) : null;
-  const live = (agents ?? []).filter((a) => !a.archived_at || a.agent_id === draft.agentId);
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at || a.agent_id === draft.agentId));
   const kinds: { kind: Draft["kind"]; label: string }[] = [{ kind: "cron", label: "Cron" }, { kind: "at", label: "Once" }, { kind: "every", label: "Every" }];
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
