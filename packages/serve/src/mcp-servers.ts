@@ -98,8 +98,9 @@ export class McpServers {
   }
 
   /** This server's address as a browser reaches it (`base`: an OAuth sign-in's callback is under it), and where it
-   *  listens (`listening`, the same when no public address is set): a loopback authorization server never reaches that port. */
-  attach(base: string, listening = base): void {
+   *  listens (`listening`, required: the same as `base` when no public address is set). A loopback authorization
+   *  server never reaches either one's port when it is local (McpSignIns.own). */
+  attach(base: string, listening: string): void {
     this.signIns.base = base.replace(/\/+$/, "");
     this.signIns.listening = listening.replace(/\/+$/, "");
   }
@@ -316,7 +317,7 @@ export class McpServers {
       // Tried twice when the authorization server does not answer (a timeout, a 5xx, the network): only a refusal is final.
       for (let tries = 0; set.tokens.refresh_token && !next && !no && tries < 2 && !this.stopped.signal.aborted; tries++) {
         try {
-          next = await refreshed(set, kept.url, this.stopped.signal, this.network, this.signIns.listening);
+          next = await refreshed(set, kept.url, this.stopped.signal, this.network, this.signIns.own);
         } catch (error) {
           no = await refused(error);
         }

@@ -74,9 +74,10 @@ type Seen = { refused?: string; failed?: { what: string; status?: number; why?: 
  *  over plain http (checked), and each is dialled at the address checked: its authorization server cannot steer this
  *  server's code, verifier, secret or refresh token to a service on this machine or its network, by its metadata or by
  *  its name's next answer. The one exception, for development and tests, is a loopback MCP server's (`mcpUrl`): its
- *  authorization server may be on the same loopback host, never another loopback address nor this server's own port
- *  (`own`, where this server listens), so it cannot reach this server or another service on this machine (loopbackAllowed). */
-const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}, own?: string, ms = REQUEST_MS) => async (input: string | URL | Request, init?: RequestInit) => {
+ *  authorization server may be on the same loopback host, never another loopback address nor this server's own ports
+ *  (`own`: where it listens, and its public address when that is on loopback), so it cannot reach this server. It CAN
+ *  reach other ports on that same loopback host, blind (endpoint and status only), by design: development only (loopbackAllowed). */
+const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}, own: readonly string[] = [], ms = REQUEST_MS) => async (input: string | URL | Request, init?: RequestInit) => {
   // Started before the address check: its name lookup is bounded by the same timeout and the server's stop.
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]);
   const url = new URL(input instanceof Request ? input.url : String(input));
@@ -111,15 +112,18 @@ async function noted(sent: Promise<Response>, what: string, seen: Seen): Promise
 const portOf = (url: URL) => Number(url.port || (url.protocol === "https:" ? 443 : 80));
 /** Whether `url` is an endpoint a loopback MCP server's authorization server may use on loopback (a development-only
  *  allowance): the MCP server's own loopback host exactly as it is written (never another loopback address, the IPv6
- *  loopback, or a name for this machine in its place), on any port but the one this server listens on (`own`, its
- *  listening address, never the public one browsers use, which names no local port). Any other loopback endpoint is
- *  checked as any address is, and refused. */
-function loopbackAllowed(url: string | URL, mcpUrl: string, own: string | undefined): boolean {
+ *  loopback, or a name for this machine in its place), on any port but this server's own (`own`: where it listens,
+ *  and its public address when that is on loopback too, as a local https proxy in front of it is). Any other loopback
+ *  endpoint is checked as any address is, and refused. Other ports on that same loopback host stay reachable, blind
+ *  (endpoint and status only): that is why the allowance is for development only. */
+function loopbackAllowed(url: string | URL, mcpUrl: string, own: readonly string[]): boolean {
   const at = typeof url === "string" ? URL.parse(url) : url;
   const mcp = URL.parse(mcpUrl);
   if (!at || !mcp || !LOOPBACK.test(mcp.hostname) || at.hostname !== mcp.hostname) return false;
-  const self = own ? URL.parse(own) : null;
-  return !(self && portOf(self) === portOf(at));
+  return !own.some((address) => {
+    const self = URL.parse(address);
+    return self !== null && portOf(self) === portOf(at);
+  });
 }
 
 /** `url`, which the authorization server named as its `what`, for an MCP server off loopback: refused when it is on
@@ -163,7 +167,7 @@ const raced = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
 
 /** Every endpoint discovery found, checked as `checked` does, before any is used; a loopback one passes only as
  *  loopbackAllowed lets it, for a loopback MCP server (`mcpUrl`). */
-async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwork, mcpUrl: string, own: string | undefined): Promise<string | undefined> {
+async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwork, mcpUrl: string, own: readonly string[]): Promise<string | undefined> {
   const signal = AbortSignal.timeout(REQUEST_MS);
   const metadata = state.authorizationServerMetadata;
   const named: Array<[string, string | undefined]> = [["address", state.authorizationServerUrl], ["metadata address", state.resourceMetadataUrl], ["authorization endpoint", metadata?.authorization_endpoint], ["token endpoint", metadata?.token_endpoint], ["registration endpoint", metadata?.registration_endpoint]];
@@ -203,6 +207,13 @@ export class McpSignIns {
   /** Where this server listens (`http://<host>:<port>`), whatever `base` is: its port is never an endpoint a loopback
    *  authorization server may name. Set by McpServers.attach. */
   listening = "";
+  /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
+   *  and its public address too when that is on loopback (a local proxy in front of the listener, such as
+   *  https://localhost:8443, reaches this server). */
+  get own(): string[] {
+    const base = URL.parse(this.base);
+    return [this.listening, ...(base && LOOPBACK.test(base.hostname) ? [this.base] : [])].filter(Boolean);
+  }
 
   /** CIMD only from a public https address: an authorization server must be able to fetch the document. */
   private get metadataUrl(): string | undefined {
@@ -229,7 +240,7 @@ export class McpSignIns {
     const seen: Seen = {};
     const provider = this.provider(entry, { state, redirect: (to) => void (opened = to), seen });
     try {
-      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, this.listening) });
+      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, this.own) });
     } catch (error) {
       // Named by the endpoint and its status, never by what the authorization server said: its answer is not passed on.
       const { OAuthError } = await sdk();
@@ -255,7 +266,7 @@ export class McpSignIns {
   async finish(entry: Pending, code: string, iss: string | undefined, stop?: AbortSignal): Promise<TokenSet> {
     let tokens: OAuthTokens | undefined;
     const provider = this.provider(entry, { saved: (got) => void (tokens = got) });
-    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, this.listening) });
+    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, this.own) });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
     const scope = tokens.scope ?? entry.scope;
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
@@ -277,7 +288,7 @@ export class McpSignIns {
       codeVerifier: () => entry.verifier ?? "",
       // Checked before anything discovery found is used: registration, the page the owner opens, the code exchange.
       saveDiscoveryState: async (state) => {
-        const why = await discoveryRefusal(state, this.network, entry.url, this.listening);
+        const why = await discoveryRefusal(state, this.network, entry.url, this.own);
         if (why) {
           if (hooks.seen) hooks.seen.refused ??= why;
           throw new Error(why);
@@ -291,7 +302,7 @@ export class McpSignIns {
 }
 
 /** `set` refreshed at its authorization server, the refresh token kept when none new is given. */
-export async function refreshed(set: TokenSet, mcpUrl: string, stop?: AbortSignal, network: OAuthNetwork = systemNetwork, own?: string): Promise<TokenSet> {
+export async function refreshed(set: TokenSet, mcpUrl: string, stop?: AbortSignal, network: OAuthNetwork = systemNetwork, own: readonly string[] = []): Promise<TokenSet> {
   const tokens = await (await sdk()).refreshAuthorization(set.discovery.authorizationServerUrl, {
     ...(set.discovery.authorizationServerMetadata ? { metadata: set.discovery.authorizationServerMetadata } : {}),
     clientInformation: set.client,

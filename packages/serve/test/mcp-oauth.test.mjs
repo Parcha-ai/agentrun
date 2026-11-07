@@ -155,12 +155,12 @@ test("CIMD only on a public https address: the client id is this server's metada
   const key = sealKey();
   const { as, mcp } = await fakes(t, { cimd: true });
   const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test");
-  store.attach("https://agents.example.com");
+  store.attach("https://agents.example.com", "https://agents.example.com");
   const pub = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.equal(pub.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.equal(pub.searchParams.get("redirect_uri"), `https://agents.example.com${CALLBACK}`);
   assert.ok(!as.log.some((entry) => entry.path === "/register"), "no registration with a metadata document");
-  store.attach("http://127.0.0.1:4321");
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321");
   const local = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.notEqual(local.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.ok(as.log.some((entry) => entry.path === "/register"), "on loopback http it registers instead");
@@ -363,7 +363,7 @@ async function publicNetwork(metadata = {}, answers) {
 /** A store on a scratch directory reaching the network `net`, under seal key `key`. */
 async function storeOn(t, key, net, data) {
   const store = new McpServers(data ?? (await scratch(t)), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
-  store.attach("http://127.0.0.1:4321");
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321");
   return store;
 }
 
@@ -825,7 +825,7 @@ test("a loopback MCP server's authorization server may use only the MCP server's
       const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
       t.after(() => mcp.close());
       const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
-      store.attach(own.origin);
+      store.attach(own.origin, own.origin);
       await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), `${what} at ${at.origin}`);
     }
     assert.deepEqual(at.hits, [], `${at.origin} heard nothing`);
@@ -835,7 +835,7 @@ test("a loopback MCP server's authorization server may use only the MCP server's
   // The MCP server's own loopback host, on another port (its authorization server's), still signs in: the repo's fake.
   const { mcp } = await fakes(t);
   const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
-  store.attach(own.origin);
+  store.attach(own.origin, own.origin);
   assert.match((await store.oauthStart("docs", { url: mcp.url })).authorization_url, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
 });
 
