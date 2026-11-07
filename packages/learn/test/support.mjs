@@ -41,7 +41,7 @@ export const index = (ids = [NOTE_ID]) => `# Learnings\n\n${ids.map((id) => `- $
 export const skill = ({ name = "find-policies", description = "Find a store's refund and shipping policies." } = {}) =>
   `---\nname: ${name}\ndescription: ${description}\n---\n# Find policies\n\nTry /policies/ first, then the footer links.\n`;
 
-export const workflow = ({ name = "find-policies", tools = ["fetch_page"], node = "agent" } = {}) => JSON.stringify({
+export const workflow = ({ name = "find-policies", tools = ["read_page"], node = "agent" } = {}) => JSON.stringify({
   v: 2,
   name,
   schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] } },
@@ -65,11 +65,11 @@ export function cleanFiles() {
 }
 
 /** The host's tool list in these tests. */
-export const HOST_TOOLS = ["fetch_page", "browser"];
+export const HOST_TOOLS = ["read_page", "browser"];
 
 /** A draft with a model node, a call node on a host tool and a Jev judge node; with `code`, its first step is a code
  *  node instead of the model node. */
-export const richWorkflow = ({ tool = "fetch_page", code } = {}) => JSON.stringify({
+export const richWorkflow = ({ tool = "read_page", code } = {}) => JSON.stringify({
   v: 2,
   name: "find-policies",
   schemas: {

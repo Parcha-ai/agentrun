@@ -5,7 +5,7 @@
 // records each of its commands' group leader and every descendant it has seen, each by pid, start and boot. Its commands
 // are the children that lead their own group and carry its mark (COMMANDS_MARK=<its token>) in their environment:
 // another environment's commands in the same process, or the app's own helpers, are not its to record. The next open,
-// which holds the owner lock, kills whatever a previous incarnation recorded that is still the same process (pid, start
+// which has found the store free, kills whatever a previous incarnation recorded that is still the same process (pid, start
 // and boot all match), waits until it is gone, and clears the records, before the Harness opens. A recorded leader's
 // whole process group is ended and waited for, a member no walk recorded included; a descendant that left the group
 // (setsid or setpgid: a session or group of its own) is ended if a walk recorded it or it still carries the mark. The
@@ -263,7 +263,7 @@ export class CommandRecorder {
  * the leader is still the recorded process, and each recorded descendant that still is. Waits up to `timeoutMs` until
  * none of them is alive: every process of a killed group, one the instance never recorded included. A record whose processes are all gone is removed; one that still names a live process (it did
  * not die at the deadline: a process in an uninterruptible wait) is rewritten with just those, so the next open tries
- * again, and they are returned. Run only while holding the run (after its owner lock), before the Harness opens.
+ * again, and they are returned. Run only once the run's store is found free, before the Harness opens.
  */
 export async function reapCommands(dir: string, options: CommandsOptions & { readonly timeoutMs?: number } = {}): Promise<Reaped> {
   const table = tableOf(options);

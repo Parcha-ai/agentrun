@@ -26,6 +26,12 @@ export interface BarrierRow {
   /** For a chokepoint whose sync is reached through a hook: the file and text that call it. */
   readonly via?: { readonly file: string; readonly text: string };
   readonly status: BarrierStatus;
+  /**
+   * An active barrier's proof: its box-loss end-to-end test, the one file (relative to the repository) that loses a box
+   * while the effect it guards is in flight and shows the effect is not sent again. `null` while it has none: the run
+   * journal may not go NORMAL then (NORMAL_PRECONDITIONS.barrierProofs).
+   */
+  readonly proof?: string | null;
   readonly why: string;
 }
 
@@ -35,38 +41,52 @@ export const BARRIERS = {
     store: "run-journal",
     site: "serve/src/tool-gate.ts",
     status: "active",
+    proof: "packages/serve/test/barriers-box-loss.test.mjs",
     why: "a pi tool call that is not replay-safe, or a billed replay-safe one: its intent, before it executes",
   },
   kernelEffectIntent: {
     store: "run-journal",
     site: "serve/src/sessions.ts",
-    via: { file: "run-adapters/src/kernel/drive.ts", text: "await writer.sync?.()" },
+    via: { file: "run-adapters/src/kernel/drive.ts", text: "await writer.sync()" },
     status: "active",
+    proof: "packages/serve/test/barriers-box-loss.test.mjs",
     why: "a kernel effect (claude-agent, codex, opencode) that is not replay-safe: its start record, before it runs",
   },
   sideRequestStarted: {
     store: "run-journal",
     site: "serve/src/harness-app.ts",
     status: "active",
+    proof: "packages/serve/test/side-request-box-loss.test.mjs",
     why: "a non-pi harness's model request: its start mark and bound, before it is sent",
   },
   modelRequestStarted: {
     store: "run-journal",
     site: "serve/src/request-start.ts",
     status: "active",
+    proof: "packages/serve/test/barrier-box-loss.test.mjs",
     why: "a pi model or compaction request: its start mark and bound, before it is sent",
   },
   paidToolHold: {
     store: "run-journal",
     site: "serve/src/paid-calls.ts",
     status: "active",
+    proof: "packages/serve/test/barrier-box-loss.test.mjs",
     why: "a paid tool call's hold (paid calls, monid, the MCP gateway), before the call is sent",
+  },
+  browserSessionOpen: {
+    store: "run-journal",
+    site: "serve/src/browser-cost.ts",
+    via: { file: "pi-browser/src/durable.ts", text: "await c.options.beforeCreate({ conversationId: scope.cid, tag, commit: scope.commit });" },
+    status: "active",
+    proof: "packages/serve/test/browser-session-barrier.test.mjs",
+    why: "a browser session's creating record (its tag, the call's hold), before the vendor's session is created",
   },
   workflowAdmit: {
     store: "run-journal",
     site: "serve/src/app.ts",
     via: { file: "dsl/src/recovery/driver.ts", text: "if (options.afterAdmit) await persist(options.afterAdmit);" },
     status: "active",
+    proof: "packages/serve/test/barrier-box-loss.test.mjs",
     why: "a workflow effect's admission with its intent, before it is dispatched",
   },
   decisionHold: {
@@ -79,12 +99,14 @@ export const BARRIERS = {
     store: "run-journal",
     site: "pi-durable-disk/src/run.ts",
     status: "active",
+    proof: null,
     why: "a status transition the run writes (its end among them)",
   },
   runRelease: {
     store: "run-journal",
     site: "pi-durable-disk/src/run.ts",
     status: "active",
+    proof: null,
     why: "the release: what the run committed is durable before its claim is sealed and let go",
   },
 } as const satisfies Record<string, BarrierRow>;
@@ -107,7 +129,7 @@ export interface StoreRow {
 /** Every store a run writes, with how it syncs. */
 export const STORES = {
   "run-journal": {
-    opens: ["pi-durable-disk/src/store.ts", "pi-durable-disk/src/run.ts"],
+    opens: ["pi-durable-disk/src/store.ts", "pi-durable-disk/src/run.ts", "pi-durable-disk/src/status.ts"],
     synchronous: "journal",
     effects: "barriers",
     what: "a run's store/run.sqlite: the pi Harness, the kernel sessions, the workflow journal and the server's marks",
@@ -162,12 +184,28 @@ export const NORMAL_PRECONDITIONS = {
     what: "a fenced run's status write skips its barrier, so it fails with the fence's own error, as at FULL (run.test.ts)",
   },
   kernelSyncRequired: {
-    done: false,
-    what: "the kernel's run-journal writer must have `sync`: an effect with no barrier to call is refused, not run (drive.ts passes a writer without one)",
+    done: true,
+    what: "the kernel's run-journal writer has `sync` (SessionWriter requires it): an effect with no barrier to call is refused, not run",
   },
   endToEndBoxLoss: {
     done: false,
-    what: "a box-loss test through the real chokepoints (the tool gate, the kernel drive, the side-request mark) on a NORMAL run's store, not only ordering tests",
+    what: "the tool gate and kernel drive proofs bite now (barriers-box-loss); the side-request proof (side-request-box-loss) bites only at NORMAL, so 2b flips this with its evidence",
+  },
+  retryMarkSynced: {
+    done: true,
+    what: "no barrier needed before pi-ai's retry: a lost attempt's end mark (serve/src/request-start.ts) carries the request's hold, which its start mark, synced before the request left (modelRequestStarted), carries too, and the retry writes no start mark of its own; a box that drops the lost mark leaves the request read as one a crash cut, at that same hold, and the WAL keeps the lost mark whenever it keeps an answer of the retry (serve/test/retry-mark-box-loss.test.mjs, a guard)",
+  },
+  holdRefusedUnsynced: {
+    done: false,
+    what: "a paid call refused after its hold was written (serve/src/paid-calls.ts:81-84, a sync that fails) and a model request ended unsent after its start mark (modelRequestStarted) leave their refusal or unsent end unsynced",
+  },
+  browserSessionBarrier: {
+    done: true,
+    what: "the durable unit is the session open (browserSessionOpen, written and synced before the vendor create); per-call holds are in-process reservations re-derived at reopen, by design",
+  },
+  barrierProofs: {
+    done: false,
+    what: "every active barrier names its box-loss end-to-end test (BarrierRow.proof); runStatus and runRelease have none yet (null)",
   },
 } as const satisfies Record<string, { readonly done: boolean; readonly what: string }>;
 

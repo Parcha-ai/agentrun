@@ -1,7 +1,7 @@
-// The provider: check refuses in words and makes nothing, create, attach, list and release do what they say, the
-// network reads back as asked, a change to a network the provider does not declare is refused (Core) and one it does
-// declare is refused or applied truthfully (Full), a computer does not run past its deadline, and the janitor ends only
-// the expired, stopped or running.
+// The provider: check refuses in words and makes nothing (past maxLifetimeMs too), create, attach, list and release do
+// what they say, the network reads back as asked, a change to a network the provider does not declare is refused
+// (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
+// and the janitor ends only the expired, stopped or running.
 import { sweep } from "../../janitor.js";
 import type { ComputerRef, ComputerSpec, NetworkSpec } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
@@ -82,6 +82,16 @@ export const providerCases: Case[] = [
 			t.assert(refusals.some((r) => r.field === "network" && r.message !== ""), `check refuses network ${kindOf(policy)}, which the provider does not declare`);
 			await refusedCreate(t, t.spec({ labels, network: policy }), `create with network ${kindOf(policy)}`);
 		}
+		// The vendor's cap is a capability, so check() refuses past it with no vendor call.
+		const { maxLifetimeMs } = t.provider.capabilities();
+		t.assert(Number.isSafeInteger(maxLifetimeMs) && maxLifetimeMs > 0, `capabilities().maxLifetimeMs is a whole number of milliseconds above 0, not ${JSON.stringify(maxLifetimeMs)}`);
+		const over = t.spec({ labels, lifetimeMs: maxLifetimeMs + 1 });
+		const refusals = t.provider.check(over);
+		t.assert(
+			refusals.some((r) => r.field === "lifetimeMs" && r.message !== ""),
+			`check of lifetimeMs ${maxLifetimeMs + 1}, past maxLifetimeMs, refuses lifetimeMs in words: ${JSON.stringify(refusals)}`,
+		);
+		await refusedCreate(t, over, "create of a spec past maxLifetimeMs");
 		t.deepEqual(await names(t, labels), [], "the computers the refused creates made");
 	}),
 	provider("create-release", async (t) => {
