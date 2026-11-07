@@ -302,6 +302,7 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 		[["--provider", "docker", "--frobnicate"], /unknown option --frobnicate/],
 		[["--provider", "./fixtures/missing.mjs"], /cannot load the provider module .*missing\.mjs/],
 		[["--provider", "./fixtures/no-factory.mjs"], /does not export createProvider\(\)/],
+		[["--provider", "Docker"], /unknown computer provider "Docker": the registry holds docker/],
 		[["--provider", "./fixtures/fake-provider.mjs", "--only", "exec,network"], /--only: network is neither a group .* nor a case id/],
 	]) {
 		const err = sink();

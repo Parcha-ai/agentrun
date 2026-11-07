@@ -1,5 +1,5 @@
-// The registry: one line per computer, id → () => import("./<vendor>.js"). Serve and the conformance CLI resolve providers
-// through it alone, so a new computer is its provider file and its line here, with no edit to either. Every import is
+// The registry: one line per computer, id → () => import("./<vendor>.js"). The conformance CLI (and serve, once wired)
+// resolves providers through it alone, so a new computer is its provider file and its line here, with no edit to either. Every import is
 // lazy: loading the registry loads no provider and no vendor SDK.
 import type { ComputerProvider } from "./provider.js";
 
