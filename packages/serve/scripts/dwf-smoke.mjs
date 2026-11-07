@@ -155,12 +155,10 @@ const line = (g) => {
   const map = Object.values(g.nodes).find((n) => n.items);
   return `run=${g.run.status}${g.run.paused ? " PAUSED" : ""} items=[${map?.items.map((i) => `${i.index}:${i.status}`).join(" ") ?? ""}] decisions=${g.totals.decisions} effects=${g.totals.effects} cost=${g.totals.cost_usd} | ${states.join(", ")}`;
 };
-// /graph never refuses a poll: a busy store answers the last good view, marked stale. Asked once, never retried.
-let stale = 0;
+// /graph never refuses a poll: the run's database is read lock-free. Asked once, never retried.
 const graph = async () => {
   const g = await request("GET", `/runs/${id}/graph`);
   assert.equal(g.status, 200, JSON.stringify(g.body));
-  if (g.body.stale) stale++;
   return g.body;
 };
 
@@ -215,7 +213,6 @@ for (let i = 0; ; i++) {
 }
 const run = (await api("GET", `/runs/${id}`)).body;
 say(`run ended: ${run.status} output=${JSON.stringify(run.result?.output)} review=${JSON.stringify(run.review)} cost=${JSON.stringify(run.cost)}`);
-say(`graph polls answered stale: ${stale}`);
 assert.equal(run.status, "completed", JSON.stringify(run));
 
 // The page images are run files.

@@ -137,7 +137,8 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
         if (refused) {
           const answer = { text: refused.text, isError: refused.isError };
           results.set(callId, answer);
-          return answer;
+          // A parked call did not run: the harness's session records it so (HostTool's `parked`).
+          return refused.parked ? { ...answer, parked: true as const } : answer;
         }
         const out = bounded(tool.outputLimits);
         const notes: string[] = [];

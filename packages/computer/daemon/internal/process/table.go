@@ -57,9 +57,10 @@ var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.
 // when all of them run. Its rings hold at most RetainedBytes together: past that, the rings of the processes that ended
 // first are let go, while their entries stay.
 type Table struct {
-	opts    Options
-	startMu sync.Mutex
-	mu      sync.Mutex
+	opts Options
+	// startSlot holds one token while a start runs; a start waits for it in a select, so its cancellation ends the wait.
+	startSlot chan struct{}
+	mu        sync.Mutex
 	// procs is in start order, which is seq order.
 	procs   []*proc
 	lastSeq int64
@@ -77,7 +78,7 @@ func NewTable(opts Options) *Table {
 	if opts.RetainedBytes <= 0 {
 		opts.RetainedBytes = RetainedBytes
 	}
-	return &Table{opts: opts}
+	return &Table{opts: opts, startSlot: make(chan struct{}, 1)}
 }
 
 type proc struct {
@@ -131,14 +132,18 @@ func (p *proc) hasEnded() bool {
 	}
 }
 
-func (t *Table) Start(params StartParams) (StartResult, error) {
+func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, error) {
 	if params.Pty != nil {
 		if err := checkSize(*params.Pty); err != nil {
 			return StartResult{}, err
 		}
 	}
-	t.startMu.Lock()
-	defer t.startMu.Unlock()
+	select {
+	case t.startSlot <- struct{}{}:
+	case <-ctx.Done():
+		return StartResult{}, rpc.Errorf(rpc.KindAborted, "process.start was cancelled while another start was in progress")
+	}
+	defer func() { <-t.startSlot }()
 	if err := t.checkRoom(); err != nil {
 		return StartResult{}, err
 	}
@@ -178,7 +183,7 @@ func (t *Table) Start(params StartParams) (StartResult, error) {
 			theirs = append(theirs, r)
 		}
 	}
-	g, err := execrun.Start(execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty}, stdin, stdout, stderr)
+	g, err := execrun.Start(ctx, execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty}, stdin, stdout, stderr)
 	closeAll(theirs...)
 	if err != nil {
 		p.release()
@@ -202,7 +207,7 @@ func (t *Table) Start(params StartParams) (StartResult, error) {
 }
 
 // checkRoom refuses a start into a full table whose every process runs. It drops nothing: a start drops an ended
-// process only once its own program runs. Hold t.startMu, so that no start fills the room between the two.
+// process only once its own program runs. Hold the start slot, so that no start fills the room between the two.
 func (t *Table) checkRoom() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -226,7 +231,7 @@ func (t *Table) oldestEnded() int {
 }
 
 // dropOldestEnded takes the process that ended first out of a full table, for the caller to release once it has let
-// go of t.mu. Hold t.mu and t.startMu, after checkRoom: a process that has ended never runs again, so there is one.
+// go of t.mu. Hold t.mu and the start slot, after checkRoom: a process that has ended never runs again, so there is one.
 func (t *Table) dropOldestEnded() *proc {
 	if len(t.procs) < t.opts.MaxEntries {
 		return nil

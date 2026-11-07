@@ -43,16 +43,15 @@ const zodChain = (overrides = {}) => ({
   ...overrides,
 });
 const chainNames = ['zod', '@browserbasehq/stagehand', '@parcha/pi-browser', '@parcha/agentrun-harness'];
-// How a chain is judged is tested on a fixture list: the real one with its zod entry set to 2026-11-06, so these cases keep
-// their dates whatever the real entry's expiry is.
+// How a chain is judged is tested on a fixture list: the real one, plus an exception for Stagehand's own zod as the gate
+// carried until Stagehand 4.4.0 (zod 4.6.6, fixed) removed it.
 const ZOD = { package: 'zod', under: 'node_modules/@browserbasehq/stagehand/', advisories: ['GHSA-mrhx-c7xc-m3w5'], expires: '2026-11-06' };
-const withZod = [...AUDIT_EXCEPTIONS.filter(exception => exception.package !== 'zod'), ZOD];
+const withZod = [...AUDIT_EXCEPTIONS, ZOD];
 const blocked = (vulnerabilities, now = before, exceptions = withZod) => auditBlockers(audit(vulnerabilities), now, exceptions).blocking.map(entry => entry.package).sort();
 
-test("the real list accepts Stagehand's own zod, and each package it reaches, until 2026-11-13, and nothing from then", () => {
-  assert.deepEqual(blocked(zodChain(), Date.parse('2026-11-12T23:59:59Z'), AUDIT_EXCEPTIONS), []);
-  assert.deepEqual(blocked(zodChain(), Date.parse('2026-11-13T00:00:00Z'), AUDIT_EXCEPTIONS), [...chainNames].sort());
-  assert.deepEqual([AUDIT_EXCEPTIONS.find(exception => exception.package === 'zod').under].flat(), ['node_modules/@browserbasehq/stagehand/'], 'only the one nested copy');
+test("the real list accepts no zod: Stagehand's own zod, and each package it reaches, block", () => {
+  assert.equal(AUDIT_EXCEPTIONS.some(exception => exception.package === 'zod'), false);
+  assert.deepEqual(blocked(zodChain(), before, AUDIT_EXCEPTIONS), [...chainNames].sort());
 });
 
 test("an exception for one nested copy accepts it, and each package vulnerable only through it, until it expires", () => {
