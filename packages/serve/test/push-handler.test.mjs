@@ -185,14 +185,15 @@ test("an event whose scope more than one trigger listens on (a file edited by ha
 test("a hook body over its source's cap is 413 at once, its socket closed, never read to its end: declared up front, or counted as it streams", { timeout: 60_000 }, async (t) => {
   const { server } = await pingServer(t);
   const { port } = new URL(server.baseUrl);
+  const host = new URL(server.baseUrl).hostname;
   const ask = (headers, first) => new Promise((resolve, reject) => {
-    const socket = connect(Number(port), "127.0.0.1");
+    const socket = connect(Number(port), host);
     let answer = "";
     socket.on("data", (chunk) => (answer += chunk));
     socket.on("close", () => resolve(answer));
     socket.on("error", reject);
     // Declared 10 MiB; only a first piece is ever sent, the rest held back: an answer and a close mean the body was not read.
-    socket.write(`POST /v2/hooks/ping HTTP/1.1\r\nHost: 127.0.0.1\r\nwebhook-id: msg_big\r\nwebhook-timestamp: ${Math.floor(Date.now() / 1000)}\r\nwebhook-signature: v1,AAAA\r\ncontent-type: application/json\r\n${headers}\r\n`);
+    socket.write(`POST /v2/hooks/ping HTTP/1.1\r\nHost: ${host}\r\nwebhook-id: msg_big\r\nwebhook-timestamp: ${Math.floor(Date.now() / 1000)}\r\nwebhook-signature: v1,AAAA\r\ncontent-type: application/json\r\n${headers}\r\n`);
     socket.write(first);
     setTimeout(() => reject(new Error(`no answer and close within 5 s: ${answer}`)), 5_000).unref();
   });
