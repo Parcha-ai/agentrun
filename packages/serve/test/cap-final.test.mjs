@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, responsesEndpoint, serve, withEnv } from "./support.mjs";
+import { agent, follow, responsesEndpoint, runDir, serve, withEnv } from "./support.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -17,7 +17,7 @@ const CAP = 0.4295;
 
 function records(data, runId, kind) {
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
       return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
     } catch (error) {
@@ -53,11 +53,12 @@ test("pi: a refusal whose cap and model id hold retry digits is final: the reque
   const { run, rows, ms } = await ended(api, started.body.run_id, from);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   // To run it the cap would have to be $0.425 spent and the next request's least, $0.36864: $0.80 up to the cent.
-  assert.equal(run.pending.said, "Not sent: the run has spent $0.425 of its $0.4295 cap, and its next cap-model-502 request needs at least $0.37. Raise the cap to at least $0.80 to run it.");
-  const refusal = rows.find((r) => r.kind === "error");
-  assert.ok(refusal?.text?.startsWith("spend_cap_reached (out of budget): Not sent: "), "its code keeps it final to pi-ai's retry");
+  assert.equal(run.pending.said, "Not sent: this run has spent $0.43 of its $0.4295 cap, and the next step needs at least $0.37. Raise the cap to at least $0.80 to continue.");
+  // Its row is the pause's (its code, which keeps it final to pi-ai's retry, is cap-clamp.test.mjs's to pin).
+  const refusal = rows.find((r) => r.paused === true);
+  assert.deepEqual([refusal?.kind, refusal?.summary], ["phase", "Paused at the run's cap"], JSON.stringify(refusal));
   assert.equal(posts(), 1, "the refused request never reached the model, and was not tried again");
-  assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal");
+  assert.deepEqual(rows.filter((r) => r.kind === "error" || r.paused === true).map((r) => r.kind), ["phase"], "one refusal");
   assert.ok(ms < 15_000, `no retry backoff: ${ms} ms`);
 });
 
@@ -72,9 +73,9 @@ for (const harness of ["claude-agent", "codex"]) {
     const { run, rows, ms } = await ended(api, started.body.run_id, from);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be $0.3502 spent and the next request's least, $0.1024: $0.46 up to the cent.
-    assert.match(run.pending.said, /^Not sent: the run has spent \$0\.3502 of its \$0\.4295 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.46 to run it\.$/);
+    assert.match(run.pending.said, /^Not sent: this run has spent \$0\.35 of its \$0\.4295 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.46 to continue\.$/);
     assert.equal(records(data, started.body.run_id, "faux.request").length, 1, "the second request was never sent");
-    assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal");
+    assert.deepEqual(rows.filter((r) => r.kind === "error" || r.paused === true).map((r) => r.kind), ["phase"], "one refusal");
     assert.ok(ms < 30_000, `no retry backoff: ${ms} ms`);
   });
 }

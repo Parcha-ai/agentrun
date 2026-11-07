@@ -22,8 +22,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
-import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolderOf, readJson } from "./files.js";
+import { agentFolder, changedOrder, checkOut, currentLearning, holdsForOk, type ItemStatus, detailShown, git, line, mainOf, type NoteRuns, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -45,7 +45,7 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
-type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange };
+type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
 type Retired = { at: string; by: "person" | "run" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
@@ -93,7 +93,7 @@ const changesAt = new Recent<number>(64);
 
 /** Where a read finds the agent's folder: through readFolder, so a link at its home, its `learning/` or its `.git` is
  *  an error, never followed, and a folder never made reads as empty. */
-const placeOf = async (data: string, agentId: string) => ({ home: homeOf(data, agentId), repo: await readFolder(data, agentId) });
+const placeOf = async (data: string, agentId: string) => ({ home: agentFolderOf(data, agentId), repo: await readFolder(data, agentId) });
 export const etagOf = (oid: string) => `"${oid}"`;
 const EMPTY: Page<never> = { items: [], total: 0, next_cursor: null };
 
@@ -329,7 +329,7 @@ const learnedView = (item: LearnedView, shown: Shown): LearnedView => ({ ...item
 
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows. */
-const noteView = ({ file, name, description, type, status, origin, superseded_by, text, oid }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, origin, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid) });
+const noteView = ({ file, name, description, type, status, origin, superseded_by, text, oid }: Note, shown: Shown, runs: NoteRuns): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, origin, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid), runs: { ...(runs.get(file) ?? { given: 0, read: 0 }) } });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
 /** A page of `all`, from `offset`, at most `limit`, each shown by `view` (so only the page's are cut of secrets). */
@@ -348,38 +348,39 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
   return { limit, at: { sha: named[1]!, offset: Number(named[2]) } };
 }
 
-/** For tests: how many times a pending count was read from a folder (once per commit of its main). */
+/** For tests: how many times a folder's statuses were read (once per commit of its main). */
 export const pendingTestHooks = { reads: 0 };
-/** By agent: its folder's main commit and how many of its items wait for the owner's OK there. */
-const pendingBy = new Map<string, { sha: string; pending: number }>();
-const pendingReads = new Map<string, Promise<number>>();
+/** By agent: its folder's main commit and each learned item's status there. */
+const statusBy = new Map<string, { sha: string; status: ReadonlyMap<string, ItemStatus> }>();
+const statusReads = new Map<string, Promise<ReadonlyMap<string, ItemStatus>>>();
 
-/** How many of agent `agentId`'s learned items wait for its owner's OK on its folder's main: notes, skills and workflow
- *  drafts held with `status: pending`, as the learning view reads them (notesAt, learnedAt). Read once per commit of
- *  main (a list of agents asks for every agent): the commit is resolved each time, the folder only when it moved. A
- *  folder never made has none waiting; one that cannot be read is undefined (the caller shows no count). */
-export async function pendingCount(data: string, agentId: string): Promise<number | undefined> {
+/** Each learned item's status on agent `agentId`'s folder's main, by file (a note's; a skill's SKILL.md; a workflow
+ *  draft's workflow.json, as its README.md says it), as the learning view reads them (notesAt, learnedAt): `active`,
+ *  `pending`, `superseded` or `retired`, with what a note supersedes. Read once per commit of main (a list asks for many runs): the commit is
+ *  resolved each time, the folder only when it moved. A folder never made holds none; one that cannot be read is
+ *  undefined. */
+export async function statusesOf(data: string, agentId: string): Promise<ReadonlyMap<string, ItemStatus> | undefined> {
   try {
     const { home, repo } = await placeOf(data, agentId);
-    // A folder never made (no .git) holds nothing yet: 0. One whose .git git cannot read (an invalid repository, git
-    // missing) is unknown: undefined, so the count is left out rather than shown as 0.
+    // A folder never made (no .git) holds nothing yet. One whose .git git cannot read (an invalid repository, git
+    // missing) is unknown: undefined, so a caller says nothing it cannot read.
     if (existsSync(join(repo, ".git")) && !(await git(home, repo, ["rev-parse", "--git-dir"]).then(() => true, () => false))) return undefined;
     const sha = await mainOf(home, repo);
-    if (!sha) return 0;
-    const known = pendingBy.get(agentId);
-    if (known?.sha === sha) return known.pending;
+    if (!sha) return new Map();
+    const known = statusBy.get(agentId);
+    if (known?.sha === sha) return known.status;
     // Requests that miss together share one read of the commit (cleared once it settles, so a failure is not kept).
     const key = `${agentId}\0${sha}`;
-    let reading = pendingReads.get(key);
+    let reading = statusReads.get(key);
     if (!reading) {
       pendingTestHooks.reads += 1;
       reading = Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha)]).then(([{ notes }, { skills, workflows }]) => {
-        const pending = notes.filter((note) => note.status === "pending").length + [...skills, ...workflows].filter((item) => item.status === "pending").length;
-        pendingBy.set(agentId, { sha, pending });
-        return pending;
+        const status = new Map<string, ItemStatus>([...notes.map((note): [string, ItemStatus] => [note.file, { status: note.status, supersedes: note.supersedes }]), ...[...skills, ...workflows].map((item): [string, ItemStatus] => [item.file, { status: item.status }])]);
+        statusBy.set(agentId, { sha, status });
+        return status;
       });
-      pendingReads.set(key, reading);
-      void reading.finally(() => pendingReads.delete(key)).catch(() => undefined);
+      statusReads.set(key, reading);
+      void reading.finally(() => statusReads.delete(key)).catch(() => undefined);
     }
     return await reading;
   } catch {
@@ -387,22 +388,30 @@ export async function pendingCount(data: string, agentId: string): Promise<numbe
   }
 }
 
+/** How many of agent `agentId`'s learned items wait for its owner's OK on its folder's main (statusesOf): notes, skills
+ *  and workflow drafts held with `status: pending`. A folder never made has none waiting; one that cannot be read is
+ *  undefined (the caller shows no count). */
+export async function pendingCount(data: string, agentId: string): Promise<number | undefined> {
+  const status = await statusesOf(data, agentId);
+  return status === undefined ? undefined : [...status.values()].filter((value) => value.status === "pending").length;
+}
+
 /** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
  *  fared and what learning changed for them (`counts`, `impact`: learning-run.ts, from the runs' rows and the learning
  *  ledger); an agent with no folder (its learning never on) has an empty one. */
-export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact) {
+export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact, runs: NoteRuns = new Map()) {
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
   if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact };
   const [{ index, notes, changes }, { skills, workflows }, log] = await Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
   // Each note's last change, from the notes' walk; a skill's or a draft's is on it (learnedAt). A retired one says when
   // and by whom it was retired, from the same change.
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => withChanges(noteView(note, shown), changes.get(note.file))), skills: skills.map((item) => learnedView(item, shown)), workflows: workflows.map((item) => learnedView(item, shown)), log, counts, impact };
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => withChanges(noteView(note, shown, runs), changes.get(note.file))), skills: skills.map((item) => learnedView(item, shown)), workflows: workflows.map((item) => learnedView(item, shown)), log, counts, impact };
 }
 
 /** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the
  *  commit's first read kept. */
-export async function learningNotes(data: string, agentId: string, query: URLSearchParams, shown: Shown): Promise<Page<NoteView>> {
+export async function learningNotes(data: string, agentId: string, query: URLSearchParams, shown: Shown, runs: NoteRuns = new Map()): Promise<Page<NoteView>> {
   const status = query.get("status");
   if (status !== null && !(NOTE_STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${NOTE_STATUSES.join(", ")}`);
   const { home, repo } = await placeOf(data, agentId);
@@ -411,7 +420,7 @@ export async function learningNotes(data: string, agentId: string, query: URLSea
   if (!sha) return EMPTY;
   const { notes, changes } = await notesAt(home, repo, sha);
   const listed = status === null ? notes : notes.filter((note) => note.status === status);
-  return pageOf(listed, sha, at?.offset ?? 0, limit, (note) => withChanges(noteView(note, shown), changes.get(note.file)));
+  return pageOf(listed, sha, at?.offset ?? 0, limit, (note) => withChanges(noteView(note, shown, runs), changes.get(note.file)));
 }
 
 /** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first, reading only its own. */
@@ -541,7 +550,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
     if (!note) throw refused(problems);
     given = note.text;
   }
-  const home = homeOf(data, agentId);
+  const home = agentFolderOf(data, agentId);
   return withAgentRepo(data, agentId, async () => {
     // The folder through agentFolder, as a run's merge reaches it: a link at the agent's home, its learning/ or its
     // .git is refused (an error, nothing written), never followed. `check` checks again once a create has made .git.
@@ -682,8 +691,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
 
 /** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn: its detail cut of the
  *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
-export async function runLearning(run: Run, shown: Shown, secrets: readonly string[]) {
-  const learning = run.meta.learning;
+export async function runLearning(run: Run, shown: Shown, secrets: readonly string[], data: string) {
+  // What it held for its owner's OK as it reads now (learning.ts currentLearning); its record stays as the merge wrote it.
+  const learning = holdsForOk(run.meta.learning) ? currentLearning(run.meta.learning, await statusesOf(data, run.agentId)) : run.meta.learning;
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
   const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;

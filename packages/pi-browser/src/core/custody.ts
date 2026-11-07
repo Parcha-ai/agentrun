@@ -5,8 +5,12 @@ import { isLeaseTransition, type LeaseState } from "./lease.js";
 import { startSpent } from "./usage.js";
 
 export type BrowserDriver = { close(): Promise<void> };
-/** A Stagehand close after a dropped and reconnected connection can hang forever; the provider ends the session anyway. */
-export const DRIVER_CLOSE_MS = 5_000;
+/** A driver's close is waited for this long at most, so a close that never comes back (any `DriverFactory` may be passed)
+ *  never holds up a release. It is past the longest a Stagehand disconnect takes (10 s for the instance's close, then 10 s
+ *  for the detach): a shorter wait could return while the client is still attached, and the next attach to the browser is
+ *  refused until it has let go. */
+export const DRIVER_CLOSE_MS = 25_000;
+/** A close that fails is not the caller's: the session goes on or is released either way. */
 export async function closeDriver(driver: BrowserDriver): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([driver.close().catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, DRIVER_CLOSE_MS); })]);

@@ -31,20 +31,26 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
 
 ## Run it on a server
 
-1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker run` on your own machine or server, with your own model key. An OpenRouter key with a credit limit caps what your agents can spend.
+1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker compose` on your own Linux machine
+   or server (Docker Engine 26 or later), with your own model key. An OpenRouter key with a credit limit caps what your
+   agents can spend.
 
    ```sh
-   docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
-     -e OPENROUTER_API_KEY \
-     ghcr.io/parcha-ai/agentrun-server:beta
-   docker logs agentrun | grep Open
+   curl -fsSLO https://raw.githubusercontent.com/Parcha-ai/agentrun/main/compose.yaml
+   export OPENROUTER_API_KEY=...
+   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+   docker compose up -d
+   docker compose logs agentrun | grep Open
    ```
 
-   With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
-   limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
-   run. For a provider's own key, pass `-e ANTHROPIC_API_KEY` or `-e OPENAI_API_KEY` instead; any
-   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`, with its model named in
-   `AGENT_MODEL`.
+   The `.env` beside `compose.yaml` keeps the socket's group for every later `docker compose` command, in any shell.
+
+   Open the link it prints; the named volume `agentrun-data` keeps every agent and run. Each run's `bash` runs in a
+   Docker container of its own beside the server, with no network but the package registries and GitHub, and only that
+   run's files. `compose.yaml` gives the server this host's Docker socket, and the Docker socket is root on this host:
+   whatever can reach it, the server included, can do anything on this machine. For a provider's own key, export
+   `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` instead; any OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL`
+   and `AGENT_MODEL_API_KEY`, with its model named in `AGENT_MODEL`.
 
 2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. A Starter's 512 MB runs 3 pi agents or 2 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. A 2 GB instance holds 10 Codex runs. The image leaves Claude Code out for now, so run Claude Code agents with `npx @parcha/agentrun`. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
 
@@ -135,9 +141,6 @@ on; [Archil](https://archil.com) is a network disk you mount on any Linux host.
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser, and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes | Pi; a provider (a local Chrome needs no key; Browserbase and Kernel need their keys); pi-durable and chord for its `./durable` entry | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | published (`@latest`) |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Lets a pi agent read documents, images, scans and video within the model's limits, and keeps a priced record of every look | nothing for a document's text; Photon or sharp for images; a pi-durable host (pi-durable, chord and pi-ai); a model that looks, for questions about a file | [`examples/vision-agent`](examples/vision-agent/README.md) (one agent that answers questions about files: `npm run demo:vision -- examples/document-check` runs on fakes, no key; it needs ffmpeg and poppler), then its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | published (`@latest`) |
 | [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step | pi-durable and chord; Docker for the Docker provider; a Daytona key or a Modal client for those; a TypeSafe key, or an OpenRouter key, for Jev's placement | the "A box" example in its README (a local box, no key; a second one needs Docker) | published (`@latest`) |
-| [`@parcha/pi-git-remote`](packages/pi-git-remote/README.md) | A git repository a host keeps for its agent: commits through git's plumbing, no hook or filter of either repository runs, no push is forced | git 2.40+; pi's coding agent only for its `./coding-agent` extension | its README's [quickstart](packages/pi-git-remote/README.md#quickstart-no-key-no-network) | published (`@latest`) |
-| [`@parcha/pi-agent-learn`](packages/pi-agent-learn/README.md) | An agent that learns in its own git repository: a `learn` tool, notes curated into commits, saved workflows promoted on receipts | pi-durable and chord; git 2.40+; a judge (Jev or a general model) for curation | its README's [quickstart](packages/pi-agent-learn/README.md#quickstart-no-key-no-network) | published (`@latest`) |
-| [`@parcha/agentrun-learn`](packages/learn/README.md) | Self-learning on any harness, as files: the layout of an agent's own learning repository, the memo and note formats, and a checker for a run's branch | the DSL; git | `agentrun-learn check --base main` on a run's branch | held, not published |
 | [`@parcha/agentrun-decisions`](packages/decisions/README.md) | Fast decision models besides Jev for a workflow's decision nodes: Parallel Decisions, with probabilities and web citations, behind the DSL's provider seam | the DSL; a Parallel key | `runJudge: judgeFromProvider(parallelProvider())` | published from the next release (`@latest`) |
 | [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one file, a pack. An agent's sign-ins are saved in its home, so its next run starts signed in | pi-durable and chord; nothing else for its quickstart (a browser provider such as pi-browser makes the sign-ins) | its README's [quickstart](packages/pi-durable-agent/README.md#quickstart-no-key-no-network) | published (`@latest`) |
 | [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked | pi-durable, chord, pi-ai, pi-codemode and typebox; pi-transport only for a demo with boxes | its README's [first demo](packages/harness/README.md#run-a-demo-from-an-install-with-no-key) | held, not published |
@@ -249,9 +252,6 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser (a local Chrome, Browserbase or Kernel), and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Lets a pi agent read documents, images, scans and video within the model's limits; it says when it cannot read something, and keeps a priced record of every look; start at [`examples/vision-agent`](examples/vision-agent/README.md) (`npm run demo:vision -- examples/document-check`, free, no key) |
 | [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step; a strict config, and a conformance suite a vendor can run |
-| [`@parcha/pi-git-remote`](packages/pi-git-remote/README.md) | A git repository a host keeps for its agent: commits through git's plumbing, a remote on this machine, any https host or code.storage, and a pi coding-agent extension that commits a session's changes |
-| [`@parcha/pi-agent-learn`](packages/pi-agent-learn/README.md) | An agent that learns in its own git repository: notes curated into commits on `main`, a `<learned>` section read at a fixed commit, saved workflows promoted and demoted on receipts; start at [`examples/agent-learn`](examples/agent-learn/README.md) (`npm run demo:learn`, no key) |
-| [`@parcha/agentrun-learn`](packages/learn/README.md) | The contract of an agent's own learning repository, and the checker of a run's branch |
 | [`@parcha/agentrun-decisions`](packages/decisions/README.md) | Parallel Decisions as a `DecisionProvider` for the DSL's decision nodes |
 | [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one pack. An agent's sign-ins are saved in its home, so its next run starts signed in |
 | [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked |

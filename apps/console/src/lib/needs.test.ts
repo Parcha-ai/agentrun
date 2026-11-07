@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { choicesOf, failureGroups, hasOwnRun, mergeNeeds, pollSettled, rerunBody } from "./needs";
 import type { Run } from "./v2";
 
-const run = (id: string, over: Partial<Run> = {}): Run => ({
+const run = (id: string, over: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: id, agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status: "failed", state: "idle", title: id,
-  created_at: "2026-11-03T16:08:00Z", ended_at: "2026-11-03T16:08:30Z", result: null, error: null, cost: null, archived_at: null, ...over,
+  created_at: "2026-11-03T16:08:00Z", ended_at: "2026-11-03T16:08:30Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...over,
 });
 const failed = (id: string, message: string, over: Partial<Run> = {}) => run(id, { error: { code: "run_failed", message, retryable: false }, ...over });
 
@@ -66,7 +66,7 @@ describe("rerunBody", () => {
   const base = run("x", { status: "failed", cost: { usd: 0.4, basis: "estimate", charge_state: null, cap_usd: 0.5 }, effort: "high" });
   it("carries the first message, the effort and the spend cap", () => {
     expect(rerunBody(base, "Check invoice INV-2299.")).toEqual({ body: { input: { content: "Check invoice INV-2299." }, effort: "high", max_cost_usd: 0.5 } });
-    expect(rerunBody({ ...base, effort: undefined, cost: null }, "Go.")).toEqual({ body: { input: { content: "Go." } } });
+    expect(rerunBody({ ...base, effort: undefined, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null } }, "Go.")).toEqual({ body: { input: { content: "Go." } } });
   });
   it("refuses a workflow run, and a first message the timeline cut, never starting a shortened task", () => {
     expect(rerunBody({ ...base, kind: "workflow" }, "{}")).toHaveProperty("refusal");

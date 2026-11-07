@@ -1,19 +1,20 @@
 // A run's harness sessions (the run adapters' SessionStore) kept in the run's own durable store, so a run on any harness
 // resumes from what its process left there. Each session key is a conversation of the run's Harness, named by a
 // `session.key` entry on the root conversation; each record is an entry of it, appended through the Harness's commit.
-// Two fences hold a session to one writer: across processes the run's lease (a process whose lease lapsed has its
-// commit refused, FencedError), and within one the newest `open` of a key, checked inside the commit that appends.
+// Two fences hold a session to one writer: across processes the run's claim (a fenced process has its commit refused,
+// FencedError), and within one the newest `open` of a key, checked inside the commit that appends.
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type Cursor, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-kernel";
-import { FencedError } from "@parcha/pi-durable-disk";
+import { BARRIER, FencedError, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 
 const SESSION_KEY = "session.key";
 const PAGE = 500;
 
 type EntryLike = { kind: string; data?: unknown };
 
-export function durableSessions(harness: Harness, context: Context): SessionStore {
+/** `store`: the run's store, which the sessions' barrier syncs (a kernel effect's start, before it runs). */
+export function durableSessions(harness: Harness, context: Context, store?: SyncTarget): SessionStore {
   const holders = new Map<string, number>();
   const known = new Map<string, ConversationId>();
   // One creation per key at a time: two first opens at once share it, so a key names one conversation.
@@ -48,12 +49,12 @@ export function durableSessions(harness: Harness, context: Context): SessionStor
     return out;
   };
 
-  /** One commit, refused as SessionFenced when the run's lease is gone. */
+  /** One commit, refused as SessionFenced once the run is fenced. */
   const commit = async <T>(key: string, change: (tx: Tx) => Promise<T>): Promise<T> => {
     try {
       return await harness.commit(change, context);
     } catch (error) {
-      // The lease's refusal can come as the cause of the Harness's own error.
+      // The fence's refusal can come as the cause of the Harness's own error.
       for (let at: unknown = error; at; at = (at as { cause?: unknown }).cause) if (at instanceof FencedError || at instanceof SessionFenced) throw new SessionFenced(key);
       throw error;
     }
@@ -95,6 +96,9 @@ export function durableSessions(harness: Harness, context: Context): SessionStor
       const writer: SessionWriter = {
         key,
         read: () => read(key),
+        // Every record appended so far is durable when this resolves: the kernel calls it after an effect's start record
+        // and before the effect runs (drive.ts), so a lost box never runs it twice.
+        sync: () => syncNow(store, BARRIER.kernelEffectIntent),
         async append(records) {
           await commit(key, async (tx) => {
             // Checked in the commit: an open that resolved before it fences this writer, whatever its own timing.

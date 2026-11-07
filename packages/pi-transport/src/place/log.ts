@@ -13,6 +13,7 @@ export const PlacementsDoc = defineDocFamily<JsonObject, null>({
 	scope: "session",
 	family: true,
 	initial: () => ({}),
+	checkpointWhen: () => false,
 });
 
 /**

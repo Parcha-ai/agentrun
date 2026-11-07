@@ -1,20 +1,19 @@
-// Shared by the park, serve and fork suites: a "disk" over a local directory (the control API's objects, delegations
-// and token users, plus a claim per run that the delegations track), and an app on pi-ai's faux model with Rivet's
+// Shared by the park, serve and door suites: a "disk" over a local directory (its objects, and a claim per run that its
+// holds track), and an app on pi-ai's faux model with Rivet's
 // lifecycle cases: a flaky model that errors once, tools that block until the run stops, and a task of the app's own.
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTask, defineTool } from "@earendil-works/pi-durable";
 import type { HarnessSettings } from "@earendil-works/pi-durable";
-import type { Delegation } from "disk";
 import { runPath, type Claim, type RunRef } from "../src/claim.ts";
 import { archilEnv } from "../src/env.ts";
 import { HeldError } from "../src/errors.ts";
 import { openDurableRun, type DurableRun, type OpenDurableRunOptions, type RunEnv } from "../src/run.ts";
-import type { CheckControl, HostDriver, HostHandle, HostStatus, SupervisorControl } from "../src/supervise.ts";
 import { fakeClaim, localClaimDir, type FakeClaim } from "./_run-support.ts";
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,7 +34,10 @@ const notFound = () => Object.assign(new Error("NoSuchKey"), { status: 404, code
  * A disk over a local directory: `runs/<id>/` is `<base>/runs/<id>/`. Objects are files (a key ending in `/` is a
  * directory marker), delegations are the claims `acquire` handed out and not yet released, token users are a map.
  */
-export class LocalDisk implements SupervisorControl, CheckControl {
+/** A claim this disk handed out and that is not released yet. */
+type Delegation = { clientId: string; inodeId: number; path: string; isPending: boolean; isOrphaned: boolean };
+
+export class LocalDisk {
   readonly base: string;
   readonly delegations: Delegation[] = [];
   readonly users = new Map<string, string>();
@@ -254,7 +256,7 @@ function loggedEnv(c: Claim): RunEnv {
   });
 }
 
-/** Open `ref` on `disk` with `harness`; fences are collected (no exit), every run.json write logged in the claim's log. */
+/** Open `ref` on `disk` with `harness`; fences are collected (no exit), every status write logged in the claim's log. */
 export function openOn(
   disk: LocalDisk,
   ref: RunRef,
@@ -262,36 +264,21 @@ export function openOn(
   extra: Partial<OpenDurableRunOptions> & { fenced?: unknown[] } = {},
 ): Promise<DurableRun> {
   let claim: FakeClaim | undefined;
-  return openDurableRun(ref, {
-    mountToken: "unused",
+  const opened = openDurableRun(ref, {
     acquire: async () => (claim = disk.acquire(ref) as FakeClaim),
     claimDir: localClaimDir,
     harness,
     env: loggedEnv,
     onFenced: (error) => void extra.fenced?.push(error),
-    persist: async (root, text, signal) => {
-      claim?.log.push(`run.json ${JSON.parse(text).status}`);
-      const { persistRecord } = await import("../src/status.ts");
-      await (extra.persist ?? persistRecord)(root, text, signal);
-    },
-    ...Object.fromEntries(Object.entries(extra).filter(([k]) => k !== "persist" && k !== "fenced")),
+    ...Object.fromEntries(Object.entries(extra).filter(([k]) => k !== "fenced")),
   });
-}
-
-/** A host driver that opens instances in this process (the test supplies how). */
-export class InProcessHost implements HostDriver {
-  readonly starts: RunRef[] = [];
-  readonly #start: (ref: RunRef) => Promise<void>;
-  constructor(start: (ref: RunRef) => Promise<void>) {
-    this.#start = start;
-  }
-  async start(ref: RunRef): Promise<HostHandle> {
-    this.starts.push(ref);
-    await this.#start(ref);
-    return { driver: "in-process", n: this.starts.length };
-  }
-  async status(): Promise<HostStatus> {
-    return "unknown";
-  }
-  async stop(): Promise<void> {}
+  return opened.then((run) => {
+    const setStatus = run.setStatus.bind(run);
+    return Object.assign(run, {
+      setStatus: async (...args: Parameters<DurableRun["setStatus"]>) => {
+        await setStatus(...args);
+        claim?.log.push(`status ${args[0]}`);
+      },
+    });
+  });
 }

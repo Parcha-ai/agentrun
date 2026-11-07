@@ -30,7 +30,7 @@ test("serve's web tools by the same rule: a page followed by a line for the mode
   const fetched = JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "Example", links: [], via: "direct", parallel: "Parallel answered 500" }) + skipped;
   const unsearched = JSON.stringify({ error: "web_search does not run here: no native search for codex yet" });
   const searched = `${JSON.stringify({ provider: "exa-keyless", query: "q", results: [] })}\nCite the URL of each result you rely on.`;
-  assert.deepEqual([["web_fetch", unfetched], ["fetch_page", unfetched], ["web_fetch", fetched], ["web_search", unsearched], ["web_search", searched]].map(([tool, text]) => callFailed(tool, { text, isError: false })), [true, true, false, true, false]);
+  assert.deepEqual([["web_fetch", unfetched], ["web_fetch", fetched], ["web_search", unsearched], ["web_search", searched]].map(([tool, text]) => callFailed(tool, { text, isError: false })), [true, false, true, false]);
   const entries = [
     user("Search, then fetch."),
     answer([call("s1", "web_search", { query: "q" }), call("s2", "web_search", { query: "q" }), call("w1", "web_fetch", { url: "https://down.example/" })], usage(10, 5)),
@@ -62,6 +62,6 @@ test("a result row reads its outcome once, for its summary and its status both: 
 });
 
 test("a tool's name where calls are counted: its registered one in plain words, else the name it was called by", () => {
-  assert.deepEqual(["web_fetch", "fetch_page", "read", "run", "browser_release", "submit"].map(nameOf), ["Fetch web pages", "Fetch web pages", "Read files", "Open or act on a page in the browser", "Release the browser session", "Submit the answer"]);
+  assert.deepEqual(["web_fetch", "read", "run", "browser_release", "submit"].map(nameOf), ["Fetch web pages", "Read files", "Open or act on a page in the browser", "Release the browser session", "Submit the answer"]);
   assert.equal(nameOf("a_tool_nobody_registered"), "a_tool_nobody_registered");
 });

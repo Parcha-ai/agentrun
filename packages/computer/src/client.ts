@@ -2,6 +2,7 @@
 import type { Readable, Writable } from "node:stream";
 import {
 	CANCEL_METHOD,
+	type ComputerClient,
 	type DaemonErrorKind,
 	type DaemonMethod,
 	type DaemonMethods,
@@ -15,9 +16,24 @@ export interface DaemonStream {
 	writable: Writable;
 }
 
+export interface CallOptions {
+	signal?: AbortSignal;
+}
+
 type ReplyError = { code?: unknown; message?: unknown; data?: { kind?: unknown } };
 
-const KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>(["not_found", "invalid", "timeout", "aborted", "denied", "limit", "unsupported"]);
+const KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>([
+	"not_found",
+	"invalid",
+	"timeout",
+	"aborted",
+	"denied",
+	"limit",
+	"unsupported",
+	"exists",
+	"not_dir",
+	"is_dir",
+]);
 
 /** A daemon's error reply as a ComputerError: its kind when it names one, else what its JSON-RPC code means. */
 function fromReply(error: ReplyError): ComputerError {
@@ -32,9 +48,9 @@ function fromReply(error: ReplyError): ComputerError {
 /**
  * Calls a daemon's methods. Each call gets its own id; replies may come in any order. An aborted call sends
  * $/cancelRequest and returns `aborted` at once; the daemon still ends what the call started. When the stream ends,
- * every pending and later call fails with `gone`.
+ * every pending and later call fails with `gone`. A line that is not a reply to a pending call is dropped.
  */
-export class DaemonClient {
+export class DaemonClient implements ComputerClient {
 	readonly #writable: Writable;
 	readonly #readable: Readable;
 	readonly #pending = new Map<number, (result: Result<unknown>) => void>();
@@ -56,7 +72,7 @@ export class DaemonClient {
 	async call<M extends DaemonMethod>(
 		method: M,
 		params: DaemonMethods[M]["params"],
-		options: { signal?: AbortSignal } = {},
+		options: CallOptions = {},
 	): Promise<Result<DaemonMethods[M]["result"]>> {
 		const { signal } = options;
 		if (this.#gone) return { ok: false, error: this.#gone };

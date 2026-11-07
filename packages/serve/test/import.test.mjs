@@ -19,7 +19,7 @@ import { summaryLines } from "../dist/import-summary.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, scratch } from "./support.mjs";
+import { client, FAUX, runDir, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CANARY = "CANARY-VALUE-7f3e9d2c1b0a6e5d";
@@ -153,7 +153,7 @@ test("nothing written holds a key-shaped variable's value, and every file a run 
   walk(data);
   for (const file of all) assert.ok(!readFileSync(file).includes(CANARY), `no canary in ${file}`);
   const run = runsOf(store, report.agents[0].id)[0];
-  const dir = join(data, "runs", run.id);
+  const dir = join(runDir(data, run.id));
   assert.equal(statSync(join(dir, "store", "run.sqlite")).mode & 0o777, 0o600);
   assert.equal(statSync(join(dir, "serve.json")).mode & 0o777, 0o600);
   assert.equal(statSync(dir).mode & 0o777, 0o700);
@@ -173,7 +173,7 @@ test("nothing written holds a key-shaped variable's value, and every file a run 
 test("an imported run takes no message (409 not_continuable, reason imported); a stop, a cancel and a restart answer as for an ended run and move nothing", { timeout: 60_000 }, async (t) => {
   const { data, store, report } = await imported(t);
   const run = runsOf(store, report.agents[0].id)[0];
-  const dir = join(data, "runs", run.id);
+  const dir = join(runDir(data, run.id));
   const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   let closed = false;
   t.after(() => (closed ? undefined : one.close()));
@@ -199,7 +199,7 @@ test("an imported run takes no message (409 not_continuable, reason imported); a
 test("an imported run with no transcript and no work/ reads as such: its timeline and files answer, never 500", { timeout: 60_000 }, async (t) => {
   const { data, store, report } = await imported(t);
   const run = runsOf(store, report.agents[0].id)[0];
-  rmSync(join(data, "runs", run.id, "store"), { recursive: true });
+  rmSync(join(runDir(data, run.id), "store"), { recursive: true });
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => server.close());
   const api = client(server.baseUrl, server.token);
@@ -606,9 +606,8 @@ test("this repository's own source, imported as a session's output, has nothing 
     }
   };
   for (const top of ["packages", "apps"]) walk(join(repo, top));
-  // One file holds a key-shaped literal on purpose: packages/learn/test/check.test.mjs, whose checker test plants a Slack
-  // bot token's shape (its `xoxb-` string) to see it refused. It is left out; every other file must come through whole.
-  const source = files.filter((file) => !file.endsWith(join("learn", "test", "check.test.mjs")));
+  // Every file must come through whole.
+  const source = files;
   assert.ok(source.length > 300, `the source read: ${source.length} files`);
   const root = await scratch(t);
   const at = join(root, "home");
@@ -1001,7 +1000,7 @@ test("a skill folder this user cannot read, or a skills directory it cannot read
 test("an import the process left without its transcript is finished by the next one, not counted as imported", async (t) => {
   const { h, data, store, report } = await imported(t);
   const run = runsOf(store, report.agents[0].id)[0];
-  const dir = join(data, "runs", run.id);
+  const dir = join(runDir(data, run.id));
   // As a process stopped between the run's row and its transcript leaves it.
   rmSync(join(dir, "store", "run.sqlite"));
   rmSync(join(dir, "serve.json"));
@@ -1023,6 +1022,23 @@ test("an import the process left without its transcript is finished by the next 
   assert.ok(entries > 0, "the transcript is there");
   assert.equal(store.listRuns().length, 5, "no second run for it");
 });
+
+for (const at of ["run's folder", "store folder"]) {
+  test(`an import left without its transcript whose ${at} is now a symbolic link is refused, and nothing is written through the link`, async (t) => {
+    const { h, data, store, report } = await imported(t);
+    const run = runsOf(store, report.agents[0].id)[0];
+    const dir = join(runDir(data, run.id));
+    const elsewhere = join(await scratch(t), "elsewhere");
+    mkdirSync(elsewhere);
+    const link = at === "store folder" ? join(dir, "store") : dir;
+    rmSync(link, { recursive: true });
+    symlinkSync(elsewhere, link);
+    const refused = await runImport(store, await planImport(options(h), store), options(h)).then(() => null, (error) => error);
+    assert.deepEqual(readdirSync(elsewhere, { recursive: true }), [], "nothing was written where the link points");
+    assert.match(String(refused?.message), /symbolic link/);
+    assert.equal(store.listRuns().length, 5, "no second run for it");
+  });
+}
 
 test("a session file this user cannot read is named and passed over; the rest still import", { skip: process.getuid?.() === 0 ? "root reads a mode 000 file" : false }, async (t) => {
   const root = await scratch(t);
@@ -1106,7 +1122,7 @@ async function importedOne(t, write) {
 /** A run's stored metrics, checked against its own transcript: runMetricsOf of its entries, and its settled timeline's
  *  usage row. Returns the metrics (without `at`) and the transcript's answers. */
 function metricsOf(data, store, runId) {
-  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
   db.close();
   const { at, activeMs, effort, ...counted } = store.runMetrics(runId);
@@ -1219,7 +1235,7 @@ test("a Claude Code API error is a request that failed, at its 0 tokens, never u
   assert.deepEqual([two.metrics.requests, two.metrics.unmetered], [2, 0]);
   assert.deepEqual(two.kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant", "pi.user", "pi.user"]);
   const rows = (id) => {
-    const db = new DatabaseSync(join(data, "runs", id, "store", "run.sqlite"), { readOnly: true });
+    const db = new DatabaseSync(join(runDir(data, id), "store", "run.sqlite"), { readOnly: true });
     const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
     db.close();
     return timelineOf(entries, { settled: true });
@@ -1346,7 +1362,7 @@ test("the CLI's own note is never the person's turn: a session holding only note
   t.after(() => store.close());
   await runImport(store, plan, options(h));
   const [run] = store.listRuns();
-  assert.equal(JSON.parse(readFileSync(join(data, "runs", run.id, "serve.json"), "utf8")).title, "Tidy the notes.");
+  assert.equal(JSON.parse(readFileSync(join(runDir(data, run.id), "serve.json"), "utf8")).title, "Tidy the notes.");
 });
 
 test("a block a resumed Claude Code file repeats, at its own earlier times, adds no time at work", async (t) => {
@@ -1407,7 +1423,7 @@ test("a response a resumed session's file copies counts once across the import, 
   const [first, copy] = one.runs.map((run) => one.store.runMetrics(run.id));
   assert.deepEqual([first.requests, first.input, first.output], [2, 8, 80], "the first session keeps its own");
   assert.deepEqual([copy.requests, copy.input, copy.output, copy.tools, copy.activeMs], [1, 50, 60, {}, 60_000], "the resumed one adds only its own request, and no time for the copy");
-  const db = new DatabaseSync(join(one.data, "runs", one.runs[1].id, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(one.data, one.runs[1].id), "store", "run.sqlite"), { readOnly: true });
   const kinds = db.prepare("SELECT json_extract(record, '$.kind') AS kind FROM entries ORDER BY id").all().map((r) => r.kind);
   db.close();
   assert.deepEqual(kinds, ["pi.user", "pi.assistant"], "its transcript is its own turns");
@@ -1429,7 +1445,7 @@ test("a response a resumed session's file copies counts once across the import, 
   const later = store.listRuns().find((run) => run.importedFrom.session === sessionId(94));
   const counted = store.runMetrics(later.id);
   assert.deepEqual([counted.requests, counted.input, counted.output, counted.tools, counted.activeMs], [1, 50, 60, {}, 60_000], "its own request, and no time for the copy");
-  const reread = new DatabaseSync(join(data, "runs", later.id, "store", "run.sqlite"), { readOnly: true });
+  const reread = new DatabaseSync(join(runDir(data, later.id), "store", "run.sqlite"), { readOnly: true });
   const laterKinds = reread.prepare("SELECT json_extract(record, '$.kind') AS kind FROM entries ORDER BY id").all().map((r) => r.kind);
   reread.close();
   assert.deepEqual(laterKinds, ["pi.user", "pi.assistant"], "no copied prompt or result in its transcript");
@@ -1463,7 +1479,7 @@ test("a session's subagents are no runs of their own: their requests, tokens and
   assert.deepEqual([codex.input, codex.cacheRead, codex.output, codex.requests, codex.tools], [1200, 4500, 195, 6, { shell: { calls: 3, errors: 0 } }], "its subagent's and that one's own");
   const linked = store.runMetrics(runs[2].id);
   assert.deepEqual([linked.requests, linked.tools], [2, { Bash: { calls: 1, errors: 0 } }], "nothing through a linked folder");
-  const db = new DatabaseSync(join(data, "runs", runs[0].id, "store", "run.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runDir(data, runs[0].id), "store", "run.sqlite"), { readOnly: true });
   const answers = db.prepare("SELECT COUNT(*) AS n FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").get().n;
   db.close();
   assert.equal(answers, 2, "the transcript holds the session's own answers");
@@ -1518,7 +1534,7 @@ test("one number per run: an imported run's timeline usage row counts its subage
   for (const run of runs) {
     const stored = store.runMetrics(run.id);
     // As the run's page reads it: its root conversation's entries, settled.
-    const db = new DatabaseSync(join(data, "runs", run.id, "store", "run.sqlite"), { readOnly: true });
+    const db = new DatabaseSync(join(runDir(data, run.id), "store", "run.sqlite"), { readOnly: true });
     const entries = db.prepare("SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").all().map((row) => JSON.parse(row.record));
     db.close();
     assert.equal(timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, stored.requests, run.importedFrom.source);

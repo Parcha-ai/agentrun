@@ -12,9 +12,10 @@
 // reopen's, until it has answered an event stream (the server's, its snapshot written with the door idle), then notes so
 // in the file TURN_END_GATE names. serve imports this module in the run's open (adapters.ts adapterFor), after the door
 // is attached, so the wait is the open's own and the server's stream can connect meanwhile.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { ServerResponse } from "node:http";
 import { StatementSync } from "node:sqlite";
+import { writeWhole } from "./write-whole.mjs";
 
 const [arm, held, again] = [process.env.TURN_END_ARM, process.env.TURN_END_HELD, process.env.TURN_END_AGAIN];
 // Only a run's process: the server never runs a turn.
@@ -36,7 +37,7 @@ if (arm && held && process.argv.includes("--app")) {
         passed.add(record);
         since.push(kind);
       } else if (after ? typeof kind === "string" && passed.size >= pass : kind === "adapter.turn_end") {
-        writeFileSync(into, JSON.stringify({ pid: process.pid, since, at: kind }));
+        writeWhole(into, JSON.stringify({ pid: process.pid, since, at: kind }));
         const nap = new Int32Array(new SharedArrayBuffer(4));
         for (let i = 0; i < 3_000; i++) Atomics.wait(nap, 0, 0, 20);
       } else if (typeof kind === "string") since.push(kind);
@@ -56,7 +57,7 @@ if (gate && held && process.argv.includes("--app") && existsSync(held)) {
   };
   // A ceiling only: a stream that never came is written down, and the test fails on it by name.
   for (const end = Date.now() + 60_000; !streamed && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 20));
-  writeFileSync(gate, JSON.stringify({ streamed }));
+  writeWhole(gate, JSON.stringify({ streamed }));
 }
 
 import { script as base } from "./faux-harness.mjs";
@@ -67,6 +68,6 @@ import { script as base } from "./faux-harness.mjs";
 export function script(spec) {
   const queued = /Queue two follow-ups until (\S+), then hold the last until (\S+)\./.exec(spec.system.join("\n"));
   if (!queued) return base(spec);
-  const hold = (until) => ({ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(until)}` }, usd: 0.001 });
+  const hold = (until) => ({ call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(until)}` }, usd: 0.001 });
   return [hold(queued[1]), { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }, hold(queued[2]), { say: "Answer 3.", usd: 0.001 }, { end: true, usd: 0.001 }];
 }

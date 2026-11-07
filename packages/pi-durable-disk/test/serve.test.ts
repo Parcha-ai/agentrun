@@ -1,5 +1,4 @@
-// The serve mode without Archil: the HTTP front over a real pi Harness on a local "disk", and the client that
-// wakes a released run through ensureRunning. The requestId is deduplicated by pi in the run's store, so a retry that
+// The serve mode: the HTTP front over a real pi Harness on a local "disk". The requestId is deduplicated by pi in the run's store, so a retry that
 // reaches the next incarnation (fresh process memory) finds the same submission.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -10,8 +9,8 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { recordWake } from "../src/park.ts";
 import type { DurableRun } from "../src/run.ts";
-import { MESSAGE_ORIGIN_KIND, readServeToken, requestRun, serveRun, ServeError, type RunServer } from "../src/serve.ts";
-import { InProcessHost, lifecycleApp, LocalDisk, newCounters, openOn, sleep, until, type Counters } from "./_lifecycle.ts";
+import { MESSAGE_ORIGIN_KIND, readServeToken, serveRun, type RunServer } from "../src/serve.ts";
+import { lifecycleApp, LocalDisk, newCounters, openOn, sleep, until, type Counters } from "./_lifecycle.ts";
 import { ctx } from "./_run-support.ts";
 
 const REF = { disk: "dsk-local", region: "local", id: "serve-1" };
@@ -210,6 +209,71 @@ describe("the HTTP front", () => {
     }
   });
 
+  it("a trigger's origin is taken in its own shape, on a guarded input too; a guarded one refused busy takes its marker back, so nothing is left open for a later message with its text", async () => {
+    const disk = new LocalDisk("serve-trigger-origin");
+    const counters = newCounters();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let server: RunServer | undefined;
+    let run: DurableRun | undefined;
+    try {
+      ({ server, run } = await served(disk, counters, { gate }));
+      const origin = { kind: "trigger", trigger_id: "trg_1", source: "webhook", owner: false };
+      for (const bad of [{ ...origin, source: "email" }, { ...origin, owner: "false" }, { ...origin, trigger_id: 7 }, { ...origin, extra: 1 }, { kind: "trigger", trigger_id: "trg_1", source: "webhook" }]) {
+        const refused = await call(server!, "POST", "/submit", { requestId: "bad", content: "A new event came in.", origin: bad });
+        assert.deepEqual([refused.status, refused.body.error], [400, "BAD_REQUEST"], JSON.stringify(bad));
+      }
+      const taken = await call(server!, "POST", "/submit", { requestId: "t1", content: "A new event came in.", origin, answers: false, asks: ["ask_person"], wait: true });
+      assert.equal(taken.status, 200, JSON.stringify(taken.body));
+      // Busy: a turn holds at the gate tool, and a guarded input is refused, after its marker went in.
+      const gated = await call(server!, "POST", "/submit", { requestId: "g1", content: "gate" });
+      assert.equal(gated.body.submission.status, "placed");
+      await until("the gate tool", () => counters.gate === 1);
+      const busy = await call(server!, "POST", "/submit", { requestId: "t2", content: "Another event came in.", origin, answers: false, asks: ["ask_person"] });
+      assert.deepEqual([busy.status, busy.body.error], [409, "BUSY"]);
+      // The writes queue behind the turn: they are in once it is done.
+      open();
+      const root = await run!.harness.root(ctx);
+      // In the order they were written (the page is newest first).
+      const markersNow = async () => (await root.entries({}, 500, undefined, ctx)).items.filter((entry) => entry.kind === MESSAGE_ORIGIN_KIND).sort((a, b) => Number(a.id) - Number(b.id)).map((entry) => entry.data);
+      await until("the refused try's marker and its withdrawal", async () => (await markersNow()).length === 3);
+      const markers = await markersNow();
+      assert.deepEqual(markers, [
+        { origin, text: "A new event came in." },
+        { origin, text: "Another event came in." },
+        { origin, text: "Another event came in.", withdrawn: true },
+      ], "the taken one's marker, and the refused one's with its withdrawal");
+      assert.equal((await userEntries(run!, "A new event came in.")).length, 1, "the trigger's message reached the run");
+    } finally {
+      await run?.release();
+      await server?.close();
+      disk.remove();
+    }
+  });
+
+  it("a trigger's guarded message refused WAITING writes no marker: the waiting check comes before it; a server origin on a guarded input is refused", async () => {
+    const disk = new LocalDisk("serve-trigger-waiting");
+    let server: RunServer | undefined;
+    let run: DurableRun | undefined;
+    try {
+      ({ server, run } = await served(disk, newCounters()));
+      const PARK = "agentrun.tool_approval";
+      const root = await run!.harness.root(ctx);
+      await run!.harness.commit((tx) => tx.appendEntry(root.id, { kind: PARK, data: { phase: "requested", id: "ap_9", tool: "web_fetch", call_id: "call_9" } as never }), ctx);
+      const origin = { kind: "trigger", trigger_id: "trg_1", source: "schedule", owner: true };
+      const waiting = await call(server!, "POST", "/submit", { requestId: "w1", content: "Check the queue.", origin, answers: false, asks: ["ask_person"], parks: [PARK] });
+      assert.deepEqual([waiting.status, waiting.body.error], [409, "WAITING"], JSON.stringify(waiting.body));
+      const server_ = await call(server!, "POST", "/submit", { requestId: "s1", content: "The cap was raised.", origin: { kind: "server", reason: "cap_raised" }, answers: false });
+      assert.deepEqual([server_.status, server_.body.error], [400, "BAD_REQUEST"], "a server origin is never on a guarded input");
+      const markers = (await root.entries({}, 500, undefined, ctx)).items.filter((entry) => entry.kind === MESSAGE_ORIGIN_KIND);
+      assert.deepEqual(markers, [], "no marker written");
+    } finally {
+      await run?.release();
+      await server?.close();
+      disk.remove();
+    }
+  });
+
   it("dedup is per conversation, as pi's submissionByRequest is: the same requestId on another conversation is a new submission", async () => {
     const disk = new LocalDisk("serve-perconv");
     const counters = newCounters();
@@ -305,30 +369,8 @@ describe("the bearer token", () => {
     }
     await assert.rejects(serveRun({ url: "ftp://run-host.example:21" }), (e: unknown) => (e as { code?: string }).code === "SERVE_URL_INVALID");
     const server = await serveRun({ url: "https://run-host.example:8443" });
-    assert.equal(server.url, "https://run-host.example:8443", "run.json's holder carries the given address, not the bound one");
+    assert.equal(server.url, "https://run-host.example:8443", "the run's holder carries the given address, not the bound one");
     await server.close();
-  });
-
-  it("the client sends its token; without it the instance's 401 comes back as the answer", async () => {
-    const disk = new LocalDisk("serve-token-client");
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      const host = new InProcessHost(async (ref) => {
-        const app = lifecycleApp(newCounters());
-        const server = await serveRun({ root: { agent: app.agent }, token: TOKEN });
-        const run = await openOn(disk, ref, app, { holder: { driver: "in-process", serve: server.url } });
-        server.attach(run);
-        instances.push({ run, server });
-      });
-      const body = { requestId: "c1", content: "hello", wait: true };
-      const ok = await requestRun(REF, { method: "POST", path: "/submit", body }, { host, ensure: { control: disk }, token: TOKEN, timeoutMs: 10_000 });
-      assert.deepEqual([ok.status, (ok.body as any).answer.text], [200, "echo: hello"]);
-      const refused = await requestRun(REF, { method: "POST", path: "/submit", body }, { host, ensure: { control: disk }, timeoutMs: 10_000 });
-      assert.deepEqual([refused.status, (refused.body as any).error], [401, "UNAUTHORIZED"]);
-      for (const i of instances) (await i.run.release(), await i.server.close());
-    } finally {
-      disk.remove();
-    }
   });
 
   it("the token file must be private: 0600 is read, anything group or world readable, empty or missing is refused", () => {
@@ -347,126 +389,6 @@ describe("the bearer token", () => {
       assert.throws(() => readServeToken(file), (e: unknown) => (e as { code?: string }).code === "SERVE_TOKEN_INVALID");
       assert.throws(() => readServeToken(join(disk.base, "missing")), (e: unknown) => (e as { code?: string }).code === "SERVE_TOKEN_INVALID");
     } finally {
-      disk.remove();
-    }
-  });
-});
-
-describe("the client", () => {
-  it("starts a never-started run and a parked one on request, sends straight to a running one, and refuses a done run", async () => {
-    const disk = new LocalDisk("serve-client");
-    const counters = newCounters();
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      const host = new InProcessHost(async () => {
-        // The driver returns once the instance runs; the client finds it through run.json.
-        void served(disk, counters).then((i) => instances.push(i));
-      });
-      const options = { host, ensure: { control: disk }, timeoutMs: 10_000 };
-      const submit = (requestId: string, content: string) => requestRun(REF, { method: "POST", path: "/submit", body: { requestId, content, wait: true } as JsonValue }, options);
-
-      const first = await submit("c1", "hello");
-      assert.equal(first.status, 200);
-      assert.equal((first.body as any).answer.text, "echo: hello");
-      assert.deepEqual(first.ensured.map((e) => e.action), ["started"]);
-
-      const again = await submit("c2", "hi");
-      assert.deepEqual([again.status, again.ensured.length], [200, 0], "a running instance answers at once");
-
-      // Parked idle: run.json sleeping with no wake; only a request starts it.
-      await recordWake(instances[0]!.run, null);
-      await instances[0]!.run.release();
-      const woken = await submit("c3", "again");
-      assert.equal((woken.body as any).generation, 2);
-      assert.equal(woken.ensured[0]?.action === "started" && woken.ensured[0].woke, true);
-
-      await instances[1]!.run.setStatus("done");
-      await instances[1]!.run.release();
-      await assert.rejects(submit("c5", "too late"), (e: unknown) => e instanceof ServeError && e.code === "RUN_TERMINAL");
-      for (const i of instances) await i.server.close();
-      await sleep(10);
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("a control API that never answers ends the request at its deadline, not never", { timeout: 10_000 }, async () => {
-    const disk = new LocalDisk("serve-stall");
-    try {
-      const stalled = Object.assign(Object.create(disk) as LocalDisk, { getObject: () => new Promise<Uint8Array>(() => {}) });
-      const t0 = Date.now();
-      const err = await requestRun(REF, { method: "GET", path: "/status" }, { host: new InProcessHost(async () => {}), ensure: { control: stalled }, timeoutMs: 400 }).then(() => null, (e: unknown) => e);
-      assert.ok(err instanceof ServeError && err.code === "NOT_SERVED", String(err));
-      assert.ok(Date.now() - t0 < 2_000, `ended at its deadline (${Date.now() - t0} ms)`);
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("gives up on an instance whose lease lapses while a request is open (a frozen instance never answers) and asks the supervisor", async () => {
-    const disk = new LocalDisk("serve-frozen");
-    try {
-      const now = Date.now();
-      await disk.putObject(`runs/${REF.id}/run.json`, JSON.stringify({
-        run: REF.id, status: "running", generation: 1, sealedSeq: null, wakeAt: null, updatedAt: new Date(now).toISOString(),
-        heartbeatAt: new Date(now - 2_500).toISOString(), detail: null,
-        holder: { driver: "in-process", host: "h", bootId: null, pid: 1, since: new Date(now).toISOString(), serve: "http://127.0.0.1:9" },
-      }));
-      let aborted = 0;
-      const hanging = ((_url: URL, init: RequestInit) =>
-        new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => (aborted = Date.now() - now, reject(new Error("aborted")))))) as unknown as typeof fetch;
-      const host = new InProcessHost(async () => {});
-      const err = await requestRun(REF, { method: "GET", path: "/status" }, { host, ensure: { control: disk, leaseExpiryMs: 3_000 }, timeoutMs: 4_000, fetch: hanging }).then(() => null, (e: unknown) => e);
-      assert.ok(err instanceof ServeError && err.code === "NOT_SERVED", String(err));
-      assert.ok(aborted > 0 && aborted < 2_500, `the request was dropped once the lease lapsed (${aborted} ms), not at the deadline`);
-      assert.ok(err.ensured.some((e) => e.action === "started"), "and the supervisor was asked");
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("starts once while the instance opens, though nothing lists it yet, and asks again only after the start timeout", { timeout: 20_000 }, async () => {
-    const disk = new LocalDisk("serve-once");
-    const counters = newCounters();
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      // The driver returns at once; the instance mounts (and so shows in the delegations) 400 ms later.
-      const host = new InProcessHost(async () => void sleep(400).then(() => served(disk, counters)).then((i) => instances.push(i)));
-      const r = await requestRun(REF, { method: "POST", path: "/submit", body: { requestId: "o1", content: "hello", wait: true } }, { host, ensure: { control: disk }, timeoutMs: 10_000 });
-      assert.equal(r.status, 200);
-      assert.deepEqual(r.ensured.map((e) => e.action), ["started"]);
-      assert.equal(host.starts.length, 1);
-      await instances[0]!.run.release();
-      await instances[0]!.server.close();
-
-      const never = new InProcessHost(async () => {});
-      // The supervisor's start grace (300 ms here) has passed too by the time the client asks again.
-      const err = await requestRun({ ...REF, id: "serve-never" }, { method: "GET", path: "/status" }, { host: never, ensure: { control: disk, startGraceMs: 300 }, timeoutMs: 1_500, startTimeoutMs: 400 }).then(() => null, (e: unknown) => e);
-      assert.ok(err instanceof ServeError && err.code === "NOT_SERVED");
-      assert.ok(never.starts.length >= 2 && never.starts.length <= 4, `a start that never opens is retried after the start timeout (${never.starts.length} starts)`);
-    } finally {
-      disk.remove();
-    }
-  });
-
-  it("a start the supervisor reports in flight (`starting`, inside its start grace) is waited for, never doubled", { timeout: 20_000 }, async () => {
-    const disk = new LocalDisk("serve-starting");
-    const counters = newCounters();
-    const instances: { run: DurableRun; server: RunServer }[] = [];
-    try {
-      // Another supervisor started generation 1 just now: its start mark is written, nothing is mounted yet.
-      await disk.putObject(`runs/${REF.id}/start.json`, JSON.stringify({ generation: 1, at: new Date().toISOString(), by: "other:1" }));
-      void sleep(500).then(() => served(disk, counters)).then((i) => instances.push(i));
-      const host = new InProcessHost(async () => {
-        throw new Error("this client must not start a second instance");
-      });
-      const r = await requestRun(REF, { method: "POST", path: "/submit", body: { requestId: "s1", content: "hello", wait: true } }, { host, ensure: { control: disk }, timeoutMs: 10_000 });
-      assert.equal(r.status, 200);
-      assert.deepEqual(r.ensured.map((e) => e.action), ["starting"], "asked once, then waited for generation 1");
-      assert.equal(host.starts.length, 0);
-      assert.equal((r.body as any).generation, 1);
-    } finally {
-      for (const i of instances) (await i.run.release().catch(() => {}), await i.server.close());
       disk.remove();
     }
   });
