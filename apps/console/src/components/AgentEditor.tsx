@@ -15,6 +15,7 @@ import type { McpServer } from "@/lib/mcp";
 import { newAgentPlace, placeOf } from "@/lib/place";
 import type { Places } from "@/lib/place";
 import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
+import { useLeaveGuard } from "@/lib/leaving";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -30,7 +31,7 @@ export type EditorProps = {
   revisions?: Revision[];
   caps: EditorCaps;
   /** Saves the form: a new agent, or the next revision of this one. Resolves with the server's refusal, or null. */
-  onSave?: (fields: AgentFields, note: string) => Promise<SaveProblem | null>;
+  onSave?: (fields: AgentFields, note: string, editor?: { leaveSaved: () => void }) => Promise<SaveProblem | null>;
   onMakeCurrent?: (revision: string) => void;
   onArchive?: (archive: boolean) => void;
   onReload?: () => void;
@@ -88,6 +89,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
+  // The form as saved: as it opened, or as its last save left it. A form unlike it holds unsaved changes, and leaving the
+  // page asks first (lib/leaving). The revision note is not one: a note alone saves nothing.
+  const [base, setBase] = useState<AgentFields>(f);
+  const leaveSaved = useLeaveGuard(!same(f, base));
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -96,10 +101,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const placeKey = JSON.stringify(newAgentPlace(caps.places) ?? null);
   useEffect(() => {
     if (!creating) return;
-    setF((x) => {
+    // The defaults are no edit: the saved form takes them too.
+    const defaults = (x: AgentFields): AgentFields => {
       const place = x.place ?? newAgentPlace(caps.places);
       return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
-    });
+    };
+    setF(defaults); setBase(defaults);
   }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
@@ -115,7 +122,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // it names (one the form does not show, such as a place, only above).
   const warnings = agent?.warnings ?? [];
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
-  const set = (patch: AgentFields) => { setF((x) => ({ ...x, ...patch })); setSaved(false); };
+  // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
+  const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); setSaved(false); };
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
@@ -144,12 +152,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
-    const p = await onSave(fields, note);
+    const sent = f;
+    // `leaveSaved`: this editor's own guard, for a page that moves on once the save lands (a new agent opening its page).
+    // It lifts the guard only while the form is still what this save sent: an edit made while the save was under way
+    // was never sent, so the move asks, and Cancel keeps it (as the answer below keeps it unsaved).
+    const p = await onSave(fields, note, { leaveSaved: () => { if (same(formNow.current, sent)) leaveSaved(); } });
     // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
     // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
+    // Saved: the form as sent is the saved one (its tool settings now the definition's, when unchanged since).
+    if (!p) setBase(unchanged ? (({ tool_settings: _saved, ...rest }) => rest)(sent) : sent);
   };
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
@@ -210,6 +224,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           ))}
         </ol>
         <section className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-10">
+          {/* A new agent's form is read-only while its Create is under way: what the request sent is the form, so the page
+              it opens never asks, and no edit made meanwhile is left behind. A refused Create gives it back as it was. */}
+          <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           <p className="caps text-[11px] text-muted-foreground">Step {at + 1}</p>
           <h2 className="caps mb-6 border-b pb-4 text-[15px] font-semibold">{steps[at].label}</h2>
 
@@ -380,6 +397,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               ))}
             </ul>
           )}
+          </fieldset>
         </section>
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t px-5 py-3 md:px-8">
@@ -388,7 +406,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
+        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? (creating ? "Creating…" : "Saving") : creating ? "Create" : "Save revision"}</Button>}
       </footer>
     </div>
   );

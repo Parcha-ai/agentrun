@@ -25,3 +25,12 @@ export function goBack(fallback: string) {
   if (at > 0) history.back();
   else location.hash = fallback;
 }
+
+/** Takes back a move the console refused (App's guard on unsaved changes, after the browser already moved): back to the
+ *  entry the console was at, never a rewrite of one. A step to a numbered entry (the browser's Back or Forward) is undone
+ *  by the same number of steps the other way; a new entry (a link, an address) by one step back, which leaves it ahead in
+ *  the history, as a page the person may still go Forward to. Call it before `trackHistory`'s listener sees the move. */
+export function undoMove() {
+  const n = numbered();
+  history.go(n === undefined ? -1 : at - n);
+}
