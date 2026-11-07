@@ -1673,7 +1673,9 @@ then loads the harness from its own packages inside its install and nowhere else
 a tree that is not whole is installed again. Claude Code as an earlier build installed it, at the top of `<data>/harnesses`
 itself, is removed before the first install (the server logs `harness_install_removed`), and it installs again; a
 `harnesses` directory that holds anything else is left as it is. Until it is installed, capabilities list the harness with `installs:
-"on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked
+"on_first_use"`. On a platform it has no build for (no Codex target, or no Claude CLI package in the lock), it is
+unavailable from the start, its reason `no Codex build for this platform (<platform>)` or `no Claude Code build for
+this platform (<platform>)`, and a run on it is refused at once: nothing is installed, and npm is never run. When npm fails, the run fails and its error names the command that installs it by hand, the same locked
 install: the shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses/<harness>.new`, `npm ci
 --ignore-scripts --include=optional` there, then that directory put in place of `<data>/harnesses/<harness>` (made
 writable first: the server leaves its install read-only). A server that stops
