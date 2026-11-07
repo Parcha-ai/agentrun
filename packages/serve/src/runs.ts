@@ -27,6 +27,7 @@ import { DATA_ENV, dataOfRun, FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CAN
 import { MCP_PIN, mcpCredentialsOf, mcpNameOf, type McpPin, mcpPinOf, type McpServerSource } from "./mcp-gateway.js";
 import { META_REASON, metaToolOf } from "./mcp-meta.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
+import { servedOnly, servedOnlyIds } from "./served-only.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { Hearing } from "./heard.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -271,6 +272,8 @@ export type Run = {
   lastEntry?: number;
   /** What the live path's rows keep served (keepCommitted), for a learning row shown between its snapshots. */
   keep?: (id: string) => boolean;
+  /** The ids of the rows only the served view made for it (servedOnly), which the live path's keep never holds. */
+  madeHere?: Set<string>;
   /** What its pinned revision's tools resolve from (tool-plane.ts), resolved again at each launch. */
   tooling?: Tooling;
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
@@ -659,7 +662,7 @@ const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** The row a run shows while its harness installs for it (harness-install.ts), since `at`. */
-const installRow = ({ at, words }: { at: string; words: string }): TimelineEvent => ({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
+export const installRow = ({ at, words }: { at: string; words: string }): TimelineEvent => servedOnly({ id: "harness:installing", timestamp: at, created_at: at, kind: "phase", summary: words, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 
 /** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
  *  its id the refusal's with NOTE_SUFFIX, so it is no message: isMessageRow), marked `paused`, never an error row. The
@@ -668,14 +671,16 @@ const BUDGET_PAUSED = "Paused at the run's cap";
 /** The waiting row of a run paused at its cap, after the refusal's row: "Waiting for you to raise the cap", and no
  *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
 const BUDGET_WAITING = "Waiting for you to raise the cap";
-function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
+export function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.paused === true);
   if (at < 0) return [...rows];
   // The refusal's own marker (`paused`, servedError) and the server's origin stay on the refusal's row: the waiting row
   // is no refusal and no row of the server's, and keeps the id it had, the refusal's own with ":paused".
   const { paused: _marker, origin: _origin, ...refusal } = rows[at]!;
   const own = refusal.id.endsWith(NOTE_SUFFIX) ? refusal.id.slice(0, -NOTE_SUFFIX.length) : refusal.id;
-  const paused: TimelineEvent = { ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+  // Only the served view makes it (servedOnly): once the run is raised, show() stops making it and it goes, even while a
+  // live process feeds the timeline (keepCommitted).
+  const paused: TimelineEvent = servedOnly({ ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
   return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
 }
 /** Whether an error row of `run`'s is a refusal for room it paused at: one in an agentic run's own turn (decide never
@@ -835,9 +840,12 @@ export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string }
 
 /** The rows a snapshot that no longer holds them leaves served: those committed entries made. A row any connection
  *  showed live is not one (`live` holds them for the run), so a live row that ended while the door was away goes. */
-export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[], isLive: (id: string) => boolean): (id: string) => boolean {
+/** The live path's keep: a row a committed entry made stays served though a later snapshot no longer holds it (the
+ *  timeline only grows); a row the reducer showed live does not, nor one only the served view makes (`madeHere`, the ids
+ *  show() tagged servedOnly, read as it grows), which goes once show() stops making it. */
+export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[], isLive: (id: string) => boolean, madeHere: ReadonlySet<string> = new Set()): (id: string) => boolean {
   for (const row of rows) if (isLive(row.id)) live.add(row.id);
-  return (id) => !live.has(id) && !isLive(id);
+  return (id) => !madeHere.has(id) && !live.has(id) && !isLive(id);
 }
 
 /** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
@@ -1458,7 +1466,10 @@ export class Runs {
     const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served);
     // While its harness installs, the run says so (a phase row of the server's, gone once it is installed).
     const installing = run.installRow ? [...rows, installRow(run.installRow)] : rows;
-    if (run.log.sync(withLearning(installing, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
+    const view = withLearning(installing, run.meta.learning, this.learning.shown());
+    // Every row only this view makes, remembered by id, so the live path's keep never holds one once it is no longer made.
+    servedOnlyIds(view, (run.madeHere ??= new Set()));
+    if (run.log.sync(view, run.keep)) run.updatedAt = new Date().toISOString();
   }
 
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
@@ -2099,7 +2110,7 @@ export class Runs {
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.
         const rows = reducer.rows();
-        this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
+        this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive, (run.madeHere ??= new Set())));
         if (event === "snapshot" && run.finishStop) {
           run.finishStop = false;
           if (run.working && stopped(run) && run.submitted === 0) {
@@ -3288,6 +3299,9 @@ export class Runs {
       delete next.error;
     } else if (follow) run.meta.cap_continue = follow;
     if (next && typeof run.resuming === "number") run.resuming = undefined;
+    // The served view as the raise leaves it, now: the pause's waiting row goes at the raise, not at the next row a
+    // process sends (a paused process being let go sends none).
+    this.show(run);
     this.refresh(run);
     const answered = pause !== undefined ? run.meta.cap_continue : undefined;
     if (!answered) return { resumed: false, ...(this.live(run) ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
@@ -3868,6 +3882,10 @@ export class Runs {
   /** The timeline from change `after`, held up to `waitMs` for a change when there is none. */
   async page(run: Run, after: number, waitMs: number, limit: number): Promise<Page & { status: Status; state: State; final: boolean }> {
     const deadline = Date.now() + waitMs;
+    // A full read is of the served view as the run stands now: show() first, so a row only the view makes (a pause's
+    // waiting row, the install row, the learning row) is as current state says, whatever change came with no show() after
+    // it. One diff of the run's rows (RowLog.sync), on a full read only; a read from a cursor gets each change as it is shown.
+    if (after <= 0) this.show(run);
     for (;;) {
       const page = run.log.page(after, limit);
       const { status, state } = statusOf(run);

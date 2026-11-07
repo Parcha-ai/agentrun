@@ -5,11 +5,13 @@
 // good fails, and its refusal's row stays an error row. The row is the same live, on a full re-read of the timeline, and
 // from a server started again: it is the refusal's own, never read from the run's status.
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { isMessageRow, NOTE_SUFFIX } from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, letGo, scratch, serve } from "./support.mjs";
+import { agent, client, follow, letGo, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -87,4 +89,36 @@ test("a run its cap refuses for good (a model with no output ceiling) fails: its
     assert.match(errors[0].text, /^spend_cap_reached: Not sent: the next model request's model has no output ceiling here/, where);
     assert.deepEqual(rows.filter((row) => row.paused === true || row.kind === "waiting").map((row) => row.kind), [], `${where}: no pause row`);
   }
+});
+
+/** The output-priced faux model in a process that cannot exit until EXIT_GATE exists: a paused run's let-go held open. */
+const SLOW_EXIT = new URL("./fixtures/faux-output-priced-slow-exit.mjs", import.meta.url).pathname;
+
+test("raised while its paused process is still being let go (a live process still feeding its timeline), the run shows no waiting row on a fresh full read: at once, once it completes, and from a server started again", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const gate = join(dir, "exit");
+  withEnv(t, { EXIT_GATE: gate });
+  const data = join(dir, "agents");
+  let server = await startServe({ data, port: 0, faux: SLOW_EXIT, drainTimeout: "30s" });
+  t.after(() => server?.close());
+  let api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("held-raise"))).status, 201);
+  const { run_id } = (await api("POST", "/agents/held-raise/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.05 })).body;
+  await follow(api, run_id, SETTLED);
+  assert.equal((await view(api, run_id)).pending?.kind, "budget", "paused at its cap");
+  const waitingRows = async () => (await api("GET", `/runs/${run_id}/timeline`)).body.rows.filter((row) => row.kind === "waiting").map((row) => row.id);
+  assert.equal((await waitingRows()).length, 1, "paused: its waiting row");
+  // Its process told to go and held there: the raise lands while that live process still feeds the timeline.
+  const pid = runRecordOf(data, run_id).holder.pid;
+  assert.ok(processAlive(pid), "the paused run's process is still being let go");
+  assert.equal((await api("PATCH", `/runs/${run_id}`, { max_cost_usd: 1 })).status, 200);
+  assert.deepEqual(await waitingRows(), [], "raised, its process still live: no waiting row");
+  writeFileSync(gate, "");
+  await follow(api, run_id, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  assert.equal((await view(api, run_id)).status, "completed");
+  assert.deepEqual(await waitingRows(), [], "completed: no waiting row");
+  await server.close();
+  server = await startServe({ data, port: 0, faux: SLOW_EXIT, drainTimeout: "5s" });
+  api = client(server.baseUrl, server.token);
+  assert.deepEqual(await waitingRows(), [], "a server started again: no waiting row");
 });
