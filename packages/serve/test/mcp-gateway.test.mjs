@@ -263,7 +263,7 @@ test("a priced call that never left (its server is down) books nothing: no mark,
   useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
   const said = await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c1" });
   assert.equal(said.isError, true);
-  assert.match(textOf(said), /The MCP server fake failed/);
+  assert.match(textOf(said), /The MCP server fake could not be reached at http:\/\/127\.0\.0\.1:9 \(.+\); nothing was sent\./);
   assert.deepEqual([spent, entries], [0, []]);
   const unpriced = mcpGateway({ pin: { fake: { url: dead, tools } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
   await unpriced.call("fake", "add", {}, { signal: signal(), callId: "c2" });
