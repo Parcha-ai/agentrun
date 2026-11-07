@@ -45,6 +45,7 @@ export const ERROR_STATUS = {
   store_unreadable: 409,
   wrong_origin: 409,
   sign_in_held: 409,
+  scope_taken: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

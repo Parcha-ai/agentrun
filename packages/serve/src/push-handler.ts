@@ -69,12 +69,15 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
     const { created, firing } = deps.receive(pathTrigger, events[0]!.key, events[0]!.text);
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
   }
-  // A server-wide source's: each event fires every trigger listening on its scope; one no trigger takes is said.
+  // A server-wide source's: each event fires the one trigger that listens on its scope (a scope belongs to one trigger:
+  // triggers.ts scope_taken). One no trigger takes is said; one more than one does (a file edited by hand) fires none,
+  // and is said with their ids, so no event fires twice or reaches whichever came first.
   const fired: { created: boolean; firing: unknown }[] = [];
   for (const event of events) {
     const ids = event.scope === undefined ? [] : deps.scoped(adapter.id, event.scope);
-    if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
-    for (const id of ids) fired.push(deps.receive(id, event.key, event.text));
+    if (ids.length === 1) fired.push(deps.receive(ids[0]!, event.key, event.text));
+    else if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
+    else deps.say({ condition: "hook_scope_ambiguous", source: adapter.id, route, scope: String(event.scope), triggers: ids.join(",") });
   }
   return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
 }
