@@ -248,6 +248,9 @@ export function personHands(options: {
   /** Asks the run's cap ended (a refused re-hold), and its words. */
   const capped = new Map<string, string>();
   let poll: NodeJS.Timeout | undefined;
+  /** The run's process let go (close): every hold that comes back after it is dropped, and nothing new is held. */
+  let closed = false;
+  const CLOSED = { refused: "the run's process is letting go of the browser" };
   const note = (kind: string, data: Record<string, string>): Promise<void> => options.note(kind, data).catch(() => undefined);
 
   /** The person's time on each session, held once under the cap for everyone who needs it there (a take-over, an ask), and
@@ -271,6 +274,7 @@ export function personHands(options: {
    *  the stretch between is held for it, or it is refused. */
   const acquire = async (tag: string, user: string, what: string, pauses: boolean, reach?: number): Promise<{ refused: string } | undefined> => {
     for (;;) {
+      if (closed) return CLOSED;
       const known = ledgers.get(tag);
       if (known) {
         // The first hold refused (or failed): the ledger is gone, and this one asks the cap for itself, in its own words.
@@ -313,6 +317,11 @@ export function personHands(options: {
       const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now(), until: now() + holdMs, turns: Promise.resolve() };
       ledger.ready = options.personTime(what, holdMs / 1000, { pauses, tag, from: ledger.since }).then(
         (hold) => {
+          // Let go meanwhile (close): the hold goes, and nothing is held again.
+          if (!("refused" in hold) && (closed || ledgers.get(tag) !== ledger)) {
+            hold.drop();
+            return CLOSED;
+          }
           if (!("refused" in hold)) {
             ledger.holds.push(hold);
             again(tag, ledger);
@@ -391,6 +400,8 @@ export function personHands(options: {
     const user = `ask:${id}`;
     // Held through its own expiry, as its asking held it: joining a take-over's hold, the stretch past it.
     void acquire(kept.tag, user, "handing the browser to you", false, Date.parse(kept.expires_at)).then((refused) => {
+      // The process let go meanwhile: the ask is the next process's to take up, never ended here.
+      if (closed) return refused ? undefined : release(kept.tag, user);
       if (refused) {
         options.gates(kept.tag).give?.("cap", refused.refused);
         return capAsk(id, refused.refused);
@@ -512,6 +523,7 @@ export function personHands(options: {
     },
     /** The run's process lets go: its holds dropped, its poll stopped. */
     close(): void {
+      closed = true;
       if (poll) clearInterval(poll);
       poll = undefined;
       for (const ask of open.values()) ask.drop();

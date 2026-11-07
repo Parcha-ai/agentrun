@@ -328,6 +328,31 @@ test("an ask that arrives while the take-over's re-hold waits on the cap holds n
   assert.deepEqual(held, [["taking over the browser", 900], ["more of your time in the browser", 900]], "the stretch from 15 to 30 minutes is held once, not again for the ask");
 });
 
+test("a process that lets go while its first hold is still being asked of the cap keeps nothing: the hold that comes back is dropped, and nothing is held again later", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock(Date.now());
+  const holdMs = 15 * 60_000;
+  const calls = [];
+  let dropped = 0;
+  let grant;
+  const person = personHands({ root, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, gates: () => ({ give: () => false }), note: async () => {}, personTime: async (what) => {
+    calls.push(what);
+    if (calls.length === 1) await new Promise((resolve) => { grant = resolve; });
+    return { drop: () => { dropped += 1; } };
+  } });
+  const taking = person.take("ar-run-41-1");
+  await sleep(5);
+  person.close();
+  grant();
+  const answer = await taking;
+  assert.ok("refused" in answer, "the take that raced the close holds nothing");
+  assert.equal(dropped, 1, "the hold that came back after the close is dropped");
+  await clock.tick(2 * holdMs);
+  assert.deepEqual(calls, ["taking over the browser"], "and nothing is held again");
+  const asked = await person.handoff.request(ask(41, "ar-run-41-1"));
+  assert.ok("refused" in asked, "a closed process makes no ask");
+});
+
 test("a take-over's row is written when its hold goes live, and a take whose hold never started is let go with no row", async (t) => {
   const root = await scratch(t);
   const { person, held } = hands(root);
