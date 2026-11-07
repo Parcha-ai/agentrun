@@ -23,7 +23,7 @@ import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { dataOfRun, FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, openRouterOnly, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, claudePriceModel, codexModel, type ConfineChild, openRouterOnly, skillCheckOf, thinkingFor } from "./adapters.js";
 import { PORT_PROVIDER, portModels } from "./port-models.js";
 import type { SessionPort } from "@parcha/agentrun-kernel";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
@@ -187,10 +187,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const guidance = effortGuidance(process.env[EFFORT_ENV]);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
-    // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
-    // refuse; codex's prompt, and a faux harness's, name each skill and its file when the run reads its files (it reads
-    // the SKILL.md when it fits), else keep every skill whole (skills.ts).
-    const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
+    // claude-agent, codex and opencode load the skills their adapter takes itself (skillCheckOf), and the prompt keeps only
+    // the ones it would refuse; a faux harness's prompt names each skill and its file when the run reads its files (it
+    // reads the SKILL.md when it fits), else keeps every skill whole (skills.ts).
+    const check = !env[FAUX_HARNESS_ENV] ? await skillCheckOf(harness) : undefined;
     const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
