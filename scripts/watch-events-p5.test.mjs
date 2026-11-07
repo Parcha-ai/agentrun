@@ -1,7 +1,8 @@
-// pi 1.5 removed `watchEvents`, on which the live path was built. On the held branch pi/family-1.5 each place that
-// called it is a placeholder that refuses with one message, until P5 moves the live path to conversation.watch with
-// ConversationTranscript and pi.live. This lists exactly those places: a new one fails here, and so does one left
-// after P5 (P5 empties PLACEHOLDERS and this test with it). Nothing in the sources imports watchEvents from pi.
+// pi 1.5 removed `watchEvents`, on which the live path was built. On the held branch pi/family-1.5 an adapter rebuilds it
+// on observeCommits (packages/pi-durable-disk/src/live-events.ts) for exactly two callers, until P5 moves the live path to
+// conversation.watch with ConversationTranscript and pi.live and deletes the adapter. This lists those callers: a new
+// one fails here, and so does one left after P5 (P5 empties CALLERS and deletes this test). Nothing in the sources
+// imports watchEvents from pi.
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -9,9 +10,9 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
-const MESSAGE = 'live events move to conversation.watch in P5';
-/** The door's GET /events, and a recording's live pi lines. */
-export const PLACEHOLDERS = ['packages/harness/src/record.ts', 'packages/pi-durable-disk/src/serve.ts'];
+const ADAPTER = 'packages/pi-durable-disk/src/live-events.ts';
+/** The door's GET /events, and a recording's live pi lines: the adapter's callers until P5. */
+export const CALLERS = ['packages/harness/src/record.ts', 'packages/pi-durable-disk/src/serve.ts'];
 
 /** Every .ts, .mts and .js file under each package's src/. */
 function sources() {
@@ -27,9 +28,10 @@ function sources() {
   return out;
 }
 
-test('the watchEvents placeholders are exactly the listed places, each refusing with the one message', () => {
-  const found = sources().filter((file) => readFileSync(file, 'utf8').includes(MESSAGE)).map((file) => relative(repo, file)).sort();
-  assert.deepEqual(found, [...PLACEHOLDERS].sort());
+test('the watchEvents adapter has exactly the listed callers, until P5', () => {
+  assert.ok(existsSync(join(repo, ADAPTER)), `${ADAPTER} is the adapter`);
+  const found = sources().map((file) => relative(repo, file)).filter((file) => file !== ADAPTER && /\bwatchEvents\(/.test(readFileSync(join(repo, file), 'utf8'))).sort();
+  assert.deepEqual(found, [...CALLERS].sort());
 });
 
 test('no source imports watchEvents from pi-durable', () => {

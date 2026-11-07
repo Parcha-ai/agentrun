@@ -13,16 +13,9 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { ConversationBusy, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { Conversation, ConversationId, Cursor, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, Tx, UserInput } from "@earendil-works/pi-durable";
 
-/** pi 1.5 removed watchEvents. Held branch pi/family-1.5 only: the door's GET /events refuses until P5 moves it to
- *  conversation.watch with ConversationTranscript and pi.live (scripts/watch-events-p5.test.mjs lists every such site). */
-async function watchEvents(_harness: Harness, _conversation: ConversationId, _context: Context): Promise<{
-  snapshot: Record<string, unknown>;
-  start(listener: (batch: unknown[]) => Promise<void>): void;
-  stop(): Promise<void>;
-  closed: Promise<{ reason: string }>;
-}> {
-  throw new Error("live events move to conversation.watch in P5");
-}
+// pi 1.5 removed watchEvents: the door's GET /events reads the adapter that rebuilds it on observeCommits until P5 moves
+// it to conversation.watch with ConversationTranscript and pi.live (scripts/watch-events-p5.test.mjs lists each caller).
+import { watchEvents } from "./live-events.ts";
 import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
 import { busyState } from "./park.ts";

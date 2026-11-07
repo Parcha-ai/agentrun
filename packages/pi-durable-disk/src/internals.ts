@@ -18,6 +18,10 @@ export type { ProcessInfo, ProcessOrigin, ProcessSnapshot, ProcessTable } from "
 export { newestSettledInput, snapshotInputs } from "./serve.ts";
 // A host's proof that a door is the one it launched (a nonce handed on `run --door-nonce-fd`, answered at POST /door-proof).
 export { doorProof } from "./serve.ts";
+// One conversation's agent events, as pi-durable 1.1's watchEvents gave them, rebuilt on pi 1.5's observeCommits: the
+// door's GET /events and the harness's recordings read it until P5 moves them to conversation.watch.
+export { watchEvents } from "./live-events.ts";
+export type { LiveEnd, LiveEvent, LiveEvents } from "./live-events.ts";
 export type { InputRecord } from "./serve.ts";
 // The workspace confinement, for a host that reads a run's files itself (agentrun-serve), and its process-wide TEST seam
 // (confineTestHooks: runs after a path is checked and before it is opened; tests only, never a production hook).
