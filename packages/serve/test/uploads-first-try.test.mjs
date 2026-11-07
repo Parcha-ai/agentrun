@@ -195,6 +195,23 @@ export default function reply(context, faux) {
   }
 });
 
+test("an image sent to a run on claude-agent or codex is read by pi's read tool as a host tool: an image read asks the calling agent for its model, which a host tool's api answers", { timeout: 180_000 }, async (t) => {
+  // pi 1.5's read, on an image, reads the calling agent's model for its image limits (api.agent(), api.models).
+  const server = await served(t, { fauxHarness: FAUX_HARNESS });
+  const { api } = server;
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+  const file = (await sendFile(server, { path: "brief/pixel.png" }, png)).json.file;
+  for (const harness of ["claude-agent", "codex"]) {
+    const id = `image-${harness}`;
+    assert.equal((await api("POST", "/agents", agent(id, { harness, tools: ["read"], instructions: "Read the upload inputs/brief/pixel.png." }))).status, 201, harness);
+    const run = await api("POST", `/agents/${id}/runs`, { input: { content: "Read the upload inputs/brief/pixel.png." }, file_ids: [file.file_id] });
+    assert.equal(run.status, 202, `${harness}: ${JSON.stringify(run.body)}`);
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const result = rows.find((r) => r.kind === "tool_result");
+    assert.equal(result?.tool_status, "success", `${harness}: its read tool read the image: ${JSON.stringify(result)}`);
+  }
+});
+
 test("the page's session sends a file in one call only with its own Origin: the POST is marked raw, and nothing else changes", async (t) => {
   const server = await served(t, { accounts: true, openSetup: true });
   const page = `http://127.0.0.1:${server.port}`;
