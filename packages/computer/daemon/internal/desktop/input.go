@@ -58,6 +58,9 @@ func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error)
 	if failed != nil {
 		return ActionsResult{Failed: failed}, nil
 	}
+	if len(actions) == 0 {
+		return ActionsResult{}, nil
+	}
 	d.use.Lock()
 	defer d.use.Unlock()
 	c, err := d.connection()

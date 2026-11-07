@@ -321,6 +321,11 @@ func TestOnXvfbTheDisplayIsDeclared(t *testing.T) {
 	if got := strings.Join(k.display.Groups(), ","); got != "screen,input.pointer,input.keys" {
 		t.Fatalf("groups %q", got)
 	}
+	var empty result
+	k.c.ok("input.actions", map[string]any{"actions": []any{}}, &empty)
+	if empty.Done != 0 || empty.Failed != nil {
+		t.Fatalf("an empty batch: %+v", empty)
+	}
 }
 
 func TestOnXvfbAShotIsAPNGOfTheScreenWithTheFixturesColors(t *testing.T) {

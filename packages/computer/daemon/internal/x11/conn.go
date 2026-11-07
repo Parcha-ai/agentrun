@@ -28,8 +28,11 @@ var le = binary.LittleEndian
 var ErrClosed = errors.New("the X connection is closed")
 
 const (
-	// ioTimeout bounds the setup, every write, and the wait for every reply: an X server that stops answering fails the
-	// call instead of hanging it.
+	// setupTimeout bounds the dial and the connection setup: hello asks for the display, and must not wait long for one
+	// that does not answer.
+	setupTimeout = 5 * time.Second
+	// ioTimeout bounds every write, and the wait for every reply: an X server that stops answering fails the call
+	// instead of hanging it.
 	ioTimeout = 30 * time.Second
 	// flushAt is how much a batch of requests buffers before it is written anyway.
 	flushAt = 64 << 10
@@ -148,7 +151,7 @@ func Dial(name string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	dialer := net.Dialer{Timeout: ioTimeout}
+	dialer := net.Dialer{Timeout: setupTimeout}
 	var sock net.Conn
 	if addr.Host == "" || addr.Host == "unix" {
 		path := fmt.Sprintf("/tmp/.X11-unix/X%d", addr.Number)
@@ -190,7 +193,7 @@ func authFor(addr Address) (Auth, error) {
 
 // Open runs the connection setup over sock and starts reading it. It takes the screen'th screen.
 func Open(sock net.Conn, auth Auth, screen int) (*Conn, error) {
-	_ = sock.SetDeadline(time.Now().Add(ioTimeout))
+	_ = sock.SetDeadline(time.Now().Add(setupTimeout))
 	req := []byte{'l', 0}
 	req = le.AppendUint16(req, 11)
 	req = le.AppendUint16(req, 0)
