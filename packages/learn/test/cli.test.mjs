@@ -88,7 +88,7 @@ test("a tool list kept in the repository is locked against the run", async (t) =
 });
 
 test("agentrun-learn check refuses a Codex-only and a Pi-only tool in a draft, and passes a clean one", async (t) => {
-  for (const [tool, status] of [["exec_command", 1], ["apply_patch", 1], ["bash", 1], ["edit", 1], ["fetch_page", 0]]) {
+  for (const [tool, status] of [["exec_command", 1], ["apply_patch", 1], ["bash", 1], ["edit", 1], ["read_page", 0]]) {
     const { dir, tools } = await repo(t, { ...cleanFiles(), "workflows/find-policies/workflow.json": workflow({ tools: [tool] }) });
     const out = cli(dir, ["check", "--base", "main", "--tools", tools]);
     assert.equal(out.status, status, `${tool}: ${out.stdout}${out.stderr}`);
