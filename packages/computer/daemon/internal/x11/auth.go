@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"strconv"
 )
@@ -24,7 +25,14 @@ const (
 // ReadAuthority finds the MIT-MAGIC-COOKIE-1 for a local display in an Xauthority file: an entry of this host (family
 // Local) or any host (family Wild), for this display number or any. A missing file, or none for the display, is no
 // cookie and no error.
+//
+// Only a display in this computer has one: addr.Host is "" or "unix" (the unix socket) or a loopback address, as Dial
+// gives it once it has resolved the host. For any other host this is no cookie, so a local cookie is never sent to
+// another server.
 func ReadAuthority(path string, addr Address, hostname string) (Auth, bool, error) {
+	if !addr.local() {
+		return Auth{}, false, nil
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Auth{}, false, nil
@@ -54,4 +62,13 @@ func ReadAuthority(path string, addr Address, hostname string) (Auth, bool, erro
 		}
 	}
 	return Auth{}, false, nil
+}
+
+// local is whether the address is a display in this computer: the unix socket, or a loopback address.
+func (a Address) local() bool {
+	if a.Host == "" || a.Host == "unix" {
+		return true
+	}
+	ip, err := netip.ParseAddr(a.Host)
+	return err == nil && ip.Unmap().IsLoopback()
 }

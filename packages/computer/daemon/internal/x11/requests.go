@@ -110,6 +110,9 @@ func (c *Conn) QueryPointer() (x, y int, err error) {
 
 // GetImage reads a rectangle of the root window as ZPixmap and converts it to RGBA through the visual's masks.
 func (c *Conn) GetImage(x, y, width, height int) (*image.RGBA, error) {
+	if width*height > MaxImagePixels {
+		return nil, fmt.Errorf("a %dx%d image is over the %d pixels one GetImage reads", width, height, MaxImagePixels)
+	}
 	body := le.AppendUint32(nil, c.screen.Root)
 	body = le.AppendUint16(body, uint16(int16(x)))
 	body = le.AppendUint16(body, uint16(int16(y)))

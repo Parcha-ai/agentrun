@@ -9,11 +9,13 @@
 package x11
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -36,6 +38,16 @@ const (
 	ioTimeout = 30 * time.Second
 	// flushAt is how much a batch of requests buffers before it is written anyway.
 	flushAt = 64 << 10
+	// MaxImagePixels is the most pixels one GetImage reads: 16384 x 16384, the largest image a screen shot is read back
+	// as (MAX_SIDE in src/conformance/png.ts).
+	MaxImagePixels = 16384 * 16384
+	// maxReply is the most bytes a reply may carry past its first 32: the largest one this client asks for is a GetImage
+	// of MaxImagePixels at 32 bits a pixel, 1 GiB (2^30 bytes, 2^28 words). Every other reply it asks for is under a
+	// few kilobytes. A longer one is refused, and the connection closed, before anything is allocated for it.
+	maxReply = MaxImagePixels * 4
+	// maxEvent is the most bytes a GenericEvent may carry past its first 32. This client asks for none: the X Input 2
+	// and Present events that are GenericEvents are a few hundred bytes. Its bytes are read and dropped, never kept.
+	maxEvent = 1 << 20
 )
 
 // Event types, as in an event's first byte and XTEST's FakeInput.
@@ -146,6 +158,10 @@ func smallNumber(s string) (int, bool) {
 
 // Dial connects to the X server a DISPLAY names, with the cookie for it in $XAUTHORITY (or ~/.Xauthority) when there
 // is one. A local display is the unix socket /tmp/.X11-unix/X<n>, its abstract name first, as libxcb does on Linux.
+//
+// Only a display in this computer is dialled: the unix socket, or TCP to a host that is, or resolves only to, loopback
+// addresses. computerd drives the display of its own computer, and the cookie it sends is this host's; any other
+// DISPLAY is refused before anything is sent.
 func Dial(name string) (*Conn, error) {
 	addr, err := ParseDisplay(name)
 	if err != nil {
@@ -159,6 +175,9 @@ func Dial(name string) (*Conn, error) {
 			sock, err = dialer.Dial("unix", path)
 		}
 	} else {
+		if addr.Host, err = loopback(addr.Host); err != nil {
+			return nil, fmt.Errorf("DISPLAY %s: computerd drives only a display in this computer (a unix socket, or TCP to a loopback address): %w", name, err)
+		}
 		sock, err = dialer.Dial("tcp", net.JoinHostPort(addr.Host, strconv.Itoa(6000+addr.Number)))
 	}
 	if err != nil {
@@ -175,6 +194,32 @@ func Dial(name string) (*Conn, error) {
 		return nil, fmt.Errorf("the X server at DISPLAY %s: %w", name, err)
 	}
 	return c, nil
+}
+
+// loopback is the address to dial for a TCP display's host: the host itself when it is a loopback address, else the
+// first address it resolves to, when every one is loopback.
+func loopback(host string) (string, error) {
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if !ip.Unmap().IsLoopback() {
+			return "", fmt.Errorf("%s is not a loopback address", host)
+		}
+		return ip.String(), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), setupTimeout)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return "", err
+	}
+	for _, ip := range ips {
+		if !ip.Unmap().IsLoopback() {
+			return "", fmt.Errorf("%s resolves to %s, which is not a loopback address", host, ip)
+		}
+	}
+	if len(ips) == 0 {
+		return "", fmt.Errorf("%s resolves to no address", host)
+	}
+	return ips[0].Unmap().String(), nil
 }
 
 func authFor(addr Address) (Auth, error) {
@@ -342,21 +387,39 @@ func (c *Conn) read() {
 			}
 			c.mu.Unlock()
 		case 1:
-			extra := make([]byte, int(le.Uint32(head[4:]))*4)
-			if _, err := io.ReadFull(c.sock, extra); err != nil {
+			n, err := announced(head, "a reply", maxReply)
+			if err != nil {
+				failure = err
+				break
+			}
+			c.mu.Lock()
+			_, waited := c.pending[seq]
+			c.mu.Unlock()
+			if !waited { // a reply nothing waits for: read past it
+				if _, err := io.CopyN(io.Discard, c.sock, int64(n)); err != nil {
+					failure = err
+				}
+				break
+			}
+			data := make([]byte, 32+n)
+			copy(data, head)
+			if _, err := io.ReadFull(c.sock, data[32:]); err != nil {
 				failure = err
 				break
 			}
 			c.mu.Lock()
 			if ch, ok := c.pending[seq]; ok {
 				delete(c.pending, seq)
-				ch <- packet{data: append(head, extra...)}
+				ch <- packet{data: data}
 			}
 			c.mu.Unlock()
 		default:
-			if head[0]&0x7f == 35 { // GenericEvent: more bytes follow
-				extra := make([]byte, int(le.Uint32(head[4:]))*4)
-				if _, err := io.ReadFull(c.sock, extra); err != nil {
+			if head[0]&0x7f == 35 { // GenericEvent: more bytes follow, which no event this client keeps needs
+				n, err := announced(head, "a GenericEvent", maxEvent)
+				if err == nil {
+					_, err = io.CopyN(io.Discard, c.sock, int64(n))
+				}
+				if err != nil {
 					failure = err
 					break
 				}
@@ -380,6 +443,16 @@ func (c *Conn) read() {
 	}
 	c.cond.Broadcast()
 	c.mu.Unlock()
+}
+
+// announced is how many bytes follow a reply's or GenericEvent's first 32, from its 32-bit length in words: at most
+// limit, else an error in words that ends the connection.
+func announced(head []byte, what string, limit int) (int, error) {
+	words := uint64(le.Uint32(head[4:]))
+	if words*4 > uint64(limit) {
+		return 0, fmt.Errorf("the X server announced %s of %d bytes, over the %d this client reads", what, words*4, limit)
+	}
+	return int(words) * 4, nil
 }
 
 // Seq is the sequence number of the last request buffered.
