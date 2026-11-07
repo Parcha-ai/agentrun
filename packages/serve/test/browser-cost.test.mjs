@@ -298,9 +298,13 @@ test("after a reopen, a kept session's down time is held once: its first call fi
  *  ended `listener_error`, and it hears no later commit (pi-durable types.d.ts, Session.observeCommits). */
 function piObserver() {
   const state = { detached: false, observer: undefined };
+  // The Session's own end (`closed`), settled by `closeAs` as pi's close settles it.
+  let closeAs;
+  const closed = new Promise((resolve) => (closeAs = resolve));
   return {
     state,
-    harness: { observeCommits: (observer) => ((state.observer = observer), { detach: () => void (state.detached = true) }) },
+    closeAs,
+    harness: { closed, observeCommits: (observer) => ((state.observer = observer), { detach: () => void (state.detached = true) }) },
     publish(changes) {
       if (state.detached) return;
       try {
@@ -362,19 +366,22 @@ test("on a capped run, a browser charge the process failed to count refuses the 
 /** pi 1.5's end for a Session that closed normally: `failed` with "session closed" (session/session.js closeEnds). */
 const SESSION_CLOSED = () => ({ kind: "failed", error: new Error("session closed") });
 
-test("an observer pi ends before the run's own close began (listener_error, failed, even pi's own \"session closed\") leaves the run's browser spend unknown, never silently uncounted", (t) => {
+test("an observer end with a Session that failed, or a listener error, leaves the run's browser spend unknown, never silently uncounted, whatever words pi's end carries", async (t) => {
   t.after(() => useSpend(undefined));
-  for (const end of [{ kind: "listener_error", error: new Error("a listener threw") }, { kind: "failed", error: new Error("the Session failed") }, SESSION_CLOSED(), { kind: "ended" }]) {
+  const FAILED = { kind: "failed", error: new Error("the disk is gone") };
+  for (const [end, closedAs] of [[{ kind: "listener_error", error: new Error("a listener threw") }, undefined], [FAILED, FAILED], [SESSION_CLOSED(), FAILED]]) {
     const spend = countingSpend(t, 5);
     const pi = piObserver();
     browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}).watch(pi.harness);
     pi.publish(chargeOf("ar-1", 0.01));
     pi.end(end);
-    assert.equal(spend.spent, null, `${end.kind} ${end.error?.message ?? ""} before the run's close: unknown`);
+    if (closedAs) pi.closeAs(closedAs);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(spend.spent, null, `${end.kind} ${end.error?.message ?? ""}, the Session ${closedAs?.kind ?? "open"}: unknown`);
   }
 });
 
-test("once the run's own close began (spend.closing()), the end pi gives its close keeps the count, silently", (t) => {
+test("an observer end with a Session that closed normally (pi's `closed`) keeps the count, silently, whatever words pi's end carries", async (t) => {
   t.after(() => useSpend(undefined));
   const closed = countingSpend(t, 5);
   const lines = [];
@@ -382,14 +389,15 @@ test("once the run's own close began (spend.closing()), the end pi gives its clo
   const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => lines.push(line));
   spend.watch(pi.harness);
   pi.publish(chargeOf("ar-1", 0.01));
-  spend.closing?.();
   pi.end(SESSION_CLOSED());
+  pi.closeAs({ kind: "closed" });
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(closed.spent, 0.01, "the count stands");
   assert.deepEqual(lines, [], "no line");
-  assert.equal(typeof spend.closing, "function", "browserSpend has closing()");
+  assert.equal("closing" in spend, false, "no flag of our own: pi's end decides");
 });
 
-test("a real Harness: a charge booked, the run's close begun, the Harness closed: the count stands, with no line", async (t) => {
+test("a real Harness: a charge booked, the Harness closed by the run's own close: the count stands, with no line", async (t) => {
   const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
   t.after(() => useSpend(undefined));
   const counted = countingSpend(t, 5);
@@ -400,8 +408,8 @@ test("a real Harness: a charge booked, the run's close begun, the Harness closed
   spend.watch(harness);
   const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
   await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
-  spend.closing?.();
   await harness.close(ctx);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(counted.spent, 0.0001, "the count stands after the close");
   assert.deepEqual(lines, [], "no line");
 });

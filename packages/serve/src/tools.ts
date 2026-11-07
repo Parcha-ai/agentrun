@@ -300,9 +300,6 @@ const browserTool: ToolEntry = {
       await spend.reopened(harness, browser.docs, context);
     });
     host.beforeRelease(async (harness) => {
-      // The run's own close begins here, before the Harness closes: the end pi then gives the spend's observer keeps its
-      // count (browser-cost.ts closing()); an end before this point leaves the spend unknown.
-      spend.closing();
       try {
         if (refused) return;
         const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;

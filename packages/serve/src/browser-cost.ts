@@ -148,23 +148,18 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     }
   }
 
-  /** Whether the run's own close began (`closing()`): the end pi gives the Session's close after that keeps the count. */
-  let closingBegun = false;
-  /** The run's close begins: called by the run's own close path (tools.ts beforeRelease) before the Harness closes. */
-  function closing(): void {
-    closingBegun = true;
-  }
-
   /** Applies each browser charge `harness` commits, and each change of pi-browser's inventory (the document of kind
    *  `inventory`), once the commit is in: the charges first, so a release billed and ended in one commit is billed from
    *  its reserve before it goes. */
-  function watch(harness: Pick<Session, "observeCommits">, inventory = "browser.inventory"): void {
+  function watch(harness: Pick<Session, "observeCommits" | "closed">, inventory = "browser.inventory"): void {
     // pi 1.5 detaches an observer whose advance throws, for good: every later charge would then go uncounted, silently.
-    // So nothing leaves advance. A charge it fails to count, or any end before the run's own close began (`closing()`:
-    // a listener error, a failed Session, pi closing it for its own reasons), makes the run's spend unknown (spent null),
-    // which a capped run's next paid request or call is refused on, as it refuses any unknown spend; an uncapped run goes
-    // on, with one line that says so. The end of the run's own close (pi gives a normal close as `failed` with "session
-    // closed") keeps the count: it is known by our close having begun, never by pi's words.
+    // So nothing leaves advance. A charge it fails to count makes the run's spend unknown (spent null), which a capped
+    // run's next paid request or call is refused on, as it refuses any unknown spend; an uncapped run goes on, with one
+    // line that says so. pi ends a commit observer only when its Session closes (session.js close: a normal close ends
+    // it `failed` with "session closed", a failed Session `failed` with its error), and the Session's own end
+    // (`closed`, settled by that same close once its Storage closed) says which, tagged by kind: `closed` keeps the
+    // count, silently, on every close path; `failed` (the store failed, or could not close) leaves it unknown. A
+    // listener error, which only a throw out of advance could cause, is unknown at once.
     let said = false;
     const uncounted = (why: string) => {
       addSpend(null);
@@ -187,7 +182,12 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         }
       },
       end: (end) => {
-        if (!closingBegun) uncounted(`its commits stopped reaching the count before the run closed: ${end.kind}${"error" in end ? `, ${String((end.error as Error)?.message ?? end.error)}` : ""}`);
+        const why = (kind: string, error: unknown) => `its commits stopped reaching the count: ${kind}${error === undefined ? "" : `, ${String((error as Error)?.message ?? error)}`}`;
+        if (end.kind === "listener_error") return uncounted(why(end.kind, end.error));
+        harness.closed.then(
+          (ended) => void (ended.kind === "failed" && uncounted(why("the Session failed", ended.error))),
+          (error: unknown) => uncounted(why("the Session's end is unknown", error)),
+        );
       },
     });
   }
@@ -234,5 +234,5 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     return forModel(JSON.stringify({ error: why }), { isError: true });
   }
 
-  return { onCharge, watch, closing, reopened, capped, opening, stretch };
+  return { onCharge, watch, reopened, capped, opening, stretch };
 }
