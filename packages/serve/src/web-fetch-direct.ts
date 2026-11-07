@@ -1,5 +1,5 @@
 // The guarded direct fetch: one web page from a public host, as a Page: { ok, url, status, title, text, chars, links,
-// refused?, error? }. web_fetch reads a page through it (web-fetch.ts); fetch_page, its legacy name, runs web_fetch. The
+// refused?, error? }. web_fetch reads a page through it (web-fetch.ts). The
 // fetch is pi-browser's public-host guard (publicFetch): every redirect hop resolved, checked and dialled at the address
 // checked, http(s) only, a byte cap and a timeout. Before it, a URL on a port other than 80 or 443, or longer than
 // URL_MAX, is refused here as well. A refusal or a failure is a Page with ok false, never a throw, so an agent reads why
@@ -25,8 +25,6 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
  *  cut. `converted: "text"` when the text is the page's plain text, its conversion to markdown having run out of time. */
 export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; html_chars?: number; converted?: "text"; links: string[]; links_omitted?: number; refused?: string; error?: string };
 
-/** web_fetch's legacy name: a revision or a call node naming it runs web_fetch under it (tools.ts). */
-export const FETCH_PAGE_TOOL = "fetch_page";
 /** Under `--faux` only: a module whose default export gives `{ lookup, fetchImpl }` for the fetch (the tests' fake
  *  network), in place of the system's resolver and undici. */
 export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
@@ -48,7 +46,7 @@ export const URL_MAX = 4_096;
 export const TIMEOUT_MS = 30_000;
 /** Where readPage cuts a page's HTML before it reads it, scripts and styles aside (not PAGE_READ_MAX_CHARS, the most of
  *  the text read): pi-browser's READ_MAX_CHARS, held here so the tool's words name it without loading pi-browser where
- *  nothing is fetched (fetch-page-cut.test holds the two equal). */
+ *  nothing is fetched (web-fetch-direct-cut.test holds the two equal). */
 export const HTML_READ_CHARS = 1_000_000;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
