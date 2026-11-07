@@ -232,6 +232,52 @@ test("a form POST whose intent the network service took with it is told lost, an
   assert.deepEqual(rows.slice(2), ["D2 POST /submit pending", "D2 POST /submit allowed"]);
 });
 
+test("a known service whose new pid shows only after a gap over 2 s still has its lost request told", async (t) => {
+  const { browser, observer, lost } = await rig(t);
+  browser.announce("R1");
+  await sleep(100);
+  browser.restart(null);
+  setTimeout(() => browser.restart(300), 2_600);
+  await sleep(3_200);
+  await observer.flush(undefined, 500);
+  assert.deepEqual(lost.map((r) => r.requestId), ["R1"]);
+});
+
+test("a known service that names no pid past the long bound has its waiting request told lost, stops being asked, and a later restart is still found", { timeout: 60_000 }, async (t) => {
+  const { browser, observer, lost } = await rig(t);
+  browser.announce("R1");
+  await sleep(100);
+  browser.restart(null);
+  await sleep(11_000);
+  assert.deepEqual(lost.map((r) => r.requestId), ["R1"], "told once the gap passed the long bound");
+  const asked = browser.asked();
+  await sleep(800);
+  assert.equal(browser.asked(), asked, "nothing is asked once nothing waits");
+  browser.restart(300);
+  browser.announce("R2");
+  await sleep(100);
+  browser.restart(400);
+  await observer.flush(undefined, 1_000);
+  assert.deepEqual(lost.map((r) => r.requestId), ["R1", "R2"], "detection still runs, from the pid it learned again");
+});
+
+test("a form lost both by its intent and by its Document's id is refused once; the frame's next Document POST without a new intent is decided as any other", async (t) => {
+  const { browser, observer, rows, lost } = await rig(t, effectDecider("allow"));
+  browser.formIntent("FR1");
+  browser.announceForm("D1");
+  await sleep(100);
+  browser.restart(200);
+  await sleep(400);
+  assert.deepEqual(lost.map((r) => r.requestId).sort(), ["D1", "navigation:FR1"]);
+  browser.pauseForm("F1", "D1", "FR1");
+  await sleep(200);
+  browser.announceForm("D2");
+  browser.pauseForm("F2", "D2", "FR1");
+  await sleep(200);
+  await observer.flush(undefined, 1_000);
+  assert.deepEqual(rows, ["D1 POST /submit pending", "D1 POST /submit denied", "D2 POST /submit pending", "D2 POST /submit allowed"]);
+});
+
 test("a journaling observer, which holds nothing, never asks for the network service", async (t) => {
   const { browser, observer } = await rig(t, null);
   browser.announce("R1");

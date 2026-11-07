@@ -22,8 +22,10 @@ const EXTENSION = "chrome-extension://";
 const RUN_CODE = "run code";
 /** How often the network service's pid is asked for while a request waits for its pause. */
 const SERVICE_POLL_MS = 250;
-/** How long answers may name no network service before the browser is taken to have none of its own. */
+/** How long a browser that never named a network service may go on naming none before it is taken to have none of its own. */
 const NO_SERVICE_MS = 2_000;
+/** How long a known network service may be missing, its successor not yet shown, before what it carried is told lost. */
+const SERVICE_GONE_MS = 10_000;
 type Announced = { sessionId: string; seq: number; method: string; url: string };
 
 /** An extension's pages (its offscreen document, its wake page) send nothing a model chose; its service worker is where
@@ -91,8 +93,12 @@ export class EffectObserver {
   /** The browser refused `SystemInfo.getProcessInfo` (a provider's endpoint may), or kept answering without a network
    *  service of its own (one in-process) for `NO_SERVICE_MS`: it is not asked again. */
   private noService = false;
-  /** Since when the answers have named no network service: a moment is a new service not started yet, `NO_SERVICE_MS` is none. */
+  /** Since when the answers have named no network service. In a browser that never named one, `NO_SERVICE_MS` of that
+   *  means it has none of its own (in-process). After a known one, it is a restart whose new service is slow to show:
+   *  `SERVICE_GONE_MS` of that and the old one's waiting requests are told lost. */
   private missingSince: number | null = null;
+  /** A network service was named at least once in this observer's life. */
+  private seenService = false;
   /** Ends the watch's wait between questions early: a request just announced is asked about at once, so a service that dies
    *  a moment after it is found to have died with it. */
   private nudge: (() => void) | null = null;
@@ -252,7 +258,7 @@ export class EffectObserver {
   private async conclusiveCheck(ms: number): Promise<void> {
     if (this.noService || !this.decide) return;
     for (const end = Date.now() + ms; ;) {
-      if ((await this.checkService()) !== "unknown" || this.servicePid === null || Date.now() >= end || this.closed) return;
+      if ((await this.checkService()) !== "unknown" || this.servicePid === null || this.noService || Date.now() >= end || this.closed) return;
       await new Promise((r) => setTimeout(r, Math.min(SERVICE_POLL_MS, 100)));
     }
   }
@@ -269,22 +275,36 @@ export class EffectObserver {
       return "unknown";
     }
     this.askedSeq = Math.max(this.askedSeq, covered);
-    // No pid: Chrome has not started the new service yet, or runs none of its own. The question is asked again a bounded
-    // number of times; a browser that never names one then stops being asked, and a request that ended unpaused is no
-    // longer kept for an answer that will not come.
+    // No pid: Chrome has not started the new service yet, or runs none of its own (see `missingSince`).
     if (pid === null) {
       this.missingSince ??= Date.now();
-      if (Date.now() - this.missingSince >= NO_SERVICE_MS) { this.noService = true; this.endedUnpaused.clear(); }
-      return "unknown";
+      const missing = Date.now() - this.missingSince;
+      if (!this.seenService) {
+        if (missing >= NO_SERVICE_MS) { this.noService = true; this.endedUnpaused.clear(); }
+        return "unknown";
+      }
+      if (this.servicePid === null || missing < SERVICE_GONE_MS) return "unknown";
+      // The known service has been gone too long to wait for its successor: what it carried is lost, and the next pid
+      // named is learned afresh.
+      this.missingSince = null;
+      await this.lose(covered, null);
+      return "restarted";
     }
     this.missingSince = null;
+    this.seenService = true;
     if (this.servicePid === null || pid === this.servicePid) {
       this.servicePid = pid;
       this.confirmedSeq = covered;
       this.endedUnpaused.clear();
       return "same";
     }
-    // Only a request seen waiting while the old service was alive is lost: one announced since may be the new service's, on its way.
+    await this.lose(covered, pid);
+    return "restarted";
+  }
+
+  /** The service last seen died: the requests seen waiting while it was alive, and still unpaused, are lost and told; one
+   *  announced since may be the new service's, on its way. Not paused means never sent, and a later pause of one is refused. */
+  private async lose(covered: number, pid: number | null): Promise<void> {
     const gone: Array<[string, Announced]> = [...this.announced, ...this.endedUnpaused].filter(([id, entry]) => entry.seq <= this.confirmedSeq && !this.pausedIds.has(id));
     this.servicePid = pid;
     this.confirmedSeq = covered;
@@ -295,7 +315,6 @@ export class EffectObserver {
       try { request = describeRequest(entry.method, entry.url); } catch { continue; }
       try { await this.lostListener?.({ requestId: id, method: request.method, origin: request.origin, path: request.path }); } catch { /* a listener's failure is its own */ }
     }
-    return "restarted";
   }
 
   private unannounce(requestId: string): void {
@@ -393,7 +412,9 @@ export class EffectObserver {
     // A request the call was told the browser lost, and so was not sent, stays not sent: by its own id, or for a form's
     // Document by its frame's intent, which is what the call was told of when the form's request did not exist yet.
     const intent = p.resourceType === "Document" && p.frameId ? `navigation:${p.frameId}` : null;
-    const told = this.lost.has(id) || (intent !== null && this.lost.delete(intent));
+    // The intent is used up whether or not the id matched too, so it never refuses a later Document in the frame.
+    const intentLost = intent !== null && this.lost.delete(intent);
+    const told = this.lost.has(id) || intentLost;
     const { allow, verdict } = saved && !told ? await Promise.race([this.decide(request), cutoff, limit]).finally(() => clearTimeout(timer)) : REFUSED;
     clearTimeout(timer);
     const recorded = await this.journal(id, request, allow ? "allowed" : "denied", verdict);
