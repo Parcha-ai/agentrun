@@ -233,4 +233,24 @@ describe("the barriers table, held to the source", () => {
       "quiet: listed with no effects, but x/src/q.ts runs a tool, a model or a barrier on it",
     ]);
   });
+
+  it("a comment meets no check: a via line or a barrier's call that is only in a comment is missing; the same lines as code, beside text that only looks like a comment, pass", () => {
+    const t: Table = {
+      barriers: { hooked: { store: "s", site: "x/src/a.ts", status: "active", why: "", via: { file: "x/src/d.ts", text: "if (hook) await persist(hook);" } } },
+      stores: { s: { opens: ["x/src/a.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
+    };
+    const commented = new Map([
+      ["x/src/a.ts", "openNodeSqliteStorage(f);\n// await syncNow(store, BARRIER.hooked);\n/* syncNow(store, BARRIER.hooked) */"],
+      ["x/src/d.ts", "// if (hook) await persist(hook);\n/**\n * if (hook) await persist(hook);\n */\nconst later = 1;"],
+    ]);
+    assert.deepEqual(violations(t, "FULL", commented), [
+      "hooked: active, but x/src/a.ts has no syncNow(…, BARRIER.hooked)",
+      'hooked: x/src/d.ts no longer has "if (hook) await persist(hook);"',
+    ]);
+    const code = new Map([
+      ["x/src/a.ts", 'openNodeSqliteStorage(f);\nconst url = "http://x"; await syncNow(store, BARRIER.hooked); // synced'],
+      ["x/src/d.ts", "const slashes = /\\/\\//; const text = `// ${slashes}`; if (hook) await persist(hook); /* admitted */"],
+    ]);
+    assert.deepEqual(violations(t, "FULL", code), []);
+  });
 });
