@@ -35,7 +35,6 @@ const reviewed = new Map([
   ['packages/pi-durable-disk/test/live/_p9.ts', childScript],
   ['packages/pi-durable-disk/test/live/daytona-probe.ts', childScript],
   ['packages/pi-durable-disk/test/live/docker-probe.ts', childScript],
-  ['packages/pi-transport/src/testing/move-conformance.ts', childScript],
   ['packages/pi-vision/test/durable-providers.test.mjs', childScript],
   ['packages/pi-vision/test/node-env.test.mjs', childScript],
   ['packages/pi/test/signin-entry.test.mjs', childScript],
