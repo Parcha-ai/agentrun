@@ -661,6 +661,9 @@ async function oldLayout(data: string): Promise<string | undefined> {
 }
 
 export async function startServe(options: ServeOptions): Promise<Serve> {
+  // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
+  // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
+  delete process.env[HARNESS_TABLE_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
