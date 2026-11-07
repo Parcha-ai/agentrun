@@ -86,6 +86,8 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
   let active = 0;
   let since: number | undefined;
   let gone = false;
+  /** Each step's refusal no raise fixes, by its execution path (record). */
+  const stops = new Map<string, { refusal: CapRefusal; at: StepAt | undefined }>();
   /** Each step's held time by its execution path: what ended, and since when it holds now. */
   const held = new Map<string, { total: number; from?: number }>();
   const cancelled = () => existsSync(join(root, RUN_CANCELLED));
@@ -155,9 +157,19 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
         }
       }
     },
-    /** Keeps a refusal no raise fixes, at `at`, for the server: the first one, which the run ends on. */
+    /** Keeps a refusal no raise fixes, at `at`, for the server: the first one, which the run ends on. The step's own
+     *  refusal is kept too, by its path, for `stopped` to read once the step fails on it. */
     record(refusal: CapRefusal, at?: StepAt): void {
       if (!existsSync(join(root, CAP_STOPPED))) writeWhole(join(root, CAP_STOPPED), { words: refusal.words, node: at?.label ?? null, at: new Date().toISOString() } satisfies CapStopped);
+      stops.set(at?.path ?? `#${stops.size}`, { refusal, at });
+    },
+    /** The refusal no raise fixes that the step at `path` met (a model node's request, recorded by capModels), if any:
+     *  its failure is then a CapStop, never the node's own failure, which a collecting map would take for an item's. */
+    stopped(path: string | null | undefined): CapStop | undefined {
+      // Its own, else the run's first: a step whose request lost its node's context (a map's items side by side) still
+      // stops the run, which no further request can go on in once one was refused for good.
+      const met = (path ? stops.get(path) : undefined) ?? stops.values().next().value;
+      return met ? new CapStop(met.refusal, met.at) : undefined;
     },
     /** Ends the step at `at` on a refusal no raise fixes: its words kept for the server, and CapStop thrown. */
     stop(refusal: CapRefusal, at?: StepAt): never {

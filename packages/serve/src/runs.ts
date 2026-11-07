@@ -2824,6 +2824,8 @@ export class Runs {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       // A raised run whose follow-up is still to go let its process go as a paused one does: its sign-in's lease goes too.
       // A workflow run paused at its cap that let its process go waits for a raise, which opens it again (raiseCap).
+      // One whose raise serve.json kept and a crash cut short: finished now (finishRaise opens it again), never left waiting.
+      if (run.kind === "workflow" && gone && budgetWaiting(run) && (await this.finishRaise(run, { settling: true }))) return this.refresh(run);
       const stalled = run.kind === "workflow" ? !budgetWaiting(run) : statusOf(run).status !== "input_required" && !raisedToGo(run);
       // Its sign-in's save lease stays with it until it ends (carryBack), through a relaunch or a restart: a session it
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
@@ -3303,22 +3305,45 @@ export class Runs {
    *  resuming from its journal. A raise while it works holds from its next check. The same raise again changes nothing. */
   private async raiseWorkflow(run: Run, from: number, cap: number): Promise<{ resumed: boolean }> {
     const last = run.meta.cap_raised?.at(-1);
-    if (Math.abs(cap - from) <= CAP_TOLERANCE && last && Math.abs(last.to - cap) <= CAP_TOLERANCE) return { resumed: false };
+    // The same raise again (a retry): what the first saved is finished, whatever a crash cut it at (finishRaise).
+    if (Math.abs(cap - from) <= CAP_TOLERANCE && last && Math.abs(last.to - cap) <= CAP_TOLERANCE) {
+      await this.finishRaise(run);
+      this.refresh(run);
+      return { resumed: last.pause === "budget" };
+    }
     if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
     const paused = budgetWaiting(run);
     const raised = [...(run.meta.cap_raised ?? []), { from, to: cap, at: new Date().toISOString(), ...(paused ? { pause: "budget" } : {}) }];
     await this.saveMeta(run, () => ({ ...run.meta, max_cost_usd: cap, cap_raised: raised }));
     run.meta.max_cost_usd = cap;
     run.meta.cap_raised = raised;
-    writeRaisedCap(run.dir, cap);
-    if (paused && !this.live(run) && !run.outcome && !run.cancel) {
-      clearBudgetPause(run.dir);
-      await this.pinNeeds(run);
-      await this.pinSignIn(run);
-      this.launch(run);
-    }
+    await this.finishRaise(run);
     this.refresh(run);
     return { resumed: paused };
+  }
+
+  /** Finishes the raise serve.json keeps (`max_cost_usd`), in its steps' order, each one done again harmlessly: `cap.json`
+   *  takes it (a waiting process wakes on it), then a pause it answers (budget.json under a lower cap) is taken away and
+   *  its run, with no process, opened again under it. A raise, its retry and a restart's settle all finish it here, so a
+   *  crash between serve.json and the rest never leaves a raised run waiting for a raise. True when it took a pause away. */
+  private async finishRaise(run: Run, { settling = false }: { settling?: boolean } = {}): Promise<boolean> {
+    const cap = run.meta.max_cost_usd;
+    const mark = run.kind === "workflow" && run.dir ? budgetPausedIn(run.dir) : undefined;
+    if (cap === undefined || run.outcome || run.cancel) return false;
+    if (run.meta.cap_raised?.length) writeRaisedCap(run.dir, cap);
+    if (!mark || !(cap > mark.cap_usd + CAP_TOLERANCE)) return false;
+    if (this.live(run)) return false;
+    // One finish at a time per run: a settle under way decides the run's next process (it may be reading the run as gone
+    // and launching), so a raise meanwhile leaves the launch to it and finishes again once it is through. Never two.
+    if (!settling && run.settles > 0) {
+      void run.settling?.then(() => this.finishRaise(run)).catch(() => undefined);
+      return true;
+    }
+    clearBudgetPause(run.dir);
+    await this.pinNeeds(run);
+    await this.pinSignIn(run);
+    this.launch(run);
+    return true;
   }
 
   /** Sends a raised run its pause's follow-up, under its id (the door takes one id once), at the run's cap now: as a

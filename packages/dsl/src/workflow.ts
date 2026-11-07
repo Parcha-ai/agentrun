@@ -1985,21 +1985,25 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
   } else if (!node.poll || deps.syntheticEffects) {
     result = await executeOnce();
   } else {
-    const startedAt = deps.recovery?.pollStartedAt(node, undefined, executionPath(deps)) ?? Date.now();
-    const pollUntilMs = startedAt + node.poll.deadline_s * 1000;
+    // The poll window, read again at each check: a recovery run's is the driver's durable clock, which a host's hold moves
+    // back (holdPoll); else it starts now and moves back by what the host held the call (deps.held).
+    const startOf = (): number => deps.recovery?.pollStartedAt(node, undefined, executionPath(deps)) ?? firstStart + (deps.held?.(executionPath(deps)) ?? 0);
+    const firstStart = Date.now();
+    const startedAt = startOf();
+    const pollUntil = () => startOf() + node.poll!.deadline_s * 1000;
     // Each check sends one effect.poll. Outside a recovery run, a check that does not settle reports
     // null only once its wait ends inside the poll deadline, so a poll timeout, wherever it lands,
     // ends with one "deadline" event for the last check started.
     const pollDeadline = (iteration: number, elapsedMs: number) => deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: "deadline", elapsed_ms: elapsedMs } });
     for (let iteration = 1; ; iteration += 1) {
       try {
-        result = await executeOnce(pollUntilMs, deps.recovery ? undefined : iteration);
+        result = await executeOnce(pollUntil(), deps.recovery ? undefined : iteration);
       } catch (error) {
         if (!deps.recovery && error === pollTimeout) pollDeadline(iteration, Date.now() - startedAt);
         throw error;
       }
       if (!validator.Check(result)) throw invalid(result);
-      const elapsedMs = Date.now() - startedAt;
+      const elapsedMs = Date.now() - startOf();
       if (node.poll.fail_when && predicateMatches(node.poll.fail_when, result)) {
         deps.onEvent?.({ type: "effect.poll", label: node.label, detail: { iteration, settled: "fail_when", elapsed_ms: elapsedMs } });
         throw new EffectFailure(`call node "${node.label}" poll met fail_when after ${iteration} check(s): ${JSON.stringify(result).slice(0, 300)}`, null);
@@ -2025,7 +2029,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
         throw error;
       }
       // A wait that wakes late, at or past the poll deadline, ends the poll before another check.
-      if (Date.now() >= pollUntilMs) {
+      if (Date.now() >= pollUntil()) {
         pollDeadline(iteration, elapsedMs);
         throw pollExceeded(iteration);
       }

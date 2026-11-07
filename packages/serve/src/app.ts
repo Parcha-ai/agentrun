@@ -336,6 +336,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       }
     }) as F;
   };
+  /** A model node that failed on a refusal no raise fixes (its model with no price, a spend no one knows: capModels
+   *  recorded it, spend.stopped) fails as CapStop, as a call or a decision does, never as the node's own failure, which a
+   *  collecting map would take for an item's and go on. */
+  const capStopped = <F,>(fn: F): F => (fn && waits ? (async (params: { executionPath?: string }) => {
+    try {
+      return await (fn as (params: unknown) => Promise<unknown>)(params);
+    } catch (error) {
+      throw waits.stopped(params?.executionPath) ?? error;
+    }
+  }) as F : fn);
   // Each decision's hold under the cap, before its request is admitted, and its charge once it answers (decision-cap.ts).
   const capped = waits && decisionProviders ? cappedDecisions({
     providers: decisionProviders, waits, mode,
@@ -365,7 +375,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
         .catch((error: unknown) => { if (refused && !signal.aborted) return undefined; throw error; });
       if (refused) {
         log({ t: "effect.end", ...at, status: "failed", error: `spend cap: ${refused.words}`.slice(0, 65_536), at: new Date().toISOString() });
-        return { [CAP_HELD]: refused };
+        return { [CAP_HELD]: { ...refused, heldAt: Date.now() } };
       }
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
@@ -385,7 +395,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
    *  the driver's admission, for a raise, and goes again as the driver's next effect at its path; held by a refusal no
    *  raise fixes, the run stops (CapStop). A resume answers each held effect from its receipt the same way, and a cap
    *  raised since sends the call at once. */
-  const failing = (run: (params: never) => Promise<unknown>) => async (params: never) => {
+  const failing = (run: (params: never) => Promise<unknown>, holdPoll?: (executionPath: string, ms: number, hold: string) => void) => async (params: never) => {
     for (;;) {
       const value = await run(params);
       if (isObject(value) && typeof value[TOOL_FAILED] === "string") throw new EffectFailure(value[TOOL_FAILED], null, { code: null });
@@ -396,6 +406,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       if (!waits) throw new Error(`call node "${node.label}": ${refusal.words}`);
       if (!refusal.room) waits.stop(refusal, at);
       if (!(await waits.wait(refusal, signal, at))) throw signal?.reason ?? new Error(`call node "${node.label}" was not sent: its wait for a raise ended`);
+      // What it waited, from its refusal (a resume's included), is the call's own no more: its poll window moves back by
+      // it (the driver's durable clock, once per hold), as its attempt's deadline does (deps.held).
+      const heldAt = (value[CAP_HELD] as { heldAt?: unknown }).heldAt;
+      if (typeof heldAt === "number" && executionPath) holdPoll?.(executionPath, Date.now() - heldAt, String(heldAt));
     }
   };
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
@@ -436,7 +450,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // sends nothing), each step counts in flight, and a call node's deadline leaves out what it waited for a raise.
       const judge = capped && deps.runJudge ? capped.before(deps.runJudge, (params) => params.kind === "route" && driver.routeDecision(params.executionPath as never) !== undefined) : deps.runJudge;
       return { deps: {
-        ...deps, runEffect: stepped(deps.runEffect && (failing(deps.runEffect as never) as never)), runNode: stepped(gate(deps.runNode), true), runJudge: stepped(gate(judge)), onEvent,
+        ...deps, runEffect: stepped(deps.runEffect && (failing(deps.runEffect as never, (path, ms, hold) => driver.holdPoll(path, ms, hold)) as never)), runNode: stepped(gate(capStopped(deps.runNode)), true), runJudge: stepped(gate(judge)), onEvent,
         ...(waits ? { held: (path: string) => waits.held(path) } : {}),
         recovery: { ...recovery, resume: (...args: Parameters<typeof recovery.resume>) => resume(args), decision: decisions.decision },
       } };
