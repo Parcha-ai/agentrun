@@ -122,7 +122,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // it names (one the form does not show, such as a place, only above).
   const warnings = agent?.warnings ?? [];
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
-  const set = (patch: AgentFields) => { setF((x) => ({ ...x, ...patch })); setSaved(false); };
+  // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
+  const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); setSaved(false); };
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
@@ -223,6 +224,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           ))}
         </ol>
         <section className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-10">
+          {/* A new agent's form is read-only while its Create is under way: what the request sent is the form, so the page
+              it opens never asks, and no edit made meanwhile is left behind. A refused Create gives it back as it was. */}
+          <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           <p className="caps text-[11px] text-muted-foreground">Step {at + 1}</p>
           <h2 className="caps mb-6 border-b pb-4 text-[15px] font-semibold">{steps[at].label}</h2>
 
@@ -393,6 +397,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               ))}
             </ul>
           )}
+          </fieldset>
         </section>
       </div>
       <footer className="flex flex-wrap items-center gap-3 border-t px-5 py-3 md:px-8">
@@ -401,7 +406,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>}
+        {!viewing && <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{saving ? (creating ? "Creating…" : "Saving") : creating ? "Create" : "Save revision"}</Button>}
       </footer>
     </div>
   );

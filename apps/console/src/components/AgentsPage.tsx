@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
 import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
-import { type Agent, createBody, editBody, isStarter, saveError } from "@/lib/agentForm";
+import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
@@ -50,11 +50,6 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   const shown = useRef(true);
   // Set in the setup too: StrictMode (main.tsx) sets an effect up, cleans it up and sets it up again.
   useEffect(() => { shown.current = true; return () => { shown.current = false; }; }, []);
-  // The agent this form's Create made. Once the server has answered, the agent exists even when the move to its page is
-  // cancelled (an edit made while the Create was under way): the form stays, and its next save goes to that agent, never
-  // to a second Create. Another address is another form.
-  const made = useRef<Agent | null>(null);
-  useEffect(() => { made.current = null; }, [agentId]);
   const revisionsOf = (id: string) => allPages((cursor) => v2.listRevisions(id, cursor), (p) => p.revisions);
   const load = async () => {
     if (!agentId) return;
@@ -106,32 +101,14 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       onSave={async (fields, note, editor) => {
         let saved;
         try {
-          if (!agent && made.current) {
-            // Made, and the move to its page cancelled: the kept edits are a revision of that agent, made on the revision the
-            // Create made. Another save since (another tab) is not written over: the form says so and stays.
-            const { agent: now, etag: t } = await v2.getAgent(made.current.agent_id);
-            if (now.revision !== made.current.revision) return { kind: "other" as const, message: "This agent changed since it was created here, so these edits were not saved. Open its page to see its current revision." };
-            // A workflow agent from a starter (Decision, Workflow): what this form still holds (its name, its description) is
-            // set at creation, so there is nothing to save; its page opens. An agentic one keeps its own harness when the
-            // form was switched to a starter meanwhile.
-            if (now.kind !== "workflow") {
-              const body = editBody(now, isStarter(fields.harness) ? { ...fields, harness: now.definition.harness } : fields, note);
-              if (!body.unchanged) { const { unchanged: _u, ...send } = body; await v2.updateDefinition(now.agent_id, send, t); }
-            }
-            if (!shown.current) return null;
-            editor?.leaveSaved();
-            go(agentHash(now.agent_id, now.kind === "workflow" ? "workflow" : undefined));
-            return null;
-          }
           if (!agent) {
-            const created = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider }));
+            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
             // Only while this page is still the one shown: a Create that answers after the person left moves nowhere, and
             // lifts only its own editor's guard, never the one on the page shown now.
-            made.current = created;
             if (!shown.current) return null;
             editor?.leaveSaved();
-            go(agentHash(created.agent_id, created.kind === "workflow" ? "workflow" : undefined));
+            go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;
           }
           const body = editBody(agent, fields, note);
