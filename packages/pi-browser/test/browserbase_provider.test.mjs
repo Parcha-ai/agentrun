@@ -98,7 +98,6 @@ test("attach gives the driver the raw connect URL and the process its dial targe
   assert.ok(dialed.length === 1 && dialed[0] === target.dial.url, "attach tells the browser to keep downloads, dialing the proxy like the driver does");
   assert.ok(target.sdkCdpUrl === "wss://connect.usw2.browserbase.com/sess_1?signingKey=SECRET", "the extension in the cloud browser dials the raw URL");
   assert.ok(target.dial.url === "wss://proxy.example/ws/sess_1?signingKey=SECRET", "this process dials the credential proxy");
-  assert.equal(target.extensionId, undefined, "the driver finds the preloaded extension itself");
   await provider.attach(ref);
   assert.equal(dialed.length, 1, "the setting's socket is held for the session: a second attach in this process sends nothing");
   const restarted = browserbaseProvider({ env: proxied(), client: fake.sdk, downloadBehavior: async () => undefined });

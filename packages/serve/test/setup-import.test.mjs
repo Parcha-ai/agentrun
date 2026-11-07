@@ -582,7 +582,7 @@ test("a key saved on the Tool keys page is cut out of everything setup's import 
     for (const [which, value] of [["the saved key", saved], ["the server's own", own]]) assert.deepEqual([holding(data, value), names.filter((name) => name.includes(value))], [[], []], `${when}: no file under the data directory holds ${which}, or is named after it`);
   };
   nowhere("the first import");
-  assert.ok(holding(join(data, "runs"), "[redacted]").length > 0, "[redacted] where it was");
+  assert.ok(holding(join(data, "disk"), "[redacted]").length > 0, "[redacted] where it was");
   const sessions = () => {
     const reader = openStoreReader(data);
     try {

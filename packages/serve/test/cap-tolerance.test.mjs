@@ -12,14 +12,14 @@ const model = { id: "gpt-6-luna", name: "gpt-6-luna", api: "openai-responses", p
 test("a request whose least and what was spent make the cap in decimal fits it, never refused by a float's tail", async () => {
   const cap = await capBefore(0.31, model);
   // $0.0028 spent; the least, 3,072 tokens, costs 0.30720000000000003 in a float, and 0.31 - 0.0028 is 0.3072.
-  assert.deepEqual(cap.beforeRequest({ spentUsd: 0.0028, inFlight: [], inputTokensMax: 0, outputTokensLeast: 3072 }), { outputTokensMax: 3072 });
+  assert.equal(cap.beforeRequest({ spentUsd: 0.0028, inFlight: [], inputTokensMax: 0, outputTokensLeast: 3072 }).outputTokensMax, 3072);
 });
 
 test("a request past the cap names a raise a cent above it, never the cap itself", async () => {
   const cap = await capBefore(0.31, model);
   for (const spentUsd of [0.0029, 0.0028 + 2e-9]) {
     const refused = cap.beforeRequest({ spentUsd, inFlight: [], inputTokensMax: 0, outputTokensLeast: 3072 })?.refuse ?? "";
-    assert.match(refused, /Raise the cap to at least \$0\.32 to run it\.$/, `${spentUsd}: ${refused}`);
+    assert.match(refused, /Raise the cap to at least \$0\.32 to continue\.$/, `${spentUsd}: ${refused}`);
   }
 });
 

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, serve } from "./support.mjs";
+import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
@@ -114,7 +114,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   assert.equal(field(status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
   const cwd = await readlink(`/proc/${cli}/cwd`);
-  assert.equal(cwd, realpathSync(join(data, "runs", runId, "work")), "the CLI works in the run's workspace, where its file tools write");
+  assert.equal(cwd, realpathSync(join(runDir(data, runId), "work")), "the CLI works in the run's workspace, where its file tools write");
   const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0").filter(Boolean);
   assert.ok(!environ.some((line) => line.includes(KEY)), "the key never reaches the CLI");
   assert.deepEqual(environ.filter((line) => /^(ANTHROPIC_API_KEY|AGENTRUN_[A-Z_]*)=/.test(line)).map((line) => line.split("=")[0]), [], "nor the server's variables");
@@ -131,7 +131,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   // The endpoint reports a response's input as its request body's length over 4, and 12 output tokens.
   const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * PRICE.input + 12 * PRICE.output, 0) / 1e6;
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "each response's input and output at serve's catalog price");
-  const left = (await filesUnder(join(data, "runs", runId, "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
+  const left = (await filesUnder(join(runDir(data, runId), "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });
 
@@ -163,7 +163,7 @@ test("a claude-agent run writes where its CLI works: a relative path, the CLI's 
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 150_000 });
-  const work = join(data, "runs", runId, "work");
+  const work = join(runDir(data, runId), "work");
   assert.ok(cwd, "the CLI told its model its working directory");
   assert.equal(realpathSync(cwd), realpathSync(work), "the CLI's working directory is the run's workspace");
   const calls = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]);
@@ -175,7 +175,7 @@ test("a claude-agent run writes where its CLI works: a relative path, the CLI's 
   assert.equal(await readFile(join(work, "hello.md"), "utf8"), "hello\n", "the absolute write landed on the same file, in the workspace");
   assert.equal(await readFile(join(work, ".learning", "note.md"), "utf8"), "noted\n", "the learning note is in the workspace");
   assert.deepEqual((await filesUnder(work)).sort(), [".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
-  assert.ok(!existsSync(join(data, "runs", runId, "escape.md")), "the path out was not written");
+  assert.ok(!existsSync(join(runDir(data, runId), "escape.md")), "the path out was not written");
   assert.ok(told.some((text) => /escape\.md: outside the workspace/.test(text)), `the path out is refused: ${told.join(" | ")}`);
   assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);
   for (const root of new Set([data, realpathSync(data)])) {
@@ -196,7 +196,7 @@ test("a claude-agent run whose process dies while a request is in flight resumes
   assert.ok(cli, "the Claude CLI runs, under this test");
   // Accepted while the request is in flight: it waits for the turn, and outlives the process.
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "And then?" })).status, 202);
-  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  const { holder } = runRecordOf(data, runId);
   process.kill(holder.pid, "SIGKILL");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["Say what you did.", "And then?"]);
@@ -288,7 +288,7 @@ test("a capped run on a model named as OpenRouter names it (dotted) is held to i
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
   // Named as the catalog shows it, and nothing spent or held: the cap to raise to is the least.
-  const words = /^Not sent: this run's cap of \$0\.001 can't cover one Claude Haiku 4\.5 \(latest\) request \(at least \$(\d+\.\d\d)\)\. Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(ended.pending.said);
+  const words = /^Not sent: the next step needs at least \$(\d+\.\d\d), and this run's cap is \$0\.001\. Raise the cap to at least \$(\d+\.\d\d) to continue\.$/.exec(ended.pending.said);
   assert.ok(words, ended.pending.said);
   assert.equal(words[2], words[1]);
   assert.ok(Number(words[1]) >= 0.00512, `the least covers the answer's 1,024 tokens: $${words[1]}`);
@@ -312,7 +312,7 @@ test("a claude-agent run's model proxy reports a refusal in the run's log: one h
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   release();
   await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
-  const log = await readFile(join(data, "runs", runId, "process.log"), "utf8");
+  const log = await readFile(join(runDir(data, runId), "process.log"), "utf8");
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);

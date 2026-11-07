@@ -77,6 +77,9 @@ function flagType(shape) {
 const firstLine = (text) => (text ?? '').split('\n')[0].trim();
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json$/;
 const COMPONENT = '#/components/schemas/';
+// The JSON Schema types the client's types are made of, and the keywords that shape a value beyond them.
+const TYPES = ['string', 'number', 'integer', 'boolean', 'null', 'array', 'object'];
+const UNTYPED = ['prefixItems', 'patternProperties', 'dependentSchemas', 'dependentRequired', 'unevaluatedProperties', 'unevaluatedItems', 'contains', '$dynamicRef'];
 
 /** A schema as a type reads it: its structure only (type, enum, const, properties, required, items, additional
  *  properties, oneOf, anyOf, allOf), no description or bound, so a change of wording changes no type. A component it
@@ -84,8 +87,15 @@ const COMPONENT = '#/components/schemas/';
 function typeOf(doc, schema) {
   if (schema === true || schema === undefined || schema === null) return {};
   if (schema === false) return { not: {} };
+  if (typeof schema.$ref === 'string' && !schema.$ref.startsWith(COMPONENT)) throw new Error(`generate-clients: a type cannot follow ${schema.$ref}, a reference outside ${COMPONENT}`);
   const name = typeof schema.$ref === 'string' && schema.$ref.startsWith(COMPONENT) ? schema.$ref.slice(COMPONENT.length) : undefined;
   const s = deref(doc, schema) ?? {};
+  // A keyword that shapes the value beyond what a client's type is made of fails here, loudly, never dropped: a type
+  // without it would be wrong. A keyword that only narrows (if/then/else, not, pattern, bounds) leaves the type wider.
+  const shaping = UNTYPED.find((keyword) => s[keyword] !== undefined);
+  if (shaping) throw new Error(`generate-clients: the client's types cannot express ${shaping}${name ? ` (in ${name})` : ''}; teach typeOf and scripts/clients/typescript.mjs to`);
+  const types = (Array.isArray(s.type) ? s.type : s.type === undefined ? [] : [s.type]).filter((type) => !TYPES.includes(type));
+  if (types.length) throw new Error(`generate-clients: the client's types know no type ${types.join(', ')}${name ? ` (in ${name})` : ''}`);
   const out = name ? { name } : {};
   for (const key of ['type', 'enum', 'const', 'required']) if (s[key] !== undefined) out[key] = s[key];
   if (s.properties) out.properties = Object.fromEntries(Object.entries(s.properties).map(([key, value]) => [key, typeOf(doc, value)]));
@@ -118,7 +128,10 @@ export function operationsOf(doc) {
         params.set(`${p.in} ${p.name}`, { name: p.name, in: p.in, required: p.required === true, ...shapeOf(doc, p.schema), description: firstLine(p.description) });
       }
       const body = deref(doc, op.requestBody);
-      const schema = deref(doc, body?.content?.['application/json']?.schema);
+      const media = body?.content?.['application/json'];
+      const schema = deref(doc, media?.schema);
+      // The JSON body's first documented example (an OpenAPI 3.1 media type's examples, else its example).
+      const example = Object.values(media?.examples ?? {}).map((e) => deref(doc, e)?.value).find((value) => value !== undefined) ?? media?.example;
       found.push({
         operationId: op.operationId, method: method.toUpperCase(), path, tags: op.tags ?? [], summary: op.summary ?? firstLine(op.description),
         unsupported: op['x-agentrun-serve-unsupported'] !== undefined, parameters: [...params.values()],
@@ -126,6 +139,7 @@ export function operationsOf(doc) {
           required: body.required === true, types: Object.keys(body.content ?? {}),
           properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
           type: schema === undefined ? null : typeOf(doc, body.content['application/json'].schema),
+          ...(example !== undefined ? { example } : {}),
         },
         answers: Object.entries(op.responses ?? {}).filter(([status]) => /^2/.test(status)).flatMap(([, response]) => Object.keys(deref(doc, response)?.content ?? {})),
         answer: answerOf(doc, op),
@@ -146,6 +160,8 @@ function stringPaths(doc, schema, path = [], seen = new Set()) {
   if (types.includes('string') || s.enum?.some((v) => typeof v === 'string')) found.push(path);
   for (const [name, property] of Object.entries(s.properties ?? {})) found.push(...stringPaths(doc, property, [...path, name], seen));
   if (s.additionalProperties && typeof s.additionalProperties === 'object') found.push(...stringPaths(doc, s.additionalProperties, [...path, '*'], seen));
+  // A list's items: `[]`, each of them, which a public field may name (`scopes.[]`), unlike a map's values.
+  if (s.items && typeof s.items === 'object' && !Array.isArray(s.items)) found.push(...stringPaths(doc, s.items, [...path, '[]'], seen));
   return found;
 }
 
@@ -220,6 +236,8 @@ export function commandsOf(ops, map) {
       // A secret body's string fields that are no secret, by their full path: every other one is cut from what is printed.
       ...(secretBody ? { publicFields: map.publicFields[op.operationId] ?? [] } : {}),
       query, headers, bodyFlags, hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
+      // A working body, as the document gives it: the command's help prints it as a --body to paste. Never a secret body's.
+      ...(op.body?.example !== undefined && !secretBody ? { example: op.body.example } : {}),
       // A download: its answer is the file's bytes, written as received.
       raw: op.answers.length > 0 && !op.answers.includes('application/json'),
       summary: op.summary,

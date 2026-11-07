@@ -7,6 +7,7 @@
     "pi-browser",
     "pi-durable-disk",
     "pi-durable-agent",
+    "pi-transport",
     "decisions",
     "run-adapters",
     "run-adapters-claude-agent",
@@ -20,6 +21,7 @@
     "@parcha/pi-browser",
     "@parcha/pi-durable-disk",
     "@parcha/pi-durable-agent",
+    "@parcha/pi-transport",
     "@parcha/agentrun-decisions",
     "@parcha/agentrun-kernel",
     "@parcha/agentrun-harness-claude",
@@ -45,7 +47,7 @@
   ],
   "expect": {
     "exitCode": 0,
-    "pattern": "^ok: pi runs; claude-agent and codex say how to install them; the console is served$"
+    "pattern": "^ok: pi runs; claude-agent and codex install on first use; the console is served$"
   },
   "timeoutMs": 300000
 }

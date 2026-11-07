@@ -21,6 +21,7 @@ import { HARNESSES } from "./harness.js";
 import { checkKey, type KeyCheck } from "./key-check.js";
 import { toolsView } from "./tools.js";
 import { MODEL_KEYS } from "./model.js";
+import { TOOL_KEY_ROWS } from "./key-words.js";
 import { isObject, unknownFields } from "./validate.js";
 
 export const TOOL_KEYS_FILE = "tool-keys.json";
@@ -33,15 +34,10 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
  *  and is kept the same way), and what it may unlock: tools by name, and `decisions.<id>`, a workflow's decision
  *  provider. GET lists only those this server binds (unlockedBy), so a name here the server does not bind is never
  *  promised, and one shows by itself once the server binds it. A `tool` key's fields reach only the runs that name a
- *  tool it unlocks (runs.ts' secretsFor); a key of any other kind (a model's) reaches every run. */
+ *  tool it unlocks (runs.ts' secretsFor); a key of any other kind (a model's) reaches every run. The tool rows live in
+ *  key-words.ts (TOOL_KEY_ROWS), whose words name this page where a key is not set. */
 export const TOOL_KEYS = [
-  { id: "parallel", kind: "tool", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
-  { id: "monid", kind: "tool", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
-  { id: "browserbase", kind: "tool", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
-  // The browser's other vendor (tool-plane.ts BROWSER_KEYS): a run's browser is the one its plane picks.
-  { id: "kernel", kind: "tool", label: "Kernel", fields: ["KERNEL_API_KEY"], unlocks: ["browser"] },
-  // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
-  { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
+  ...TOOL_KEY_ROWS,
   // A model provider's key (model.ts' MODEL_KEYS, which give each its default model): every run gets it, as the
   // launcher's model keys reach every run. Its harnesses are pi and those that talk to the provider's API (MODEL_KEYS).
   ...MODEL_KEYS.map(({ id, label, field, harnesses }) => ({ id, kind: "model" as const, label, fields: [field] as const, unlocks: [] as const, harnesses })),

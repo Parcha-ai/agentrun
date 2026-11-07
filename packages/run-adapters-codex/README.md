@@ -44,6 +44,11 @@ const runNode = createHarnessRunner(
   Each search a response ran (`tool_usage.web_search.num_requests`) is added to its price at OpenAI's $0.01 a call; a
   model with no known search price books an unknown cost. A request that offers web search has no input bound, so a cap
   treats its input as unknown.
+- **Remote MCP servers, when granted.** A session given `spec.mcp` (a host's MCP gateway) writes each server in Codex's
+  `mcp_servers` at the proxy's `/mcp/<server>`, with the proxy key as Codex's bearer, only the granted tools enabled,
+  approve mode and `required = true`; the proxy admits those tools in the `mcp__<server>` namespace Codex sends them in.
+  Codex sends a call without waiting for the session, so the proxy holds it until its line (a script's nested call: its
+  script's) is in the log, records its intent and only then sends it, through the host's gateway (`src/mcp.ts`).
 - **A private machine.** A session runs in its own directories. Its working directory is the host's workspace when the
   host names one (`io.cwd`, where the host's file tools write, an untrusted project to Codex), and otherwise an empty
   directory of the session's. Codex keeps nothing there, and takes no instructions from an `AGENTS.md` in it

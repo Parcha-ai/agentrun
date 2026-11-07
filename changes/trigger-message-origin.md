@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-durable-agent, @parcha/pi-durable-disk
+kind: fix
+---
+A trigger's input, a started run's first message or a firing's message to a run, enters the run as the trigger's, never as the person's: its user entry carries the origin `{kind: "trigger", trigger_id, source, owner}` (`messageOrigins` reads it), with `owner` set by the trigger's definition as it fires and never by its payload (true for a schedule, on time or by hand; false for a webhook, its body empty or not). The model reads the very text it did; the run's timeline shows a `phase` row, "Trigger <its id>: <its first line>", with `origin: "trigger"`, never "You: ...". In `@parcha/pi-durable-agent`, `MessageOrigin` gains the trigger kind and `originOf` reads it (`TRIGGER_SOURCES`), and a `MESSAGE_ORIGIN` marker with `withdrawn: true` takes back an open one. In `@parcha/pi-durable-disk`, a run's door takes a trigger origin, on an input that may not answer a person (`answers: false`) too, and withdraws its marker when that input is refused busy. Upgrading: nothing to do.

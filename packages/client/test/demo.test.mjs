@@ -22,17 +22,18 @@ test("demo: create an agent, start a capped run and wait, list runs, answer a qu
   assert.deepEqual([again.status, again.code, again.error.code], [409, "agent_exists", "agent_exists"]);
   assert.ok(!again.message.includes(server.token));
 
-  // A capped run, waited for.
-  const started = await client.runs.start("notes", { input: { content: "Write notes.md with three facts about the Moon." }, max_cost_usd: 0.5 });
+  // A capped run, waited for. Capped at $5: under three held requests' worth, the server's wrap-up note comes before the
+  // first request, which this faux model would read as its person's message.
+  const started = await client.runs.start("notes", { input: { content: "Write notes.md with three facts about the Moon." }, max_cost_usd: 5 });
   assert.equal(started.agent_id, "notes");
   const done = await client.runs.wait(started.run_id, { timeoutMs: 60_000 });
-  assert.deepEqual([done.run_id, done.status, done.cost.cap_usd], [started.run_id, "completed", 0.5]);
+  assert.deepEqual([done.run_id, done.status, done.cost.cap_usd], [started.run_id, "completed", 5]);
   const listed = await client.runs.list({ limit: 10 });
   assert.ok(listed.runs.some((run) => run.run_id === started.run_id), "the run is listed");
   assert.ok((await client.agents.runs("notes")).runs.some((run) => run.run_id === started.run_id), "and in the agent's runs");
 
   // A run that asks: it waits on its person, is answered, and completes with what they said.
-  const asking = await client.runs.start("notes", { input: { content: "Ask me which region to cover, then write region.md about it." }, max_cost_usd: 0.5 });
+  const asking = await client.runs.start("notes", { input: { content: "Ask me which region to cover, then write region.md about it." }, max_cost_usd: 5 });
   const asked = await client.runs.wait(asking.run_id);
   assert.deepEqual([asked.status, asked.pending?.kind], ["input_required", "question"]);
   await client.runs.message(asking.run_id, { content: "Europe" });
@@ -53,18 +54,16 @@ test("demo: create an agent, start a capped run and wait, list runs, answer a qu
   assert.ok(stopped.pending.suggested_cap_usd > 0.05);
   const raise = await client.runs.raiseCap(capped.run_id, { max_cost_usd: 1 });
   assert.deepEqual([raise.resumed, raise.max_cost_usd], [true, 1]);
-  // The raise answers at once, and the server sends the run its follow-up turn once its process has been let go: until
-  // then the run reads input_required with no pending, which a wait returns as it is.
-  let raised = await client.runs.wait(capped.run_id);
-  for (let i = 0; raised.status === "input_required" && raised.pending === null && i < 100; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    raised = await client.runs.wait(capped.run_id);
-  }
+  // Once the raise is kept the run reads as one that goes on, at once: never input_required with no pending.
+  assert.ok(["queued", "working"].includes(raise.status), `right after the raise: ${JSON.stringify(raise)}`);
+  const after = await client.runs.get(capped.run_id);
+  assert.ok(!(after.status === "input_required" && after.pending === null), `read again: ${after.status}`);
+  const raised = await client.runs.wait(capped.run_id);
   assert.deepEqual([raised.run_id, raised.status, raised.pending, raised.cost.cap_usd], [capped.run_id, "completed", null, 1]);
   assert.match(text(await client.runs.readFile(capped.run_id, "moon.md")), /^# .+\n$/, "it wrote moon.md once it went on");
 
   // Following a run live gives every row the timeline holds once it ended, each once.
-  const followed = await client.runs.start("notes", { input: { content: "Write sun.md with three facts about the Sun." }, max_cost_usd: 0.5 });
+  const followed = await client.runs.start("notes", { input: { content: "Write sun.md with three facts about the Sun." }, max_cost_usd: 5 });
   const rows = new Map();
   const pages = [];
   for await (const page of client.runs.follow(followed.run_id)) {
