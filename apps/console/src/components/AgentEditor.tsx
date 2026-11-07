@@ -1,6 +1,7 @@
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
+import { McpToolPicker } from "@/components/McpToolPicker";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -10,6 +11,7 @@ import { type Agent, type AgentFields, capOf, DECISION, defaultTools, harnessOpt
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
+import type { McpServer } from "@/lib/mcp";
 import { newAgentPlace, placeOf } from "@/lib/place";
 import type { Places } from "@/lib/place";
 import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
@@ -21,7 +23,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
  *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
  *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off" };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -43,6 +45,10 @@ export type EditorProps = {
   validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
   /** The capabilities with a provider choice (capabilities.tools): the Tools step's tool settings, for those the agent grants. */
   providerChoices?: ToolChoice[];
+  /** The saved MCP servers, when `caps.mcp`: null while read, "failed" when they could not be. */
+  mcpServers?: McpServer[] | null | "failed";
+  /** Reads the MCP servers again, after a read that failed. */
+  onRetryMcp?: () => void;
   /** Each tool's permission on this server (approvals/1), from capabilities: an agent's own is set over it. */
   permissionGates?: ToolGate[];
   /** A tool whose permission the Tools step opens on, focused (a start refused for it links here). */
@@ -71,7 +77,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, onRetryMcp }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
@@ -265,6 +271,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                       </label></li>
                     );
                   })}
+                  {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
                 </ul>
                 {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
                 {!workflow && !reachesWeb(f.tools ?? []) && (

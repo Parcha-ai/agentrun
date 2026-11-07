@@ -4,13 +4,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { backoff } from "../lib/follow.mjs";
+import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
@@ -32,7 +33,7 @@ export default (context, faux) => {
 
 async function serve(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-follow-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") };
   writeFileSync(join(dir, "faux.mjs"), FAUX);
   const data = join(dir, "data");
@@ -295,4 +296,20 @@ test("--timeout takes a fraction of a second: the wait goes on to its timeout, e
     assert.equal(waited.code, 1, `${seconds}: ${waited.err}`);
     assert.match(waited.err, /^Run r1 is still working after [\d.]+ s; it goes on/, seconds);
   }
+});
+
+test("runs start --wait and runs get print the run's console page, on the port the server took", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t);
+  const cli = cliOf(server.env, []);
+  const data = ["--data", server.data];
+  writeFileSync(join(server.dir, "agent.json"), JSON.stringify({ definition: { id: "demo", version: 1, name: "demo", instructions: "Answer.", skills: [], tools: [] } }));
+  assert.equal((await cli(["agents", "create", "--body", `@${join(server.dir, "agent.json")}`, ...data])).code, 0);
+  const origin = server.base.replace(/\/v2$/, "");
+  assert.notEqual(new URL(origin).port, "7340", "a port the server took, not the default");
+  const done = await cli(["runs", "start", "demo", "--wait", "--body", JSON.stringify({ input: { content: "What is the answer?" } }), ...data]);
+  assert.equal(done.code, 0, done.err);
+  const run = done.json();
+  assert.equal(run.console_url, `${origin}/#/runs/${run.run_id}`);
+  const got = await cli(["runs", "get", run.run_id, ...data]);
+  assert.equal(got.json().console_url, `${origin}/#/runs/${run.run_id}`);
 });

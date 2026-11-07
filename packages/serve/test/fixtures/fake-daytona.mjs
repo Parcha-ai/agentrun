@@ -46,13 +46,9 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/workspace|\/tmp\/pi-transport|\
 export async function daytonaSandboxes(t, { key, blocks = true, lists = true, refusesLists, hostileTar, failDeletes = 0, failListings = [], sudoProbe = false, archil } = {}) {
   const root = join(await scratch(t), "daytona");
   mkdirSync(root, { recursive: true });
-  // Every box command runs with a sudo stand-in first on its PATH (sudoStandIn); one it met fails the test, unless the
-  // test probes the stand-in itself (`sudoProbe`).
+  // Every box command runs with a sudo stand-in first on its PATH (sudoStandIn); one it met fails the test (once the
+  // server is closed, below), unless the test probes the stand-in itself (`sudoProbe`).
   const sudo = sudoStandIn(root);
-  t.after(() => {
-    const calls = sudo.calls();
-    if (calls.length && !sudoProbe) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${calls.join("; ")}`);
-  });
   const sandboxes = new Map();
   const requests = [];
   const state = { blocks, lists, refusesLists, failDeletes, listings: 0, redirect: undefined, hostile: Boolean(hostileTar), fuse: true };
@@ -204,7 +200,13 @@ export async function daytonaSandboxes(t, { key, blocks = true, lists = true, re
   const server = createServer((req, res) => void handle(req, res).catch((error) => res.writeHead(500).end(String(error?.message ?? error))));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
-  t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
+  // The server closed first, then the guard: a hook that throws ends the hooks after it, so a test that trips the guard
+  // still leaves no server behind.
+  t.after(async () => {
+    await new Promise((resolve) => (server.closeAllConnections(), server.close(resolve)));
+    const calls = sudo.calls();
+    if (calls.length && !sudoProbe) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${calls.join("; ")}`);
+  });
   return {
     url: `${base}/api`,
     toolboxUrl: `${base}/toolbox`,

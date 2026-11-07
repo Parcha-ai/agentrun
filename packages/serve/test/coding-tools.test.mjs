@@ -56,7 +56,13 @@ test("in a box the source is pi's read, write, edit and bash, and the background
   assert.equal(source.extension.name, ArchilCodingTools.name, "the extension keeps pi's name");
   const pis = Object.fromEntries(ArchilCodingTools.tools.map((tool) => [tool.name, tool]));
   for (const tool of source.tools.filter((tool) => !tool.name.startsWith("bash_"))) {
-    assert.equal(tool.parameters, pis[tool.name].parameters, `${tool.name} keeps pi's schema`);
+    // bash's schema is pi's in shape; only its timeout's words say the default and the ceiling (bench-tools.test.mjs).
+    if (tool.name === "bash") {
+      const { timeout: ours, ...rest } = tool.parameters.properties;
+      const { timeout: theirs, ...pisRest } = pis.bash.parameters.properties;
+      assert.deepEqual(rest, pisRest, "bash keeps pi's other parameters");
+      assert.deepEqual({ ...ours, description: undefined }, { ...theirs, description: undefined }, "bash's timeout keeps pi's type");
+    } else assert.equal(tool.parameters, pis[tool.name].parameters, `${tool.name} keeps pi's schema`);
     assert.equal(tool.replay, pis[tool.name].replay, `${tool.name} keeps pi's replay`);
     assert.deepEqual(tool.outputLimits, pis[tool.name].outputLimits);
   }
@@ -67,7 +73,7 @@ test("in a box the source is pi's read, write, edit and bash, and the background
   const bash = source.tools.find((tool) => tool.name === "bash");
   const context = { marker: "ctx" };
   await bash.execute({ command: "printf hi > out.txt" }, api, context);
-  assert.deepEqual(seen, [{ command: "printf hi > out.txt", cwd: "/workspace", env: {}, inherit: true }], "pi's bash, run in the box's cwd, on the box's own env alone");
+  assert.deepEqual(seen, [{ command: "printf hi > out.txt", cwd: "/workspace", env: {}, inherit: true }], "pi's bash, run in the box's cwd, on the box's own env alone (its timeout, the default, is bench-tools.test.mjs's)");
   assert.deepEqual(calls, [context]);
   // A background tool's call is one command in the box, from the box's work dir (background.ts).
   seen.length = 0;

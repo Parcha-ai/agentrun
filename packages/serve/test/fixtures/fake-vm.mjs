@@ -41,11 +41,11 @@ export const vm = {
   end: (id) => vm.sandboxes.find((sandbox) => sandbox.sandboxId === id)?.terminate({ wait: true }),
   /** What the sudo stand-in first on every program's PATH was asked (fake-daytona.mjs sudoStandIn). */
   sudoCalls: () => sudoStandIn(vm.root).calls(),
-  /** Back to its defaults, every sandbox ended; it throws when a program ran sudo here (the stand-in refused it). */
+  /** Back to its defaults, every sandbox ended; then it throws when a program ran sudo here (the stand-in refused it),
+   *  so a test that trips the guard still leaves nothing for the next. */
   reset: () => {
     const sudo = vm.sudoCalls();
     rmSync(join(vm.root, "sudo.calls"), { force: true });
-    if (sudo.length) throw new Error(`a box program ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
     vm.execDelayMs = 0;
     vm.failStdout = false;
     vm.failWait = false;
@@ -56,6 +56,7 @@ export const vm = {
     for (const sandbox of vm.sandboxes) sandbox.terminate({ wait: true });
     vm.clients.length = 0;
     vm.sandboxes.length = 0;
+    if (sudo.length) throw new Error(`a box program ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   },
 };
 

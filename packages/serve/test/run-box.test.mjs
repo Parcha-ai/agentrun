@@ -350,18 +350,25 @@ test("a turn's end never wakes a box its provider stopped: a woken box has no fi
   assert.deepEqual(calls, []);
 });
 
-test("a turn's end in a running box with nothing mounted (a restart took its mount and its firewall) destroys the box and fails, saying so", async (t) => {
-  const { syncRemoteBox } = await import("../dist/run-box.js");
+test("a turn's end in a running box with nothing mounted (a restart took its mount and its firewall) destroys the box and fails, saying so; the box the run's next call makes says it was replaced, once", async (t) => {
+  const { ensureRemoteBox, syncRemoteBox } = await import("../dist/run-box.js");
   const { NotMounted } = await import("../dist/archil.js");
+  const { folder } = await remoteFolder();
+  const runDir = await scratch(t);
   const destroyed = [];
-  let running = { id: "restarted", facts: () => ({ provider: "fake", workspace: "/workspace" }), destroy: async () => ((destroyed.push("restarted"), (running = undefined)), { ok: true, value: undefined }) };
+  const box = (id) => ({ id, facts: () => ({ provider: "fake", workspace: "/workspace", network: "none" }), destroy: async () => ((destroyed.push(id), running?.id === id && (running = undefined)), { ok: true, value: undefined }) });
+  let running = box("restarted");
   const boxes = {
     list: async () => ({ ok: true, value: running ? [{ id: running.id, labels: {} }] : [] }),
     attach: async (id) => ({ ok: true, value: running && running.id === id ? running : undefined }),
+    create: async () => ({ ok: true, value: (running = box("new")) }),
   };
   const adapter = { sync: async () => { throw new NotMounted("the box has nothing mounted at /workspace"); } };
-  await assert.rejects(syncRemoteBox(boxes, { id: "r" }, { adapter, disk: "dsk-00000000000baf76", subpath: "agents/a/runs/r/work" }, BACKGROUND_CONTEXT), /nothing mounted at \/workspace.*destroyed: the run's next call makes it again, locked and mounted/);
+  await assert.rejects(syncRemoteBox(boxes, { id: "r", dir: runDir }, { adapter, disk: "dsk-00000000000baf76", subpath: "agents/a/runs/r/work" }, BACKGROUND_CONTEXT), /nothing mounted at \/workspace.*destroyed: the run's next call makes it again, locked and mounted/);
   assert.deepEqual(destroyed, ["restarted"]);
+  // What the destroyed box held outside the run's files went with it: its model is told, by the box made next, once.
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder }), { id: "new", made: true, replaced: true });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder }), { id: "new", made: false });
 });
 
 test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work lets go of the folder, then is destroyed and made again at /workspace", async (t) => {
@@ -386,6 +393,31 @@ test("a remote box made when boxes had the run's work/ at /run/agentrun/run/work
   assert.deepEqual(calls, [["unmount", "old"], ["mount", "new"]]);
   assert.deepEqual(destroyed, ["old"]);
   assert.equal(specs[0].workspace, "/workspace");
+});
+
+test("a remote box replaced, then a create of its successor that fails: the next attempt that makes one still says replaced, once", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const { calls, folder } = await remoteFolder();
+  const runDir = await scratch(t);
+  let found;
+  let fails = 1;
+  const box = (id, workspace) => ({ id, facts: () => ({ provider: "fake", workspace, network: "none" }), destroy: async () => ((found = found?.id === id ? undefined : found), { ok: true, value: undefined }) });
+  const boxes = {
+    list: async () => ({ ok: true, value: found ? [{ id: found.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: found && found.id === id ? found : undefined }),
+    create: async (spec) => {
+      if (fails-- > 0) return { ok: false, error: Object.assign(new Error("the provider is busy"), { code: "unavailable" }) };
+      found = box("new", spec.workspace);
+      return { ok: true, value: found };
+    },
+  };
+  // Made when boxes had the run's work/ elsewhere: it lets go of the folder, and is replaced.
+  found = box("old", "/run/agentrun/run/work");
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder }), /could not be made: the provider is busy/);
+  assert.equal(found, undefined, "the old box is gone, and no new one came");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder }), { id: "new", made: true, replaced: true }, "the attempt that makes one says the box was replaced");
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, { allow: "none", folder }), { id: "new", made: false }, "and only that one");
+  assert.deepEqual(calls, [["unmount", "old"], ["mount", "new"], ["mount", "new"]]);
 });
 
 test("a remote box found with a host list is kept only when its list is the one asked, as a set: another list, or one it does not say, is destroyed and made again; one that cannot let go of the folder is kept and not used", async (t) => {

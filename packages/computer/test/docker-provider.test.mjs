@@ -65,11 +65,11 @@ switch (args[0]) {
 /** The value after each occurrence of a flag. */
 const valuesOf = (args, flag) => args.flatMap((arg, i) => (arg === flag ? [args[i + 1]] : []));
 
-test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec", () => {
+test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec, files and processes", () => {
 	const { provider } = fakeDocker();
 	assert.equal(provider.id, "docker");
 	assert.match(provider.version, /^\d+\.\d+\.\d+/);
-	assert.deepEqual(provider.capabilities(), { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec"] });
+	assert.deepEqual(provider.capabilities(), { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"] });
 });
 
 test("check() refuses in words, field by field, with no docker call", () => {
@@ -162,7 +162,11 @@ test("create() runs a hardened container with the daemon as its first process an
 	assert.deepEqual(valuesOf(run, "--entrypoint"), ["/opt/agentrun/computerd"]);
 	assert.deepEqual(run.slice(-4), ["debian:bookworm-slim", "init", "--deadline", deadline], "PID 1 ends the computer at the deadline the label holds");
 	const [uid, gid] = DEFAULT_USER.split(":");
-	assert.deepEqual(valuesOf(run, "--tmpfs"), [`/work:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`], "a home the computer's user can write");
+	assert.deepEqual(
+		valuesOf(run, "--tmpfs"),
+		[`/work:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`, `/run/agentrun:rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700`],
+		"a home the computer's user can write, and init's socket directory, the user's alone",
+	);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
 	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
 	assert.deepEqual(inspect.slice(0, 1), ["inspect"]);
@@ -182,7 +186,7 @@ test("create() passes the sizes, an open network and the workdir", async () => {
 	assert.deepEqual(valuesOf(run, "--memory-swap"), ["512m"]);
 	assert.deepEqual(valuesOf(run, "--pids-limit"), ["64"]);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/app"]);
-	assert.equal(valuesOf(run, "--tmpfs").length, 1, "/work is mounted even when the spec names another workdir");
+	assert.equal(valuesOf(run, "--tmpfs").filter((tmpfs) => tmpfs.startsWith("/work:")).length, 1, "/work is mounted even when the spec names another workdir");
 });
 
 test("create() with no sizes gives serve's: 2 CPUs, 4 GiB with swap the same, 1024 pids", async () => {
@@ -214,7 +218,14 @@ test("create() runs a computer as a non-root user unless its spec asks for root"
 	assert.deepEqual(await userOf({ ...SPEC, user: "0:0" }), ["0:0"]);
 	const { provider, calls } = fakeDocker({ user: "1234:5678" });
 	assert.equal((await provider.create({ ...SPEC, user: "2000:3000" })).ok, true);
-	assert.deepEqual(valuesOf(calls()[0], "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=2000,gid=3000,mode=0700"], "/work belongs to the user the computer runs as");
+	assert.deepEqual(
+		valuesOf(calls()[0], "--tmpfs"),
+		["/work:rw,nosuid,nodev,exec,uid=2000,gid=3000,mode=0700", "/run/agentrun:rw,noexec,nosuid,nodev,uid=2000,gid=3000,mode=0700"],
+		"/work and init's socket directory belong to the user the computer runs as",
+	);
+	const root = fakeDocker();
+	assert.equal((await root.provider.create({ ...SPEC, user: "0" })).ok, true);
+	assert.deepEqual(valuesOf(root.calls()[0], "--tmpfs"), ["/work:rw,nosuid,nodev,exec,uid=0,gid=0,mode=0700", "/run/agentrun:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700"]);
 });
 
 test("check() takes a user as numbers, uid or uid:gid, and refuses a name in words", () => {

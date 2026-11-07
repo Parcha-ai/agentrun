@@ -204,8 +204,8 @@ export interface ClaudeCodeHarnessOptions {
    * model proxy (`<modelUrl>/mcp/<name>`, behind the session's key), with the
    * tools granted on each: those are allowed by name (`mcp__<name>__<tool>`)
    * and each call is recorded as a built-in's. They are set over the CLI's
-   * stdin (`setMcpServers`), never in its argv. A server that does not
-   * connect fails the turn. Default none.
+   * stdin (`setMcpServers`), never in its argv. The proxy answers the
+   * handshake: an unreachable server shows at its first call. Default none.
    */
   mcpServers?: readonly { readonly name: string; readonly tools: readonly string[] }[];
   /**

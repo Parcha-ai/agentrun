@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
-import { mcpRoute, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { startModelProxy } from '@parcha/agentrun-kernel/host';
 
 const KEY = 'session-key-for-tests';
 const policy = {
@@ -21,7 +21,7 @@ const ADD = { name: 'add', description: 'Add two numbers.', inputSchema: { type:
 async function proxy(t, call, options = {}) {
   const calls = [];
   const mcp = { servers: [{ name: 'fake', tools: [ADD, { ...ADD, name: 'slow' }] }], call: async (server, tool, args, context) => (calls.push({ server, tool, args, ...context }), call(server, tool, args, context)) };
-  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(mcp, options) }, KEY);
+  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: mcp, client: { callIdMeta: 'claudecode/toolUseId' }, ...options } }, KEY);
   t.after(() => p.close());
   return { p, calls };
 }
@@ -93,11 +93,36 @@ test('a client that disconnects, or cancels, aborts its call; a cancel of a call
 test("a server and a tool named like an object's own properties are served like any other", async (t) => {
   const tool = { ...ADD, name: "toString" };
   const mcp = { servers: [{ name: "constructor", tools: [tool] }], call: async (server, name) => ({ content: [{ type: "text", text: `${server}/${name}` }] }) };
-  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'c', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(mcp) }, KEY);
+  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'c', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session: mcp, client: { callIdMeta: 'claudecode/toolUseId' } } }, KEY);
   t.after(() => p.close());
   assert.deepEqual(JSON.parse((await send(p.url, { path: '/mcp/constructor', body: rpc('tools/list') })).text).result.tools.map((t) => t.name), ['toString']);
   assert.deepEqual(messagesOf((await send(p.url, { path: '/mcp/constructor', body: rpc('tools/call', { name: 'toString', arguments: {} }) })).text).at(-1).result.content[0].text, 'constructor/toString');
   assert.equal(JSON.parse((await send(p.url, { path: '/mcp/constructor', accept: 'application/json', body: rpc('tools/call', { name: 'hasOwnProperty', arguments: {} }) })).text).result.isError, true);
   const { p: other } = await proxy(t, async () => ({ content: [] }));
   assert.equal((await send(other.url, { path: '/mcp/constructor', body: rpc('tools/list') })).status, 404, 'a session without that server has none of that name');
+});
+
+test("the proxy mounts /mcp/<server> itself from the session's MCP and its harness's client fact: the call id comes from the _meta key the harness declared, and from no other", async (t) => {
+  const meta = { 'claudecode/toolUseId': 'toolu_9', callId: 'call_9' };
+  const seen = {};
+  for (const [harness, client] of [['claude-agent', { callIdMeta: 'claudecode/toolUseId' }], ['codex', { callIdMeta: 'callId' }]]) {
+    const calls = [];
+    const session = { servers: [{ name: 'fake', tools: [ADD] }], call: async (server, tool, args, context) => (calls.push(context.callId), { content: [{ type: 'text', text: '5' }] }) };
+    const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'c', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: { session, client } }, KEY);
+    t.after(() => p.close());
+    const both = await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 2, b: 3 }, _meta: meta }) });
+    assert.equal(both.status, 200, both.text);
+    const own = client.callIdMeta === 'callId' ? { callId: 'call_1' } : { 'claudecode/toolUseId': 'toolu_1' };
+    const other = client.callIdMeta === 'callId' ? { 'claudecode/toolUseId': 'toolu_2' } : { callId: 'call_2' };
+    await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 1, b: 1 }, _meta: own }, 2) });
+    await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 1, b: 1 }, _meta: other }, 3) });
+    seen[harness] = calls;
+  }
+  assert.deepEqual(seen, { 'claude-agent': ['toolu_9', 'toolu_1', undefined], codex: ['call_9', 'call_1', undefined] });
+});
+
+test("tools/call: the client reads the answer's content and whether it failed, never the host's parked flag", async (t) => {
+  const { p } = await proxy(t, async () => ({ content: [{ type: 'text', text: 'This mcp:fake/add call waits for a person\'s approval.' }], parked: true }));
+  const answer = JSON.parse((await send(p.url, { accept: 'application/json', body: rpc('tools/call', { name: 'add', arguments: { a: 2, b: 3 } }) })).text);
+  assert.deepEqual(answer.result, { content: [{ type: 'text', text: 'This mcp:fake/add call waits for a person\'s approval.' }] });
 });

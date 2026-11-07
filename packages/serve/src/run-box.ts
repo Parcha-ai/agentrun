@@ -17,7 +17,7 @@
 // box-relay-vm.ts), which holds the key or the client, and what its own host tools file in work/ goes in through the
 // box (writeInWork), which holds the folder. Its tools have no network yet.
 import { createHash } from "node:crypto";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -55,8 +55,9 @@ export const BOX_REPLACED_NOTE = "this run's box was replaced after a restart: /
 export const BOX_ENV: Readonly<Record<string, string>> = Object.freeze({ LANG: "C.UTF-8", HOME: "/tmp" });
 /** How long a box lives whatever happens to the server: a bound on a leaked box, never its clean end. */
 export const BOX_LIFETIME_MS = 24 * 60 * 60_000;
-/** A bash command's timeout when the model names none. */
-export const BASH_TIMEOUT_MS = 300_000;
+/** A box command's deadline when its call names none: bash's own default (coding-tools.ts BASH_DEFAULT_TIMEOUT_S), which
+ *  bash always names, so this is the backstop for any other command. */
+export const BASH_TIMEOUT_MS = 120_000;
 /** The image a Docker box starts from (box-image.ts, where the server makes it ready). */
 export { DEFAULT_DOCKER_IMAGE, DOCKER_IMAGE_ENV } from "./box-image.js";
 /** The settings that bound a Docker box; unset, their defaults: enough for a build, and safe on a laptop, where one run's
@@ -152,6 +153,11 @@ export async function boxNetworkOf(env: NodeJS.ProcessEnv, options: Parameters<t
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
+
+/** In a run's directory while the box the server destroyed for a new one has no successor yet (ensureRemoteBox, and a
+ *  turn's end that destroys a box with nothing mounted: syncRemoteBox): the attempt that makes one says the box was
+ *  replaced, though the one that destroyed the old box failed after it. */
+export const BOX_REPLACED_FILE = "box-replaced";
 
 type Mount = NonNullable<BoxSpec["mounts"]>[number];
 
@@ -494,7 +500,6 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
   let asked: "none" | "allowlist" | "open" = allow === "none" || allow === "open" ? allow : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
-  let replaced = false;
   const facts = box?.facts();
   // A locked box is kept unless its provider blocks it (it could not reach Archil). A list held by a provider that does
   // not read it back (its facts name no hosts) is fixed at the box's create: the box is kept only when the label it was
@@ -514,9 +519,10 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     } catch (error) {
       throw new Error(`the run's box has another host list than this server's now (or a network it does not ask for, or its files outside /workspace), and it could not let go of the run's folder, so it is kept and not used: ${(error as Error).message}`);
     }
+    // Noted before the old box goes: should what follows fail, the attempt that makes its successor still says so.
+    await writeFile(join(run.dir, BOX_REPLACED_FILE), "");
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
-    replaced = true;
   }
   if (!box) {
     let created = await boxes.create(remoteSpec(run.id, allow, limits), context);
@@ -543,7 +549,9 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     if (made) await box.destroy(context).catch(() => undefined);
     throw new Error(`the run's folder could not be mounted in its box: ${(error as Error).message}`);
   }
-  // `replaced`: a box the run had was destroyed for this one, and what it held outside the run's files with it.
+  // `replaced`: a box the run had was destroyed for this one (in this attempt or a failed one before it), and what it
+  // held outside the run's files with it. Said once.
+  const replaced = await rm(join(run.dir, BOX_REPLACED_FILE)).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : Promise.reject(error)));
   return { id: box.id, made, ...(replaced ? { replaced } : {}) };
 }
 
@@ -572,13 +580,15 @@ async function mountIn(boxes: BoxProvider, run: { id: string }, folder: RemoteFo
  *  mount, which the run's process would run its next tools in; that process's next call finds it stopped and has it
  *  made ready again (ensureRemoteBox), locked and mounted. A running box with nothing mounted (a restart took its mount
  *  and its firewall) is destroyed, so the run's next call makes it again, and the sync fails, saying so. */
-export async function syncRemoteBox(boxes: BoxProvider, run: { id: string }, folder: RemoteFolder, context: Context): Promise<boolean> {
+export async function syncRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, folder: RemoteFolder, context: Context): Promise<boolean> {
   const box = await runningRunBox(boxes, run.id, context);
   if (!box) return false;
   try {
     await folder.adapter.sync(mountedIn(folder, box, context));
   } catch (error) {
     if (!(error instanceof NotMounted)) throw error;
+    // Noted before the box goes: the box the run's next call makes says this one was replaced (ensureRemoteBox).
+    await writeFile(join(run.dir, BOX_REPLACED_FILE), "");
     await destroyRunBoxes(boxes, run.id, context);
     throw new Error(`${error.message}, so it is destroyed: the run's next call makes it again, locked and mounted`);
   }

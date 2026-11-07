@@ -8,7 +8,7 @@
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
-import { authContextOf, mcpCredentials, withSecrets } from "./secrets.js";
+import { mcpCredentials, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
@@ -17,7 +17,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capOf, spentIn } from "./cap.js";
+import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
@@ -31,7 +31,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
@@ -78,8 +78,7 @@ async function markResumed({ harness, context, generation, previous }: BeforeRes
 async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   const choice = claudeModel(env, ref);
   if ("why" in choice) throw new Error(choice.why);
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
@@ -88,8 +87,7 @@ async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harn
   if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
   const choice = await codexModel(env, ref, harness);
   if ("why" in choice) throw new Error(choice.why);
-  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
@@ -115,6 +113,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
+  const mode = capModeOf(process.env);
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
   // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
@@ -122,7 +121,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // the run's one total, which the harness keeps (cap.ts capModels' `joined`): what they cost in earlier processes is
   // read here, as the harness's booking does not hold it.
   const joined = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE), { sides: joined }), { unpriced: chosen.unpriced, refused: marked.refused, joined });
+  // The wrap-up on pi (cap.ts WrapUp): near its cap the run's own model is told once, under this cap, to finish. Not on
+  // another harness: its guard tells the harness's model (harness-app.ts).
+  const storeFile = join(where.store, RUN_STORE_FILE);
+  const wrapUp = cap === undefined || joined || !model ? undefined : { model: model.modelId, costs: costsIn(storeFile, model.modelId), sent: wrapUpSentIn(storeFile, cap), record: marked.wrapUp };
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(storeFile, { sides: joined }), { unpriced: chosen.unpriced, refused: marked.refused, joined, mode, ...(wrapUp ? { wrapUp } : {}) });
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
   // on another harness too, for a learned workflow's call node.
   searchOn(models);
@@ -198,11 +201,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
-    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
     const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
-    const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
+    const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId), mode });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
@@ -230,9 +233,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     if (!tools) bound.set(name, (tools = entry.bind(host)));
     return tools;
   };
+  // The gate reads its store before the run resumes (an agentic run's and a workflow's alike): the resume dispatches the
+  // calls a crash cut, and a rerun of one it let through must find its mark (tool-gate.ts prime).
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async (run: BeforeResume) => { await markResumed(run); for (const settle of settles) await settle(run.harness); },
+    beforeResume: async (run: BeforeResume) => { await toolGate.prime(run.harness, run.context); await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).

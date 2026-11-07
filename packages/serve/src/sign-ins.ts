@@ -143,6 +143,22 @@ export class SignIns {
     }));
   }
 
+  /** The pointer of `agentId`'s sign-in for `resolution`, read only: no lease taken, nothing made or written. For a run
+   *  this server loads (after a restart), whose rows, errors and answers must never show it: `{ ref }`; `unreadable`
+   *  when the agent keeps one that does not open under this server's seal key (none now, or another), or its sign-ins
+   *  file cannot be read or parsed, told apart from none at all (undefined: no file, or no entry for the vendor). */
+  async peek(agentId: string, resolution: string): Promise<{ ref: string } | "unreadable" | undefined> {
+    const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
+    if (!vendor) return undefined;
+    // Only a file that is not there means none: one this server may not read, or that does not parse, is unreadable.
+    const entries = await this.read(agentId).catch(() => null);
+    if (entries === null) return "unreadable";
+    const entry = entries.find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
+    if (!entry) return undefined;
+    const ref = this.open(agentId, entry);
+    return ref === undefined ? "unreadable" : { ref };
+  }
+
   /** The sign-in run `runId` of `agentId` starts from on `resolution` (its plane's browser): made at the vendor when the
    *  agent has none, then leased to this run to save, unless another run of the agent holds the lease. None for a
    *  browser that keeps none, or with no seal key. */

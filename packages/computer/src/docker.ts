@@ -23,6 +23,8 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
 /** The computer's home and default workdir: a tmpfs its user owns, since a non-root user can write nowhere else. */
 const WORK = "/work";
+/** Where init's socket lives (the daemon's DefaultSocket's directory): a tmpfs the computer's user owns, mode 0700. */
+const SOCKET_DIR = "/run/agentrun";
 const COMPUTER_LABEL = "agentrun.computer";
 const DEADLINE_LABEL = "agentrun.computer.deadline";
 const NAME = /^computer-[0-9a-f]{12}$/;
@@ -78,7 +80,7 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	capabilities(): ComputerCapabilities {
-		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec"] };
+		return { lifetime: "janitor", network: ["none", "open"], isolation: "container", os: "linux", daemon: ["exec", "files", "processes"] };
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
@@ -139,6 +141,7 @@ export class DockerProvider implements ComputerProvider {
 		const user = userOf(spec.user) ?? this.#user;
 		const [uid, gid] = user.split(":");
 		args.push("--user", user, "--tmpfs", `${WORK}:rw,nosuid,nodev,exec,uid=${uid},gid=${gid},mode=0700`, "--env", `HOME=${WORK}`);
+		args.push("--tmpfs", `${SOCKET_DIR}:rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700`);
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		args.push("--network", spec.network === "none" ? "none" : "bridge");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
