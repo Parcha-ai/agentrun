@@ -51,7 +51,7 @@ test("run with an app module that does not load: the factory runs once the claim
   const lines: string[] = [];
   process.stderr.write = ((chunk: string | Uint8Array) => (lines.push(String(chunk)), true)) as typeof process.stderr.write;
   try {
-    const args = ["run", "--dir", join(dir, "run-nope"), "--app", join(dir, "nope.mjs")];
+    const args = ["run", "--dir", join(dir, "run-nope"), "--epoch", "1", "--app", join(dir, "nope.mjs")];
     assert.equal(await main(args), 1);
     assert.equal(await main(args), 1, "not 76: the first open let its claim go");
     assert.ok(lines.some((l) => l.includes('"event":"app failed"') && l.includes("APP_FAILED")), lines.join(""));

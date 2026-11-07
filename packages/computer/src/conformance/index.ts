@@ -13,4 +13,4 @@ export {
 	parseEvents,
 	type StartedFixture,
 } from "./fixture.js";
-export { type Png, readPng } from "./png.js";
+export { MAX_PNG_BYTES, type Png, readPng } from "./png.js";

@@ -10,7 +10,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && npm run build --workspaces --if-present",
+    "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && node scripts/build-workspaces.mjs",
     "test": "node scripts/test-workspaces.mjs",
     "test:changed": "node scripts/test-workspaces.mjs --changed",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p examples/tsconfig.json",

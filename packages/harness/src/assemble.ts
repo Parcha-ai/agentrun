@@ -256,7 +256,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   };
 }
 
-/** What the run's final status carries in `run.json` (the one thing a box place reads): how it ended, the record, the store's hash, and what the host adds (`extra`: the models the live parts chose, so a remote recording's manifest() sees them too). */
+/** What the run's final status carries in the run's record (what a place reads when it has no outcome line): how it ended, the record, the store's hash, and what the host adds (`extra`: the models the live parts chose, so a remote recording's manifest() sees them too). */
 export function finalDetail(result: RunResult, storeSha256: string | undefined, extra: Record<string, unknown> = {}) {
   return { status: result.status, ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}), ...extra };
 }
@@ -281,7 +281,7 @@ export async function appOf(place: RunPlace, host: Host, job: Job, options: RunO
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
       // `report` prepares the outcome (what must be written while the run is open) and may return what announces it: that is called only after the final status and the release succeeded, so a failed finish is never reported as a success.
       const announce = await report({ result, storeSha256 });
-      // A box place has only run.json: the record, the store's hash and, when the demo shapes one, its result (the announcement's `detail`) are in the final status as well.
+      // A place with no outcome line reads only the run's record: the record, the store's hash and, when the demo shapes one, its result (the announcement's `detail`) are in the final status as well.
       const detail = finalDetail(result, storeSha256, { ...extra, ...((announce as { detail?: Record<string, unknown> } | undefined | void)?.detail ?? {}) });
       await finishRun(durable, result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(detail))) : detail) as JsonValue, announce ?? undefined);
       process.exit(0);

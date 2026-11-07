@@ -1,5 +1,5 @@
 // Fakes for the runs app's tests: pi-shaped entries, a fake door (a local HTTP server that answers like a run's
-// `serveRun`: SSE events, status, submit, abort), and runs of a real agent home with run.json, a tiny store and work files.
+// `serveRun`: SSE events, status, submit, abort), and runs of a real agent home with a record in the store, a tiny store and work files.
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -10,6 +10,9 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineDocFamily, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { durableProfileStore, startRun } from "@parcha/pi-durable-agent";
+import { writeDoor, writeRecord } from "./fake-run.mjs";
+
+export { writeDoor, writeRecord };
 
 const cost = (total) => ({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total } });
 export const user = (id, text) => ({ id, conversationId: 1, kind: "pi.user", model: [{ role: "user", content: text, timestamp: id }] });
@@ -91,23 +94,13 @@ export async function fakeDoor({ snapshot = [], batches = [], gapMs = 20, hold =
 
 /**
  * Start run `id` of the agent home (`startRun`: the runs index, the run directory, its store and work/), then write its
- * run.json, optionally a tiny store of `entries` in place of pi's, files under work/, and web.json/live.json.
+ * record in its store, optionally a tiny store of `entries` in place of pi's, files under work/, and web.json/live.json.
+ * A `running` run with a `door` has it in web.json, served by this process, as start-run.mjs records a live run's door;
+ * a `running` run with none is one whose process went.
  */
 export async function makeRun(home, id, { status = "done", door, entries, files = {}, meta, live, generation = 1, updatedAt = new Date().toISOString(), wakeAt = null } = {}) {
   const { dir } = await startRun(home, { runId: id, host: "test", ...(meta?.createdAt ? { now: Date.parse(meta.createdAt) } : {}) });
   const now = new Date().toISOString();
-  const record = {
-    run: id,
-    status,
-    generation,
-    sealedSeq: status === "running" ? null : 1,
-    wakeAt,
-    holder: status === "running" ? { driver: "local", host: "box", bootId: null, pid: process.pid, since: now, ...(door ? { serve: door } : {}) } : null,
-    heartbeatAt: status === "running" ? now : null,
-    updatedAt,
-    detail: null,
-  };
-  writeFileSync(join(dir, "run.json"), JSON.stringify(record));
   if (entries) {
     rmSync(join(dir, "store"), { recursive: true });
     mkdirSync(join(dir, "store"));
@@ -117,23 +110,18 @@ export async function makeRun(home, id, { status = "done", door, entries, files 
     for (const entry of entries) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
     db.close();
   }
+  writeRecord(dir, { run: id, status, generation, wakeAt, updatedAt, holder: status === "running" ? { driver: "local", host: "box", bootId: null, pid: process.pid, since: now } : null });
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, "work", path)), { recursive: true });
     writeFileSync(join(dir, "work", path), content);
   }
   if (meta) writeFileSync(join(dir, "web.json"), JSON.stringify(meta));
+  if (status === "running" && door) writeDoor(dir, door, process.pid, generation);
   if (live) {
     writeFileSync(join(dir, "live.json"), JSON.stringify({ liveViewUrl: live, sessionId: "s1", updatedAt: now }));
     chmodSync(join(dir, "live.json"), 0o600);
   }
   return dir;
-}
-
-/** Refresh a running run's heartbeat, as the instance does every few seconds. */
-export function beat(dir) {
-  const path = join(dir, "run.json");
-  const record = JSON.parse(readFileSync(path, "utf8"));
-  writeFileSync(path, JSON.stringify({ ...record, heartbeatAt: new Date().toISOString() }));
 }
 
 export const link = (target, path) => symlinkSync(target, path);
