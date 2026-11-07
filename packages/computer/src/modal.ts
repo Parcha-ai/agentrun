@@ -149,6 +149,16 @@ const WORKDIR = /^\/[A-Za-z0-9._/-]*$/;
 const USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
 const USER_FORM = "a uid or uid:gid in numbers, such as 1000:1000; a name is refused, since the image may not have it";
+/** A user that is root: uid 0, however written, or the name, with or without a group. */
+const ROOT_USER = /^(?:0+|root)(?::|$)/;
+const isRootUser = (value: unknown) => typeof value === "string" && ROOT_USER.test(value);
+/**
+ * Why a Modal computer never runs as root. Init leaves root no capability, yet uid 0 still owns /, /opt and
+ * /opt/agentrun, so it can rename a program of its own over the daemon; no file mode stops the owner of every directory
+ * above it. Every connection is Modal's exec of that path, outside the daemon, with Modal's own root capabilities.
+ */
+const ROOT =
+	"a Modal computer does not run as root: each connection is Modal's exec of the daemon's stdio bridge, which runs /opt/agentrun/computerd outside the daemon with Modal's own root capabilities, and a root computer user, though init leaves it no capability, owns /, /opt and /opt/agentrun, so it could replace what that exec runs; ask for another uid, such as 1000:1000";
 const TARGET = /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$/;
 /** Modal's own default request (guide/sandbox-resources, "Pay for what you use"): a spec's sizes are limits, as in Docker. */
 const CPU_REQUEST = 0.125;
@@ -511,7 +521,7 @@ export class ModalProvider implements ComputerProvider {
 		}
 		const given = user === undefined ? "1000:1000" : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
-		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
+		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; ${ROOT}`);
 		if (given.endsWith(":0")) throw new Error(`the provider's user ${user} is in root's group (gid 0); a computer is in group 0 only when its spec asks`);
 		const merged = { ...DEFAULT_TIMEOUTS, ...timeouts };
 		for (const [key, value] of Object.entries(merged)) {
@@ -547,7 +557,8 @@ export class ModalProvider implements ComputerProvider {
 			daemon: "pid1",
 			groups: ["exec", "files", "processes"],
 			maxLifetimeMs: this.#maxLifetimeMs,
-			user: ["root", "uid"],
+			// Never root: see ROOT.
+			user: ["uid"],
 			release: ["delete"],
 		};
 	}
@@ -585,7 +596,8 @@ export class ModalProvider implements ComputerProvider {
 		if (workdir !== undefined && !(typeof workdir === "string" && WORKDIR.test(workdir))) {
 			refuse("workdir", "workdir must be an absolute path of letters, digits and . _ - / only: it becomes the image's WORKDIR");
 		}
-		if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
+		if (isRootUser(user)) refuse("user", ROOT);
+		else if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (field === "gpu") refuse(field, "this provider makes VM computers, and Modal offers GPUs on the gVisor runtime only");
@@ -807,6 +819,8 @@ export class ModalProvider implements ComputerProvider {
 		if (problem) return fail("invalid", problem);
 		const found = await this.#own(ref);
 		if (!found.ok) return found;
+		const root = rootRecorded(found.value.tags, ref.name);
+		if (root) return root;
 		const opened = await this.#open(found.value.sandbox, ref.name);
 		if (!opened.ok) return opened;
 		const drift = helloDrift(opened.value.hello, this.#expected());
@@ -916,6 +930,8 @@ export class ModalProvider implements ComputerProvider {
 			const { image, network, cpus, memoryMb, workdir, user } = recorded;
 			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user } as ComputerSpec);
 			found.push(...refusals.map(({ field, message }) => `${field}: ${message}, as recorded at create`));
+			// No exec in a computer whose user is root: the bridge would run what that user could have replaced.
+			if (isRootUser(user)) return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
 		const inside = await this.#inside(sandbox, name, signal);
 		if (!inside.ok) return inside;
@@ -1000,6 +1016,8 @@ export class ModalProvider implements ComputerProvider {
 		if (policy !== undefined && policy !== recorded) return fail("refused", `${FIXED}: ${ref.name} was created with network ${recorded}, not ${policy}`);
 		let read: NetworkPolicy = recorded;
 		if (recorded === "none") {
+			const root = rootRecorded(found.value.tags, ref.name);
+			if (root) return root;
 			const inside = await this.#inside(found.value.sandbox, ref.name, signal);
 			if (!inside.ok) return inside;
 			const { reached } = inside.value.probe;
@@ -1037,6 +1055,13 @@ export class ModalProvider implements ComputerProvider {
 		if (finished.ok) return ok(undefined);
 		return fail(finished.error.code, `release delete of ${ref.name} is not done: ${finished.error.message}`);
 	}
+}
+
+/** A refusal for a computer whose spec tag records a root user, before any exec in it (see ROOT); else undefined. */
+function rootRecorded(tags: Record<string, string>, name: string): Result<never> | undefined {
+	const recorded = recordedOf(tags);
+	if (typeof recorded === "string" || !isRootUser(recorded.user)) return undefined;
+	return fail("refused", `the computer ${name} was made with user ${recorded.user}, so this provider runs nothing in it: ${ROOT}`);
 }
 
 /** Why ref is not a Modal computer's ref, or undefined. */

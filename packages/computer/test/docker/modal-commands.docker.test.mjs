@@ -160,6 +160,43 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			});
 		}
 
+		// Why the provider refuses root (ModalProvider.check, ROOT): Modal's exec of the bridge runs /opt/agentrun/computerd
+		// outside the daemon, with Modal's own root capabilities. After the upload that path is root's, 0755, in a root
+		// 0755 directory under a root / and /opt: a computer user that is not root writes none of them. Root with no
+		// capability still owns every one, so it renames another program over the path, and the next exec runs that one
+		// with the container's capabilities.
+		it(`${image}: after the upload, uid 1000 cannot write the daemon or any directory above it; uid 0 with no capability can, and the next exec of the bridge runs what it put there`, async () => {
+			const as = async (user) => {
+				const { name } = sandbox(image, { user });
+				upload(name);
+				return { name, client: await connected(name) };
+			};
+			const run = async (client, script) => {
+				const ran = await client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 10_000 });
+				assert.equal(ran.ok, true, JSON.stringify(ran));
+				return { out: Buffer.from(ran.value.stdout, "base64").toString(), code: ran.value.exitCode };
+			};
+			const owners = "stat -c '%n %u:%g %a' / /opt /opt/agentrun /opt/agentrun/computerd";
+			const replace = "printf '#!/bin/sh\\ngrep CapEff /proc/self/status\\n' > /opt/agentrun/x && chmod 0755 /opt/agentrun/x && mv -f /opt/agentrun/x /opt/agentrun/computerd";
+
+			const user = await as("1000:1000");
+			assert.equal((await run(user.client, owners)).out, "/ 0:0 755\n/opt 0:0 755\n/opt/agentrun 0:0 755\n/opt/agentrun/computerd 0:0 755\n");
+			for (const script of [replace, ": > /opt/agentrun/computerd", "mv /opt/agentrun /tmp/agentrun", "mkdir /opt/other", "chmod 0777 /opt/agentrun"]) {
+				assert.notEqual((await run(user.client, script)).code, 0, `uid 1000: ${script}`);
+			}
+			user.client.close();
+			assert.equal(docker("exec", user.name, "stat", "-c", "%u:%g %a %s", "/opt/agentrun/computerd").trim(), `0:0 755 ${daemon().bytes.length}`, "the daemon is as uploaded");
+
+			const root = await as("0:0");
+			const ran = await run(root.client, `grep CapEff /proc/self/status && ${replace}`);
+			root.client.close();
+			assert.equal(ran.code, 0, "root with no capability replaced the daemon: it owns /opt/agentrun");
+			assert.match(ran.out, new RegExp(`^CapEff:\\s+${ZERO}\\n$`), "and had no capability to do it with");
+			const bridged = spawnSync("docker", ["exec", root.name, ...modalCommands().stdio], { encoding: "utf8" });
+			assert.match(bridged.stdout, /^CapEff:\s+[0-9a-f]{16}\n$/);
+			assert.notEqual(bridged.stdout.trim().split(/\s+/)[1], ZERO, "the bridge's exec ran the replacement with the container's capabilities");
+		});
+
 		it(`${image}: init that cannot empty its bounding set (root without CAP_SETPCAP) refuses to start, in words, and the container ends`, () => {
 			const { name } = sandbox(image, { user: "0:0", caps: ["--cap-drop", "SETPCAP"] });
 			upload(name);

@@ -251,7 +251,7 @@ test("create refuses a root user before any SDK call", async () => {
 	}
 });
 
-test("connect and attach refuse a computer recorded with a root user, before any exec in it", async () => {
+test("connect, attach and network refuse a computer recorded with a root user, before any exec in it", async () => {
 	const { provider, fake } = setup({}, { sandboxes: [seeded({ user: "0:0" })] });
 	const ref = refOf(fake);
 	const connected = await provider.connect(ref);
@@ -262,6 +262,10 @@ test("connect and attach refuse a computer recorded with a root user, before any
 	assert.equal(attached.ok, false);
 	assert.equal(attached.error.code, "refused");
 	assert.match(attached.error.message, /root/);
+	const network = await provider.network(ref);
+	assert.equal(network.ok, false);
+	assert.equal(network.error.code, "refused");
+	assert.match(network.error.message, /root.*outside the daemon/);
 	assert.equal(fake.names().includes("sandbox.exec"), false, "no exec in a computer whose user is root");
 });
 
