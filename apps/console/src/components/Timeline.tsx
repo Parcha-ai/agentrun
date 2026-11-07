@@ -43,17 +43,18 @@ const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)
  *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
 const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 const toolName = (tool: string | null | undefined) => (tool && BROWSER.has(tool) ? nameOf(tool) : tool);
-const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : rowPaused(row) ? "Paused at its spend cap" :
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval" })[row.kind] ?? row.kind;
 
-/** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
- *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
  *  of its own), as the run header's status chip says it. Only a wait whose row is a `waiting` one: a cap pause's. An
  *  approval waits on its own tool_approval_requested row, which carries "Approval required"; the newest waiting row
  *  then is an earlier question, answered. */
 const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap" };
 
+/** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
+ *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. A
+ *  server row marked `paused` (the run paused at its cap) shows a pause icon, muted like any server row. */
 function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingChip?: string }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
@@ -61,15 +62,14 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
   const running = row.kind === "tool_use" && row.tool_status === "running";
   const paused = rowPaused(row);
   const Icon = running ? LoaderCircle : paused ? CirclePause : ICON[row.kind] ?? Flag;
-  // A cap pause's row is a quiet marker: the banner says the server's sentence, so the row keeps it for its expand.
-  const detail = step.above ? null : step.detail ?? (rowPaused(row) ? (row.text ?? row.summary) : rowDetail(row));
+  const detail = step.above ? null : step.detail ?? rowDetail(row);
   const interrupted = row.tool_status === "interrupted";
   const failed = rowFailed(row) || interrupted;
   const missing = row.tool_status === "missing";
   return (
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
-        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row) || paused) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
+        <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row)) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text", missing && "text-muted-foreground")}>
           <Icon className={cn("size-3.5", running && "animate-spin text-run-active")} aria-hidden />
         </span>
         {!last && <span className="w-px flex-1 bg-border" aria-hidden />}
@@ -86,7 +86,7 @@ function Row({ step, last, waitingChip }: { step: Step; last: boolean; waitingCh
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            {!rowPaused(row) && <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>}
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
             {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>

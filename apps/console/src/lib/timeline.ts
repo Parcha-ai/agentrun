@@ -15,9 +15,10 @@ export function applyPage(held: TimelineRow[], page: TimelinePage): TimelineRow[
 export const rowDetail = (row: TimelineRow): string | null =>
   (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text) ?? null;
 /** A row that failed: a call its result says did not do its work, or an error. */
-export const rowFailed = (row: TimelineRow) => row.tool_status === "failed" || (row.kind === "error" && row.paused !== true);
-/** A request the run's spend cap held back (an `error` row the server marks `paused`): the run paused, nothing failed. */
-export const rowPaused = (row: TimelineRow) => row.kind === "error" && row.paused === true;
+export const rowFailed = (row: TimelineRow) => row.tool_status === "failed" || row.kind === "error";
+/** The server's mark of a run paused at its spend cap (a `phase` row it writes with `paused: true`): the run paused,
+ *  nothing failed. A request that failed at the cap is an `error` row with no `paused`. */
+export const rowPaused = (row: TimelineRow) => row.paused === true;
 
 /** One step of a run as a person reads it: a row, and what folds into it. `ms`: how long a tool took (its call to its
  *  result, or to its row's `ended_at`); `saved`: the file it saved; `times` and `until`: a failure repeated in a row,
