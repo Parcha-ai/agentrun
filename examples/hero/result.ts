@@ -30,8 +30,8 @@ export function deliverSnapshot(root: string, record: Record_): void {
     const receipt = JSON.parse(readFileSync(join(root, path), 'utf8')) as { body: string; ext?: string };
     const name = `screenshots/${String(row.id)}.${receipt.ext ?? 'jpg'}`;
     writeFileSync(join(out, name), Buffer.from(receipt.body, 'base64'));
+    // The record is the run's outcome as pi 1.5 hands it back, frozen: nothing here writes to it.
     html = html.split(path).join(name);
-    row.screenshotFile = name;
   }
   writeFileSync(join(out, 'snapshot.html'), html);
 }
