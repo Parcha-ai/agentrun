@@ -28,6 +28,8 @@ const NO_SERVICE_MS = 2_000;
 const SERVICE_GONE_MS = 10_000;
 /** How long one question about the network service may go unanswered: a timeout is no answer, never a restart. */
 const ASK_MS = 1_000;
+/** Unanswered questions in a row after which the watch waits for a new held request before it asks again. */
+const UNANSWERED_STALL = 3;
 /** `frameId`: a Document request's frame, so a form lost by its intent and by its request is told once. */
 type Announced = { sessionId: string; seq: number; method: string; url: string; frameId?: string };
 
@@ -93,6 +95,9 @@ export class EffectObserver {
   /** How far `announceSeq` had got when the service was last asked, whatever it answered. */
   private askedSeq = 0;
   private watching = false;
+  /** Questions in a row left unanswered; `UNANSWERED_STALL` of them stall the watch until a new held request. */
+  private unanswered = 0;
+  private stalled = false;
   /** The browser refused `SystemInfo.getProcessInfo` (a provider's endpoint may), or kept answering without a network
    *  service of its own (one in-process) for `NO_SERVICE_MS`: it is not asked again. */
   private noService = false;
@@ -181,6 +186,16 @@ export class EffectObserver {
 
   private arm(): void { this.isCut = false; this.cutoff = new Promise((resolve) => { this.cut = () => resolve(REFUSED); }); }
 
+  /** `send`, whose question is forgotten when it goes unanswered for `ms`: "late", and nothing kept pending for it. */
+  private sendWithin(method: string, ms: number): Promise<any> {
+    const id = this.next++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.pending.delete(id); resolve("late"); }, ms);
+      this.pending.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+      try { this.ws.send(JSON.stringify({ id, method, params: {} })); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error as Error); }
+    });
+  }
+
   private send(method: string, params: object = {}, sessionId?: string): Promise<any> {
     const id = this.next++;
     return new Promise((resolve, reject) => {
@@ -217,8 +232,9 @@ export class EffectObserver {
     else if (m.method === "Network.loadingFinished") this.unannounce(m.params.requestId);
     else if (m.method === "Network.webSocketCreated") this.track(this.socket(m.sessionId!, m.params));
     else if (m.method === "Page.frameRequestedNavigation" && m.params.reason === "formSubmissionPost" && this.sessions.get(m.sessionId!)?.holds) {
-      // A new intent in the frame is a new form: an earlier one told lost no longer refuses it.
+      // A new intent in the frame is a new form: an earlier one told lost no longer refuses it, and it is asked about.
       this.lost.delete(`navigation:${m.params.frameId}`);
+      this.stalled = false;
       this.announced.set(`navigation:${m.params.frameId}`, { sessionId: m.sessionId!, seq: (this.announceSeq += 1), method: "POST", url: m.params.url });
       this.watch();
     }
@@ -226,6 +242,8 @@ export class EffectObserver {
 
   private announce(sessionId: string, p: { requestId: string; type?: string; frameId?: string; request: { method: string; url: string } }): void {
     if (!this.sessions.get(sessionId)?.holds || SAFE.has(p.request.method) || this.pausedIds.has(p.requestId)) return;
+    // A new held request is asked about even after a browser left questions unanswered.
+    this.stalled = false;
     this.announced.set(p.requestId, { sessionId, seq: (this.announceSeq += 1), method: p.request.method, url: p.request.url, ...(p.type === "Document" && p.frameId ? { frameId: p.frameId } : {}) });
     this.watch();
   }
@@ -234,11 +252,11 @@ export class EffectObserver {
    *  at once for a request just announced, then every `SERVICE_POLL_MS` while it waits. */
   private watch(): void {
     if (this.watching) { this.nudge?.(); return; }
-    if (this.closed || !this.decide || this.noService) return;
+    if (this.closed || !this.decide || this.noService || this.stalled) return;
     this.watching = true;
     void (async () => {
       try {
-        while (!this.closed && !this.noService && (this.announced.size || this.endedUnpaused.size)) {
+        while (!this.closed && !this.noService && !this.stalled && (this.announced.size || this.endedUnpaused.size)) {
           await this.checkService();
           if (this.announceSeq > this.askedSeq) continue;
           await new Promise<void>((resolve) => {
@@ -264,7 +282,7 @@ export class EffectObserver {
     if (this.noService || !this.decide) return;
     const end = Date.now() + ms;
     for (;;) {
-      if ((await this.checkService()) !== "unknown" || this.servicePid === null || this.noService || this.closed || signal?.aborted) return;
+      if ((await this.checkService()) !== "unknown" || this.servicePid === null || this.noService || this.stalled || this.closed || signal?.aborted) return;
       const until = this.seenService && this.missingSince !== null ? Math.max(end, this.missingSince + SERVICE_GONE_MS + SERVICE_POLL_MS) : end;
       if (Date.now() >= until) return;
       await new Promise<void>((resolve) => {
@@ -279,10 +297,15 @@ export class EffectObserver {
     const covered = this.announceSeq;
     let pid: number | null = null;
     try {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), ASK_MS); });
-      const answer = await Promise.race([this.send("SystemInfo.getProcessInfo") as Promise<{ processInfo?: Array<{ type?: unknown; id?: unknown }> }>, late]).finally(() => clearTimeout(timer));
-      if (answer === "late") return "unknown";
+      const answer = await this.sendWithin("SystemInfo.getProcessInfo", ASK_MS) as { processInfo?: Array<{ type?: unknown; id?: unknown }> } | "late";
+      if (answer === "late") {
+        // An unanswered question is no answer. A browser that keeps leaving them unanswered is not asked again until a
+        // new held request is announced: what waits now is left to the flush's own bound, never called lost.
+        this.unanswered += 1;
+        if (this.unanswered >= UNANSWERED_STALL) { this.stalled = true; this.endedUnpaused.clear(); }
+        return "unknown";
+      }
+      this.unanswered = 0;
       const { processInfo } = answer;
       const service = processInfo?.find((p) => typeof p.type === "string" && p.type.includes("NetworkService"));
       pid = typeof service?.id === "number" ? service.id : null;

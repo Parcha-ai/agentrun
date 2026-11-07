@@ -328,6 +328,30 @@ test("a browser that never answers the question does not hold a flush past its b
   assert.ok(Date.now() - start < 5_000, `the flush returned (${Date.now() - start} ms)`);
 });
 
+test("a browser that keeps its socket open and never answers leaves no question pending once it times out, and the asking stops instead of piling up", async (t) => {
+  const { browser, observer, lost } = await rig(t);
+  // A known service first, then the browser stops answering while one request waits and another ended unpaused.
+  browser.announce("R0");
+  browser.pause("F0", "R0");
+  await observer.flush(undefined, 500);
+  browser.hangService();
+  browser.announce("R1");
+  browser.announce("R2");
+  await sleep(50);
+  browser.failed("R2");
+  await observer.flush(undefined, 500);
+  await sleep(4_000);
+  const asked = browser.asked();
+  await sleep(2_500);
+  assert.equal(browser.asked(), asked, `the questions stopped (${asked} sent)`);
+  assert.equal(observer.pending.size, 0, "no unanswered question is kept");
+  assert.deepEqual(lost, [], "timeouts alone never make a request lost");
+  // A new held request starts the watch again.
+  browser.announce("R3");
+  await sleep(300);
+  assert.ok(browser.asked() > asked, "a new held request is asked about");
+});
+
 test("a journaling observer, which holds nothing, never asks for the network service", async (t) => {
   const { browser, observer } = await rig(t, null);
   browser.announce("R1");
