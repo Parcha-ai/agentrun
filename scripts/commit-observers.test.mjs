@@ -16,7 +16,7 @@ export const ACCEPTED = [
   { at: "packages/pi-durable-disk/src/park.ts:209", keeps: "resolves", why: "parking's recheck: queues a check, never throws" },
   { at: "packages/pi-durable-disk/src/park.ts:242", keeps: "resolves", why: "drain's wake: resolves the promise its loop waits on" },
   { at: "packages/pi/src/durable/recording.ts:275", keeps: "catches", why: "the recording maps and queues; a failure is the stop's to report" },
-  { at: "packages/serve/src/browser-cost.ts:166", keeps: "catches", why: "a charge it fails to count, or an early end, makes the run's spend unknown (spent null)" },
+  { at: "packages/serve/src/browser-cost.ts:175", keeps: "catches", why: "a charge it fails to count, or an end before the run's close, makes the run's spend unknown (spent null)" },
 ];
 
 /** Every source file under each package's src/ (no dist/, vendor/ or declaration file). */
