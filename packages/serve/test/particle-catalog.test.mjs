@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { capModels } from "../dist/cap.js";
-import { PARTICLE_1_PRICE, PRICE_OVERRIDES } from "../dist/local-models.js";
+import { PARTICLE_1_PRICE, PRICE_OVERRIDES, withLocalModels } from "../dist/local-models.js";
 import { catalogPrice, catalogPrices, providerModels, runModels, unpricedModels } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
@@ -21,6 +21,16 @@ test("pi-ai 1.5.0's own catalog lists particle-ai/particle-1 at OpenRouter's pro
   assert.ok(catalog, "pi-ai lists it");
   assert.deepEqual(catalog.cost, { input: 0.05, output: 0.5, cacheRead: 0.003, cacheWrite: 0 }, "the catalog's promotional price");
   assert.deepEqual(PRICE_OVERRIDES.map(({ provider, id }) => `${provider}/${id}`), [`openrouter/${ID}`]);
+});
+
+test("a later catalog whose entry carries promotional price tiers still holds at the list price: the override replaces the whole cost, its tiers too", () => {
+  // pi-ai prices a request at the highest tier its input passes (calculateCost), so a promotional tier left in place
+  // would price every hold below the list price.
+  const promo = { input: 0.05, output: 0.5, cacheRead: 0.003, cacheWrite: 0, tiers: [{ inputTokensAbove: 0, input: 0.01, output: 0.1, cacheRead: 0.001, cacheWrite: 0 }] };
+  const own = { id: "openrouter", getModels: () => [{ id: ID, cost: promo }] };
+  let listed;
+  withLocalModels({ getProvider: () => own, setProvider: (provider) => void (listed = provider) });
+  assert.deepEqual(listed.getModels()[0].cost, { ...PARTICLE_1_PRICE }, "the list price, whole: no promotional tier left");
 });
 
 test("the cap's hold for a particle-1 request is its worst case at the list price, never the catalog's promotional one", async () => {

@@ -406,6 +406,41 @@ test("a real Harness: a charge booked, the run's close begun, the Harness closed
   assert.deepEqual(lines, [], "no line");
 });
 
+/** A real Harness over memory with one browser charge booked and counted: `storage` to fail it with. */
+async function chargedHarness(t, lines) {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.after(() => useSpend(undefined));
+  const counted = countingSpend(t, 5);
+  const storage = new durable.MemoryStorage();
+  const harness = await durable.Harness.open(storage, { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, (line) => lines.push(line));
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  return { ctx, durable, counted, storage, harness, root };
+}
+
+test("a real Harness closed by a path that never says the run's close began (a drain without resume, a fence, pi closing it): its normal close keeps the count, with no line", async (t) => {
+  const lines = [];
+  const { ctx, counted, harness } = await chargedHarness(t, lines);
+  await harness.close(ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, 0.0001, "the count stands after a normal close");
+  assert.deepEqual(lines, [], "no line: nothing went uncounted");
+});
+
+test("a real Harness whose store fails: the Session's failed end leaves the run's spend unknown, with one line", async (t) => {
+  const lines = [];
+  const { ctx, durable, counted, storage, harness, root } = await chargedHarness(t, lines);
+  storage.commit = async () => { throw new Error("the disk is gone"); };
+  await harness.commit(async (tx) => { (await tx.doc(durable.AgentDoc, root.id)).thinkingLevel = "high"; }, ctx).catch(() => undefined);
+  assert.equal((await harness.closed).kind, "failed", "the Session failed");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(counted.spent, null, "the run's spend is unknown");
+  assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
+});
+
 // Last of this process's runs: its first process's reserve stays in this process's holds (a real one would be gone).
 /** A run whose first process opened one browser session and ended without letting the run go (the session still live at
  *  the provider, as after a crash): `open()` starts its next process on the same store. */

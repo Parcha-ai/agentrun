@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { AgentDoc, createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { AgentDoc, createRegistry, Harness, LiveDoc, MemoryStorage } from "@earendil-works/pi-durable";
 import { watchEvents } from "../src/live-events.ts";
 
 async function opened() {
@@ -84,4 +84,30 @@ test("a document changed while the snapshot is acquired reaches the stream: the 
   const last = seen.filter((event) => event.type === "snapshot" || event.type === "agent_changed").at(-1);
   assert.equal(last?.agent?.thinkingLevel, "high", `the stream ends on the newer agent: ${JSON.stringify(seen.map((event) => event.type))}`);
   await stream.stop();
+});
+
+test("a document change the stream cannot follow ends it failed, never stale: pi 1.5 detaches a document observer whose advance throws", async (t) => {
+  const { harness, root } = await opened();
+  t.after(() => harness.close(ctx));
+  // pi's observeDoc as the Session runs it: a later change whose advance throws is reported, the observer detached and
+  // ended `listener_error` (guardObserver), and it hears no later change. The change here carries an op whose path is
+  // no list, which the stream cannot follow.
+  const seamed = new Proxy(harness, {
+    get: (target, key) => key !== "observeDoc" ? Reflect.get(target, key, target)?.bind?.(target) ?? Reflect.get(target, key, target) : async (token: unknown, id: never, observer: { advance(call: unknown): void; end(end: unknown): void }, context: never) => {
+      const attached = await target.observeDoc(token as never, id, observer as never, context);
+      if (token === LiveDoc && attached) setTimeout(() => {
+        try {
+          observer.advance({ kind: "value", value: {}, ops: [["set", 5]] });
+        } catch (error) {
+          attached.detach();
+          observer.end({ kind: "listener_error", error });
+        }
+      }, 20);
+      return attached;
+    },
+  }) as unknown as Harness;
+  const stream = await watchEvents(seamed, root.id, ctx);
+  stream.start(async () => {});
+  const end = await Promise.race([stream.closed, new Promise((resolve) => setTimeout(() => resolve("still open"), 500))]);
+  assert.deepEqual(end, { reason: "failed" }, "the stream ends failed once it cannot follow a document");
 });
