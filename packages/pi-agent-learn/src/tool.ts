@@ -21,12 +21,8 @@ export async function collectCandidates(target: Pick<Session, "snapshot">, conte
 type ToolContent = { type: "text"; text: string }[];
 type ToolParameters = Parameters<typeof defineTool>[0]["parameters"];
 
-/** pi-durable 1.1 reads a tool result's `content`; 1.2 and later read `output` and show a result without it as empty.
- *  The model's text goes under both keys. */
-const forModel = (text: string): { content: ToolContent; output: ToolContent } => {
-  const content: ToolContent = [{ type: "text", text }];
-  return { content, output: content };
-};
+/** A tool result's text as pi-durable reads it: its `output`. */
+const forModel = (text: string): { output: ToolContent } => ({ output: [{ type: "text", text }] });
 
 const refused = (text: string) => ({ ...forModel(text), isError: true }) as ToolExecutionResult;
 

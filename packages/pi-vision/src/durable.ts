@@ -49,18 +49,12 @@ export type VisionHandle = {
   transcribe(env: VisionEnv | undefined, call: CallContext): TranscribeGlobal;
 };
 
-/** The names pi-durable gives a result's blocks: `output` from 1.2, `content` in 1.0 and 1.1. Each release reads its own
- *  and ignores the other, and 1.2 reads a result without `output` as empty, so a result is written under both and read
- *  from `output`, else `content`. These names, read and written only by the two functions below, are the one place
- *  that knows. */
-const BLOCKS = ["output", "content"] as const;
-
-/** pi's tool result for the core's: the blocks, the error flag, the details and the usage pi folds into the
- *  conversation's spend under the tool's name. */
+/** pi's tool result for the core's: the blocks (pi-durable reads a result's `output`), the error flag, the details and
+ *  the usage pi folds into the conversation's spend under the tool's name. */
 export function piResult(result: ToolResult): ToolExecutionResult {
   const blocks = [...result.content];
   return {
-    ...Object.fromEntries(BLOCKS.map((name) => [name, blocks])),
+    output: blocks,
     ...(result.isError ? { isError: true } : {}),
     ...(result.details ? { details: result.details as JsonValue } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
@@ -68,7 +62,8 @@ export function piResult(result: ToolResult): ToolExecutionResult {
 }
 
 function coreResult(result: ToolExecutionResult): ToolResult {
-  const blocks = BLOCKS.map((name) => (result as Record<string, unknown>)[name]).find(Array.isArray);
+  const output = (result as Record<string, unknown>).output;
+  const blocks = Array.isArray(output) ? output : undefined;
   return {
     content: blocks ? blocks.filter((b): b is ToolResult["content"][number] => b?.type === "text" || b?.type === "image") : [],
     ...(result.isError ? { isError: true } : {}),

@@ -25,9 +25,7 @@ import { forModelBlocks } from "./result.js";
 import { asGivenRefusals, refuseOutsideWorkspace } from "./workspace-paths.js";
 import { writesHeld } from "./workspace.js";
 
-// pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
-// hold apart from this package's own: the extension crosses that boundary as a value, typed on this side.
-const pis = ArchilCodingTools as unknown as Extension;
+const pis: Extension = ArchilCodingTools;
 
 /** pi's coding tools on the runner, without bash, each refusal of a path outside the workspace named by the path the
  *  call gave (`asGivenRefusals`): the model reads that refusal, and the run's timeline shows it. */

@@ -153,16 +153,15 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
         // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
         // monid's answer a failure as an error result, which is kept as it is.
         const result = await tool.execute(args as never, api as never, withAbortSignal(signal, context)).catch((error: Error) => ({ failed: error.message, isError: true }));
-        // pi 1.1 names the result's blocks `content`, pi 1.2 and later `output`; pi 1.2's bash answers its exit as a
-        // result's diagnostic, where 1.1 threw it.
-        const given = result as unknown as { content?: unknown; output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
-        const said = [textOf(given.content ?? given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
+        // pi names a result's blocks `output`; its bash answers its exit as a result's diagnostic.
+        const given = result as unknown as { output?: unknown; isError?: boolean; failed?: string; diagnostics?: readonly { message: string }[] };
+        const said = [textOf(given.output) || out.text(), given.failed, ...notes, ...(given.diagnostics ?? []).map((note) => note.message)].filter((part) => part).join("\n\n");
         const isError = given.isError === true;
         const work = (env as { cwd?: unknown }).cwd;
         const works = typeof work === "string" ? [work, realOf(work)] : [];
         const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
         results.set(callId, answer);
-        const images = imagesOf(given.content ?? given.output);
+        const images = imagesOf(given.output);
         return images.length ? { ...answer, images } : answer;
       },
     };
