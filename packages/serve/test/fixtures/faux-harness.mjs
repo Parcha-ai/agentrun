@@ -97,6 +97,29 @@ export function script(spec) {
   if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
   // The wrap-up due only after a turn's one request ($0.40): the next turn's first request is the first that can take it.
   if (/Wrap up in the next turn\./.test(text)) return [{ end: true, usd: 0.4 }, { say: "Second.", usd: 0.01 }];
+  // One call that ends before its answer is paid, on a store slow to write (the tests' ROOT_WRITE_DELAY_ENV).
+  if (/Write once on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { end: true, usd: 0.002 }];
+  // One answer that writes, calls, writes again and calls again, both calls ending before it is paid (Claude Code's
+  // cost comes in after its response), then the closing answer.
+  if (/Write between two calls\./.test(text)) return [{ calls: [{ say: "First I write a.md.", call: "write", args: { path: "a.md", content: "alpha" } }, { say: "Then b.md.", call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote both.", usd: 0.002 }];
+  // Two requests on a store slow to write (the tests' ROOT_WRITE_DELAY_ENV): the first writes, then calls, and is paid
+  // after its call ends (Claude Code's cost comes in after its response); the second answers.
+  if (/Write on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
+  // The same, but the first request is paid only once <file> exists: after the second has started and answered.
+  const paidLate = /Write on a slow store, paid once (\S+) exists\./.exec(text);
+  if (paidLate) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookWhen: paidLate[1] }, { say: "Wrote it.", usd: 0.002 }];
+  // Text of the session's before any request of this process's own (a resumed turn's, say), a side call the only one
+  // open; then one request that answers. Both are paid only once <file> exists.
+  const sideFirst = /Answer after text with only a side call open, paid once (\S+) exists\./.exec(text);
+  if (sideFirst) return [{ say: "Answered.", usd: 0.002, bookWhen: sideFirst[1], sideFirst: { usd: 0.0005, say: "Before." } }];
+  // The same two requests, the first's cost unknown (its provider gave none).
+  if (/Write unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { say: "Wrote it.", usd: 0.002 }];
+  // The same, the second ending the turn, then a follow-up's request, under a cap.
+  if (/Pay unpriced on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: null, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
+  // Two requests, a side call (a title) admitted and answered while the first still streams: two in flight at once.
+  if (/Write beside a side call on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true, sideDuring: { usd: 0.0005 } }, { say: "Wrote it.", usd: 0.002 }];
+  // The same two requests (the second ends the turn), then a follow-up's request, under a cap.
+  if (/Pay on a slow store\./.test(text)) return [{ calls: [{ say: "Writing a.md.", call: "write", args: { path: "a.md", content: "alpha" } }], usd: 0.001, bookAfter: true }, { end: true, usd: 0.002 }, { say: "And more.", usd: 0.001 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   // Reads a file the run was given (an upload, copied into its inputs/), then says so.
   const upload = /Read the upload (\S+)\./.exec(text)?.[1];
