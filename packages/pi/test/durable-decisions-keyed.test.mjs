@@ -26,7 +26,7 @@ const row = (i, extra = {}) => ({
   usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0, latency_ms: 3, decision_id: `d${i}`, request: { index: 0, count: 1 }, state_sha256: 'f'.repeat(64), run_key: 'run-1', ...extra,
 });
 // The old form, as a store that holds it has it: one session document whose receipts list is rewritten at every commit.
-const OldDoc = defineDoc({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: 'session', initial: () => ({ receipts: [] }) });
+const OldDoc = defineDoc({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: 'session', checkpointWhen: () => false, initial: () => ({ receipts: [] }) });
 const seedOld = (harness, rows) => harness.commit(async (tx) => { const doc = await tx.doc(OldDoc); for (const stored of rows) doc.receipts.push(JSON.parse(JSON.stringify(stored))); }, ctx);
 
 /** The documents of one kind the file holds: [singleton count, family count]. */

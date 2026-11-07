@@ -150,7 +150,7 @@ export async function serveStatic(dir, prefix = "/") {
   return { url: `http://127.0.0.1:${server.address().port}${prefix}`, requests, close: () => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())) };
 }
 
-const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
+const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({}) });
 
 /** A run's store signed in, as the agent app leaves it: each profile (key -> `{ ref, ...fields }`) made, then its
  *  fields (`allowedOrigins`, `startUrl`, `verifiedAt`) committed. `carryBack` then gives them to the home. */

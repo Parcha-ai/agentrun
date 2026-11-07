@@ -55,7 +55,7 @@ function storedFamily(file) {
   } finally { db.close(); }
 }
 // A store written before the keyed family: it holds the single document, so its run keeps that form.
-const OldDoc = defineDoc({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: 'session', initial: () => ({ receipts: [] }) });
+const OldDoc = defineDoc({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: 'session', checkpointWhen: () => false, initial: () => ({ receipts: [] }) });
 const asOldStore = (harness) => harness.commit(async (tx) => { await tx.doc(OldDoc); }, ctx);
 
 // A Session the writer opens, counting how often it was opened and released.

@@ -60,10 +60,10 @@ export const LOCAL_DOWNLOADS = "Your browser is a Chrome on this machine: a file
 
 /** pi-durable-agent's `browser.profiles`, by its kind: the run's copy of the agent's saved sign-ins, which `carryBack`
  *  returns to the home. Only the host writes it, and no tool reads it. */
-const Profiles = defineDocFamily<JsonObject, null>({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
+const Profiles = defineDocFamily<JsonObject, null>({ kind: "browser.profiles", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({}) });
 /** The conversation's label, the reference host's document of the same kind: a viewer heads the run with it. Here the
  *  agent's name. */
-const Label = defineDoc<{ label: string }>({ kind: "reference.label", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ label: "" }) });
+const Label = defineDoc<{ label: string }>({ kind: "reference.label", version: 1, scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false, initial: () => ({ label: "" }) });
 
 /** The definition's instructions; then the run's guide (`savedGuide`: the home's base prompt and the variant the host
  *  chose, as they were when the run started), when it has one; then each skill the definition names

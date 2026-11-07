@@ -14,9 +14,9 @@ const root = mkdtempSync(join(tmpdir(), 'agentrun-decisions-reader-'));
 after(() => rmSync(root, { recursive: true, force: true }));
 const fileOf = () => join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
 const open = async (file) => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
-const Single = defineDoc({ kind: 'agentrun.decisions', version: 1, scope: 'session', initial: () => ({ receipts: [] }) });
-const Keyed = defineDocFamily({ kind: 'agentrun.decisions', version: 1, scope: 'session', family: true, initial: () => ({}) });
-const Count = defineDoc({ kind: 'agentrun.decisions.count', version: 1, scope: 'session', initial: () => ({ count: 0 }) });
+const Single = defineDoc({ kind: 'agentrun.decisions', version: 1, scope: 'session', checkpointWhen: () => false, initial: () => ({ receipts: [] }) });
+const Keyed = defineDocFamily({ kind: 'agentrun.decisions', version: 1, scope: 'session', family: true, checkpointWhen: () => false, initial: () => ({}) });
+const Count = defineDoc({ kind: 'agentrun.decisions.count', version: 1, scope: 'session', checkpointWhen: () => false, initial: () => ({ count: 0 }) });
 const row = (id) => ({ v: 1, node: 'pick', kind: 'judge', decision_id: id, run_key: 'r', rule: { kind: 'judge' }, cost_usd: 0 });
 
 test('the single document: its list, in order', async () => {

@@ -227,7 +227,7 @@ test('live.json shows the live view while the session is open and nothing once i
 
 // ---- the sign-in's site, and the browser's frames ------------------------------------------------------------------
 
-const Profiles = defineDocFamily({ kind: 'browser.profiles', version: 1, scope: 'session', family: true, initial: () => ({}) });
+const Profiles = defineDocFamily({ kind: 'browser.profiles', version: 1, scope: 'session', family: true, checkpointWhen: () => false, initial: () => ({}) });
 const jpeg = (n) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, n, 0xff, 0xd9]);
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 /** A frame line as the recorder hands it over, with its JPEG. */

@@ -690,6 +690,8 @@ describe("what the router leans on in pi", () => {
 			version: 1,
 			scope: "session",
 			initial: () => ({ commits: 0 }),
+			// Required from pi 1.4: ordinary changes stay deltas.
+			checkpointWhen: () => false,
 		});
 		const directory = mkdtempSync(join(RUN_ROOT, "d-"));
 		try {
