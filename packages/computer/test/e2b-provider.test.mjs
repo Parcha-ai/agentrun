@@ -20,6 +20,7 @@ const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const IMAGE_LABEL = "agentrun.computer.image";
 const MAX_LABEL = "agentrun.computer.max-deadline";
+const TIMEOUT_LABEL = "agentrun.computer.timeout-ms";
 const SPEC = { image: "desktop", lifetimeMs: 600_000, network: "none" };
 const HOUR = 3_600_000;
 const BARE = "e2b_bare_key_must_never_be_used";
@@ -50,7 +51,7 @@ function seeded(fake, { name = "computer-0123456789ab", labels = {}, network = "
 	const deadline = new Date(Date.now() + lifetimeMs).toISOString();
 	const sb = fake.add({
 		template,
-		metadata: { ...labels, [COMPUTER]: "1", [NAME]: name, [DEADLINE]: deadline, [IMAGE_LABEL]: template, [MAX_LABEL]: new Date(Date.now() + HOUR).toISOString() },
+		metadata: { ...labels, [COMPUTER]: "1", [NAME]: name, [DEADLINE]: deadline, [IMAGE_LABEL]: template, [MAX_LABEL]: new Date(Date.now() + HOUR).toISOString(), [TIMEOUT_LABEL]: String(lifetimeMs) },
 		timeoutMs: lifetimeMs,
 		allowInternetAccess: network === "open",
 		network: { allowPublicTraffic: false },
@@ -82,18 +83,19 @@ async function withProcessEnv(values, fn) {
 	}
 }
 
-/** Everything written to the console and to stderr and stdout while fn runs, and fn's value. */
+/**
+ * Everything written to the console and to stderr while fn runs, and fn's value. Not stdout: the test runner reports
+ * through it.
+ */
 async function captured(fn) {
 	const lines = [];
-	const saved = { log: console.log, error: console.error, warn: console.warn, info: console.info, debug: console.debug, out: process.stdout.write, err: process.stderr.write };
+	const saved = { log: console.log, error: console.error, warn: console.warn, info: console.info, debug: console.debug, err: process.stderr.write };
 	for (const name of ["log", "error", "warn", "info", "debug"]) console[name] = (...args) => lines.push(args.map(String).join(" "));
-	process.stdout.write = (chunk, ...rest) => (lines.push(String(chunk)), saved.out.call(process.stdout, "", ...rest));
 	process.stderr.write = (chunk, ...rest) => (lines.push(String(chunk)), saved.err.call(process.stderr, "", ...rest));
 	try {
 		return { value: await fn(), text: lines.join("\n") };
 	} finally {
 		Object.assign(console, { log: saved.log, error: saved.error, warn: saved.warn, info: saved.info, debug: saved.debug });
-		process.stdout.write = saved.out;
 		process.stderr.write = saved.err;
 	}
 }
@@ -210,7 +212,7 @@ test("COMPUTER_E2B_DOMAIN names the domain the key goes to; anything but a host 
 	const opts = fake.calls.find(([name]) => name === "Sandbox.list")[1];
 	assert.equal(opts.domain, "e2b.example.com");
 	assert.equal(opts.apiUrl, "https://api.e2b.example.com");
-	for (const domain of ["https://e2b.app", "e2b.app/x", "", "localhost:3000"]) {
+	for (const domain of ["https://e2b.app", "e2b.app/x", "localhost:3000", "E2B.app"]) {
 		await assert.rejects(fromEnv({ [ENV.key]: KEY, [ENV.domain]: domain }, { Sandbox: fake.Sandbox }), /COMPUTER_E2B_DOMAIN/);
 	}
 });
@@ -264,7 +266,7 @@ test("create() makes the sandbox from the template with the labels, the lifetime
 	assert.equal(opts.signal, undefined, "create is raced, never cancelled: a sandbox it makes is known by id");
 	const deadline = Date.parse(opts.metadata[DEADLINE]);
 	assert.ok(deadline >= before + 600_000 && deadline <= Date.now() + 600_000);
-	assert.deepEqual(opts.metadata, { run: "r1", case: "c1", [COMPUTER]: "1", [NAME]: made.value.name, [DEADLINE]: opts.metadata[DEADLINE], [IMAGE_LABEL]: "desktop", [MAX_LABEL]: opts.metadata[MAX_LABEL] });
+	assert.deepEqual(opts.metadata, { run: "r1", case: "c1", [COMPUTER]: "1", [NAME]: made.value.name, [DEADLINE]: opts.metadata[DEADLINE], [IMAGE_LABEL]: "desktop", [MAX_LABEL]: opts.metadata[MAX_LABEL], [TIMEOUT_LABEL]: "600000" });
 	assert.ok(Math.abs(Date.parse(opts.metadata[MAX_LABEL]) - (before + HOUR)) < 5_000, "the most extend may reach: create's time plus the cap");
 });
 
@@ -374,6 +376,18 @@ test("a create E2B refuses makes nothing and kills nothing; one that lands after
 	assert.deepEqual(fake.kills, [only(fake).id]);
 });
 
+test("a create whose answer never comes is swept by its name label: the sandbox it made is killed", async () => {
+	const { provider, fake } = setup({}, { create: "lost" });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "timeout");
+	for (let i = 0; i < 50 && fake.kills.length === 0; i++) await new Promise((done) => setTimeout(done, 10));
+	const sb = only(fake);
+	assert.deepEqual(fake.kills, [sb.id]);
+	const query = fake.calls.find(([name]) => name === "Sandbox.list")[1].query.metadata;
+	assert.deepEqual(query, { [COMPUTER]: "1", [NAME]: sb.metadata[NAME] }, "found by the name create gave it, and nothing else");
+});
+
 test("an abort at each step of create kills the sandbox, and create returns aborted", async () => {
 	const steps = ["Sandbox.getInfo", "files.write", "commands.run install", "commands.run init", "hello", "process.start", "files.read", "exec.run", "Sandbox.list"];
 	for (const at of steps) {
@@ -408,6 +422,8 @@ test("drift at create is refused and the sandbox killed: hello, the daemon's cre
 		[{ info: { network: { allowPublicTraffic: true } } }, /public traffic/],
 		[{ info: { lifecycle: { onTimeout: "pause" } } }, /onTimeout/],
 		[{ box: { reached: ["1.1.1.1:443"] } }, /reached 1\.1\.1\.1:443/],
+		[{ info: { templateId: "tpl-other", name: "other-desktop" } }, /template: declared "desktop", read back "tpl-other" \(other-desktop\)/],
+		[{ info: { metadata: { [COMPUTER]: "1" } } }, /label agentrun\.computer\.name/],
 	]) {
 		const { provider, fake } = setup({}, fakeOptions);
 		const made = await provider.create(SPEC);
@@ -477,7 +493,7 @@ test("attach() by id or by labels reads the spec back and checks the daemon; one
 	for (const by of [{ id: ref.id }, { labels: { run: "r1" } }]) {
 		const attached = await provider.attach(by);
 		assert.equal(attached.ok, true, attached.ok ? "" : attached.error.message);
-		assert.deepEqual({ ...attached.value, spec: { ...attached.value.spec, deadline: undefined } }, { ...ref, spec: { image: "desktop", user: "1000:1000", network: "none", workdir: "/work", deadline: undefined, kind: "desktop" } });
+		assert.deepEqual({ ...attached.value, spec: { ...attached.value.spec, deadline: undefined } }, { ...ref, spec: { image: "desktop", snapshot: "tpl-desktop", user: "1000:1000", network: "none", workdir: "/work", deadline: undefined, kind: "desktop" } });
 	}
 	sb.box.status = { CapEff: "000001ffffffffff" };
 	const drifted = await provider.attach({ id: ref.id });
@@ -599,7 +615,7 @@ test("with publicStream the computers take public traffic and network open only,
 	assert.equal(url.protocol, "https:");
 	assert.equal(url.host, `6080-${made.value.id}.e2b.app`);
 	assert.equal(url.pathname, "/vnc.html");
-	assert.match(url.searchParams.get("password"), /^[A-Za-z0-9]{16,}$/);
+	assert.match(url.searchParams.get("password"), /^[A-Za-z0-9]{8}$/, "8 characters: VNC authentication reads no more");
 	const sb = only(fake);
 	const x11vnc = sb.processes.find((p) => p.argv[0] === "x11vnc");
 	assert.ok(x11vnc.argv.includes("-localhost"), "the VNC server listens on loopback only; noVNC is its one way in");
@@ -628,6 +644,8 @@ test("the stream URL and its password are never logged and never in an error", a
 	assert.ok(!text.includes(password) && !text.includes(url), "nothing logged the URL or its password");
 	for (const failure of result.failures) assert.ok(!JSON.stringify(failure).includes(password), JSON.stringify(failure));
 	assert.ok(!JSON.stringify(fake.calls).includes(password), "the password went to the computer as a file only");
+	const source = readFileSync(new URL("../dist/e2b.js", import.meta.url), "utf8");
+	assert.doesNotMatch(source, /\bconsole\.|process\.(stdout|stderr)/, "the provider writes nowhere but its results");
 });
 
 // --- the registry and the conformance module ---

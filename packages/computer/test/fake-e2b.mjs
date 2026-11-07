@@ -100,7 +100,7 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *  - templates: alias → template id (default desktop → tpl-desktop, base → tpl-base);
  *  - info: fields a new sandbox's getInfo reports over what create gave (allowInternetAccess, network, lifecycle, ...);
  *  - create: "ok", "fail" (InvalidArgumentError, nothing made), "auth" (AuthenticationError), "hold" (settles only
- *    when fake.release() is called);
+ *    when fake.release() is called), "lost" (makes the sandbox, then throws TimeoutError: its id never comes back);
  *  - sha: "ok" or "lie" (install prints a sha256 that is not the file's);
  *  - install: exit code of the install script (default 0);
  *  - initFails: words init writes to stderr before it exits 1 (no daemon listens);
@@ -407,6 +407,10 @@ export function fakeE2B({
 						lifecycle: opts.lifecycle,
 					}),
 				);
+			if (create === "lost") {
+				make();
+				throw new TimeoutError("Request timed out: the sandbox may have been made, its id never came back");
+			}
 			if (create === "hold") {
 				const wait = deferred();
 				held.push(wait);
