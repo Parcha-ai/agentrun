@@ -15,7 +15,8 @@
 import { appendFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { Type, createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { AssistantMessage, FauxResponseFactory, Message, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { Conversation, Cursor, EntryRecord, SettledSubmissionRecord, Storage } from "@earendil-works/pi-durable";

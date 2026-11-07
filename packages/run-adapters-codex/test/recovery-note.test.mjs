@@ -7,6 +7,7 @@ import { INTERRUPTED_TEXT, openDrive } from '@parcha/agentrun-kernel/kernel';
 import { placeSubmissions, recoveryNote, toolBridge } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { repairOutput } from '../dist/harness.js';
+import { codeMode } from '../dist/code-mode.js';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const hang = () => new Promise(() => {});
@@ -48,6 +49,31 @@ test("a cut-off call's output says what the recovery note of the same turn says 
   assert.deepEqual(told, { c1: 'retryable', c2: 'interrupted' });
   assert.match(repairOutput(state, call('c1', 'fetch_page')), /It is safe to repeat\./);
   assert.doesNotMatch(repairOutput(state, call('c2', 'pay')), /safe to repeat/);
+});
+
+test("a completed call that returned images, its answer not yet recorded by Codex, is repaired as its text and a line on its images: never their data as JSON", async () => {
+  // The kernel tool records a result with images as { text, images } (adapter.ts kernelTool); a crash before Codex wrote
+  // the call's output leaves it dangling, and the repair must not hand the model the images' base64 as text. What Codex
+  // is handed is the item after code mode's recoverItems, which both repairs (with a recovery note and without) run on
+  // repairOutput's items before they are injected: that is what is checked.
+  const DATA = 'iVBORw0KGgo'.repeat(2000);
+  const store = memorySessionStore();
+  const drive = await openDrive({ writer: await store.open('pic'), signal: new AbortController().signal });
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Look at the chart.' });
+  await placeSubmissions(drive, [drive.pending()[0]]);
+  const read = tool('read', 'safe', async () => ({ text: 'Read chart.png (image/png, 22000 bytes).', images: [{ mimeType: 'image/png', data: DATA }] }));
+  await toolBridge(drive, [read], { live: false }).call('read', {}, 'c4');
+  const next = await openDrive({ writer: await store.open('pic'), signal: new AbortController().signal });
+  const state = next.state();
+  assert.equal(state.effects.get('tool:c4')?.status, 'completed', 'the call completed and its outcome is in the log');
+  const journal = { append() {}, flush: async () => {}, read: async () => [] };
+  const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1 });
+  const items = [{ type: 'function_call_output', call_id: 'c4', output: repairOutput(state, call('c4', 'read')) }];
+  await mode.recoverItems(items, [{ callId: 'c4', name: 'read', type: 'function_call' }], [], -1);
+  const output = items[0].output;
+  assert.equal(output.includes(DATA.slice(0, 32)), false, `no image data in the repaired output: ${output.slice(0, 160)}`);
+  assert.equal(output.startsWith('Read chart.png (image/png, 22000 bytes).'), true, `the call's own text first: ${output.slice(0, 160)}`);
+  assert.match(output, /1 image .*not shown again/, 'it says an image was returned and is not shown again');
 });
 
 test("a call still running in the drive that holds the session is never told it is safe to repeat, whatever its policy", async () => {

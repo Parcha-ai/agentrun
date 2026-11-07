@@ -5,7 +5,7 @@ import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DockerProvider } from "../dist/index.js";
+import { checkLifetime, DockerProvider } from "../dist/index.js";
 import { fakeDocker, idOf, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
@@ -15,11 +15,25 @@ const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for ne
 const runOf = (all) => all.find((args) => args[0] === "run");
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
-test("capabilities: a container whose lifetime the janitor enforces, network none or open, and a daemon with exec, files and processes", () => {
+test("capabilities: a linux container with computerd as PID 1, whose lifetime the janitor enforces up to 30 days, network none or open, and exec, files and processes", () => {
 	const { provider } = fakeDocker();
 	assert.equal(provider.id, "docker");
 	assert.match(provider.version, /^\d+\.\d+\.\d+/);
-	assert.deepEqual(provider.capabilities(), { lifetime: "janitor", network: ["none", "open"], networkReadBack: true, isolation: "container", os: "linux", daemon: ["exec", "files", "processes"], user: ["root", "uid"], release: ["stop", "delete"] });
+	assert.deepEqual(provider.capabilities(), {
+		kind: "linux",
+		lifetime: "janitor",
+		network: ["none", "open"],
+		networkReadBack: true,
+		isolation: "container",
+		os: "linux",
+		daemon: "pid1",
+		groups: ["exec", "files", "processes"],
+		maxLifetimeMs: 30 * 24 * 60 * 60 * 1000,
+		user: ["root", "uid"],
+		release: ["stop", "delete"],
+	});
+	assert.equal(provider.extend, undefined, "no extend(): the deadline is a label, which cannot change after create");
+	assert.equal(provider.stream, undefined, "no stream()");
 });
 
 test("check() refuses in words, field by field, with no docker call", () => {
@@ -55,6 +69,7 @@ test("a lifetime is at most 30 days, and create() never throws on a spec check()
 		const refusals = provider.check({ ...SPEC, lifetimeMs });
 		assert.deepEqual(refusals.map((r) => r.field), ["lifetimeMs"], `lifetimeMs ${lifetimeMs}`);
 		assert.match(refusals[0].message, /at most 30 days/);
+		assert.deepEqual(refusals, checkLifetime(lifetimeMs, provider.capabilities()), "the shared lifetime rule, with Docker's cap");
 		const result = await provider.create({ ...SPEC, lifetimeMs });
 		assert.equal(result.ok, false);
 		assert.equal(result.error.code, "refused");
@@ -305,7 +320,7 @@ test("connect() opens the daemon over docker exec and says hello", async () => {
 	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
-	assert.deepEqual(connected.value.hello, { version: VERSION, os: "linux", arch: "amd64", capabilities: ["exec", "files", "processes"] });
+	assert.deepEqual(connected.value.hello, { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] });
 	assert.deepEqual(calls(), [["exec", "-i", ref.name, "/opt/agentrun/computerd", "stdio"]]);
 	await connected.value.close();
 	const after = await connected.value.client.call("ping", {});
@@ -313,11 +328,13 @@ test("connect() opens the daemon over docker exec and says hello", async () => {
 	assert.equal(after.error.code, "gone");
 });
 
-test("connect() refuses a daemon of another version, or one missing a declared capability, and closes the stream", async () => {
+test("connect() refuses a daemon of another version, kind or groups, and closes the stream", async () => {
 	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
 	for (const [hello, words] of [
 		[{ version: "0.0.1" }, /version 0\.0\.1.*expected/],
-		[{ capabilities: ["exec", "files"] }, /processes/],
+		[{ groups: ["exec", "files"] }, /groups lack processes/],
+		[{ groups: ["exec", "files", "processes", "screen"] }, /offers groups screen/],
+		[{ kind: "desktop" }, /kind desktop/],
 		[{ os: "windows" }, /os windows/],
 	]) {
 		const { provider, calls } = fakeDocker({ hello });
@@ -329,9 +346,9 @@ test("connect() refuses a daemon of another version, or one missing a declared c
 		assert.match(connected.error.message, /computer-0123456789ab/);
 		assert.deepEqual(calls(), [["exec", "-i", ref.name, "/opt/agentrun/computerd", "stdio"]]);
 	}
-	const extra = fakeDocker({ hello: { capabilities: ["exec", "files", "processes", "display"] } });
-	const connected = await extra.provider.connect(ref);
-	assert.equal(connected.ok, true, "a daemon may offer more than the provider declares");
+	const reordered = fakeDocker({ hello: { groups: ["processes", "files", "exec"] } });
+	const connected = await reordered.provider.connect(ref);
+	assert.equal(connected.ok, true, "the same groups in another order");
 	await connected.value.close();
 });
 

@@ -96,28 +96,26 @@ test("a harness whose binary is missing or off its pins at the start says to res
   const keys = { OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` };
   withEnv(t, keys, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE"]);
   /** GET /v2/capabilities' harnesses by id, from a server started with `vars` set. */
-  const offers = async (vars) => {
+  const offers = async (vars, harnesses = true) => {
     Object.assign(process.env, vars);
-    const { api } = await serve(t, { faux: undefined });
+    const { api } = await serve(t, { faux: undefined, harnesses });
     return Object.fromEntries((await api("GET", "/capabilities")).body.harnesses.map((offer) => [offer.id, offer]));
   };
-  const INSTALL = /; once it is installed, restart AgentRun to pick it up\.$/;
   const PINS = /; once the pinned build is installed, restart AgentRun\.$/;
-  // claude-agent's reason is its CLI's, or its SDK's where the SDK here is missing or off its pin.
-  const restartOf = (reason) => (/not installed/.test(reason) ? INSTALL : PINS);
-  // Not installed: no file where each binary is named.
-  const missing = await offers({ CODEX_BIN: join(dir, "nothing"), AGENTRUN_CLAUDE_AGENT_EXECUTABLE: join(dir, "nothing") });
-  assert.equal(missing.codex.available, false, JSON.stringify(missing.codex));
-  assert.match(missing.codex.reason, /is not installed/);
-  assert.match(missing.codex.reason, INSTALL, "codex not installed: restart once it is installed");
-  assert.equal(missing["claude-agent"].available, false, JSON.stringify(missing["claude-agent"]));
-  assert.match(missing["claude-agent"].reason, restartOf(missing["claude-agent"].reason), "claude-agent not installed: the restart is named");
+  // Not installed: no file where each binary is. Claude Code without its CLI, or Codex without its binary, is not whole: it
+  // installs again on first use, so each runs and names no restart.
+  const missing = await offers({}, { cli: join(dir, "nothing"), codexBin: join(dir, "nothing") });
+  assert.deepEqual([missing.codex.available, missing.codex.installs, missing.codex.reason], [true, "on_first_use", undefined], "codex's tree without its binary installs again");
+  assert.deepEqual([missing["claude-agent"].available, missing["claude-agent"].installs, missing["claude-agent"].reason], [true, "on_first_use", undefined], "claude-agent's tree without its CLI installs again");
   // Off its pins: a binary that is not the pinned build.
-  const off = await offers({ CODEX_BIN: unpinned, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: unpinned });
+  const off = await offers({}, { cli: unpinned, codexBin: unpinned });
   assert.match(off.codex.reason, /is not the pinned build/);
   assert.match(off.codex.reason, PINS, "codex off its pins: restart once the pinned build is installed");
   assert.equal(off["claude-agent"].available, false, JSON.stringify(off["claude-agent"]));
-  assert.match(off["claude-agent"].reason, restartOf(off["claude-agent"].reason), "claude-agent off its pins: the restart is named");
+  assert.match(off["claude-agent"].reason, PINS, "claude-agent's CLI off its pins: the restart is named");
+  // Claude Code and Codex not installed in the data at all: each installs on first use, so it runs, and names no restart.
+  const fresh = await offers({}, false);
+  for (const id of ["claude-agent", "codex"]) assert.deepEqual([fresh[id].available, fresh[id].installs, fresh[id].reason], [true, "on_first_use", undefined], id);
   // A setting fixes it, and a save of a key checks the harnesses again (server.ts): no restart named.
   delete process.env.OPENAI_API_KEY;
   const keyless = await offers({ AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: unpinned }) });

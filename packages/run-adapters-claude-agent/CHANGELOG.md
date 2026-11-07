@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.31 (2026-11-06)
+
+- Agents call a saved MCP server's tools on pi and claude-agent: grant `mcp:<server>/<tool>` in `definition.tools`. A save checks the name against the server's saved tools (`422` naming them). A run's first launch pins the granted tools as saved and the server's URL; its credential reaches only runs that grant one of its tools, over the run's secrets pipe. pi binds each tool in the run's process; claude-agent's own MCP client calls it at the session's model proxy (`/mcp/<server>`, behind the session key), so the CLI never holds the credential. A call follows no redirect, a crash-cut call is answered interrupted and never sent again, a moved server is sent nothing, and the timeline reads `<server> · <tool>`. `features.mcp_client.harnesses` lists the harnesses that run them. Every call passes the run's tool gate and its spend cap.
+
 ## 0.1.0-beta.30 (2026-11-05)
 
 - A run whose model provider stops the answer on its content filter now ends `failed` with `error.code` `moderated` and

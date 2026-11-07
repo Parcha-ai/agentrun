@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import * as refusal from "../dist/key-refusal.js";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
@@ -103,10 +103,10 @@ async function judgedRun(t, item = CUT_KEY) {
   return { api, data, runId: started.body.run_id };
 }
 
-/** The run's store held by another connection with no reader allowed, so the graph's read of it is busy. The store is in
- *  WAL mode, where an exclusive transaction still lets readers in: the connection's exclusive locking mode does not. */
+/** The run's store held by another connection, as a run's own process holds it: an exclusive locking mode, which lets
+ *  no locking reader in. The graph's read takes no lock (run-db.ts), so it never waits on it. */
 function hold(t, data, runId) {
-  const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  const store = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE");
   store.prepare("SELECT count(*) FROM sqlite_master").get();
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
@@ -117,7 +117,7 @@ function hold(t, data, runId) {
 test("a map item's label cut at 200 characters inside a held key, and a decision whose state holds one: the graph shows no part of either", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await judgedRun(t);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
-  assert.equal(graph.stale, false);
+  assert.equal(graph.stale, undefined, "no stale view: the store is read lock-free");
   const item = graph.nodes["/root/steps/0"].items[0];
   assert.ok(item && item.label.startsWith("x".repeat(190)), JSON.stringify(graph.nodes["/root/steps/0"]));
   assert.equal(graph.decisions.length, 1, JSON.stringify(graph.decisions));
@@ -129,25 +129,16 @@ test("a map item's label cut at 200 characters inside a held key, and a decision
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no label or state again");
 });
 
-test("a graph read while the run's store is busy, from the last whole view: stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
+test("a graph read while another connection holds the run's store: read whole and lock-free, never stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
   const { api, data, runId } = await judgedRun(t);
-  assert.equal((await api("GET", `/runs/${runId}/graph`)).body.stale, false, "a whole read first, which the server keeps");
+  const whole = (await api("GET", `/runs/${runId}/graph`)).body;
   const release = hold(t, data, runId);
-  const graph = (await api("GET", `/runs/${runId}/graph`)).body;
+  const held = await api("GET", `/runs/${runId}/graph`);
   release();
-  assert.equal(graph.stale, true, JSON.stringify(Object.keys(graph)));
-  assert.equal(graph.decisions.length, 1, "the kept view holds the decision");
-  noKey(JSON.stringify(graph), "the stale graph");
-});
-
-test("a graph read while the run's store is busy and no whole view was kept: its live view, stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
-  const { api, data, runId } = await judgedRun(t);
-  const release = hold(t, data, runId);
-  const graph = (await api("GET", `/runs/${runId}/graph`)).body;
-  release();
-  assert.equal(graph.stale, true, JSON.stringify(Object.keys(graph)));
-  assert.ok(graph.effects.length >= 1, JSON.stringify(graph.effects));
-  noKey(JSON.stringify(graph), "the live-only graph");
+  assert.equal(held.status, 200, JSON.stringify(held.body));
+  assert.deepEqual(Object.keys(held.body).sort(), Object.keys(whole).sort(), "the same view: no stale field, no live view in its place");
+  assert.deepEqual([held.body.nodes, held.body.decisions, held.body.effects], [whole.nodes, whole.decisions, whole.effects]);
+  noKey(JSON.stringify(held.body), "the graph read while held");
 });
 
 test("a call's error and a decision's state, each long enough to be cut, with the held key across the cut: the graph shows no part of it", { timeout: 60_000 }, async (t) => {
@@ -177,18 +168,17 @@ test("a call's error and a decision's state, each long enough to be cut, with th
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no error or state again");
 });
 
-test("a key saved after the graph was kept: a busy read from the kept view shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
-  // Not held when the run ran, nor when the graph was first read and kept; no 8 characters of it are in CUT_KEY or LATER.
+test("a key saved after a graph read: the next read, while another connection holds the run's store, shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
+  // Not held when the run ran, nor when the graph was first read; no 8 characters of it are in CUT_KEY or LATER.
   const saved = ["later", "saved", "qponmlkjih"].join("-");
   const { api, data, runId } = await judgedRun(t, saved);
   const first = (await api("GET", `/runs/${runId}/graph`)).body;
-  assert.equal(first.stale, false);
   assert.ok(JSON.stringify(first.nodes).includes(saved.slice(0, 10)), "not held yet: the label shows it, cut at 200");
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: saved } })).status, 204);
   const release = hold(t, data, runId);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   release();
-  assert.equal(graph.stale, true);
+  assert.equal(graph.stale, undefined, "read whole, lock-free");
   const shown = JSON.stringify(graph);
-  for (let i = 0; i + 8 <= saved.length; i++) assert.ok(!shown.includes(saved.slice(i, i + 8)), `the kept view holds ${saved.slice(i, i + 8)}: ${JSON.stringify(graph.nodes)}`);
+  for (let i = 0; i + 8 <= saved.length; i++) assert.ok(!shown.includes(saved.slice(i, i + 8)), `the graph holds ${saved.slice(i, i + 8)}: ${JSON.stringify(graph.nodes)}`);
 });

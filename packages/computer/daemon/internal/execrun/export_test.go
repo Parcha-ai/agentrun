@@ -29,3 +29,9 @@ func SetGuardHooks(t *testing.T, forked, reaping func(guardPid int)) {
 
 // GuardPid is the pid of g's guard.
 func GuardPid(g *Guarded) int { return g.guard.Process.Pid }
+
+// SetGuardArgs has Start add what args returns for p to the guard's argv, after GuardCommand, for the test's duration.
+func SetGuardArgs(t *testing.T, args func(p Program) []string) {
+	guardArgs = args
+	t.Cleanup(func() { guardArgs = nil })
+}

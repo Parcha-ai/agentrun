@@ -29,7 +29,11 @@ function fieldState(f: ToolKeyField): string {
   return f.stored_unreadable ? "saved here, can't be opened" : "not set";
 }
 
-/** Settings → Keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
+/** The keys page's groups, in order: the model providers' keys, then the tools'. `name` is how words elsewhere name the
+ *  group ("Settings → Model keys"), `label` its heading here. */
+export const KEY_GROUPS = [{ kind: "model", label: "Models", name: "Model keys" }, { kind: "tool", label: "Tools", name: "Tool keys" }] as const;
+
+/** Settings → Tool keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
  *  set, and a form to add, change or remove the one saved here. A value goes to the server and nowhere else: the
  *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `atRest` is
  *  capabilities' `features.tool_keys.at_rest`; `onChange` follows each save and removal (the server's tools and models
@@ -65,7 +69,7 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
     : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
   const reenter = view.reenter;
   // The model providers' keys first, then the tools': headed only when there are both (an older server has no model keys).
-  const groups = [{ label: "Models", name: "Model keys", keys: view.keys.filter((k) => k.kind === "model") }, { label: "Tools", name: "Tool keys", keys: view.keys.filter((k) => k.kind !== "model") }].filter((g) => g.keys.length);
+  const groups = KEY_GROUPS.map((g) => ({ ...g, keys: view.keys.filter((k) => (k.kind === "model") === (g.kind === "model")) })).filter((g) => g.keys.length);
   const row = (k: ToolKey) => (
     <KeyRow key={k.id} tool={k} cantStore={cantStore} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}
       open={open?.id === k.id ? open.mode : null} problem={problem?.id === k.id ? problem : null}

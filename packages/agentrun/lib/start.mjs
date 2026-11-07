@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { main as cli, NOUNS, words } from "./cli.mjs";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
 /** This command's package at its version, handed to the server it starts (AGENTRUN_NPX_PACKAGE), so the server's hints
@@ -30,17 +31,19 @@ export function openLineUrl(line, publicUrl) {
 export const TAIL_LINES = 20;
 
 /** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
- *  box, or why not) and the Docker box image's first build, as it starts and ends. */
-export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image )/;
+ *  box, or why not), the Docker box image's first build, as it starts and ends, and, on a server with a public address
+ *  and no password yet, the setup link with its code, which setup at that address asks for. */
+export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image |Set up this server: )/;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link
  *  once the server prints one), so this command never builds the address itself. Resolves undefined when the output ends
- *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows. Every
- *  whole line after it goes to `onLine`; the rest of the output is read and dropped, so the server never blocks on a full
- *  pipe. */
-export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}) {
+ *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows, and each
+ *  goes to `onBefore`. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the
+ *  server never blocks on a full pipe. */
+export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefore = () => {}) {
   const keep = (line) => {
+    onBefore(line);
     seen.push(line);
     if (seen.length > TAIL_LINES) seen.shift();
   };
@@ -97,7 +100,9 @@ export function npmExecOf(env, from = process.ppid) {
   return undefined;
 }
 
-export const USAGE = "Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open], or a server command: import, reset-password";
+export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open]   start the server
+       npx @parcha/agentrun import|reset-password [--data DIR]   a server command
+       npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
 /** The server's launcher, installed with this package (its dependency), or undefined. */
 export function installedServer(resolve = createRequire(import.meta.url).resolve) {
@@ -113,6 +118,7 @@ export function installedServer(resolve = createRequire(import.meta.url).resolve
 export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((arg) => arg !== "--no-open") : ["--open", ...argv]);
 
 export async function main(argv, env = process.env) {
+  if (NOUNS.has(words(argv)[0])) return cli(argv, env);
   if (argv.includes("--help") || argv.includes("-h")) return console.log(USAGE), 0;
   if (process.platform === "win32") return console.error("AgentRun's server runs on macOS and Linux; on Windows, use WSL or its container."), 1;
   const launcher = installedServer();
@@ -172,13 +178,15 @@ export async function main(argv, env = process.env) {
   let told = false;
   const held = [];
   const tell = (line) => SAID.test(line) && (told ? console.error(line) : held.push(line));
+  // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
+  // its banner): it is held and said first, in order.
   const seen = [];
-  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
+  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);
   if (url === undefined) {
     child.kill("SIGTERM");
     // Its stdout is kept out of this terminal, so its last lines are shown here: with its stderr above, they say why.
-    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start, and the server printed nothing.");
+    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start; the server's own message, if it gave one, is above.");
     return (await exited) || 1;
   }
   console.log(`AgentRun is running at ${url}`);

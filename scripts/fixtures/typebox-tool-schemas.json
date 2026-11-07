@@ -1,0 +1,635 @@
+{
+ "pi": {
+  "type": "object",
+  "required": [
+   "action"
+  ],
+  "properties": {
+   "action": {
+    "anyOf": [
+     {
+      "type": "string",
+      "const": "describe"
+     },
+     {
+      "type": "string",
+      "const": "inspect"
+     },
+     {
+      "type": "string",
+      "const": "dry-run"
+     },
+     {
+      "type": "string",
+      "const": "run"
+     },
+     {
+      "type": "string",
+      "const": "save"
+     },
+     {
+      "type": "string",
+      "const": "load"
+     },
+     {
+      "type": "string",
+      "const": "list"
+     }
+    ]
+   },
+   "name": {
+    "type": "string",
+    "description": "Saved procedure name: lowercase letters, digits, hyphens or underscores."
+   },
+   "digest": {
+    "type": "string",
+    "description": "Optional exact saved SHA-256 revision to load."
+   },
+   "workflow": {
+    "type": "object",
+    "patternProperties": {
+     "^.*$": {}
+    },
+    "description": "The complete AgentRun workflow JSON object. Pass the object directly, not a JSON-encoded string. Inspection validates its DSL structure."
+   },
+   "input": {
+    "type": "object",
+    "patternProperties": {
+     "^.*$": {}
+    }
+   }
+  }
+ },
+ "pi-transport": {
+  "type": "object",
+  "required": [
+   "environments"
+  ],
+  "properties": {
+   "environments": {
+    "type": "object",
+    "patternProperties": {
+     "^.*$": {
+      "type": "object",
+      "required": [
+       "provider"
+      ],
+      "properties": {
+       "provider": {
+        "type": "string",
+        "minLength": 1
+       },
+       "image": {
+        "type": "string",
+        "minLength": 1
+       },
+       "snapshot": {
+        "type": "string",
+        "minLength": 1
+       },
+       "cpus": {
+        "type": "number",
+        "exclusiveMinimum": 0
+       },
+       "memoryMb": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "gpu": {
+        "type": "string",
+        "minLength": 1
+       },
+       "region": {
+        "type": "string",
+        "minLength": 1
+       },
+       "isolation": {
+        "anyOf": [
+         {
+          "type": "string",
+          "const": "none"
+         },
+         {
+          "type": "string",
+          "const": "container"
+         },
+         {
+          "type": "string",
+          "const": "gvisor"
+         },
+         {
+          "type": "string",
+          "const": "vm"
+         }
+        ]
+       },
+       "env": {
+        "type": "object",
+        "patternProperties": {
+         "^.*$": {
+          "type": "string"
+         }
+        }
+       },
+       "expose": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "maxLifetime": {
+        "type": "string"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string",
+          "const": "session"
+         },
+         {
+          "type": "string",
+          "const": "conversation"
+         }
+        ]
+       },
+       "capabilities": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "purpose": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "additionalProperties": false
+     }
+    }
+   },
+   "home": {
+    "type": "string",
+    "minLength": 1
+   },
+   "hands": {
+    "anyOf": [
+     {
+      "type": "string",
+      "minLength": 1
+     },
+     {
+      "type": "object",
+      "patternProperties": {
+       "^.*$": {
+        "type": "string"
+       }
+      }
+     }
+    ]
+   },
+   "auto": {
+    "type": "object",
+    "required": [
+     "classifier"
+    ],
+    "properties": {
+     "classifier": {
+      "type": "object",
+      "required": [
+       "provider",
+       "modelId"
+      ],
+      "properties": {
+       "provider": {
+        "type": "string",
+        "minLength": 1
+       },
+       "modelId": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "additionalProperties": false
+     },
+     "ask": {
+      "anyOf": [
+       {
+        "type": "string",
+        "const": "message"
+       },
+       {
+        "type": "string",
+        "const": "turn"
+       }
+      ]
+     },
+     "rest": {
+      "type": "string",
+      "minLength": 1
+     },
+     "threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     }
+    },
+    "additionalProperties": false
+   },
+   "workspace": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string",
+      "pattern": "^/"
+     },
+     "exclude": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "maxBytes": {
+      "type": "integer",
+      "minimum": 1
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "additionalProperties": false
+ },
+ "pi-agent-learn": {
+  "type": "object",
+  "required": [
+   "name",
+   "status",
+   "when",
+   "revisions",
+   "uses"
+  ],
+  "properties": {
+   "name": {
+    "type": "string",
+    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    "maxLength": 64
+   },
+   "status": {
+    "anyOf": [
+     {
+      "type": "string",
+      "const": "trial"
+     },
+     {
+      "type": "string",
+      "const": "active"
+     },
+     {
+      "type": "string",
+      "const": "demoted"
+     }
+    ]
+   },
+   "when": {
+    "type": "array",
+    "items": {
+     "anyOf": [
+      {
+       "type": "object",
+       "required": [
+        "pointer",
+        "op"
+       ],
+       "properties": {
+        "pointer": {
+         "type": "string",
+         "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+         "maxLength": 256
+        },
+        "op": {
+         "type": "string",
+         "const": "exists"
+        }
+       },
+       "additionalProperties": false
+      },
+      {
+       "type": "object",
+       "required": [
+        "pointer",
+        "op",
+        "value"
+       ],
+       "properties": {
+        "pointer": {
+         "type": "string",
+         "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+         "maxLength": 256
+        },
+        "op": {
+         "type": "string",
+         "const": "eq"
+        },
+        "value": {}
+       },
+       "additionalProperties": false
+      },
+      {
+       "type": "object",
+       "required": [
+        "pointer",
+        "op",
+        "value"
+       ],
+       "properties": {
+        "pointer": {
+         "type": "string",
+         "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+         "maxLength": 256
+        },
+        "op": {
+         "type": "string",
+         "const": "in"
+        },
+        "value": {
+         "type": "array",
+         "items": {},
+         "minItems": 1,
+         "maxItems": 32
+        }
+       },
+       "additionalProperties": false
+      },
+      {
+       "type": "object",
+       "required": [
+        "pointer",
+        "op",
+        "value"
+       ],
+       "properties": {
+        "pointer": {
+         "type": "string",
+         "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+         "maxLength": 256
+        },
+        "op": {
+         "anyOf": [
+          {
+           "type": "string",
+           "const": "gte"
+          },
+          {
+           "type": "string",
+           "const": "lte"
+          }
+         ]
+        },
+        "value": {
+         "type": "number"
+        }
+       },
+       "additionalProperties": false
+      }
+     ]
+    },
+    "maxItems": 16
+   },
+   "revisions": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "required": [
+      "sha256",
+      "status",
+      "since",
+      "run",
+      "after"
+     ],
+     "properties": {
+      "sha256": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      },
+      "status": {
+       "anyOf": [
+        {
+         "type": "string",
+         "const": "trial"
+        },
+        {
+         "type": "string",
+         "const": "active"
+        },
+        {
+         "type": "string",
+         "const": "superseded"
+        },
+        {
+         "type": "string",
+         "const": "retired"
+        },
+        {
+         "type": "string",
+         "const": "demoted"
+        }
+       ]
+      },
+      "since": {
+       "type": "string",
+       "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+      },
+      "run": {
+       "type": "string",
+       "pattern": "^(?!.*\\.\\.)(?!.*\\.lock$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?<!\\.)$"
+      },
+      "after": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 1000000000
+      },
+      "when": {
+       "type": "array",
+       "items": {
+        "anyOf": [
+         {
+          "type": "object",
+          "required": [
+           "pointer",
+           "op"
+          ],
+          "properties": {
+           "pointer": {
+            "type": "string",
+            "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+            "maxLength": 256
+           },
+           "op": {
+            "type": "string",
+            "const": "exists"
+           }
+          },
+          "additionalProperties": false
+         },
+         {
+          "type": "object",
+          "required": [
+           "pointer",
+           "op",
+           "value"
+          ],
+          "properties": {
+           "pointer": {
+            "type": "string",
+            "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+            "maxLength": 256
+           },
+           "op": {
+            "type": "string",
+            "const": "eq"
+           },
+           "value": {}
+          },
+          "additionalProperties": false
+         },
+         {
+          "type": "object",
+          "required": [
+           "pointer",
+           "op",
+           "value"
+          ],
+          "properties": {
+           "pointer": {
+            "type": "string",
+            "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+            "maxLength": 256
+           },
+           "op": {
+            "type": "string",
+            "const": "in"
+           },
+           "value": {
+            "type": "array",
+            "items": {},
+            "minItems": 1,
+            "maxItems": 32
+           }
+          },
+          "additionalProperties": false
+         },
+         {
+          "type": "object",
+          "required": [
+           "pointer",
+           "op",
+           "value"
+          ],
+          "properties": {
+           "pointer": {
+            "type": "string",
+            "pattern": "^(?:\\/(?:[^~/]|~[01])*)*$",
+            "maxLength": 256
+           },
+           "op": {
+            "anyOf": [
+             {
+              "type": "string",
+              "const": "gte"
+             },
+             {
+              "type": "string",
+              "const": "lte"
+             }
+            ]
+           },
+           "value": {
+            "type": "number"
+           }
+          },
+          "additionalProperties": false
+         }
+        ]
+       },
+       "maxItems": 16
+      },
+      "description": {
+       "type": "string",
+       "maxLength": 1000
+      }
+     },
+     "additionalProperties": false
+    },
+    "minItems": 1,
+    "maxItems": 32
+   },
+   "uses": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "required": [
+      "run",
+      "sha256",
+      "outcome",
+      "at"
+     ],
+     "properties": {
+      "run": {
+       "type": "string",
+       "pattern": "^(?!.*\\.\\.)(?!.*\\.lock$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?<!\\.)$"
+      },
+      "sha256": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      },
+      "outcome": {
+       "anyOf": [
+        {
+         "type": "string",
+         "const": "frozen"
+        },
+        {
+         "type": "string",
+         "const": "escalated"
+        },
+        {
+         "type": "string",
+         "const": "failed"
+        }
+       ]
+      },
+      "at": {
+       "type": "string",
+       "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+      }
+     },
+     "additionalProperties": false
+    },
+    "maxItems": 30
+   },
+   "refused": {
+    "type": "array",
+    "items": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "maxItems": 128
+   }
+  },
+  "additionalProperties": false
+ },
+ "harness": {
+  "type": "object",
+  "required": [
+   "code"
+  ],
+  "properties": {
+   "code": {
+    "type": "string",
+    "description": "The script."
+   }
+  }
+ }
+}

@@ -35,7 +35,7 @@
       }
     ],
     "cost": {
-      "usd": 0.157052,
+      "usd": 0.191438,
       "basis": "estimate",
       "unknown_runs": 0
     },
@@ -55,19 +55,19 @@
         "needs_review": 0,
         "failed": 0,
         "runs_with_metrics": 6,
-        "tokens": 55336,
-        "cost_usd": 0.157052,
+        "tokens": 57152,
+        "cost_usd": 0.191438,
         "unknown_cost_runs": 0,
-        "input": 11512,
-        "cache_read": 27566,
-        "cache_write": 11522,
-        "output": 4736,
-        "requests": 28,
+        "input": 17346,
+        "cache_read": 17855,
+        "cache_write": 17353,
+        "output": 4598,
+        "requests": 18,
         "unmetered": 0
       },
       "time": {
         "ended_runs": 6,
-        "wall_ms": 37659,
+        "wall_ms": 32764,
         "active_runs": 0,
         "active_ms": 0
       },
@@ -80,21 +80,21 @@
           "needs_review": 0,
           "failed": 0,
           "runs_with_metrics": 6,
-          "tokens": 55336,
-          "cost_usd": 0.157052,
+          "tokens": 57152,
+          "cost_usd": 0.191438,
           "unknown_cost_runs": 0
         }
       ],
       "by_day": [
         {
-          "day": "2026-11-03",
+          "day": "2026-11-05",
           "runs": 6,
           "completed": 6,
           "needs_review": 0,
           "failed": 0,
           "runs_with_metrics": 6,
-          "tokens": 55336,
-          "cost_usd": 0.157052,
+          "tokens": 57152,
+          "cost_usd": 0.191438,
           "unknown_cost_runs": 0
         }
       ],
@@ -106,8 +106,8 @@
           "needs_review": 0,
           "failed": 0,
           "runs_with_metrics": 6,
-          "tokens": 55336,
-          "cost_usd": 0.157052,
+          "tokens": 57152,
+          "cost_usd": 0.191438,
           "unknown_cost_runs": 0
         }
       ],
@@ -115,13 +115,7 @@
         {
           "tool": "write",
           "label": "Write files",
-          "calls": 9,
-          "errors": 0
-        },
-        {
-          "tool": "read",
-          "label": "Read files",
-          "calls": 7,
+          "calls": 6,
           "errors": 0
         }
       ]
