@@ -16,12 +16,12 @@ import (
 const (
 	// MaxActions is the most actions one batch holds (MAX_ACTIONS).
 	MaxActions = 100
-	// MaxBatchWaitMs is the most wait and hold one batch asks for, summed (MAX_BATCH_WAIT_MS).
+	// MaxBatchWaitMs is the most time one batch asks for, summed over its timed actions (MAX_BATCH_WAIT_MS).
 	MaxBatchWaitMs = 300_000
 	// MaxTypeRunes is the most characters one type action takes.
 	MaxTypeRunes = 64 << 10
-	// maxRepeat is the most times one key action presses its keys.
-	maxRepeat = 1000
+	// maxRepeat is the most times one key action presses its keys (MAX_KEY_REPEAT).
+	maxRepeat = 100
 	// maxClicks is the most wheel clicks one scroll turns, each way.
 	maxClicks = 10_000
 	// maxPath is the most points one drag holds.
@@ -78,6 +78,9 @@ var fieldsOf = map[string][]string{
 // or limit past this daemon's bounds), its keys (invalid), its group against groups (unsupported), a pixel scroll,
 // which X11's wheel does not have (unsupported), and the summed wait and hold (limit). Beyond checkActions, X11 takes
 // whole pixels and whole clicks, and type takes only characters that have a key: printable ones, newlines and tabs.
+// timed are the actions whose ms is a duration, summed toward MaxBatchWaitMs (TIMED in actions.ts).
+var timed = map[string]bool{"wait": true, "hold": true, "long_press": true, "swipe": true, "pinch": true}
+
 func Check(raw json.RawMessage, groups []string) *Failure {
 	_, failed := check(raw, groups)
 	return failed
@@ -113,10 +116,12 @@ func check(raw json.RawMessage, groups []string) ([]action, *Failure) {
 		if a.Type == "scroll" && a.Unit == "px" {
 			return nil, &Failure{i, rpc.KindUnsupported, fmt.Sprintf("action %d: this computer scrolls by clicks, not pixels: X11's wheel turns in clicks", i)}
 		}
-		if a.Type == "wait" || a.Type == "hold" {
+		// Every duration counts, as checkActions sums it: wait, hold, long_press, swipe and pinch. X11 refuses the touch
+		// three above as unsupported, so here only wait and hold reach the sum.
+		if timed[a.Type] {
 			waited += a.MS
 			if waited > MaxBatchWaitMs {
-				return nil, &Failure{i, rpc.KindLimit, fmt.Sprintf("the batch's wait and hold reach %d ms at action %d, over %d ms", waited, i, MaxBatchWaitMs)}
+				return nil, &Failure{i, rpc.KindLimit, fmt.Sprintf("the batch's durations reach %d ms at action %d, over %d ms", waited, i, MaxBatchWaitMs)}
 			}
 		}
 		actions[i] = a
