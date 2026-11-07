@@ -299,14 +299,15 @@ func (g *Guarded) Exit() (code *int, signal string, reported bool) {
 	return g.final.ExitCode, "", true
 }
 
-// Signal has the guard send sig to the program's process group. Once the program has ended it does nothing.
-func (g *Guarded) Signal(sig syscall.Signal) error {
+// Signal has the guard send sig to the process group group, or to the program's when group is 0. Once the program has
+// ended it does nothing.
+func (g *Guarded) Signal(sig syscall.Signal, group int) error {
 	g.controlMu.Lock()
 	defer g.controlMu.Unlock()
 	if g.control == nil {
 		return nil
 	}
-	data, _ := json.Marshal(guardCommand{Signal: int(sig)})
+	data, _ := json.Marshal(guardCommand{Signal: int(sig), Group: group})
 	if _, err := g.control.Write(append(data, '\n')); err != nil {
 		// Only the guard reads the control pipe, so a failed write means it has ended or is ending.
 		select {

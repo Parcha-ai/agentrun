@@ -79,7 +79,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
 | `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
-| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group; to a process that has ended it does nothing |
+| `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
 | `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
 | `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
@@ -95,6 +95,12 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 - With `pty`, stdout and stderr are one `pty` stream, and the program runs in a session of its own with the terminal
   as its controlling terminal (setsid and TIOCSCTTY in the guard). A terminal has no stdin to close: write `"\x04"`
   for the end of input, or signal `HUP`.
+- `INT` to a process with a pty is ^C: it goes to the terminal's foreground process group, as the terminal driver
+  sends it, so it ends the job a shell runs in the foreground and the shell reads on. The daemon reads that group on
+  the terminal it holds (TIOCGPGRP) and has the guard signal it only when it is in the program's own session (and so
+  under the guard); a terminal the program handed to another session is refused as `denied`, and nothing is
+  signalled. A terminal with no foreground group left (the program let go of it, or is ending) has `INT` go to the
+  program's group, and the reply says so: `{note}`. `TERM`, `KILL` and `HUP` always go to the program's group.
 - Starts take turns. A `process.start` cancelled while it waits for its turn, or before its program runs, is `aborted`,
   and nothing it started is left.
 - Writes to one process take turns. A write waits at most 10 s, its turn included, for the program to read; the rest is
@@ -458,7 +464,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 53/53 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 optional cases skipped, not declared · full 5/10 · network:allow screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
@@ -468,7 +474,7 @@ undeclared? }], core, undeclared, cleanup }`). A failure is listed under its lin
 
 `--only` that leaves any Core case out is a partial run: `core` is `"partial"` when every case that ran passed (a
 skipped Core case is not a pass) and nothing was left behind, else `"fail"`; `coreNotRun` names the Core cases that did
-not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 51 Core cases
+not run, the text report lists them on a `core not run` line, and the verdict reads `core PARTIAL 11/11 · 52 Core cases
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 

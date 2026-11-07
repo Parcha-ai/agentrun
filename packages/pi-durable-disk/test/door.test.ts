@@ -525,7 +525,7 @@ describe("the door hook: outcomes", () => {
       assert.deepEqual([unknown.status, unknown.body.status], [504, "UNKNOWN"]);
       const admitted = await submit(c.server, "admitted");
       assert.deepEqual([admitted.status, admitted.body.error, admitted.body.status], [504, "UNKNOWN", "UNKNOWN"], "an earlier instance's ADMITTED is not a hook running here");
-      assert.match(admitted.body.message, /admitted by an earlier instance, or before the lease was lost: whether the hook took it is unknown/);
+      assert.match(admitted.body.message, /admitted by an earlier instance, or before the run was fenced: whether the hook took it is unknown/);
       await until("the open's UNKNOWN in the store", async () => (await doorEntries(c.run)).some((e) => e.kind === "door.status" && e.data.requestId === "admitted" && e.data.status === "UNKNOWN"));
       assert.equal(three.calls.submit.length, 0, "the resume submitted nothing again");
       await c.run.release();

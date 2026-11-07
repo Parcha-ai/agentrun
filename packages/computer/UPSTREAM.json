@@ -97,7 +97,7 @@
       "from": "kubernetes-sigs/agent-sandbox@bfc85052f8dbc3414c366a1bc86621ea19d0779b:packages/sandboxd/pkg/processmanager/managed_process.go",
       "lines": "32-118",
       "license": "Apache-2.0",
-      "changes": "ManagedProcess as proc: the exit (code, or signal name without SIG) and end time recorded when the guard is done; Signal goes to the program's group through its guard and does nothing once it ended; CloseStdin as process.write's close, refused on a terminal; ResizeTTY refused without a terminal or after the end, with the size set by our own ioctl instead of creack/pty."
+      "changes": "ManagedProcess as proc: the exit (code, or signal name without SIG) and end time recorded when the guard is done; Signal goes to the program's group through its guard (INT on a terminal to its foreground group, read with TIOCGPGRP, when that group is in the program's session) and does nothing once it ended; CloseStdin as process.write's close, refused on a terminal; ResizeTTY refused without a terminal or after the end, with the size set by our own ioctl instead of creack/pty."
     },
     {
       "path": "daemon/internal/process/table.go",

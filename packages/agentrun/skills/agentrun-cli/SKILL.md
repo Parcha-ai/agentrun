@@ -27,7 +27,7 @@ Never print, echo or log the token, and never pass it as an argument; the CLI ne
 
 ## Recipes
 
-Run them in order, in one working directory: each writes `run.json`, the run as its command printed it, and the next reads it. The last line of each block says how its last command exits.
+Run them in order, in one working directory: each writes `out.json`, the run as its command printed it, and the next reads it. The last line of each block says how its last command exits.
 
 ### 1. Make an agent from a definition file
 
@@ -44,7 +44,7 @@ Ask the person before you create or change an agent. `agentrun server capabiliti
 ### 2. Start a run with a spend cap and wait for it
 
 ```sh
-agentrun runs start notes --max-cost-usd 5 --body '{"input": {"content": "Write notes.md with three facts about the Moon."}}' --wait > run.json
+agentrun runs start notes --max-cost-usd 5 --body '{"input": {"content": "Write notes.md with three facts about the Moon."}}' --wait > out.json
 # exit 0 completed (result.final_answer); 1 failed or cancelled (error says why); 8 it waits on a person (recipe 3)
 ```
 
@@ -53,26 +53,26 @@ agentrun runs start notes --max-cost-usd 5 --body '{"input": {"content": "Write 
 ### 3. Answer a run that asks
 
 ```sh
-agentrun runs start notes --max-cost-usd 5 --body '{"input": {"content": "Ask me which region to cover, then write region.md about it."}}' --wait > run.json
-# exit 8: it waits on a person; run.json has pending.kind question and pending.question, what it asks
+agentrun runs start notes --max-cost-usd 5 --body '{"input": {"content": "Ask me which region to cover, then write region.md about it."}}' --wait > out.json
+# exit 8: it waits on a person; out.json has pending.kind question and pending.question, what it asks
 ```
 
 Answer only what the person told you, or ask them. Then:
 
 ```sh
-run=$(node -p 'require("./run.json").run_id')
+run=$(node -p 'require("./out.json").run_id')
 agentrun runs message "$run" --content "Europe"
-agentrun runs wait "$run" > run.json
+agentrun runs wait "$run" > out.json
 # exit 0 completed, as in recipe 2
 ```
 
 ### 4. Read what it wrote and what it cost
 
 ```sh
-run=$(node -p 'require("./run.json").run_id')
+run=$(node -p 'require("./out.json").run_id')
 agentrun runs files "$run"
 agentrun runs read-file "$run" region.md
-agentrun runs get "$run" > run.json && node -p 'JSON.stringify(require("./run.json").cost)'
+agentrun runs get "$run" > out.json && node -p 'JSON.stringify(require("./out.json").cost)'
 # exit 0: files lists each path, read-file prints one file, cost.usd is what it spent and cap_usd its cap
 ```
 
@@ -80,21 +80,21 @@ agentrun runs get "$run" > run.json && node -p 'JSON.stringify(require("./run.js
 
 ### 5. Raise a cap or approve a call
 
-A run stopped at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in run.json.
+A run stopped at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in out.json.
 
 A cap too small for the task stops the run before a request it cannot pay for. With `--cap-mode strict` no request is sent that the cap cannot cover; under the default, `expected`, a request that misses the cache can go over by at most the run's `cost.overshoot_bound_usd`:
 
 ```sh
-agentrun runs start notes --max-cost-usd 0.05 --cap-mode strict --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > run.json
-# exit 8 once it stops at its cap: run.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough
+agentrun runs start notes --max-cost-usd 0.05 --cap-mode strict --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json
+# exit 8 once it stops at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough
 ```
 
 Only the person who set the cap raises it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on). Then the run goes on from where it stopped:
 
 ```sh
-run=$(node -p 'require("./run.json").run_id')
+run=$(node -p 'require("./out.json").run_id')
 agentrun runs raise-cap "$run" --max-cost-usd 1
-agentrun runs wait "$run" > run.json
+agentrun runs wait "$run" > out.json
 # exit 0 completed, as in recipe 2
 ```
 

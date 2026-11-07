@@ -1,4 +1,4 @@
-// the host lines a place's status gives (run.json, delegation, revoke, box.receipt) and a box place's recording brought home.
+// the host lines a place's status gives (box.receipt) and a box place's recording brought home.
 // One of the files the reference entry's demo tests are split into (each under about two minutes serial on CI); the shared helpers are in reference-demo-helpers.mjs.
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
@@ -15,90 +15,7 @@ import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
 import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
-// ---- run.json host lines from place.status() --------------------------------------------------------------------------------------------------
-
-test('the supervisor writes a run.json host line from place.status() when status, generation, holder or sealedSeq changes (start, kill, exit), none for a stable status or a place without status(), and the recording validates', { timeout: 300_000 }, async (t) => {
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-runjson-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
-  const file = join(tmp, 'spec.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
-  Object.assign(process.env, { DEMO_SPEC: file });
-  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
-  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  const runLines = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'run.json');
-  const record = (paths, over) => ({ run: paths.id, status: 'running', generation: 1, sealedSeq: 0, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: 1, since: 't' }, heartbeatAt: 'a', updatedAt: 'a', ...over });
-  // A place whose own record changes at start, at the kill and at exit: each is a line, in that order, and nothing else is.
-  const changing = join(tmp, 'changing');
-  await demo({ ...options, argv: ['--kill', '--json', '--record', changing], place: ({ paths, self, destroyBoxes, requestFile }) => {
-    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
-    let current = null;
-    let generation = 0;
-    return {
-      ...inner,
-      status: async () => ({ record: current }),
-      start: async (order) => { generation += 1; current = record(paths, { generation, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: generation, since: 't' } }); const runner = await inner.start(order); runner.exited.then(() => { if (current.status === 'running') current = { ...current, status: 'done', sealedSeq: 9, heartbeatAt: 'later' }; }); return runner; },
-      recover: async (last, kind, order) => { generation += 1; current = record(paths, { generation, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: generation, since: 't' } }); const next = await inner.recover(last, kind, order); next.runner.exited.then(() => { if (current.status === 'running') current = { ...current, status: 'done', sealedSeq: 9 }; }); return next; },
-      kill: async (runner, kind) => { current = { ...current, status: 'paused', sealedSeq: 7 }; await inner.kill(runner, kind); },
-    };
-  } });
-  const lines = runLines(changing);
-  assert.deepEqual(lines.map((line) => [line.data.gen, line.data.status, line.data.generation, line.data.sealedSeq]), [[1, 'running', 1, 0], [1, 'paused', 1, 7], [2, 'running', 2, 0], [2, 'done', 2, 9]]);
-  assert.ok(lines.every((line) => line.data.run && line.data.holder?.driver === 'fake'), 'the record verbatim');
-  assert.deepEqual(validateRecording(changing), []);
-  // A stable status: one line, however many times it is read. A heartbeat that moves is not a change.
-  const stable = join(tmp, 'stable');
-  await demo({ ...options, argv: ['--kill', '--json', '--record', stable], place: ({ paths, self, destroyBoxes, requestFile }) => {
-    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
-    let beat = 0;
-    return { ...inner, status: async () => { beat += 1; return { record: record(paths, { heartbeatAt: `beat-${beat}` }) }; } };
-  } });
-  assert.equal(runLines(stable).length, 1);
-  assert.deepEqual(validateRecording(stable), []);
-  // No status(): none. A reading that fails or is not a run record: none, and the run is fine.
-  const none = join(tmp, 'none');
-  const plain = await demo({ ...options, argv: ['--json', '--record', none] });
-  assert.equal(runLines(none).length, 0);
-  const broken = join(tmp, 'broken');
-  const failed = await demo({ ...options, argv: ['--json', '--record', broken], place: ({ paths, self, destroyBoxes, requestFile }) => ({ ...localPlace({ self, paths, destroyBoxes, requestFile }), status: async () => { throw new Error('the status reader failed'); } }) });
-  assert.equal(failed.processes.at(-1).outcome.status, 'complete');
-  assert.equal(runLines(broken).length, 0);
-  assert.equal(plain.processes.at(-1).outcome.status, 'complete');
-});
-test('a holder\'s host and boot id are labels in the recording (host-1, host-2, boot-1, ... by first appearance, the same label for the same value), and no real host name or boot id is in the finished recording', { timeout: 300_000 }, async (t) => {
-  const { hostname } = await import('node:os');
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-labels-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
-  const file = join(tmp, 'spec.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
-  Object.assign(process.env, { DEMO_SPEC: file });
-  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
-  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  const real = { host: hostname(), boot: existsSync('/proc/sys/kernel/random/boot_id') ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : 'made-up-boot-id-for-a-machine-without-one' };
-  const elsewhere = { host: 'another-box-for-the-test', boot: 'boot-id-of-another-box-for-the-test' };
-  const recording = join(tmp, 'recording');
-  // Generation 1 on this machine, generation 2 (after the kill) on another box, and a last record from this machine again.
-  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
-    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
-    let current = null;
-    const record = (who, generation, status) => ({ run: paths.id, status, generation, sealedSeq: generation, holder: { driver: 'fake', host: who.host, bootId: who.boot, pid: generation, since: 't' }, updatedAt: 'a' });
-    return {
-      ...inner, status: async () => ({ record: current }),
-      start: async (order) => { current = record(real, 1, 'running'); return inner.start(order); },
-      kill: async (runner, kind) => { current = { ...current, status: 'paused' }; await inner.kill(runner, kind); },
-      recover: async (last, kind, order) => { current = record(elsewhere, 2, 'running'); const next = await inner.recover(last, kind, order); next.runner.exited.then(() => { current = record(real, 3, 'done'); }); return next; },
-    };
-  } });
-  const lines = readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'run.json');
-  assert.deepEqual(lines.map((line) => [line.data.generation, line.data.status, line.data.holder.host, line.data.holder.bootId]), [
-    [1, 'running', 'host-1', 'boot-1'], [1, 'paused', 'host-1', 'boot-1'], [2, 'running', 'host-2', 'boot-2'], [3, 'done', 'host-1', 'boot-1'],
-  ], 'labels by first appearance; the same value keeps its label; a new box is a new holder');
-  for (const file of filesIn(recording)) {
-    const bytes = readFileSync(file);
-    for (const value of [real.host, real.boot, elsewhere.host, elsewhere.boot]) assert.ok(!bytes.includes(value), `${file.slice(recording.length)} holds a real host name or boot id`);
-  }
-  assert.deepEqual(validateRecording(recording), []);
-});
-// ---- signals-failed, and the messages the supervisor writes about a place's failures --------------------------------------------------------------
+// ---- host lines from the place --------------------------------------------------------------------------------------------------------------
 
 test('a place\'s signals may end with signals-failed or throw: a signals.failed host line, the attempt ends as after a failed kill, nothing ends the supervisor; and a message holds no absolute path outside the run\'s directory', { timeout: 300_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-signals-failed-'));
@@ -153,71 +70,6 @@ test('a place\'s signals may end with signals-failed or throw: a signals.failed 
   assert.deepEqual(hostLines(threwRecording, 'signals.failed').map((line) => [line.data.code, line.data.message]), [['BOOM', 'the reader threw at <path>']]);
   assert.deepEqual(unhandled, [], 'nothing in the pump ended the supervisor');
   assert.deepEqual(validateRecording(threwRecording), []);
-});
-test('a run.json line is an allowlist: a holder\'s sandbox id, name and mountpoint and any other field are dropped, and a detail is text of at most 240 with every absolute path as <path>', { timeout: 300_000 }, async (t) => {
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-allowlist-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
-  const file = join(tmp, 'spec.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference' }));
-  Object.assign(process.env, { DEMO_SPEC: file });
-  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
-  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  const recording = join(tmp, 'recording');
-  await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
-    ...localPlace({ self, paths, destroyBoxes, requestFile }),
-    status: async () => ({ record: {
-      run: paths.id, status: 'running', generation: 3, sealedSeq: 7, wakeAt: null, heartbeatAt: 'h', updatedAt: 'u', surprise: 'a field nobody listed',
-      holder: { driver: 'archil', host: 'a-real-host-name', bootId: 'a-real-boot-id', pid: 12, since: 's', sandboxId: 'sbx-123456', name: 'sandbox-of-the-demo', mountpoint: '/mnt/archil/the-disk' },
-      detail: `mounted at /mnt/archil/the-disk and ${paths.root}/store: ${'x'.repeat(400)}`,
-    } }),
-  }) });
-  const [line] = readEvents(recording).filter((entry) => entry.source === 'host' && entry.kind === 'run.json');
-  assert.deepEqual(Object.keys(line.data).sort(), ['detail', 'gen', 'generation', 'heartbeatAt', 'holder', 'run', 'sealedSeq', 'status', 'updatedAt', 'wakeAt']);
-  assert.deepEqual(line.data.holder, { driver: 'archil', host: 'host-1', bootId: 'boot-1', pid: 12, since: 's' });
-  assert.ok(line.data.detail.startsWith('mounted at <path>:') && line.data.detail.length <= 240, 'a path runs to the next delimiter');
-  const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
-  for (const leaked of ['sbx-123456', 'sandbox-of-the-demo', '/mnt/archil', 'a-real-host-name', 'a-real-boot-id', 'a field nobody listed']) assert.ok(!text.includes(leaked), `${leaked} is not in the recording`);
-
-});
-// ---- delegation and revoke lines ---------------------------------------------------------------------------------------------------------------
-
-test('delegation lines are written from place.status() when a delegation appears or its orphaned state changes (none for a stable one), a revoke line from recover()\'s { revoked, ms }, and a place without them writes none; the recording validates', { timeout: 300_000 }, async (t) => {
-  const tmp = await mkdtemp(join(tmpdir(), 'reference-delegations-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
-  const file = join(tmp, 'spec.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
-  Object.assign(process.env, { DEMO_SPEC: file });
-  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
-  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  const lines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
-  const recording = join(tmp, 'recording');
-  const first = { clientId: 'c-9a41', inodeId: 7001, path: '/runs/the-run', isOrphaned: false, isPending: false };
-  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
-    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
-    let generation = 0;
-    let delegations = [];
-    const record = () => ({ run: paths.id, status: 'running', generation, sealedSeq: 0, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: generation, since: 's' } });
-    return {
-      ...inner,
-      status: async () => ({ record: generation ? record() : null, delegations }),
-      start: async (order) => { generation = 1; delegations = [first]; return inner.start(order); },
-      // The old holder\'s delegation is orphaned the moment its box is gone; the takeover revokes it and a new holder has its own.
-      kill: async (runner, kind) => { delegations = [{ ...first, isOrphaned: true }]; await inner.kill(runner, kind); },
-      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); generation = 2; delegations = [{ clientId: 'c-b2e7', inodeId: 'f-7002', path: '/runs/the-run', isOrphaned: false, isPending: true }]; return { ...next, revoked: [{ ...first, isOrphaned: true }], ms: 1234 }; },
-    };
-  } });
-  assert.deepEqual(lines(recording, 'delegation').map((line) => [line.data.gen, line.data.clientId, line.data.isOrphaned, line.data.isPending]), [[1, 'client-1', false, false], [1, 'client-1', true, false], [2, 'client-2', false, true]], 'one line when each appears, one more when the first became orphaned, none for a stable one');
-  assert.deepEqual(Object.keys(lines(recording, 'delegation')[0].data).sort(), ['clientId', 'gen', 'inodeId', 'isOrphaned', 'isPending', 'path']);
-  assert.deepEqual(lines(recording, 'revoke').map((line) => [line.data.gen, line.data.revoked, line.data.ms]), [[2, [{ clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: true }], 1234]]);
-  assert.deepEqual(lines(recording, 'delegation').map((line) => line.data.inodeId), ['inode-1', 'inode-1', 'inode-2'], 'the same value the same label, a new one the next');
-  const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
-  // The ids as the place wrote them: the strings as text, and the number as the field's value (a bare 7001 can occur in a timestamp).
-  for (const raw of ['c-9a41', 'c-b2e7', '"inodeId":7001', 'f-7002']) assert.ok(!text.includes(raw), `${raw} is not in the recording`);
-  assert.deepEqual(validateRecording(recording), []);
-  // A place without delegations or a revoke writes none.
-  const plain = join(tmp, 'plain');
-  await demo({ ...options, argv: ['--kill', '--json', '--record', plain] });
-  assert.equal(lines(plain, 'delegation').length + lines(plain, 'revoke').length, 0);
 });
 test('a place with recordHome: the child writes its recording inside the place, the supervisor brings it home each tick and once final before the manifest, blobs first, and the recording validates', { timeout: 300_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-recordhome-'));
@@ -427,18 +279,3 @@ test('a box charge that first appears in the very last status read the superviso
   assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
 });
 
-test('a delegation without a path (the package finds it by its inode) is kept: a delegation line and a revoke entry are written without one', { timeout: 300_000 }, async (t) => {
-  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
-  const recording = join(tmp, 'recording');
-  const bare = { clientId: 'client-x', inodeId: 4242, isOrphaned: true, isPending: false };
-  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
-    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
-    return { ...inner, status: async () => ({ record: null, delegations: [bare] }), recover: async (last, kind, order) => ({ ...(await inner.recover(last, kind, order)), revoked: [bare], ms: 5 }) };
-  } });
-  const lines = readEvents(recording).filter((line) => line.source === 'host');
-  const delegation = lines.find((line) => line.kind === 'delegation');
-  assert.ok(delegation, 'the delegation line is written');
-  assert.equal('path' in delegation.data, false);
-  const revoke = lines.find((line) => line.kind === 'revoke');
-  assert.equal(revoke.data.revoked.length, 1, 'and the revoke names it');
-});

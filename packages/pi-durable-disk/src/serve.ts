@@ -1,7 +1,7 @@
 // The serve mode, a Durable Object stub's fetch over pi's own API. The instance answers `POST /submit` (pi's
 // submit with the caller's `requestId`, which pi deduplicates in the run's store, so a retry that lands on the next
 // incarnation finds the same submission), `POST /abort`, `GET /events` (pi's agent events as server-sent events) and
-// `GET /status`. It listens before the run opens, so its address can go into run.json's holder, and answers 503 with a
+// `GET /status`. It listens before the run opens, so its address can go into the run's holder, and answers 503 with a
 // code while the run opens, parks or is released. Open requests keep the instance up (parking waits for none). On loopback a bearer token is optional; on any other
 // address it is required, read from a private file, and checked in constant time on every route.
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
@@ -57,12 +57,12 @@ const textOfInput = (content: UserInput): string =>
   (typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")).trim();
 
 export interface ServeOptions {
-  /** Default 0: any free port (the address is in `url` and in run.json's holder). */
+  /** Default 0: any free port (the address is in `url` and in the run's holder). */
   readonly port?: number;
   /** Default 127.0.0.1. Any address that is not loopback needs `token`; a wildcard (0.0.0.0, ::) needs `url` too. */
   readonly host?: string;
   /**
-   * The address clients reach this server at (`http://` or `https://`), which goes into run.json's holder. Default: the
+   * The address clients reach this server at (`http://` or `https://`), which goes into the run's holder. Default: the
    * bound address, which only works for a specific host; a wildcard bind has no address a client can use.
    */
   readonly url?: string;

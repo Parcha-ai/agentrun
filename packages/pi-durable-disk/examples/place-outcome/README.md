@@ -125,8 +125,8 @@ ok: two runs, two outcomes: the one that delivered is complete with its record, 
 - `localPlace({ app })` returns `(ctx) => Place`. `ctx.paths` is the run's id and directory as the supervisor computed them.
   `place.start({ gen, env })` starts the instance as a child in its own process group, with only `PATH` and the order's `env`,
   and `runner.exited` settles when it ends, with its exit and its `outcome`. `place.release()` stops anything still running.
-- The outcome is the instance's `{"outcome":...}` line on stdout when it prints one, else `run.json` as the run left it. This
-  app prints none, so it is `run.json`'s: the app's last `setStatus` carries the result. `done` with a `record` is `complete`;
+- The outcome is the instance's `{"outcome":...}` line on stdout when it prints one, else the run's record as the run left it. This
+  app prints none, so it is the record's: the app's last `setStatus` carries the result. `done` with a `record` is `complete`;
   `failed`, or `done` with no record, is `failed`. An app that wants its supervisor to have its result puts it in that last
   status, and the models it used under `models` (kept only when they are a plain object of strings).
 - The faux model answers one turn so the run has something to deliver; the supervisor never sees the conversation, only
