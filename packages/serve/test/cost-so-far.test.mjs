@@ -5,9 +5,9 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { metersIn } from "../dist/cap.js";
+import { readRunDbSync } from "../dist/run-db.js";
 import { startServe } from "../dist/index.js";
 import { agent, client, follow, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
@@ -20,7 +20,7 @@ const round = (usd) => Math.round(usd * 1e6) / 1e6;
 
 /** Waits for `check`, up to `ms`. */
 async function until(what, check, ms = 60_000) {
-  for (const end = Date.now() + ms; !(await check()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, what);
+  for (const end = Date.now() + ms; !(await check()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, typeof what === "function" ? what() : what);
 }
 
 /** A pi run whose first turn completes at a known cost, then whose follow-up ("Take your time.") is in flight. */
@@ -115,14 +115,17 @@ test("pi: after a stop read early, the turn's end and the stop's booking arrivin
   const early = (await view(api, runId)).cost;
   // What the door held arrives: the turn's end, and the stopped request's end mark, booked at no price.
   events.release();
-  await until("the stopped request's end mark is in the store", async () => {
+  let lastError;
+  await until(() => `the stopped request's end mark is in the store: timed out; last read error: ${lastError?.message ?? "none"}`, async () => {
     const store = join(runDir(options.data, runId), "store", "run.sqlite");
     if (!existsSync(store)) return false;
-    const db = new DatabaseSync(store, { readOnly: true });
+    // The repository's reader of a store a live process writes (run-db.ts): lock-free and read-only, never in the
+    // writer's way. A read that fails while the store moves is "not yet"; a timeout names the last such error.
     try {
-      return db.prepare("SELECT count(*) AS n FROM entries WHERE record LIKE '%agentrun.request_ended%'").get().n > 0;
-    } finally {
-      db.close();
+      return readRunDbSync(store, true, (db) => db.prepare("SELECT count(*) AS n FROM entries WHERE record LIKE '%agentrun.request_ended%'").get().n > 0);
+    } catch (error) {
+      lastError = error;
+      return false;
     }
   });
   await new Promise((resolve) => setTimeout(resolve, 1_000));
