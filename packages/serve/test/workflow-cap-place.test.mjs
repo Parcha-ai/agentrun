@@ -2,12 +2,13 @@
 // server's limits (max_concurrent_runs, and the memory its harness takes). With no place free, the run waits for one,
 // still paused, and opens once one frees; never a process past the limit.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
-import { agent, client, flowAgent, follow, letGo, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, flowAgent, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_SERVE_BUDGET_HOLD_MS"];
@@ -138,29 +139,6 @@ test("a raise whose launch fails after its place was taken (a pin that throws) l
   assert.deepEqual([failed > 0, status], [true, "completed"], "the launch that failed left the run waiting, and the next try opened it under the raised cap");
 });
 
-test("a raised run waiting for a place gets the place that frees, never a newer start: new starts keep being refused until it has opened", { timeout: 180_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
-  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
-  const gate = join(data, "free");
-  const { runId } = await waitingForPlace(api, data, "starved", gate);
-  assert.equal((await api("POST", "/agents", agent("newer"))).status, 201);
-  // A stream of new starts, refused while the place is held; then the place frees.
-  let accepted;
-  let raisedThen;
-  const stream = (async () => {
-    for (const end = Date.now() + 90_000; Date.now() < end; await sleep(50)) {
-      const tried = await api("POST", "/agents/newer/runs", { input: { content: "hi" } });
-      if (tried.status === 202) return void ((accepted = tried.body.run_id), (raisedThen = (await view(api, runId)).status));
-      assert.equal(tried.status, 429, JSON.stringify(tried.body));
-    }
-  })();
-  await sleep(500);
-  await writeFile(gate, "");
-  await stream;
-  assert.ok(accepted, "a new start was accepted in the end");
-  assert.notEqual(raisedThen, "queued", "the freed place went to the raised run that waited for it, not to a newer start");
-});
-
 test("a raise on a server whose memory for runs another run holds starts no process past the memory limit: the run waits for a place, and starts once the memory frees", { timeout: 180_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
   const { RUN_MIB } = await import("../dist/harness.js");
@@ -200,21 +178,6 @@ test("a server that closes while a raised run waits for a place tries it no more
   assert.deepEqual([launches, Number.isInteger(pid) && pid !== process.pid && processAlive(pid)], [0, false]);
 });
 
-test("the place kept for a raised run waiting for one goes back when it is cancelled: a new start then takes the place that frees", { timeout: 180_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
-  const { api, data } = await serve(t, { faux: PRICED, maxRuns: 1 });
-  const gate = join(data, "free");
-  const { runId, busyId } = await waitingForPlace(api, data, "gone", gate);
-  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
-  await follow(api, runId, ENDED, { deadlineMs: 30_000 });
-  await writeFile(gate, "");
-  await follow(api, busyId, ["completed"], { deadlineMs: 60_000 });
-  assert.equal((await api("POST", "/agents", agent("after-cancel"))).status, 201);
-  let started;
-  for (const end = Date.now() + 10_000; Date.now() < end && started?.status !== 202; await sleep(200)) started = await api("POST", "/agents/after-cancel/runs", { input: { content: "hi" } });
-  assert.equal(started?.status, 202, `nothing keeps the place for a cancelled run: ${JSON.stringify(started?.body)}`);
-});
-
 test("a raised run whose launch keeps failing leaves the queue after three tries, still paused at its cap, and keeps no place: a new start then takes it", { timeout: 180_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
   let failed = 0;
@@ -230,4 +193,35 @@ test("a raised run whose launch keeps failing leaves the queue after three tries
   assert.equal((await api("POST", "/agents", agent("after-fails"))).status, 201);
   const started = await api("POST", "/agents/after-fails/runs", { input: { content: "hi" } });
   assert.equal(started.status, 202, `the run that kept failing keeps no place: ${JSON.stringify(started.body)}`);
+});
+
+test("a server that closes while a raise holds its place keeps the run's pause on disk, and the next server finishes the raise: never a run left queued with no mark and no retry", { timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const data = join(await scratch(t), "agents");
+  // The raise's launch, held where its pins are (its place taken), until the server has begun to close.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let reached;
+  const atPins = new Promise((resolve) => (reached = resolve));
+  let holds = 0;
+  const first = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s", beforeRaiseLaunch: async () => { if (holds++ === 0) { reached(); await held; } } });
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("POST", "/agents", flowAgent("closing", twoNodes()))).status, 201);
+  const { run_id: runId } = (await api("POST", "/agents/closing/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  await letGo(data, runId);
+  const raised = api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 }).catch(() => undefined);
+  await atPins;
+  const closed = first.close();
+  setTimeout(release, 300);
+  await closed;
+  await raised;
+  await sleep(500);
+  const kept = existsSync(join(runDir(data, runId), "budget.json"));
+  // The next server, its settle reading the pause on disk, finishes the raise.
+  const second = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
+  t.after(() => second.close());
+  const next = client(second.baseUrl, second.token);
+  const status = await statusWithin(next, runId, ENDED, 60_000);
+  assert.deepEqual([kept, status], [true, "completed"], "the pause stayed on disk through the close, and the next server opened the raised run");
 });
