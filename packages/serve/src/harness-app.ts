@@ -374,7 +374,7 @@ export function adapterRun(
    *  Everything a flush writes is one commit, and `end` (a turn's end: its error and TURN_END) is the last of it, so a
    *  turn's end is in the commit of its last entries. The bookkeeping goes first: a commit the store refuses ends the
    *  process, and the next open reads the root again. */
-  const flush = (final = false, end?: (tx: Tx) => Promise<unknown>): Promise<void> =>
+  const flush = (final = false, end?: (tx: Tx) => Promise<unknown>, given?: { text: string; calls: ToolCall[] }): Promise<void> =>
     later(async () => {
       const writes: ((tx: Tx) => Promise<unknown>)[] = [];
       const commitAll = async () => {
@@ -384,11 +384,15 @@ export function adapterRun(
       // Each cost for a request already written, wherever it sits: a response is booked when its stream closes, so a
       // late cost can come in after a later request's.
       for (let at = writtenAt(); at >= 0; at = writtenAt()) priceLate(costed.splice(at, 1)[0]!, writes);
-      if ((!text && !calls.length && !costed.length) || (!costed.length && !final)) return commitAll();
+      // `given`: content taken at the boundary that called this (a call's end), never what streamed since.
+      const pending = given ?? { text, calls };
+      if ((!pending.text && !pending.calls.length && !costed.length) || (!costed.length && !final)) return commitAll();
       const request = costed.shift();
-      const content = { text, calls };
-      text = "";
-      calls = [];
+      const content = pending;
+      if (!given) {
+        text = "";
+        calls = [];
+      }
       // At a turn's end with no cost in: the request still unbooked is the one this content answers. It is written at
       // unknown cost and marked booked, so a later open never writes it again.
       const unbooked = !request && final && open.size ? Math.min(...open) : undefined;
@@ -425,8 +429,29 @@ export function adapterRun(
       await commitAll();
     });
 
+  /** What the current request's answer streamed after its entry was written (its text, a call): written now as that
+   *  answer's continuation (REQUEST_CONTINUED), shown and never counted as a request of its own, nor left to a later
+   *  flush that would write it as one at an unknown cost. Called where that content ends: the next request's start, a
+   *  call of the same answer, the turn's end. */
+  const continued = () => {
+    const request = current;
+    if (request === undefined || !answered.has(request) || (!text && !calls.length)) return;
+    const content = { text, calls };
+    text = "";
+    calls = [];
+    later(() =>
+      commit(async (tx) => {
+        await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request } });
+        const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(request), undefined, content.text, content.calls) as never] });
+        if (content.text && !content.calls.length) answer = entry.id as number;
+      }).then(() => undefined),
+    );
+  };
+
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") {
+      // The answer before it is over: what it streamed since its entry is its continuation.
+      continued();
       inFlight.started(event.turn);
       // Its bound, on its start mark: the run's cost serves it while it is in flight (runs.ts).
       const admitted = admittedNext;
@@ -498,23 +523,24 @@ export function adapterRun(
       // A call of the current request's answer after that answer's entry was written (at its first call's end): written
       // now as the answer's continuation, so its result never comes before it and the next answer never holds it.
       const request = current;
-      // Written as soon as its request's cost is in (now, or when it comes in), so the call shows while it runs.
-      if (text || calls.length || request === undefined || !answered.has(request)) {
-        calls.push(call);
-        void flush();
-      } else {
-        later(() =>
-          commit(async (tx) => {
-            await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request } });
-            await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(request), undefined, "", [call]) as never] });
-          }).then(() => undefined),
-        );
-      }
+      // Written as soon as its request's cost is in (now, or when it comes in), so the call shows while it runs; a call of
+      // an answer already written goes at once, with any text streamed before it, as that answer's continuation.
+      calls.push(call);
+      if (request !== undefined && answered.has(request)) continued();
+      else void flush();
     }
     else if (event.type === "tool_end") {
       // A call still waiting for its request's cost (one that ends, or is refused, before the request is booked) goes on
       // the root now, at a cost still to come, which comes in later (PRICED_LATE): its result is never written above it.
-      void flush(calls.some((call) => call.id === event.callId));
+      // Taken now, with the request it answers marked answered now: text or a call that streams after this end is that
+      // answer's continuation (continued), never part of this entry nor a request of its own.
+      if (calls.some((call) => call.id === event.callId)) {
+        const given = { text, calls };
+        text = "";
+        calls = [];
+        if (current !== undefined) answered.add(current);
+        void flush(true, undefined, given);
+      } else void flush();
       later(() =>
         commit(async (tx) => {
           await tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
@@ -638,6 +664,8 @@ export function adapterRun(
           // (turns.ts). A turn the instance's own stop cut gets none: the next open resumes it while the session holds it
           // open, or restores its end from the root (completed with its answer) when the session had ended it.
           const cut = draining && why === undefined && status === "interrupted";
+          // What the last answer streamed after its entry was written is its continuation, never a request of its own.
+          continued();
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
               // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
