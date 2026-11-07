@@ -36,7 +36,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
+import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
 import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
@@ -281,10 +281,15 @@ export const TURN_ORIGIN_FILE = "turn-origin.json";
 /** The run's store's record of a call that waits for approval (`phase: "requested"`), and of its answer acted on
  *  (`phase: "resolved"`), on its root conversation. */
 export const APPROVAL_ENTRY = "agentrun.tool_approval";
-/** The run's store's record that the gate let a replay-safe pi call through (`{ callId }`), written before the tool runs.
- *  pi-durable reruns a cut replay-safe call with the same call id and no sign that it is a rerun: this mark is how the
- *  gate knows an earlier attempt may have been sent, so a deny of the rerun never says nothing was charged. */
-export const GATE_PASSED_ENTRY = "agentrun.tool_gate_passed";
+/** The run's store's record that the gate let a replay-safe pi call that can bill through (`{ callId }`), written before
+ *  the tool runs. pi-durable reruns a cut replay-safe call with the same call id and no sign that it is a rerun: this mark
+ *  is how the gate knows an earlier attempt may have been sent, so a deny of the rerun never says nothing was charged.
+ *  Outside `agentrun.tool_`, the tool ledger's kinds (paid-calls.ts), which readers of a run's charges take by prefix. */
+export const GATE_PASSED_ENTRY = "agentrun.gate_passed";
+/** The replay-safe tools, by settings key, whose call can be charged (a provider's fee: Parallel's search or extract): the
+ *  only ones the gate marks, so the root conversation does not grow by a mark per free call (read, the shell watchers,
+ *  monid's discover and inspect), whose earlier attempt charged nothing. monid.run is never rerun (host-tools.ts REPLAY). */
+const BILLED_REPLAYS: ReadonlySet<string> = new Set(["web_fetch", "web_search"]);
 
 /** The refusal of the end-of-run turn's write or edit under work/.learning/: its notes are kept only from its answer's
  *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
@@ -459,18 +464,20 @@ export class RunGate {
 
   private wrap(tool: ToolRegistration): ToolRegistration {
     const gate = this;
+    const billed = tool.replay === "safe" && BILLED_REPLAYS.has(settingsKeyOf(this.where.harness ?? "pi", tool.name, this.where.mcpServers) ?? "");
     return {
       ...tool,
       async execute(args, api, context) {
         const commit = (change: unknown) => api.commit(change as never, context) as never;
         // A rerun of a replay-safe call the gate let through before (pi-durable reruns it with the same call id after a
-        // crash, with no sign of it): an earlier attempt may have been sent, which the gate's refusal must not deny.
+        // crash, with no sign of it): an earlier attempt may have been sent, which the gate's refusal must not deny. The
+        // marks were read before the run resumed (prime), so a rerun the resume dispatches finds them.
         const answer = await gate.enter(tool.name, args, api.callId, { commit }, gate.passed.has(api.callId) ? { replayed: true } : {});
         // A parked call ends the turn, as ask_person's does.
         if (answer) return forModel(answer.text, answer.parked ? { control: { terminate: true } } : { isError: true });
-        // Let through: a replay-safe call's mark goes in the store before the tool runs, so a crash after it leaves a rerun
-        // the gate knows for one. A mark that fails to commit stops the call (nothing has been sent).
-        if (tool.replay === "safe" && !gate.passed.has(api.callId)) {
+        // Let through: a call that can bill is marked in the store before the tool runs, so a crash after it leaves a
+        // rerun the gate knows for one. A mark that fails to commit stops the call (nothing has been sent).
+        if (billed && !gate.passed.has(api.callId)) {
           await commit((tx: Tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: GATE_PASSED_ENTRY, data: { callId: api.callId } }));
           gate.passed.add(api.callId);
         }
@@ -479,21 +486,31 @@ export class RunGate {
     } as ToolRegistration;
   }
 
-  /** Reads the requests the run's store holds, as the run's process opens, before its turns go on. `coding`: the run's
-   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would; `extra`, the run's
- *  own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  /** Takes the open run, as the run's process opens (its app's onOpen), reading what its store holds of the gate unless
+   *  `prime` read it before the resume. `coding`: the run's coding source (coding-tools.ts), on which an approved coding
+   *  call runs, as the run's own would; `extra`, the run's own tools beyond the table (its learned_workflow), on which an
+   *  approved call of one runs. */
   async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[], extra: readonly ToolRegistration[] = []): Promise<void> {
     this.durable = durable;
     this.context = context;
     this.coding = coding;
     this.extra = extra;
-    const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
+    if (!this.primed) await this.prime(durable.harness, context);
+  }
+
+  private primed = false;
+  /** Reads what the run's store holds of the gate (the calls that wait, the answers acted on, the calls it let through)
+   *  before the run resumes: its app's beforeResume hook, ahead of harness.resume(), which dispatches the calls a crash
+   *  cut. Read here, not in onOpen, which a recovered call races. A workflow's run calls only this; load reads nothing more. */
+  async prime(harness: Pick<Harness, "conversation">, context: Context): Promise<void> {
+    const root = await harness.conversation(ROOT_CONVERSATION_ID, context);
     for (let cursor: Cursor | undefined; root; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, context);
       for (const entry of page.items) this.note(entry as { kind: string; data?: unknown });
       if (page.next === undefined) break;
       cursor = page.next;
     }
+    this.primed = true;
   }
 
   /** Whether a call waits for its answer, or for its answer to be acted on: a harness keeps the turn it ended closed. */
