@@ -42,9 +42,9 @@ if (mode) {
   const registry = createRegistry();
   registry.install(flow.extension);
   const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
-  harness.subscribeCommits((publication) => {
+  harness.observeCommits({ end() {}, advance: (publication) => {
     for (const change of publication.changes) if (change.type === 'document' && change.value && change.record.kind === 'agentrun.decisions') kill('after-decision');
-  });
+  } });
   const ended = (record) => record && { id: record.id, status: record.state.status, outcome: record.state.outcome ?? null };
   if (mode === 'start') {
     for (const key of (process.env.KEYS || 'run-1').split(',')) {

@@ -202,7 +202,9 @@ export function watchParking(run: ParkTarget, options: ParkOptions): Parking {
     queueMicrotask(() => void loop());
   }
 
-  const unsubscribe = run.harness.subscribeCommits(() => check());
+  // Each stored commit rechecks (pi 1.5's observeCommits; the Session's close or failure publishes nothing more, as on 1.1).
+  const observation = run.harness.observeCommits({ advance: () => check(), end: () => undefined });
+  const unsubscribe = () => observation.detach();
   settled.promise.catch(() => {});
   check();
   return {
@@ -234,7 +236,8 @@ export async function drain(run: Pick<ParkTarget, "harness">, options: DrainOpti
   const now = options.now ?? Date.now;
   let changed = () => {};
   let timedOut = false;
-  const unsubscribe = run.harness.subscribeCommits(() => changed());
+  const observation = run.harness.observeCommits({ advance: () => changed(), end: () => undefined });
+  const unsubscribe = () => observation.detach();
   const timer = setTimeout(() => {
     timedOut = true;
     changed();

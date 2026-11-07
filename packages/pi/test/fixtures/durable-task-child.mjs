@@ -57,14 +57,14 @@ if (mode) {
   registry.install(flow.extension);
   const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
   // A kill point that is a commit: the process dies once the commit is durable, before anything after it runs.
-  harness.subscribeCommits((publication) => {
+  harness.observeCommits({ end() {}, advance: (publication) => {
     for (const change of publication.changes) {
       if (change.type !== 'document' || !change.value) continue;
       if (change.record.kind === 'agentrun.effects' && change.value.status === 'unknown') kill('after-admit');
       if (change.record.kind === 'agentrun.effects' && change.value.status === 'completed') kill('after-complete');
       if (change.record.kind === 'agentrun.driver' && change.value.state?.pin?.done?.includes(LAST)) kill('before-terminal');
     }
-  });
+  } });
   const receipt = (record) => record && { id: record.id, status: record.state.status, outcome: record.state.outcome ?? null };
   if (mode === 'start') {
     const pause = process.env.PAUSE_AT_START === '1';
