@@ -12,6 +12,7 @@
       "EnvError",
       "FencedError",
       "HeldError",
+      "JOURNAL_SYNCHRONOUS",
       "MESSAGE_ORIGIN_KIND",
       "PathOutsideWorkError",
       "PdaError",

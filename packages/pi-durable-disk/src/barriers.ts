@@ -196,8 +196,8 @@ export const NORMAL_PRECONDITIONS = {
     what: "no barrier needed before pi-ai's retry: a lost attempt's end mark (serve/src/request-start.ts) carries the request's hold, which its start mark, synced before the request left (modelRequestStarted), carries too, and the retry writes no start mark of its own; a box that drops the lost mark leaves the request read as one a crash cut, at that same hold, and the WAL keeps the lost mark whenever it keeps an answer of the retry (serve/test/retry-mark-box-loss.test.mjs, a guard)",
   },
   holdRefusedUnsynced: {
-    done: false,
-    what: "a paid call refused after its hold was written (serve/src/paid-calls.ts:81-84, a sync that fails) and a model request ended unsent after its start mark (modelRequestStarted) leave their refusal or unsent end unsynced",
+    done: true,
+    what: "a paid call's hold and a model request's start mark are not written when there is no run store to sync, and a sync that fails after one is answered in the store, a hold by its $0 settle and a start mark by its unsent end, after it in the WAL, so any later sync that keeps one keeps the other (serve/test/hold-refused.test.mjs)",
   },
   browserSessionBarrier: {
     done: true,
