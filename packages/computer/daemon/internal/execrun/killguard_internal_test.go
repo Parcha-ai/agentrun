@@ -2,8 +2,8 @@ package execrun
 
 import (
 	"os/exec"
-	"syscall"
 	"testing"
+	"time"
 )
 
 // Once the guard was reaped its pid is free, and the kernel may give it to another process: killGuard must not signal
@@ -13,17 +13,19 @@ func TestKillGuardSparesThePidOnceTheGuardWasReaped(t *testing.T) {
 	if err := bystander.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = bystander.Process.Kill()
-		_ = bystander.Wait()
-	})
+	t.Cleanup(func() { _ = bystander.Process.Kill() })
 	done := make(chan struct{})
 	close(done)
 	g := &Guarded{guard: &exec.Cmd{Process: bystander.Process}, done: done}
 	if err := killGuard(g); err != nil {
 		t.Fatalf("killGuard on a reaped guard: %v", err)
 	}
-	if err := bystander.Process.Signal(syscall.Signal(0)); err != nil {
+	// SIGKILL lands asynchronously: wait for the bystander, bounded. Dying in that time means killGuard signalled it.
+	ended := make(chan error, 1)
+	go func() { ended <- bystander.Wait() }()
+	select {
+	case err := <-ended:
 		t.Fatalf("killGuard signalled pid %d after its guard was reaped: %v", bystander.Process.Pid, err)
+	case <-time.After(2 * time.Second):
 	}
 }
