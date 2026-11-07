@@ -33,7 +33,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
@@ -110,7 +110,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
   // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  // claude-agent's own model, as in production; on the faux harness too unless pi's faux model stands in (runnable.ts).
+  const fauxModels = Boolean(env[FAUX_HARNESS_ENV] && env[FAUX_ENV]);
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !fauxModels ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -122,7 +124,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // a request the cap refuses never leaves, and gets a start mark of its own, which its error entry answers.
   const onHarness = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
   // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
-  const priced = onHarness && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model;
+  const priced = onHarness && revision.body.harness === "claude-agent" && !fauxModels ? claudePriceModel(env, model!) : model;
   /** The session's port, once the harness's run is made (adapterRun): read at each request. */
   let sessionPort: ((label: string) => SessionPort | undefined) | undefined;
   const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root));

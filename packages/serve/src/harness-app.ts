@@ -909,7 +909,9 @@ export function adapterRun(
         runTurns(restored ? async () => (await restore(restored), await next()) : next);
       }
       // The answers from now on: each resumes the session with one message of its own.
-      gate?.start(resume);
+      // The allow un-parks the run before the approved call runs: its own model requests (a learned workflow's node, on
+      // the session's route) go out; the harness's own wait for the resume's turn, which the park left them for.
+      gate?.start(resume, () => void (parked = undefined));
     },
   };
 }
