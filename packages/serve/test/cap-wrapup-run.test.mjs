@@ -375,3 +375,21 @@ test("claude-agent on the faux harness: a side call that comes first (the harnes
   await letGo(data, runId);
   assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.29")]], "in the session's first request, once");
 });
+
+test("claude-agent on the faux harness: the request that carries the note is held at its bound with the note's bytes in it: its hold less its plain hold is the note's bytes at the input price (a pin)", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("noted-hold-h", { harness: "claude-agent", instructions: "Hold the request that carries the note." }))).status, 201);
+  // Input at $100 a million, output free, so nothing limits the request's output and its hold is its input bound's price.
+  // Its step-0 figure, 1,000 tokens or $0.10, is over a third of $0.29: it carries the note. Held at $0.10 plus the note's
+  // bytes, it fits; uncached, every byte at $100 a million.
+  const runId = (await api("POST", "/agents/noted-hold-h/runs", { input: { content: "go" }, max_cost_usd: 0.29 })).body.run_id;
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  await letGo(data, runId);
+  const [[carrier, note]] = noteRequests(data, runId);
+  assert.equal(carrier, 0, "request 0 carries the note");
+  const holds = entries(data, runId).filter((record) => record.kind === "runner.request" && record.data?.side !== true).map((record) => record.data.heldUsd);
+  const plain = (1_000 * 100) / 1e6;
+  const noteUsd = (Buffer.byteLength(note, "utf8") * 100) / 1e6;
+  assert.ok(Math.abs(holds[0] - plain - noteUsd) < 1e-9, `held ${holds[0]}: the plain $${plain} and the note's ${Buffer.byteLength(note, "utf8")} bytes ($${noteUsd})`);
+});

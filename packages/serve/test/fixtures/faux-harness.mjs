@@ -117,6 +117,8 @@ export function script(spec) {
   // The wrap-up due after a $0.40 request; the next request, which takes the note, has a side call admitted and answered
   // between that take and its own admission; then one request more.
   if (/Wrap up with a side call in between\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.4, outputTokensAsked: 1_024 }, { call: "read", args: { path: "b.txt" }, usd: 0.01, sideAfterNote: { usd: 0.0001 } }, { say: "Done.", usd: 0.01 }];
+  // One request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, then the answer.
+  if (/Hold the request that carries the note\./.test(text)) return [{ say: "Done.", inputTokensMax: 1_000, usd: 0.01 }];
   // A side call (the harness's own title request, 100 tokens) admitted and paid ($0.0005) before the session's first
   // request, whose input is 1,000 tokens; then one request more.
   if (/Wrap up after a side call comes first\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, inputTokensMax: 1_000, usd: 0.01, sideFirst: { usd: 0.0005, say: "Titled." } }, { say: "Done.", usd: 0.01 }];
