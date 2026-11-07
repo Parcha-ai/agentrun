@@ -23,7 +23,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { capRefusals } from "./cap.js";
+import { type CapRefusal, capRefusals } from "./cap.js";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
 import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
@@ -43,7 +43,10 @@ export type WebPage = Page & { via: "parallel" | "direct" | "stopped"; parallel?
 /** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
 export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
 /** A page web_fetch could not read, and how it tried. */
-type WebUnread = Unread & Pick<WebPage, "via" | "parallel">;
+/** On a read the cap refused in a call node (readOnce): the refusal, carried with the shared read, so every call node
+ *  that shares it is told and held, not only the one that started it (webFetch). Never serialized: a symbol key. */
+const HELD = Symbol("the cap's refusal of a shared read");
+type WebUnread = Unread & Pick<WebPage, "via" | "parallel"> & { readonly [HELD]?: CapRefusal };
 /** The pages a run reads, by the URL asked for, each from its read's start (so calls at once share it), the last used
  *  last: at most PAGES_HELD of them. */
 export type Pages = Map<string, Promise<WebRead | WebUnread>>;
@@ -148,12 +151,12 @@ async function readOnce(url: unknown, parallel: Extract | null | undefined, chec
   else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
   else if (parallel) {
     const told = capRefusals.getStore();
-    let held = false;
+    let held: CapRefusal | undefined;
     const read = told
-      ? await capRefusals.run((refusal) => ((held = true), told(refusal)), () => parallel.read(url as string, options.signal))
+      ? await capRefusals.run((refusal) => ((held ??= refusal), told(refusal)), () => parallel.read(url as string, options.signal))
       : await parallel.read(url as string, options.signal);
     if (typeof read !== "string") return { ...read, via: "parallel" };
-    if (held) return { ok: false, url: clip(url as string, URL_MAX), status: 0, title: "", text: "", links: [], error: read, via: "parallel", parallel: read };
+    if (held) return { ok: false, url: clip(url as string, URL_MAX), status: 0, title: "", text: "", links: [], error: read, via: "parallel", parallel: read, [HELD]: held };
     why = read;
   }
   return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
@@ -196,6 +199,8 @@ function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signa
 export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOUT_MS, offset, maxChars, signal, ...options }: GuardOptions & Part & { parallel?: Extract | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
   const named = typeof url === "string" ? url : undefined;
   let reading = named === undefined ? undefined : pages?.get(named);
+  /** The run's read under way for this URL, taken by this call: its refusal at the cap is this call's too (HELD). */
+  const shared = reading !== undefined;
   if (!reading) {
     const started = readOnce(url, parallel, checkMs, options);
     if (pages && named !== undefined) {
@@ -212,6 +217,10 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
     trim(pages);
   }
   const read = await untilStopped(url, reading, signal);
+  // A shared read the cap refused holds this call node as it held the one that started it (told there, in readOnce):
+  // the same refusal, told here, so this call waits for a raise too instead of taking the unread page as its answer.
+  const refusal = shared && !read.ok ? read[HELD] : undefined;
+  if (refusal) capRefusals.getStore()?.(refusal);
   if (!read.ok) return read;
   const { via, parallel: why, ...page } = read;
   return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
