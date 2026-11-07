@@ -215,9 +215,11 @@ export function adapterRun(
   // once admitted, held while the turn it is told in has its person's (or the server's) message still to be written
   // (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
   type WrapRow = { key: string; capUsd: number; leftUsd: number; words: string };
-  // `least`: the last admitted own-model request's least admission (Admitted.leastUsd), standing for the next one's: a
-  // session's context only grows, so the next needs at least as much.
-  const wrap: { costs: number[]; sent: boolean; due: boolean; least?: number; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, due: false, entryDue: false };
+  // `next`: the last admitted own-model request's model, input bound and output asks, from which takeNote prices the next
+  // request's least as its admission will (CapGuard.leastUsd, with the model's `previous`, which reads the cache): the next
+  // request's own bound is not known at the take, and the last one's is its lower bound.
+  type NextAsk = { model: string; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
+  const wrap: { costs: number[]; sent: boolean; due: boolean; next?: NextAsk; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, due: false, entryDue: false };
   /** The note for the request the model proxy is placing it in (ModelPort.note), when the wrap-up is due: what is left
    *  of the cap as admission counts it now (`spentUsd`: what the run spent; what its requests and paid calls in flight
    *  are held at) under three times the session's own model's typical request, or an earlier admission found it due. */
@@ -226,7 +228,9 @@ export function adapterRun(
     if (budgetUsd === undefined || wrap.sent || spentUsd === null) return undefined;
     const held = inFlight.total() + paidHolds();
     // Due by the measured typical (none until a cost is priced) or by the next request's least, room for about one more.
-    const due = wrapUpDue(budgetUsd, spentUsd, held, wrap.costs.length > 0 ? typicalCost(wrap.costs, 0) : 0, wrap.least);
+    const before = wrap.next ? previous.get(wrap.next.model) : undefined;
+    const nextLeast = wrap.next ? cap?.leastUsd?.({ ...wrap.next, ...(before ? { previous: before } : {}) }) : undefined;
+    const due = wrapUpDue(budgetUsd, spentUsd, held, wrap.costs.length > 0 ? typicalCost(wrap.costs, 0) : 0, nextLeast);
     // The step-0 latch speaks only while nothing is priced: from the first priced cost, the measured typical decides.
     const latched = wrap.due && wrap.costs.length === 0;
     if (!due && !latched) return undefined;
@@ -279,8 +283,14 @@ export function adapterRun(
     // credential between the two) leaves it for that request.
     const data = noted && !withoutNote && !side ? wrap.taken : undefined;
     if (noted) wrap.taken = undefined;
-    // Its least admission stands for the next request's (wrapUpDue's other trigger): the session's own model's only.
-    if (!side && answer?.leastUsd !== undefined) wrap.least = answer.leastUsd;
+    // Its asks stand for the next request's, whose least takeNote prices (wrapUpDue's other trigger): the session's own
+    // model's only.
+    if (!side && answer && !("refuse" in answer) && typeof model === "string") {
+      const asks = request as { outputTokensAsked?: number; outputTokensLeast?: number };
+      // Without the note's bytes: the note goes in this request alone.
+      const nextInput = noted && typeof plainInput === "number" ? plainInput : request.inputTokensMax;
+      wrap.next = { model, ...(nextInput === undefined ? {} : { inputTokensMax: nextInput }), ...(asks.outputTokensAsked === undefined ? {} : { outputTokensAsked: asks.outputTokensAsked }), ...(asks.outputTokensLeast === undefined ? {} : { outputTokensLeast: asks.outputTokensLeast }) };
+    }
     // None priced yet: this request at its input and a typical answer is the typical one, and what is left as its admission counts it
     // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
     // next request. Never a side call's: the note is for the session's own model.

@@ -138,7 +138,7 @@ export function typicalCost(costs: readonly unknown[], nextExpected: number): nu
 }
 /** Whether a run near its cap is due its wrap-up: what is left (`cap` less `spent` and `held`, as admission counts it)
  *  is under WRAP_UP_FACTOR times `typical`, or under WRAP_UP_LEAST_FACTOR times `leastUsd`, the next request's least
- *  admission as the cap prices it (Admitted.leastUsd, Judged.least), when known. The same rule under strict. */
+ *  admission as the cap prices it (CapGuard.leastUsd, Judged.least), when known. The same rule under strict. */
 export function wrapUpDue(cap: number, spent: number, held: number, typical: number, leastUsd?: number): { leftUsd: number } | undefined {
   const leftUsd = cap - spent - held;
   if (!Number.isFinite(leftUsd)) return undefined;
@@ -887,6 +887,10 @@ export function leastOutput(model: Pick<Model<Api>, "api" | "reasoning">, thinki
  *  previous request on the same model, as its usage reported it (`previous`, harness-app.ts). */
 export interface CapGuard {
   beforeRequest(request: GuardRequest): ({ refuse: string } & Partial<RefusalFigures>) | Admitted;
+  /** A request's least admission (its input and least output at its price, under `previous`), the figure beforeRequest
+   *  refuses it below, priced by the same code: the wrap-up's other trigger reads it for the next request (wrapUpDue).
+   *  Undefined for an input that cannot be measured, and on a guard that refuses everything. */
+  leastUsd?(request: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">): number | undefined;
 }
 /** A request this guard admitted: the most output it may be sent with (none for a model whose output is free and has no
  *  ceiling), what it is held at (`holdUsd`: its expected cost at that output, its worst case under strict), which the
@@ -895,9 +899,8 @@ export interface CapGuard {
  *  byte): its input and those tokens plus STOP_ALLOWANCE_TOKENS of output, at most its output limit, never more than its
  *  hold. */
 /** `typicalUsd`: the request at its input and WRAP_UP_STEP0_ANSWER_TOKENS of output (at most what it asked), the wrap-up's
- *  typical cost while nothing is priced. `leastUsd`: the request at its input and its least output, the figure the cap
- *  refuses it below, which the wrap-up reads as the next request's least (wrapUpDue). */
-export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number; typicalUsd?: number; leastUsd?: number };
+ *  typical cost while nothing is priced. */
+export type Admitted = { outputTokensMax?: number; holdUsd: number; boundUsd: number; stoppedUsd(streamed: number): number; typicalUsd?: number };
 export type GuardRequest = {
   spentUsd: number | null;
   /** The requests in flight, each held at what it was admitted at (`holdUsd`), else at its worst case at the output limit
@@ -925,7 +928,18 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
   if (output === undefined) return { beforeRequest: () => ({ refuse: noCeiling(cap) }) };
   const price = priceOf((await import("@earendil-works/pi-ai")).calculateCost, model);
   const held = (request: GuardRequest["inFlight"][number]) => request.holdUsd ?? price({ cached: 0, fresh: request.inputTokensMax! }, request.outputTokensMax ?? output);
+  /** A request priced by the one rule (requestPrice): its cost at an output, and the output it asks and needs at least. */
+  const pricedOf = ({ inputTokensMax, outputTokensAsked, outputTokensLeast, previous }: Pick<GuardRequest, "inputTokensMax" | "outputTokensAsked" | "outputTokensLeast" | "previous">) => {
+    const priced = requestPrice(price, inputTokensMax!, previous, now(), mode);
+    const asked = Math.min(outputTokensAsked ?? output, output);
+    return { priced, asked, least: Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked) };
+  };
   return {
+    leastUsd(request) {
+      if (typeof request.inputTokensMax !== "number" || !Number.isFinite(request.inputTokensMax)) return undefined;
+      const { priced, least } = pricedOf(request);
+      return priced.cost(output === 0 ? 0 : least);
+    },
     beforeRequest({ spentUsd, inFlight, inputTokensMax, outputTokensAsked, outputTokensLeast, previous }) {
       if (spentUsd === null) return { refuse: unknownSpend(cap) };
       const inputs = [inputTokensMax, ...inFlight.map((request) => request.inputTokensMax)];
@@ -933,18 +947,16 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       // Its requests in flight at what each was admitted at, and its paid calls under way at what they are held at.
       const holding = inFlight.reduce((sum, request) => sum + held(request), paidHolds());
       const left = cap - spentUsd - holding;
-      const priced = requestPrice(price, inputTokensMax!, previous, now(), mode);
+      const { priced, asked, least } = pricedOf({ inputTokensMax, outputTokensAsked, outputTokensLeast, previous });
       const cost = priced.cost;
       const bound = (tokens: number) => Math.max(0, priced.worst(tokens) - cost(tokens));
       const boundOf = (tokens: number) => (bound(tokens) > 0 ? { boundUsd: bound(tokens) } : {});
-      const admitted = (limit: number, typicalUsd = cost(limit), leastUsd = cost(limit)): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit), typicalUsd, leastUsd });
+      const admitted = (limit: number, typicalUsd = cost(limit)): Admitted => ({ ...(output === 0 ? {} : { outputTokensMax: limit }), holdUsd: cost(limit), boundUsd: bound(limit), stoppedUsd: stoppedPriceOf(cost, limit), typicalUsd });
       // A model whose output costs nothing and names no ceiling: nothing to limit, only its input to fit.
       if (output === 0) return cost(0) <= left + FIT_TOLERANCE ? admitted(0) : { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(0))), ...boundOf(0) };
-      const asked = Math.min(outputTokensAsked ?? output, output);
       const typical = cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked));
-      const least = Math.min(outputTokensLeast ?? ANSWER_TOKENS_LEAST, asked);
       const most = mostOutput(cost, least, asked, left);
-      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most, typical, cost(least));
+      return most === undefined ? { ...refuseFor(capRefusal(cap, spentUsd, holding, cost(least))), ...boundOf(least) } : admitted(most, typical);
     },
   };
 }
