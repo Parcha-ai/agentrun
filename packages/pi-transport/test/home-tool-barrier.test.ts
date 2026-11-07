@@ -30,8 +30,8 @@ afterAll(() => {
 });
 
 /** Start the run with the shim preloaded; once `pay` has paid, SIGKILL the writer: the box is gone. */
-async function payThenLoseTheBox(store: string, effects: string, variant: string): Promise<void> {
-	const child = spawn(process.execPath, [FIXTURE, store, effects, variant, "first"], {
+async function payThenLoseTheBox(store: string, effects: string, variant: string, reader: string): Promise<void> {
+	const child = spawn(process.execPath, [FIXTURE, store, effects, variant, "first", reader], {
 		env: { ...process.env, LD_PRELOAD: built!, FSYNC_SNAPSHOT_DIR: join(store, "..") },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -74,13 +74,29 @@ function resume(store: string, effects: string, variant: string): string {
 const payments = (effects: string) => readFileSync(effects, "utf8").trim().split("\n");
 
 describe.skipIf(!linux)("a home tool call across a box loss", () => {
-	for (const [variant, expected, what] of [
+	for (const [variant, reader, expected, kept, what] of [
 		[
 			"wrap",
+			"",
 			["first"],
-			"synced after its intent (the home's tool wrap): paid once, the resume reports it interrupted",
+			"with",
+			"the WAL synced after its intent (the home's tool wrap): paid once, the resume reports it interrupted",
 		],
-		["beforeTool", ["first", "resume"], "synced before its intent (a beforeTool hook): the resume pays again"],
+		["wrap", "reader", ["first"], "with", "the same, with a reader holding a snapshot during the barrier: paid once"],
+		[
+			"beforeTool",
+			"",
+			["first", "resume"],
+			"with",
+			"the WAL synced before its intent (a beforeTool hook): the resume pays again",
+		],
+		[
+			"checkpoint",
+			"reader",
+			["first"],
+			"without",
+			"a passive checkpoint as the barrier, with a reader holding the log: it syncs nothing, and the store comes back without the run (the payment it made is not even recorded)",
+		],
 	] as const) {
 		it(what, async () => {
 			if (!built) return expect(process.env.CI).toBeFalsy();
@@ -88,9 +104,9 @@ describe.skipIf(!linux)("a home tool call across a box loss", () => {
 			try {
 				const store = join(dir, "store", "run.sqlite");
 				const effects = join(dir, "effects.log");
-				await payThenLoseTheBox(store, effects, variant);
+				await payThenLoseTheBox(store, effects, variant, reader);
 				expect(payments(effects)).toEqual(["first"]);
-				expect(resume(store, effects, variant)).toContain("resumed with the conversation");
+				expect(resume(store, effects, variant)).toContain(`resumed ${kept} the conversation`);
 				expect(payments(effects)).toEqual(expected);
 			} finally {
 				rmSync(dir, { recursive: true, force: true });

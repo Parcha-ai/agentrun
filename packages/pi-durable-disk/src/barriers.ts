@@ -92,7 +92,7 @@ export const BARRIERS = {
     site: "pi-transport/src/home/tool-barrier.ts",
     via: { file: "pi-transport/src/home/run.ts", text: "registry.install(toolBarrier(registry" },
     status: "active",
-    why: "a home tool call that is not replay-safe: its intent, before it executes (the home's own barrier, a passive checkpoint: its store holds only pi-durable's tables)",
+    why: "a home tool call that is not replay-safe: its intent, before it executes (the home's own barrier, an fdatasync of its WAL file: its store holds only pi-durable's tables, so no marker commit)",
   },
 } as const satisfies Record<string, BarrierRow>;
 
