@@ -5,6 +5,9 @@
 // loudly.
 //   node scripts/build-workspaces.mjs            build every workspace that has a build script, in order
 //   node scripts/build-workspaces.mjs --order    print the order, one package name a line, and build nothing
+//   node scripts/build-workspaces.mjs --only a,b  build only those, in the same order (pi-leg.mjs: a leg's set); a package
+//                                                 in it that depends on a workspace outside it with no dist stops it
+//   --root <dir>                                  the repository to build (default: this script's)
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -53,15 +56,32 @@ export function buildOrder(packages) {
   return order;
 }
 
+/** `names`, in the order buildOrder gives every package. A name that is no workspace, or a package among them that
+ *  depends on a workspace outside them with no dist (`built(p)`), throws: it would compile against nothing. */
+export function subsetOrder(packages, names, built = (p) => existsSync(join(p.dir, 'dist'))) {
+  const byName = new Map(packages.map((p) => [p.name, p]));
+  for (const name of names) if (!byName.has(name)) throw new Error(`build-workspaces: ${name} is not a workspace`);
+  const wanted = new Set(names);
+  for (const name of wanted) {
+    for (const dep of byName.get(name).deps) {
+      if (!wanted.has(dep) && !built(byName.get(dep))) throw new Error(`build-workspaces: ${name} depends on ${dep}, which is not in the build and has no dist`);
+    }
+  }
+  return buildOrder(packages).filter((name) => wanted.has(name));
+}
+
 if (isMain(import.meta)) {
-  const packages = workspaces();
-  const order = buildOrder(packages);
+  const flag = (name) => { const at = process.argv.indexOf(name); return at < 0 ? undefined : process.argv[at + 1]; };
+  const root = flag('--root') ? resolve(flag('--root')) : ROOT;
+  const packages = workspaces(root);
+  const only = flag('--only');
+  const order = only ? subsetOrder(packages, only.split(',').filter(Boolean)) : buildOrder(packages);
   if (process.argv.includes('--order')) {
     process.stdout.write(`${order.join('\n')}\n`);
   } else {
     const built = new Set(packages.filter((p) => p.build).map((p) => p.name));
     for (const name of order.filter((n) => built.has(n))) {
-      const run = spawnSync('npm', ['run', 'build', '-w', name], { cwd: ROOT, stdio: 'inherit' });
+      const run = spawnSync('npm', ['run', 'build', '-w', name], { cwd: root, stdio: 'inherit' });
       if (run.status !== 0) {
         process.stderr.write(`build-workspaces: ${name}'s build failed (${run.status ?? run.signal}); nothing after it was built\n`);
         process.exit(run.status || 1);

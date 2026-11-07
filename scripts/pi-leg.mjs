@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkCover, commandsOf, plan as planShards, readConfig, readSuites, unitsOf } from './ci-plan.mjs';
 import { isMain } from './is-main.mjs';
 
@@ -104,7 +105,7 @@ export function legShard(root, workspaces, tested, k, n, { config, timings } = r
   return { suites, ...parts[k - 1] };
 }
 
-/** The workspaces a leg builds, in workspace order: the leg's and every workspace they use. A workspace outside the leg
+/** The workspaces a leg builds (build-workspaces.mjs builds them in dependency order): the leg's and every workspace they use. A workspace outside the leg
  *  that uses one in it is not built: it would load the leg's pi family through that one and its own copies beside it. */
 export function buildOf(workspaces, leg) {
   const byName = new Map(workspaces.map((w) => [w.name, w]));
@@ -280,7 +281,8 @@ function main() {
   if (failed) { write(); process.exit(1); }
   const env = { ...process.env, PI_EXPECT_VERSION: args.pi };
   report.built = buildOf(workspaces, plan.leg);
-  const build = run('npm', ['run', 'build', '--if-present', ...report.built.flatMap((name) => ['-w', name])], { cwd: args.root, env });
+  // In dependency order (build-workspaces.mjs): no package's build builds what it imports.
+  const build = run(process.execPath, [fileURLToPath(new URL('./build-workspaces.mjs', import.meta.url)), '--root', args.root, '--only', report.built.join(',')], { cwd: args.root, env });
   report.steps.push({ step: 'build', rc: build });
   if (build !== 0) { write(); process.exit(1); }
   if (part) {
