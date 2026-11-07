@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import type { Message } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Conversation, EntryRecord } from "@earendil-works/pi-durable";
@@ -49,7 +49,7 @@ if (process.argv[2] === "instance") {
   const charge = defineTool({
     name: "charge",
     description: "Charge an invoice. Costs real money: call it once per invoice.",
-    parameters: Type.Object({ invoice: Type.Number(), amount: Type.Number() }),
+    parameters: { type: "object", required: ["invoice", "amount"], properties: { invoice: { type: "number" }, amount: { type: "number" } } },
     // No `replay: "safe"`: a call cut in flight comes back interrupted on the next open and is never run again.
     async execute(args, api) {
       console.log(`generation ${generation}: charging invoice ${args.invoice}`);

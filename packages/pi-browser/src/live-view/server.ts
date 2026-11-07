@@ -28,6 +28,10 @@ export type LiveViewOptions = {
   gates?: DrivingGates;
   /** The viewer page (viewer.ts); the default is the package's own. */
   viewer?: ViewerAssets;
+  /** The viewer watches and never drives: every input, navigation and dialog answer it sends is dropped here, before the browser (`held read_only`), not
+   *  only hidden by the page, and it is told so (`ready` carries `readOnly: true`). A watching viewer holds no turn and keeps no session from its idle
+   *  release (it never sets `viewing`). */
+  readOnly?: boolean;
   /** How long a connection may stay silent before its hello, and how many may wait for one. */
   helloTimeoutMs?: number;
   maxPending?: number;
@@ -169,27 +173,31 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
           if (!conn.send(encodeFrame(jpeg, page.w, page.h), ack)) ack();
         },
         page: (page) => send(conn, { type: "page", url: page.url, title: page.title }),
+        noPage: () => send(conn, { type: "no_page" }),
         dialog: (dialog) => send(conn, dialog ? { type: "dialog", ...dialog } : { type: "dialog_closed" }),
         closed: () => { if (entry.viewer?.conn === conn) { send(conn, { type: "ended", reason: "browser_closed" }); conn.close(CLOSE_CODES.browser_closed, "browser_closed"); } },
       });
       viewer = { conn, stream, gate, unsubscribe: gate.onChange((drive) => send(conn, { type: "status", drive })), chain: Promise.resolve(), bad: [], queued: 0, tail: null };
     } catch { conn.close(1011, "unavailable"); return; }
     entry.viewer = viewer;
-    // A person who sits still with the viewer open is still using the session: custody does not release it on its own while this is set.
-    viewer.gate.setViewing(true);
-    send(conn, { type: "ready", drive: viewer.gate.state() });
+    // A person who sits still with the viewer open is still using the session: custody does not release it on its own while this is set. A read-only viewer
+    // only watches, so it keeps nothing open.
+    if (!options.readOnly) viewer.gate.setViewing(true);
+    send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : {}) });
   };
 
   const onViewerMessage = (entry: Entry, viewer: Viewer, data: string | Buffer, binary: boolean): void => {
     const message = binary || typeof data !== "string" ? null : parseClientMessage(data);
     // A message the protocol does not know, and one dropped because too many are waiting, are the same kind of excess: a viewer that keeps sending either is closed.
-    const excess = (reason: "bad_message" | "busy"): void => {
+    const excess = (reason: "bad_message" | "busy" | "read_only"): void => {
       const now = Date.now();
       viewer.bad = [...viewer.bad.filter((at) => now - at < BAD_WINDOW_MS), now];
       if (viewer.bad.length > MAX_BAD_MESSAGES) { refuse(viewer.conn, "bad_message"); return; }
       send(viewer.conn, { type: "held", reason });
     };
     if (!message || message.type === "hello") { excess("bad_message"); return; }
+    // A read-only viewer's input never reaches the browser, whatever its page does: dropped here, and one that keeps sending it is closed as any excess is.
+    if (options.readOnly) { excess("read_only"); return; }
     // While a model call is in flight the input is dropped, not queued: a keystroke replayed after the model moved the page is worse than a lost one.
     if (viewer.gate.input() === "agent_acting") { send(viewer.conn, { type: "held", reason: "agent_acting" }); return; }
     // Mouse moves and scrolls arrive once per animation frame, so a slow browser command is always followed by a run of them. A run is combined into its last waiting
@@ -236,7 +244,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     if (!viewer) return;
     entry.viewer = null;
     viewer.unsubscribe();
-    viewer.gate.setViewing(false);
+    if (!options.readOnly) viewer.gate.setViewing(false);
     try { viewer.stream.close(); } catch { /* the stream is gone either way */ }
   };
 

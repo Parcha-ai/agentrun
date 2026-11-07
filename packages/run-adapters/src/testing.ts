@@ -44,7 +44,7 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  `sideFirst`: one admitted before this request, then `say` streamed before this request is admitted: text of the
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
  *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -176,7 +176,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
               else await paySide();
               io.onEvent({ type: "text", delta: say });
             }
-            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
+            // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
+            const asked = "outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {};
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
             if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             if ("cutBooked" in action) {
