@@ -138,5 +138,11 @@ test("with no restart, a call is told nothing lost: the same POST under allow is
   } else if (rows.includes("POST /api/xorigin allowed")) {
     await server.nonGetReached(1, 10_000);
     assert.deepEqual(server.nonGet(), ["POST /api/xorigin"], "a POST let go before the restart reached the server");
+  } else {
+    // Lost inside the observer's one round trip before it confirmed the old service: told nothing, by design (it tells only
+    // what it can prove). It must still never have been sent.
+    assert.deepEqual(rows, [], `nothing journaled for a POST neither told lost nor allowed: ${JSON.stringify(rows)}`);
+    await server.nonGetReached(1, 2_000).catch(() => undefined);
+    assert.deepEqual(server.nonGet(), [], "a POST neither told lost nor allowed never reached the server");
   }
 });
