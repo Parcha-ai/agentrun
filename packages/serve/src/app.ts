@@ -16,7 +16,7 @@ import { createRegistry, defineExtension, type Extension, type Harness, ROOT_CON
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
-import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow } from "@parcha/pi-durable-disk";
+import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
@@ -231,9 +231,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   // The gate reads its store before the run resumes (an agentic run's and a workflow's alike): the resume dispatches the
   // calls a crash cut, and a rerun of one it let through must find its mark (tool-gate.ts prime).
+  // The run's store as a barrier takes it, from the open's beforeResume: a task the open resumes (a workflow a crash cut)
+  // runs before onOpen, and its effects are synced on it too (workflowAdmit, below).
+  let journal: SyncTarget | undefined;
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async (run: BeforeResume) => { await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
+    beforeResume: async (run: BeforeResume) => { journal = run.syncTarget; await toolGate.prime(run.harness, run.context, run.syncTarget); await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).
@@ -351,10 +354,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   const workflows = createWorkflowExtension({
     // Each workflow effect's admission is synced before it is dispatched (pi-durable-disk barriers.ts, workflowAdmit): the
-    // driver's journal is the run's store, opened by now (a workflow starts in the run's open).
+    // driver's journal is the run's store, taken in beforeResume, so a workflow the open resumes, before onOpen, has it.
     options: () => ({ files: workspaceFiles(where.work), afterAdmit: async () => {
-      if (!opened) throw new Error("the run's store is not open, so a workflow effect's admission cannot be made durable: it is not sent");
-      await syncNow(opened.store, BARRIER.workflowAdmit);
+      if (!journal) throw new Error("the run's store is not open, so a workflow effect's admission cannot be made durable: it is not sent");
+      await syncNow(journal, BARRIER.workflowAdmit);
     } }),
     run: ({ key, runtime, context, driver }) => {
       // Each typed question's receipt is a row of the run's store before its answer acts, and a resumed run takes an

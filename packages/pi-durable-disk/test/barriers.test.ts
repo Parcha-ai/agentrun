@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { BARRIER, BARRIERS, STORES, syncNow, type BarrierRow, type StoreRow } from "../src/barriers.ts";
 import { JOURNAL_SYNCHRONOUS, openArchilStore, type Synchronous } from "../src/store.ts";
@@ -136,8 +137,37 @@ const OPENS = /openArchilStore\(|openNodeSqliteStorage\(|openNodeSqliteDatabase\
 const EFFECTFUL = /\.install\(|setProvider\(|syncNow\(/;
 const CALL = /syncNow\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g;
 
-/** Every way the table and the source disagree. `sources`: file (relative to packages/) to its text. */
-function violations(table: Table, journal: Synchronous, sources: ReadonlyMap<string, string>): string[] {
+/** `text` with every comment blanked (its newlines kept), as TypeScript's parser finds them: never a `//` in a string,
+ *  a template or a regular expression. */
+function withoutComments(file: string, text: string): string {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, /\.m?js$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS);
+  const out = text.split("");
+  const blank = (ranges: readonly ts.CommentRange[] | undefined) => {
+    for (const { pos, end } of ranges ?? []) for (let at = pos; at < end; at++) if (out[at] !== "\n" && out[at] !== "\r") out[at] = " ";
+  };
+  // Every comment is trivia around a token: before it (from the line after the token before) or after it on its line.
+  const visit = (node: ts.Node): void => {
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
+    const children = node.getChildren(source);
+    if (children.length === 0) {
+      blank(ts.getLeadingCommentRanges(text, node.pos));
+      blank(ts.getTrailingCommentRanges(text, node.end));
+    }
+    for (const child of children) visit(child);
+  };
+  visit(source);
+  return out.join("");
+}
+
+/** What a comment could meet: a file with none of it is checked as it is, unparsed. */
+const MATCHED = new RegExp([CALL.source, OPENS.source, EFFECTFUL.source].join("|"));
+
+/** Every way the table and the source disagree, read with comments left out: a barrier's call, a hook's await line
+ *  (`via`) or a store's open that is only in a comment counts as missing. `sources`: file (relative to packages/) to its
+ *  text. */
+function violations(table: Table, journal: Synchronous, given: ReadonlyMap<string, string>): string[] {
+  const vias = Object.values(table.barriers).flatMap((row) => (row.via ? [row.via.text] : []));
+  const sources = new Map([...given].map(([file, text]) => [file, MATCHED.test(text) || vias.some((via) => text.includes(via)) ? withoutComments(file, text) : text]));
   const out: string[] = [];
   const called = new Map<string, Set<string>>();
   for (const [file, text] of sources) {
