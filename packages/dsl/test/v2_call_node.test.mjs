@@ -259,4 +259,21 @@ test("runner: a map's items each reach the host's deps.held at an execution path
     runEffect: async () => ({ request_id: "r", status: "ok" }),
   });
   assert.deepEqual([...new Set(asked)].sort(), ["/root/steps/1/items/0/body", "/root/steps/1/items/1/body"]);
+  // Holding item 0 moves item 0's deadline alone: both calls take 1.5 s of a 1 s deadline, item 0 held all the while
+  // completes, and item 1, whose clock no hold of item 0's touches, is cut by its own deadline.
+  let from;
+  const slow = async ({ signal }) => {
+    from ??= Date.now();
+    await new Promise((resolve, reject) => { const timer = setTimeout(resolve, 1_500); signal.addEventListener("abort", () => (clearTimeout(timer), reject(new Error("aborted by signal")))); });
+    return { request_id: "r", status: "ok" };
+  };
+  const collecting = { ...mapped, maxConcurrency: 2, onItemFailure: "collect", failedAs: "missed", body: { ...mapped.body, deadline_s: 1 } };
+  const ran = await runWorkflow({ ...workflow, root: { node: "chain", steps: [{ ...planNode }, collecting] } }, { question: "q" }, {
+    runNode: async () => ({ prompts: ["a", "b"] }),
+    held: (path) => (path === "/root/steps/1/items/0/body" && from !== undefined ? Date.now() - from : 0),
+    runEffect: slow,
+  });
+  assert.equal(ran.status, "complete", JSON.stringify(ran));
+  assert.deepEqual([ran.state.jobs.map((job) => job?.request_id ?? null), ran.state.missed.map((miss) => miss.item_index)], [["r", null], [1]], JSON.stringify(ran.state));
+  assert.match(ran.state.missed[0].message, /exceeded its 1s deadline/);
 });

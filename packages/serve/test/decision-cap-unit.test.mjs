@@ -71,3 +71,25 @@ test("a model node's failure takes a refusal kept with no path of its own only w
   waits.record({ words: "Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.", room: false, capUsd: 1 }, undefined);
   assert.deepEqual([waits.stopped("/root/steps/1", false) instanceof CapStop, waits.stopped("/root/steps/1", true) instanceof CapStop], [false, true]);
 });
+
+test("a map's items wait for a raise at paths of their own: holding item 0 leaves item 1's held time at 0, and item 0's wait ending never stops item 1's clock", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "item-held-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { letGo: () => undefined });
+  const refusal = { words: "Not sent: the call could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  const [zero, one] = ["/root/steps/0/items/0/body", "/root/steps/0/items/1/body"];
+  const first = new AbortController();
+  const second = new AbortController();
+  const held0 = waits.wait(refusal, first.signal, { label: "fetch", path: zero });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual([waits.held(one), waits.held(zero) >= 300], [0, true], "item 0 held, item 1 untouched");
+  const held1 = waits.wait(refusal, second.signal, { label: "fetch", path: one });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  first.abort();
+  await held0;
+  const before = waits.held(one);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.ok(waits.held(one) >= before + 300, `item 1's clock runs on after item 0's wait ended: ${before} then ${waits.held(one)}`);
+  second.abort();
+  await held1;
+});
