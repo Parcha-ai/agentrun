@@ -317,6 +317,11 @@ export function adapterRun(
    *  (flush), so a result is never above its call. A crash before that leaves the session's record, which the next open
    *  writes from (settleCutCalls). */
   const deferred = new Map<string, (tx: Tx) => Promise<unknown>>();
+  /** The side calls' requests (a title, a summary on another model): their cost is their own, never the content's. */
+  const sides = new Set<number>();
+  /** What each earlier request streamed, closed at the next request's start, oldest first, waiting to be written with its
+   *  own request's cost (flush). */
+  const segments: { request: number | undefined; text: string; calls: ToolCall[] }[] = [];
   /** The calls the root holds from an earlier process (read at the open): one run again after a crash is not written twice. */
   const onRoot = new Set<string>();
   const results: ToolResults = new Map();
@@ -383,8 +388,10 @@ export function adapterRun(
   };
   const writtenAt = () => costed.findIndex((c) => written.has(c.request));
 
-  /** Writes what the current request has: its entry with the content so far and the oldest cost not yet written.
-   *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost.
+  /** Writes each request's content as its own entry, with that request's own cost: first the segments closed at a
+   *  request's start (what the request before it streamed), in order, then what the current request has so far.
+   *  Content with no cost yet waits for its own, and holds every later one behind it, but at a turn's end (`final`) it
+   *  is written as a request of unknown cost. A side call's cost, and a cost with no content, is an entry of its own.
    *  Everything a flush writes is one commit, and `end` (a turn's end: its error and TURN_END) is the last of it, so a
    *  turn's end is in the commit of its last entries. The bookkeeping goes first: a commit the store refuses ends the
    *  process, and the next open reads the root again. */
@@ -398,52 +405,82 @@ export function adapterRun(
       // Each cost for a request already written, wherever it sits: a response is booked when its stream closes, so a
       // late cost can come in after a later request's.
       for (let at = writtenAt(); at >= 0; at = writtenAt()) priceLate(costed.splice(at, 1)[0]!, writes);
-      if ((!text && !calls.length && !costed.length) || (!costed.length && !final)) return commitAll();
-      const request = costed.shift();
-      const content = { text, calls };
-      text = "";
-      calls = [];
-      // At a turn's end with no cost in: the request still unbooked is the one this content answers. It is written at
-      // unknown cost and marked booked, so a later open never writes it again.
-      const unbooked = !request && final && open.size ? Math.min(...open) : undefined;
-      if (unbooked !== undefined) open.delete(unbooked);
-      const marked = request?.request ?? unbooked;
-      if (marked !== undefined) answered.add(marked);
-      writes.push(async (tx) => {
-        const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
-        // The turn's answer so far: its last request with text and no call.
-        if (content.text && !content.calls.length) answer = entry.id as number;
-        // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
-        if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
-        if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
-        // The results of its calls that ended before this entry was written, in order, right after it.
-        for (const call of content.calls) {
-          const result = deferred.get(call.id);
-          deferred.delete(call.id);
-          if (result) await result(tx);
-        }
-      });
-      if (marked !== undefined) written.add(marked);
-      if (request) priced.add(request.request);
-      else if (marked !== undefined) unpriced.add(marked);
-      // More costs than content: each later one still gets its own entry, cost only. One that came in meanwhile for a
-      // request already written is a late cost, or a duplicate.
-      while (costed.length) {
-        const next = costed.shift()!;
-        if (written.has(next.request)) {
-          priceLate(next, writes);
-          continue;
-        }
-        answered.add(next.request);
-        writes.push(async (tx) => {
-          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
-        });
-        written.add(next.request);
-        priced.add(next.request);
+      // A side call's cost (a title, a summary: no content of the session's) is its own entry, cost only, whenever it
+      // comes in: never the cost of the content streaming meanwhile.
+      for (let at = costed.findIndex((c) => sides.has(c.request)); at >= 0; at = costed.findIndex((c) => sides.has(c.request))) costOnly(costed.splice(at, 1)[0]!, writes);
+      // The segments, oldest first: each written with its own request's cost, or waiting for it.
+      while (segments.length && entryOf(segments[0]!, final, writes)) segments.shift();
+      if (segments.length) return commitAll();
+      // Then what the current request has so far.
+      if (text || calls.length) {
+        const content = { request: current, text, calls };
+        if (entryOf(content, final, writes)) {
+          text = "";
+          calls = [];
+        } else return commitAll();
       }
+      // More costs than content: each later one still gets its own entry, cost only, or is a late cost.
+      while (costed.length) costOnly(costed.shift()!, writes);
       await commitAll();
     });
+
+  /** `content`'s entry, as its request's (`content.request`), into `writes`: with that request's own cost when it is in;
+   *  else, at a turn's end, at an unknown cost, booked so a later open never writes it again; else not yet (false). The
+   *  content of a request already written is its continuation, shown and never counted again. */
+  const entryOf = (content: { request: number | undefined; text: string; calls: ToolCall[] }, final: boolean, writes: ((tx: Tx) => Promise<unknown>)[]): boolean => {
+    const owner = content.request;
+    const results = async (tx: Tx) => {
+      // The results of its calls that ended before this entry was written, in order, right after it.
+      for (const call of content.calls) {
+        const result = deferred.get(call.id);
+        deferred.delete(call.id);
+        if (result) await result(tx);
+      }
+    };
+    if (owner !== undefined && answered.has(owner)) {
+      writes.push(async (tx) => {
+        await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request: owner } });
+        const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(owner), undefined, content.text, content.calls) as never] });
+        if (content.text && !content.calls.length) answer = entry.id as number;
+        await results(tx);
+      });
+      return true;
+    }
+    const at = owner === undefined ? (costed.length ? 0 : -1) : costed.findIndex((c) => c.request === owner);
+    if (at < 0 && !final) return false;
+    const request = at >= 0 ? costed.splice(at, 1)[0] : undefined;
+    // At a turn's end with no cost in: its own request, still unbooked, is written at unknown cost and marked booked.
+    const unbooked = !request ? (owner !== undefined && open.has(owner) ? owner : owner === undefined && open.size ? Math.min(...open) : undefined) : undefined;
+    if (unbooked !== undefined) open.delete(unbooked);
+    const marked = request?.request ?? unbooked ?? owner;
+    if (marked !== undefined) answered.add(marked);
+    writes.push(async (tx) => {
+      const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
+      // The turn's answer so far: its last request with text and no call.
+      if (content.text && !content.calls.length) answer = entry.id as number;
+      // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
+      if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
+      if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
+      await results(tx);
+    });
+    if (marked !== undefined) written.add(marked);
+    if (request) priced.add(request.request);
+    else if (marked !== undefined) unpriced.add(marked);
+    return true;
+  };
+
+  /** A request's cost with no content of its own (a side call's, or more costs than content): its own entry, cost only,
+   *  or for a request already written, its late cost. */
+  const costOnly = (next: Pending, writes: ((tx: Tx) => Promise<unknown>)[]) => {
+    if (written.has(next.request)) return priceLate(next, writes);
+    answered.add(next.request);
+    writes.push(async (tx) => {
+      await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
+    });
+    written.add(next.request);
+    priced.add(next.request);
+  };
 
   const onModel = (event: ModelPortEvent): Promise<void> | undefined => {
     if (event.type === "request_start") {
@@ -453,7 +490,16 @@ export function adapterRun(
       admittedNext = undefined;
       if (admitted) sentOf.set(event.turn, admitted);
       const bound: Record<string, number> = admitted && admitted.boundUsd > 0 ? { [BOUND_FIELD]: admitted.boundUsd } : {};
-      current = event.turn;
+      // A side call streams nothing of the session's: what streams meanwhile stays the current request's. Another request
+      // of the session's closes what the one before it streamed, now, as that request's own segment (flush writes it
+      // with that request's cost), before anything of the new one can stream.
+      if (admitted?.side) sides.add(event.turn);
+      else {
+        if (text || calls.length) segments.push({ request: current, text, calls });
+        text = "";
+        calls = [];
+        current = event.turn;
+      }
       open.add(event.turn);
       models.set(event.turn, event.model);
       void flush();
@@ -481,7 +527,7 @@ export function adapterRun(
       // in with no turn running, which no turn's flush would write. If that write fails, the next open writes it from
       // the session's booking, once.
       // And content with a call waits for this cost to be written: the call shows from then.
-      if (written.has(event.turn) || turn === undefined || calls.length) flush().catch(() => undefined);
+      if (written.has(event.turn) || turn === undefined || calls.length || segments.length) flush().catch(() => undefined);
     }
   };
 
@@ -542,7 +588,7 @@ export function adapterRun(
       // A result is written only after its call's entry is on the root. A call still in the answer not yet written (one
       // that ended before its request's cost came in) has its result written with that entry, right after it; any other
       // call's entry is written, or queued, before this result.
-      const waiting = calls.some((call) => call.id === event.callId);
+      const waiting = calls.some((call) => call.id === event.callId) || segments.some((segment) => segment.calls.some((call) => call.id === event.callId));
       if (waiting) deferred.set(event.callId, result);
       void flush();
       if (!waiting) later(() => commit(async (tx) => void (await result(tx))).then(() => undefined));
