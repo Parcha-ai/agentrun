@@ -3,11 +3,11 @@
 // sealed secret that will not open is said, never dropped in silence.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const sealKey = () => randomBytes(32).toString("base64");
 /** Whether `text` holds any 8 characters of `secret` in a row. */
@@ -96,6 +96,29 @@ test("after a webhook trigger's secret is rotated, or the outbound webhook is de
   const outboundForms = { whole: outbound.body.secret, ...keyForms(outbound.body.secret) };
   const outboundShown = await pasted(api, "pastes-old-outbound", outboundForms);
   for (const [form, value] of Object.entries(outboundForms)) assert.ok(!holdsRun(outboundShown, value), `the old outbound secret as ${form} shows nowhere: ${outboundShown.slice(0, 600)}`);
+});
+
+test("an ended run the next server holds no Run for, listed from its row and serve.json alone, shows no webhook trigger's key in its error", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const first = await serve(t);
+  assert.equal((await first.api("POST", "/agents", agent("target"))).status, 201);
+  const trigger = await first.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
+  const runId = (await first.api("POST", "/agents/target/runs", { input: { content: "Fail with a refused key." } })).body.run_id;
+  await follow(first.api, runId, ["failed"], { deadlineMs: 60_000 });
+  await first.close();
+  // Its error as a server that did not cut it kept it: the trigger's key in the clear, as written and as hex.
+  const forms = keyForms(trigger.body.secret);
+  const metaFile = join(runDir(first.data, runId), "serve.json");
+  const meta = JSON.parse(await readFile(metaFile, "utf8"));
+  await writeFile(metaFile, `${JSON.stringify({ ...meta, error: { code: "run_failed", message: `The hook signed with ${forms.bare}, or ${forms.hex}.` } })}\n`);
+  const { api } = await serve(t, { data: first.data });
+  const listed = [(await api("GET", "/runs")).body, (await api("GET", "/agents/target/runs")).body];
+  for (const body of listed) {
+    const row = body.runs.find((r) => r.run_id === runId);
+    assert.ok(row?.error, JSON.stringify(body));
+    for (const [form, value] of Object.entries(forms)) assert.ok(!holdsRun(JSON.stringify(row), value), `the key as ${form} is not in the row: ${JSON.stringify(row.error)}`);
+  }
 });
 
 test("a webhook trigger's secret that does not open under the server's seal key is said at the start, naming its trigger, and the trigger stays refused", { timeout: 120_000 }, async (t) => {
