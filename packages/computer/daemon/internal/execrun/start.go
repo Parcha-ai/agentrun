@@ -1,11 +1,11 @@
 package execrun
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -269,11 +269,17 @@ func cutShort(ctx context.Context, program string, code *int, signal string) err
 
 // follow reads the guard's status lines, the program's pid, answers to signals to named groups, and then how it ended,
 // then reaps the guard.
+// maxStatusLine bounds one status line from the guard; a real one is a few hundred bytes.
+const maxStatusLine = 64 << 10
+
 func (g *Guarded) follow(status *os.File, started chan<- struct{}) {
-	dec := json.NewDecoder(io.LimitReader(status, 64<<10))
-	for {
+	// One status a line, each at most maxStatusLine; the stream itself has no total, since every signal to a named group
+	// adds an answer. A line past the bound ends the reading, as a malformed one does.
+	lines := bufio.NewScanner(status)
+	lines.Buffer(make([]byte, 0, 4096), maxStatusLine)
+	for lines.Scan() {
 		var s guardStatus
-		if dec.Decode(&s) != nil {
+		if json.Unmarshal(lines.Bytes(), &s) != nil {
 			break
 		}
 		if s.Pid != 0 && g.Pid == 0 {

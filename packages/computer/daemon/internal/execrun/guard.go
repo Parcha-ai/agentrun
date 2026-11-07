@@ -244,7 +244,10 @@ func inSessionAmong(group, session int, members []int, pgidOf, sidOf func(int) (
 	for _, d := range members {
 		if pgid, err := pgidOf(d); err == nil && pgid == group {
 			sid, err := sidOf(d)
-			return err == nil && sid == session
+			if err != nil {
+				continue // It ended between the two calls; another member may still run.
+			}
+			return sid == session
 		}
 	}
 	return false
