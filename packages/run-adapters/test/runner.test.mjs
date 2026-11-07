@@ -543,7 +543,7 @@ test("modelPortFor, alone (a chat run's session): the runner's records and event
   await third.bookCut();
   const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
   assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2 }], 'booked once, across processes');
-  assert.deepEqual(events, [{ type: 'request_end', turn: 2, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }, key, label: key }], "the host is told once, with the session's key and the request's turn");
+  assert.deepEqual(events, [{ type: 'request_end', turn: 2, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }, ended: { end: 'lost', label: 'cut' }, key, label: key }], "the host is told once, with the session's key and the request's turn, and how it ended (cut)");
 
   // The turn limit counts the cut request; the host's beforeRequest saw the session's key, its turn and the spend.
   await third.models.beforeRequest({ model: 'm' });
