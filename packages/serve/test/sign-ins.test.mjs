@@ -1534,3 +1534,58 @@ test("an error's details are cut as its message is, in a run's view and in the r
   for (const body of [...listed, ...relisted]) assert.deepEqual(body.runs.find((r) => r.run_id === runId).error.details, { reason: "held [redacted]" });
   for (const shown of [...listed, view, ...relisted]) assert.ok(!JSON.stringify(shown).includes(ref), JSON.stringify(shown));
 });
+
+test("forget is refused for a run still going that the server has not read in (its serve.json read from disk)", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await crashable(t, data);
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${join(dir, "never")} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = runRecordOf(data, runId);
+  process.kill(holder.pid, "SIGKILL");
+  await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
+  // Its lease lapsed (the gone rule's clock set back on disk), so only what it was handed keeps the sign-in.
+  const file = join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json");
+  const stored = JSON.parse(await readFile(file, "utf8"));
+  await writeFile(file, `${JSON.stringify({ ...stored, sign_ins: [{ ...stored.sign_ins[0], gone_at: new Date(Date.now() - GONE_LEASE_MS - BROWSERBASE_SETTLE_MS - 60_000).toISOString() }] })}\n`);
+  // The next server never reads the run in (its load refused): forget reads the run's serve.json from disk.
+  const refused = [];
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE, onRunLoad: (id) => { if (id === runId) { refused.push(id); throw new Error("not read in, for this test"); } } });
+  await until(async () => refused.length, (n) => n > 0);
+  assert.deepEqual((await api("GET", "/agents/alpha")).body.sign_ins.map((s) => [s.state, s.held_by]), [["ready", null]], "its lease lapsed");
+  refusedFor(await api("DELETE", "/agents/alpha/sign-ins/default"), runId, ref);
+});
+
+test("a run handed several sign-ins (marked true) is cut of every forgotten one, and withheld once one of the agent's was dropped past the newest 32", { timeout: 300_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  const seal = randomBytes(32);
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal.toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await forgottenAfterEnd(t, dir, log);
+  await first.close();
+  const metaFile = join(runDir(first.data, first.runId), "serve.json");
+  await writeFile(metaFile, `${JSON.stringify({ ...JSON.parse(await readFile(metaFile, "utf8")), sign_in_handed: true })}\n`);
+  // 31 more forgotten: 32 kept, none dropped. Every one is cut from what it said.
+  const store = new SignIns(first.data, seal, { create: async () => `ctx-later-${randomBytes(6).toString("hex")}`, remove: async () => {} }, async () => false);
+  const forgetOne = async (i) => {
+    await store.forRun("alpha", `later-${i}`, "browserbase");
+    await store.forget("alpha", "default");
+  };
+  for (let i = 0; i < MAX_FORGOTTEN - 1; i++) await forgetOne(i);
+  const second = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.ok((await servedCut(second.api, first.runId, first.ref)).includes("I kept [redacted] for you."));
+  await second.close();
+  // One more: the oldest is dropped, and which it held is not known.
+  await forgetOne(MAX_FORGOTTEN);
+  assert.equal(JSON.parse(await readFile(join(homeOf(first.data, "alpha"), "sign-ins", "sign-ins.json"), "utf8")).forgotten_dropped, true);
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const timeline = await servedCut(api, first.runId, first.ref);
+  assert.ok(!timeline.includes("I kept"), timeline);
+  assert.equal((await api("GET", `/runs/${first.runId}`)).body.result?.final_answer ?? null, null);
+});
