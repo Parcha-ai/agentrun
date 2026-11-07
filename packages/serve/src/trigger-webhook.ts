@@ -1,5 +1,6 @@
 // The signed webhook: a trigger source pushed to the server. A POST to /v2/hooks/{trigger_id}, signed under the
 // trigger's own secret (Standard Webhooks), is a firing, keyed by its `webhook-id` (server.ts checks it).
+import { MIN_KEY_BYTES } from "./standard-webhooks.js";
 import { closedSchema, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 
 export const webhook: TriggerAdapter = {
@@ -7,7 +8,7 @@ export const webhook: TriggerAdapter = {
   label: "webhook trigger",
   delivery: "push",
   owner: false,
-  secret: true,
+  settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
   describe: '{kind: "webhook"}',
   fires: "a signed request to /hooks/{trigger_id} (`webhook`)",
   firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.",

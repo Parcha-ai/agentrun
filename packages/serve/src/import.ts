@@ -5,7 +5,7 @@
 // Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, type Stats } from "node:fs";
+import { existsSync, type Stats } from "node:fs";
 import { chmod, lstat, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -15,18 +15,18 @@ import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResu
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
-import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, TOKEN_FILE, writeDurable } from "./files.js";
+import { defaultData, readJson, RUN_META, writeDurable } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
-import { SESSION_SECRET_FILE } from "./owner.js";
 import { logLine } from "./print.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
+import { openServerSecrets } from "./server-secrets.js";
 import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
-import { triggerSecretsIn } from "./trigger-secrets.js";
+import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 import { readRunDbSync } from "./run-db.js";
 
@@ -868,23 +868,15 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 
 /** The secrets this server made and keeps in data directory `data`, by value: its API token (`ar_local_...`) and its
  *  door token (server.ts), its sign-in sessions' secret (owner.ts), its webhook's signing secret (`whsec_...`;
- *  webhooks.ts) and each webhook trigger's (trigger-secrets.ts), opened with the seal key of `env`, so left out when that key is not there. One pasted into a session is
+ *  webhooks.ts) and every value a trigger source keeps sealed (sealed-settings.ts), opened with the seal key of `env`, so left out when that key is not there; each signing secret's key in every spelling too (standard-webhooks.ts secretForms). One pasted into a session is
  *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a run's own
  *  door token (one file a run; not read at each import), and a key-shaped value this server did not make (a `whsec_`
  *  from elsewhere). A webhook secret that does not open is said to `say`, as ToolKeys says a saved key that does not:
  *  the import goes on, and does not cut it. */
 export function ownSecrets(data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): string[] {
-  const read = (name: string) => {
-    try {
-      return readFileSync(join(data, name), "utf8").trim();
-    } catch {
-      return "";
-    }
-  };
   const webhook = webhookSecretIn(data, env);
   if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
-  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhook && "secret" in webhook ? webhook.secret : "", ...triggerSecretsIn(data, env)];
-  return [...new Set(values)].filter((value) => value.length >= 8 && !/\s/.test(value));
+  return openServerSecrets(data, env, TRIGGER_ADAPTERS, say).secrets.values();
 }
 
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. A run an earlier import made whose
