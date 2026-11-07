@@ -80,10 +80,12 @@ async function open(hash: string, { strict = false } = {}) {
     });
   };
   const sidebar = (label: string) => [...host.querySelectorAll('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === label);
+  // The editor's own steps (its step rail), apart from the sidebar, which has a Settings of its own on every server.
+  const step = (label: RegExp) => [...host.querySelectorAll("main ol button")].find((b) => label.test(b.textContent?.trim() ?? ""));
   const instructions = () => host.querySelector<HTMLTextAreaElement>("#agent-instructions");
   // Whether a tab close or reload is asked about: the page's beforeunload handler cancels the event.
   const unloadAsks = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
-  return { host, wait, settle, button, click, type, sidebar, instructions, unloadAsks };
+  return { host, wait, settle, button, click, type, sidebar, step, instructions, unloadAsks };
 }
 
 async function editing() {
@@ -129,8 +131,10 @@ describe("App, leaving the agent editor with unsaved changes", () => {
   it("never asks for the editor's own steps", async () => {
     const page = await editing();
     await page.type(page.instructions(), "Answer, then check the sum.");
-    await page.click(page.button(/Settings/));
-    await page.click(page.button(/Context/));
+    expect(page.step(/Settings/)).toBeTruthy();
+    expect(page.step(/Context/)).toBeTruthy();
+    await page.click(page.step(/Settings/));
+    await page.click(page.step(/Context/));
     expect(confirms).toEqual([]);
     expect(page.instructions()?.value).toBe("Answer, then check the sum.");
   });
