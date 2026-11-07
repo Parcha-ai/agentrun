@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { issuesFor, ownSettings, providerHelp, providerLabel, resolution, toolChoices, withProvider } from "./toolSettings";
+import type { operations } from "./api.generated";
 import type { ToolSettings } from "./v2";
 
 // capabilities.tools as the server lists them: a capability with a provider choice carries its providers (the built-in
@@ -11,6 +12,12 @@ const CAPS_TOOLS = [
 ];
 
 describe("tool settings", () => {
+  it("types the server's default settings, each a provider with no permission, as its settings answer", () => {
+    // What GET /settings/tools sends with nothing set: the typecheck is the test.
+    const defaults: operations["getToolSettings"]["answer"] = { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" }, browser: { provider: "auto" } };
+    expect(Object.keys(defaults)).toEqual(["web_search", "web_fetch", "browser"]);
+  });
+
   it("takes the capabilities with a provider choice, in the server's order, their providers as given, the default first", () => {
     const choices = toolChoices(CAPS_TOOLS);
     expect(choices.map((c) => [c.name, c.providers, c.provider, c.default_provider])).toEqual([

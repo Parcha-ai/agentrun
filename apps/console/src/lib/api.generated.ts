@@ -239,9 +239,21 @@ export interface components {
       llm?: {
         permission?: "allow" | "deny";
       };
-    } & Record<string, {
-      permission?: "allow" | "ask" | "deny";
-    }>;
+      [key: string]: {
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        permission?: "allow" | "deny";
+      } | {
+        provider?: "kernel" | "parallel";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider?: "auto" | "browserbase" | "kernel" | "chrome";
+        permission?: "allow" | "deny";
+      } | undefined;
+    };
     learning?: boolean;
     cap_mode?: "expected" | "strict";
   };
@@ -1547,9 +1559,19 @@ export interface operations {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "ask" | "deny";
       };
-    } & Record<string, {
-      permission: "allow" | "ask" | "deny";
-    }>;
+      [key: string]: {
+        permission: "allow" | "ask" | "deny";
+      } | {
+        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider: "kernel" | "parallel";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider: "auto" | "browserbase" | "kernel" | "chrome";
+        permission?: "allow" | "ask" | "deny";
+      };
+    };
   };
   getTrigger: {
     body: never;
@@ -2006,9 +2028,21 @@ export interface operations {
       llm?: {
         permission?: "allow" | "deny";
       };
-    } & Record<string, {
-      permission?: "allow" | "ask" | "deny";
-    }>;
+      [key: string]: {
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        permission?: "allow" | "deny";
+      } | {
+        provider?: "kernel" | "parallel";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider?: "auto" | "browserbase" | "kernel" | "chrome";
+        permission?: "allow" | "deny";
+      } | undefined;
+    };
     answer: {
       web_search: {
         provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
@@ -2022,9 +2056,19 @@ export interface operations {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
         permission?: "allow" | "ask" | "deny";
       };
-    } & Record<string, {
-      permission: "allow" | "ask" | "deny";
-    }>;
+      [key: string]: {
+        permission: "allow" | "ask" | "deny";
+      } | {
+        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider: "kernel" | "parallel";
+        permission?: "allow" | "ask" | "deny";
+      } | {
+        provider: "auto" | "browserbase" | "kernel" | "chrome";
+        permission?: "allow" | "ask" | "deny";
+      };
+    };
   };
   raiseRunCap: {
     body: {

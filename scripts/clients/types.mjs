@@ -126,10 +126,12 @@ function objectOf(schema, indent) {
   if (properties.length === 0) return extra === false ? 'Record<string, never>' : `Record<string, ${index ?? 'unknown'}>`;
   const pad = '  '.repeat(indent + 1);
   const required = new Set(schema.required ?? []);
-  const lines = properties.map(([name, property]) => `${pad}${keyOf(name)}${required.has(name) ? '' : '?'}: ${typeOf(property, indent + 1)};`);
-  const text = `{\n${lines.join('\n')}\n${'  '.repeat(indent)}}`;
-  // A map with named properties too: each value the index's, beside the named ones.
-  return index ? `${text} & Record<string, ${index}>` : text;
+  const named = properties.map(([name, property]) => ({ name, type: typeOf(property, indent + 1), optional: !required.has(name) }));
+  const lines = named.map(({ name, type, optional }) => `${pad}${keyOf(name)}${optional ? '?' : ''}: ${type};`);
+  // A map with named properties too: the named ones keep their own types, and every other key holds the index's. TypeScript
+  // has no "every other key", so the index signature also admits the named types (it must), never forcing the index's on them.
+  if (index) lines.push(`${pad}[key: string]: ${union([typeOf(extra, indent + 1), ...named.map(({ type }) => type), ...(named.some(({ optional }) => optional) ? ['undefined'] : [])])};`);
+  return `{\n${lines.join('\n')}\n${'  '.repeat(indent)}}`;
 }
 
 /** The file: `components`, each schema by name, and `operations`, each operation by its operationId with its JSON

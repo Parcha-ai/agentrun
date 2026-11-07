@@ -24,6 +24,9 @@ test('a schema is the TypeScript type of its shape: types, nulls, enums, consts,
   assert.equal(typeOf({}), 'unknown');
   assert.equal(typeOf({ type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string' }, 'a-b': { type: ['string', 'null'] } } }),
     '{\n  id: string;\n  "a-b"?: string | null;\n}');
+  // Named properties beside a map keep their own types: the map's value type is never required of them.
+  assert.equal(typeOf({ type: 'object', required: ['a'], properties: { a: { const: 'x' }, b: { type: 'number' } }, additionalProperties: { type: 'boolean' } }),
+    '{\n  a: "x";\n  b?: number;\n  [key: string]: boolean | "x" | number | undefined;\n}');
   assert.equal(typeOf({ oneOf: [{ $ref: '#/components/schemas/A' }, { type: 'null' }] }), 'components["A"] | null');
   assert.equal(typeOf({ allOf: [{ $ref: '#/components/schemas/A' }, { $ref: '#/components/schemas/B' }] }), 'components["A"] & components["B"]');
   assert.equal(typeOf({ allOf: [{ oneOf: [{ type: 'string' }, { type: 'number' }] }, { $ref: '#/components/schemas/B' }] }), '(string | number) & components["B"]');
