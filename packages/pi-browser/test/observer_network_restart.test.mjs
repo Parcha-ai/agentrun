@@ -11,6 +11,7 @@ async function fakeBrowser() {
   let servicePid = 100;
   let refusing = false;
   let hanging = false;
+  let bare = false;
   const commands = [];
   const send = (message) => {
     const body = Buffer.from(JSON.stringify(message));
@@ -46,6 +47,7 @@ async function fakeBrowser() {
       return send({ method: "Target.attachedToTarget", params: { sessionId: "S1", targetInfo: { targetId: "T1", type: "page", url: "http://fake.test/" }, waitingForDebugger: false } });
     }
     if (m.method === "SystemInfo.getProcessInfo" && hanging) return;
+    if (m.method === "SystemInfo.getProcessInfo" && bare) return send({ id: m.id });
     if (m.method === "SystemInfo.getProcessInfo" && refusing) return send({ id: m.id, error: { code: -32601, message: "'SystemInfo.getProcessInfo' wasn't found" } });
     if (m.method === "SystemInfo.getProcessInfo") return send({ id: m.id, result: { processInfo: [{ type: "browser", id: 1 }, ...(servicePid ? [{ type: "network.mojom.NetworkService", id: servicePid }] : [])] } });
     send({ id: m.id, result: {}, ...(m.sessionId ? { sessionId: m.sessionId } : {}) });
@@ -62,6 +64,12 @@ async function fakeBrowser() {
     refuseService: () => { refusing = true; },
     /** The connection stays open and never answers the question. */
     hangService: () => { hanging = true; },
+    /** A relay that answers the question with its id and no result. */
+    bareService: () => { bare = true; },
+    /** A redirect hop: the same request id announced again, with the response that redirected it. */
+    redirected: (requestId, path) => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, type: "Fetch", redirectResponse: { status: 307 }, request: { method: "POST", url: `http://other.test${path}` } } }),
+    responded: (requestId) => send({ sessionId: "S1", method: "Network.responseReceived", params: { requestId, type: "Fetch", response: { status: 200 } } }),
+    pauseAt: (requestId, networkId, origin, path) => send({ sessionId: "S1", method: "Fetch.requestPaused", params: { requestId, networkId, resourceType: "Fetch", request: { method: "POST", url: `${origin}${path}`, headers: {} } } }),
     announce: (requestId, path = "/api/order") => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, type: "Fetch", request: { method: "POST", url: `${url(path)}?card=4111` } } }),
     pause: (requestId, networkId, path = "/api/order") => send({ sessionId: "S1", method: "Fetch.requestPaused", params: { requestId, networkId, resourceType: "Fetch", request: { method: "POST", url: url(path), headers: {} } } }),
     /** A form's intent, before its request exists, then its Document request and pause. */
@@ -352,6 +360,62 @@ test("a browser that keeps its socket open and never answers leaves no question 
   assert.ok(browser.asked() > asked, "a new held request is asked about");
 });
 
+test("a redirect hop is waited for and decided under its own call, journaled apart from the hop before it", async (t) => {
+  const browser = await fakeBrowser();
+  const observer = await EffectObserver.open({ sdkCdpUrl: browser.url }, effectDecider("allow"));
+  t.after(async () => { observer.close(); await browser.close(); });
+  const rows = [];
+  const stop = observer.record((row) => { rows.push(`${row.requestId} ${row.method} ${row.origin}${row.path} ${row.held}`); });
+  browser.announce("R1");
+  browser.pause("F1", "R1");
+  // As in Chrome, the flush starts once hop 1 is paused; hop 1 goes out and its 307 to another origin comes back a moment
+  // later, then hop 2 is paused, and its answer comes.
+  setTimeout(() => browser.redirected("R1", "/api/xorigin"), 200);
+  setTimeout(() => browser.pauseAt("F2", "R1", "http://other.test", "/api/xorigin"), 400);
+  setTimeout(() => browser.responded("R1"), 600);
+  const start = Date.now();
+  await observer.flush(undefined, 3_000);
+  const took = Date.now() - start;
+  stop();
+  assert.ok(took < 2_000, `the flush ended with hop 2's answer, not at its bound (${took} ms)`);
+  assert.deepEqual(rows, ["R1 POST http://fake.test/api/order pending", "R1 POST http://fake.test/api/order allowed", "R1#2 POST http://other.test/api/xorigin pending", "R1#2 POST http://other.test/api/xorigin allowed"]);
+});
+
+test("a redirect hop lost with the network service is not told as not sent: its first hop went out", async (t) => {
+  const { browser, observer, lost } = await rig(t, effectDecider("allow"));
+  browser.announce("R1");
+  browser.pause("F1", "R1");
+  await sleep(100);
+  browser.redirected("R1", "/api/xorigin");
+  await sleep(100);
+  browser.restart(200);
+  await observer.flush(undefined, 1_000);
+  assert.deepEqual(lost, []);
+});
+
+test("a relay that answers the question with no result stalls the watch instead of spinning, and the observer still hears its socket close", async (t) => {
+  const browser = await fakeBrowser();
+  const observer = await EffectObserver.open({ sdkCdpUrl: browser.url }, effectDecider("deny"));
+  t.after(async () => { observer.close(); await browser.close(); });
+  observer.record(() => {});
+  browser.bareService();
+  browser.announce("R1");
+  await sleep(1_000);
+  assert.ok(browser.asked() <= 5, `the asking stalled (${browser.asked()} asked)`);
+  await browser.close();
+  for (const end = Date.now() + 2_000; !observer.closed && Date.now() < end; await sleep(20));
+  assert.equal(observer.closed, true, "the socket's close was heard");
+});
+
+test("a page that sends a held request every millisecond is asked about at most every 50 ms or so: 100 in 100 ms take about 3 questions", async (t) => {
+  const { browser } = await rig(t);
+  const start = Date.now();
+  for (let i = 0; i < 100; i += 1) { browser.announce(`R${i}`); await sleep(1); }
+  const took = Date.now() - start;
+  await sleep(Math.max(0, 120 - took));
+  assert.ok(browser.asked() <= Math.ceil(took / 50) + 2, `${browser.asked()} questions in ${took} ms`);
+});
+
 test("a journaling observer, which holds nothing, never asks for the network service", async (t) => {
   const { browser, observer } = await rig(t, null);
   browser.announce("R1");
@@ -372,7 +436,7 @@ test("a run whose code throws after a loss still tells the model of the lost req
   assert.equal(out.isError, true);
   const failed = JSON.parse(out.content[0].text);
   assert.match(failed.message, /Timeout 5000ms exceeded/, "the error's own words stay");
-  assert.match(failed.message, /The browser lost a request your page sent before it left the browser: POST https:\/\/shop\.test\/api\/order\./);
+  assert.match(failed.message, /The browser lost a request your page made before the request left the browser: POST https:\/\/shop\.test\/api\/order\./);
   assert.deepEqual(out.details?.lost, [{ method: "POST", url: "https://shop.test/api/order" }]);
 });
 
@@ -387,7 +451,8 @@ test("run tells the model the browser lost a request and it was NOT sent, names 
   const out = await pageTools().run({ code: "await page.click('#order')" }, port, call);
   const said = out.content[0].text;
   assert.match(said, /^done/);
-  assert.match(said, /The browser lost a request your page sent before it left the browser: POST https:\/\/shop\.test\/api\/order\. Chrome's network service restarted while it was on its way, so it was NOT sent and nothing reached the site\. Do it again if you still need it\./);
+  assert.match(said, /The browser lost a request your page made before the request left the browser: POST https:\/\/shop\.test\/api\/order\. Chrome's network service restarted while it was on its way, so the request was not sent\. Make it again if you still need it\./);
+  assert.doesNotMatch(said, /reached/, "the preflight may have reached the site: the notice says only that the request was not sent");
   assert.deepEqual(out.details.lost, [{ method: "POST", url: "https://shop.test/api/order" }]);
   assert.equal(out.details.sent, undefined);
 });

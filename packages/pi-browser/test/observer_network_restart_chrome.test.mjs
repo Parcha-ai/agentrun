@@ -94,6 +94,16 @@ test("under deny, a POST the network service took with it is told lost, nothing 
   assert.deepEqual(server.nonGet(), [], "nothing reached the server");
 });
 
+test("under allow, a POST redirected 307 to another origin is held hop by hop, and both hops are journaled under the call that sent it", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const { server, call } = await rig(t, "ns-redirect", "allow");
+  // The call flushes right after the click, with no wait of its own: hop 2 exists only once hop 1's 307 is back.
+  const { rows, lost } = await call({ steps: [{ goto: "/g" }, { click: "#redirect" }] });
+  assert.deepEqual(rows, ["POST /api/redirect allowed", "POST /api/xorigin allowed"]);
+  assert.deepEqual(lost, []);
+  await server.nonGetReached(2, 10_000);
+  assert.deepEqual(server.nonGet(), ["POST /api/redirect", "POST /api/xorigin"]);
+});
+
 test("with no restart, a call is told nothing lost: the same POST under allow is held, allowed and sent", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const { server, call } = await rig(t, "ns-none", "allow");
   const { rows, lost } = await call(G3);

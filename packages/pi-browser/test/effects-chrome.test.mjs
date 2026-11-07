@@ -101,7 +101,7 @@ test("a cross-origin POST whose preflight the network answers late is waited for
   assert.deepEqual(server.nonGet(), [], "nothing reached the server");
 });
 
-test("the observer journals every effect of S3's twelve fixtures; under deny it holds every one and none reaches the server", { skip: NO_CHROME, timeout: 240_000 }, async (t) => {
+test("the observer journals every effect of S3's twelve fixtures and a 307 redirect's two hops; under deny it holds every one and none reaches the server", { skip: NO_CHROME, timeout: 240_000 }, async (t) => {
   const server = await startServer();
   const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "effects-"));
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK] } });
@@ -116,7 +116,8 @@ test("the observer journals every effect of S3's twelve fixtures; under deny it 
 
   for (const mode of ["journal", "deny"]) {
     const observer = await EffectObserver.open(target, mode === "deny" ? effectDecider("deny") : null);
-    for (const c of CASES) {
+    for (const each of CASES) {
+      const c = mode === "deny" && each.denied ? { ...each, expected: each.denied } : each;
       const { rows } = await journalCase({ driver, observer, server, mode, c });
       assert.deepEqual([...rows.values()].map(label).sort(), c.expected, `${mode}, ${c.name}: the journal (the server got ${JSON.stringify(server.nonGet())})`);
       assert.deepEqual(server.nonGet(), mode === "deny" ? [] : c.expected, `${mode}, ${c.name}: what reached the server`);

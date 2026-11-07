@@ -118,7 +118,7 @@ const lostOf = (error: unknown): Lost[] => (error !== null && typeof error === "
 /** Told to a call whose page sent requests the browser lost before they left it (Chrome's network service restarted under
  *  them): they were not sent, so the model may send them again. */
 export const lostRequests = (lost: readonly Lost[]): string =>
-  `The browser lost ${lost.length === 1 ? "a request" : `${lost.length} requests`} your page sent before ${lost.length === 1 ? "it" : "they"} left the browser: ${lost.map((r) => `${r.method} ${r.url}`).join(", ")}. Chrome's network service restarted while ${lost.length === 1 ? "it was" : "they were"} on ${lost.length === 1 ? "its" : "their"} way, so ${lost.length === 1 ? "it was" : "they were"} NOT sent and nothing reached the site. Do it again if you still need ${lost.length === 1 ? "it" : "them"}.`;
+  `The browser lost ${lost.length === 1 ? "a request" : `${lost.length} requests`} your page made before ${lost.length === 1 ? "the request" : "they"} left the browser: ${lost.map((r) => `${r.method} ${r.url}`).join(", ")}. Chrome's network service restarted while ${lost.length === 1 ? "it was" : "they were"} on ${lost.length === 1 ? "its" : "their"} way, so ${lost.length === 1 ? "the request was" : "the requests were"} not sent. Make ${lost.length === 1 ? "it" : "them"} again if you still need ${lost.length === 1 ? "it" : "them"}.`;
 
 /** A read of a browser that has loaded no page yet: it is fresh, and the next step is to navigate, to the replaced
  *  session's last page when there is one. */
