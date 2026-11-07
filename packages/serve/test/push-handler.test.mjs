@@ -4,7 +4,7 @@
 // is said as such.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -119,4 +119,54 @@ test("an unknown trigger, or one that is off, on a trigger's own hook path is th
   const nobody = await post(server.baseUrl, "/hooks/ping", JSON.stringify({ events: [{ id: "evt-3", channel: "nobody-listens", text: "hi" }] }), { secret: pingSecret });
   assert.equal(nobody.status, 200, "a server-wide source, checked: it says no trigger takes it");
   assert.ok(lines.some((line) => line.includes("condition=hook_no_trigger")));
+});
+
+test("a scope belongs to one trigger: a second trigger of a server-wide source on a scope another enabled one listens on is 409 scope_taken, naming it; off, it may share, and turned on it is refused the same", { timeout: 120_000 }, async (t) => {
+  const { api } = await pingServer(t);
+  assert.equal((await api("POST", "/agents", agent("pinged"))).status, 201);
+  const body = (channel, extra = {}) => ({ name: "pings", source: { kind: "ping", channel }, target: { kind: "start_run", agent_id: "pinged", input: { content: "A ping." }, max_cost_usd: 0.5 }, ...extra });
+  const first = await api("POST", "/triggers", body("c1"));
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const second = await api("POST", "/triggers", body("c1"));
+  assert.equal(second.status, 409, JSON.stringify(second.body));
+  assert.equal(second.body.error.code, "scope_taken");
+  assert.deepEqual(second.body.error.details, { source: "ping", scope: "c1", trigger_id: first.body.id });
+  assert.match(second.body.error.message, new RegExp(first.body.id));
+  const off = await api("POST", "/triggers", body("c1", { enabled: false }));
+  assert.equal(off.status, 201, "off, it listens on nothing");
+  const on = await api("PATCH", `/triggers/${off.body.id}`, { enabled: true });
+  assert.deepEqual([on.status, on.body.error?.code], [409, "scope_taken"]);
+  const elsewhere = await api("POST", "/triggers", body("c2"));
+  assert.equal(elsewhere.status, 201);
+  const moved = await api("PATCH", `/triggers/${elsewhere.body.id}`, { source: { kind: "ping", channel: "c1" } });
+  assert.deepEqual([moved.status, moved.body.error?.code], [409, "scope_taken"], "moved onto a taken scope, refused");
+});
+
+test("an event whose scope more than one trigger listens on (a file edited by hand) fires none: 200, said with their ids", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, ping] });
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("POST", "/agents", agent("pinged"))).status, 201);
+  const body = (channel) => ({ name: "pings", source: { kind: "ping", channel }, target: { kind: "start_run", agent_id: "pinged", input: { content: "A ping." }, max_cost_usd: 0.5 } });
+  const a = (await api("POST", "/triggers", body("c1"))).body;
+  const b = (await api("POST", "/triggers", body("c2"))).body;
+  await first.close();
+  const file = join(data, "triggers.json");
+  const doc = JSON.parse(await readFile(file, "utf8"));
+  doc.triggers.find((x) => x.id === b.id).source.channel = "c1";
+  await writeFile(file, `${JSON.stringify(doc)}\n`);
+  const lines = [];
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line) });
+  t.after(() => next.close());
+  const res = await post(next.baseUrl, "/hooks/ping", JSON.stringify({ events: [{ id: "evt-9", channel: "c1", text: "hi" }] }), { secret });
+  assert.deepEqual([res.status, res.body.firings], [200, []], JSON.stringify(res.body));
+  const said = lines.filter((line) => line.includes("condition=hook_scope_ambiguous"));
+  assert.equal(said.length, 1, JSON.stringify(lines));
+  assert.ok(said[0].includes(a.id) && said[0].includes(b.id), said[0]);
+  const nextApi = client(next.baseUrl, next.token);
+  for (const id of [a.id, b.id]) assert.deepEqual((await nextApi("GET", `/triggers/${id}/firings`)).body.firings, [], "fired none");
 });
