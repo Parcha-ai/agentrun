@@ -102,3 +102,24 @@ test("a request its client stops part way counts its input and what streamed plu
   // Past its limit, at most its limit: what it was held at.
   assert.equal(admitted.stoppedUsd(3_500), admitted.holdUsd, "within its limit");
 });
+
+// Sonnet-shaped prices: $2 input, $10 output, $0.20 a cache read, $2.50 a cache write, a million tokens.
+const sonnetPriced = { ...model, maxTokens: 16_384, contextWindow: 200_000, cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } };
+
+test("a request's least (CapGuard.leastUsd, the wrap-up's other trigger) is the figure beforeRequest refuses it below, by the same pricing: uncached with no previous request, and with one read from the cache, far less", async () => {
+  const cap = await capBefore(0.001, sonnetPriced);
+  const ask = { inputTokensMax: 20_000, outputTokensAsked: 16_384 };
+  const refusedAt = (request) => cap.beforeRequest({ spentUsd: 0, inFlight: [], ...request }).needsUsd;
+  // With no previous request: the whole input uncached, at the cache write's $2.50, and 1,024 tokens of output.
+  assert.equal(cap.leastUsd(ask), refusedAt(ask), "no previous: the least is the refusal's figure");
+  assert.ok(Math.abs(cap.leastUsd(ask) - (20_000 * 2.5 + 1_024 * 10) / 1e6) < 1e-12, `uncached: ${cap.leastUsd(ask)}`);
+  // After a previous request of the same bound that wrote it all to the cache: read from the cache at $0.20.
+  const previous = { cachedTokens: 19_997, inputTokens: 3, boundTokens: 20_000, endedAt: Date.now() };
+  assert.equal(cap.leastUsd({ ...ask, previous }), refusedAt({ ...ask, previous }), "with a previous request: the least is the refusal's figure again");
+  assert.ok(cap.leastUsd({ ...ask, previous }) < cap.leastUsd(ask) / 3, `read from the cache, far less: ${cap.leastUsd({ ...ask, previous })} vs ${cap.leastUsd(ask)}`);
+  assert.equal(cap.leastUsd({ outputTokensAsked: 16_384 }), undefined, "an input that could not be measured has no least");
+  // Its step-0 figure (CapGuard.typicalUsd) by the same pricing: its input and 4,096 tokens of output, at most what it asks.
+  assert.ok(Math.abs(cap.typicalUsd(ask) - (20_000 * 2.5 + 4_096 * 10) / 1e6) < 1e-12, `step 0: ${cap.typicalUsd(ask)}`);
+  assert.ok(Math.abs(cap.typicalUsd({ ...ask, outputTokensAsked: 1_024 }) - cap.leastUsd({ ...ask, outputTokensAsked: 1_024 })) < 1e-12, "asking 1,024 tokens: its step-0 figure is its least");
+  assert.ok(cap.typicalUsd({ ...ask, previous }) < cap.typicalUsd(ask), "read from the cache, less");
+});

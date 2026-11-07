@@ -1,4 +1,4 @@
-// A computer is what was declared: the daemon is the provider's version with its capabilities, hello's arch is the
+// A computer is what was declared: the daemon is the provider's version with its kind and groups, hello's arch is the
 // computer's own, the network reads back as asked, and a daemon of another version is never handed out.
 import type { Case, CaseContext } from "../types.js";
 import { CASE_LABEL } from "./util.js";
@@ -10,9 +10,25 @@ const drift = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case 
 
 function sameDaemon(t: CaseContext, hello: CaseContext["hello"], where: string) {
 	t.equal(hello.version, t.provider.version, `${where}: the daemon's version is the provider's`);
-	for (const capability of t.provider.capabilities().daemon) {
-		t.assert(hello.capabilities.includes(capability), `${where}: hello declares ${capability}, which the provider declares`);
+	const { kind, groups } = t.provider.capabilities();
+	t.equal(hello.kind, kind, `${where}: hello's kind is the provider's`);
+	for (const group of groups) {
+		t.assert(Array.isArray(hello.groups) && hello.groups.includes(group), `${where}: hello declares ${group}, which the provider declares`);
 	}
+}
+
+
+/** The drift check's own words for a version mismatch (src/drift.ts, helloDrift). */
+const VERSION_DRIFT = /hello: the daemon reports version (\S+), expected (\S+)/;
+
+/**
+ * A refusal passes drift.version only when it is the version drift: the drift check's words, with two different
+ * versions. A create or connect refused for any other reason (a network mismatch, a vendor error that mentions a
+ * version) fails the case: it shows nothing about the version check.
+ */
+function versionDrift(t: CaseContext, message: string): void {
+	const found = VERSION_DRIFT.exec(message);
+	t.assert(found !== null && found[1] !== found[2], `the refusal is the version drift ("hello: the daemon reports version X, expected Y"), not: ${message}`);
 }
 
 export const driftCases: Case[] = [
@@ -54,10 +70,9 @@ export const driftCases: Case[] = [
 				} finally {
 					await drifted.release(created.value, "delete");
 				}
-				t.refused(connected, "connect to a computer whose daemon reports another version", ["refused"]);
+				versionDrift(t, t.refused(connected, "connect to a computer whose daemon reports another version", ["refused"]).message);
 			} else {
-				const error = t.refused(created, "create of a computer whose daemon reports another version", ["refused"]);
-				t.match(error.message, /version/, "the refusal names the version");
+				versionDrift(t, t.refused(created, "create of a computer whose daemon reports another version", ["refused"]).message);
 			}
 			const left = t.ok(await t.provider.list(labels), "list").map((info) => info.ref.name);
 			t.deepEqual(left, [], "the computers of the drifted daemon left");

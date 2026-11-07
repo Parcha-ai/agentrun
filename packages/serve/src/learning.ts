@@ -775,6 +775,8 @@ export const learningTestHooks: {
   afterMkdir?: (dir: string) => Promise<void> | void;
   beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;
+  /** Once a start's seed is copied and pinned, before its learning is said: a throw here leaves the start's pin. */
+  afterSeed?: (runDir: string) => Promise<void> | void;
   beforePropose?: (runDir: string) => Promise<void> | void;
   beforeReopen?: (runDir: string) => Promise<void> | void;
 } = {};

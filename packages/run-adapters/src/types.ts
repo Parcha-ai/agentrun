@@ -105,9 +105,9 @@ export interface SessionWriter {
    *  `open` of the key has resolved. */
   append(records: readonly SessionRecord[]): Promise<void>;
   /** Make every record appended so far survive a lost box, not only a dead process: the kernel calls it after an
-   *  effect's start and before the effect runs. A writer whose appends are durable already leaves it out. A wrapper
-   *  passes it on (serialWriter), or the barrier is lost. */
-  sync?(): Promise<void>;
+   *  effect's start and before the effect runs. A writer whose appends are durable already resolves at once. A wrapper
+   *  passes it on (serialWriter): a writer without one is refused at the first effect that needs it. */
+  sync(): Promise<void>;
 }
 
 /** What one session is. */
@@ -193,9 +193,14 @@ export interface ModelPort {
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
   /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
-   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). */
-  note?(model: string): string | undefined;
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
+   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+  note?(model: string, request?: NoteRequest): string | undefined;
 }
+
+/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
+ *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {

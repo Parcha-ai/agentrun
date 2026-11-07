@@ -72,7 +72,7 @@ async function queuedRelaunch(t, armed, reaching, holds) {
   t.after(() => (closed ? undefined : one.close()));
   let api = client(one.baseUrl, one.token);
   const instructions = `Queue two follow-ups until ${first}, then hold the last until ${last}.`;
-  assert.equal((await api("POST", "/agents", agent("queued", { harness: "claude-agent", instructions, tools: ["fetch_page"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("queued", { harness: "claude-agent", instructions, tools: ["web_fetch"] }))).status, 201);
   const { body } = await api("POST", "/agents/queued/runs", { input: { content: "hi" } });
   const runId = body.run_id;
   // Turn 1 holds on its fetch: both follow-ups are accepted while it works, and wait their place.

@@ -17,7 +17,7 @@ import { type NewRevision, type Revision, runDirIn, type RunOrigin, STORE_FILE }
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
-import { FAUX_WEB_ENV } from "./fetch-page.js";
+import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
@@ -28,7 +28,7 @@ import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
-import { HarnessInstall, harnessesOf, installDirOf, npmInstall, removeFlatInstall } from "./harness-install.js";
+import { HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstall, removeFlatInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -70,9 +70,9 @@ import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, capabilityOf, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
@@ -154,7 +154,7 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch the check of a Kernel key goes through (the tests'
    *  fake), in place of Kernel's API. */
   fauxKernel?: string;
-  /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
+  /** With `faux` only: a module whose default export gives web_fetch's guarded fetch its `{ lookup, fetchImpl }` (the tests' fake
    *  network), in place of the system's resolver and undici. */
   fauxWeb?: string;
   /** With `faux` only: a module whose default export is the fetch Jev's runner sends through (the tests' fake), in place
@@ -590,7 +590,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -959,7 +959,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   });
   const installs: Record<string, HarnessInstall> = Object.fromEntries(installed.map(({ entry, pins }) => {
     const lock = options.harnessLocks?.[entry.id];
-    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, async (entry, dir, pins, signal) => (await flatRemoved(), npmInstall(entry, dir, pins, { signal, ...(lock ? { lock } : {}) })), (ms) => {
+    // npm past its SIGTERM's grace (it waits on a tarball once it writes): killed, and the line says so.
+    const onKilled = () => log?.(logLine("harness_install_killed", { harness: entry.id, said: `npm did not stop within ${NPM_STOP_GRACE_MS / 1000} s of SIGTERM; killed` }));
+    return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, async (entry, dir, pins, signal) => (await flatRemoved(), npmInstall(entry, dir, pins, { signal, onKilled, ...(lock ? { lock } : {}) })), (ms) => {
       log?.(logLine("harness_installed", { harness: entry.id, ms, dir: installDirOf(data, entry.id) }));
       void probe(`${entry.id}_installed`).catch(() => undefined);
     })];
@@ -2113,7 +2115,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (live) return send(res, 200, { state: "live", viewer: viewerLink(run.id, live) }, { "cache-control": "no-store" });
         // None open: whether the run has a browser at all, its kept plane's (a run from before the plane names none, and is
         // Browserbase's where it grants the tool), checked again as a launch would be. None, or unavailable, is `off`, saying why.
-        const granted = run.tooling?.tools.map(capabilityOf).includes("browser") === true;
+        const granted = run.tooling?.tools.includes("browser") === true;
         const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
         const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
@@ -2537,7 +2539,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
-  mcpServers.attach(options.publicUrl ?? url);
+  mcpServers.attach(options.publicUrl ?? url, url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
@@ -2557,7 +2559,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
-    // A harness install under way stops with the server: its npm gets SIGTERM, and nothing half installed stays.
+    // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
     // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
     const mcpStopped = mcpServers.close();

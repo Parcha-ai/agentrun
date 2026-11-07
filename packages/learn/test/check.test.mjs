@@ -345,7 +345,7 @@ test("with no host tool list, a draft that names a tool is refused, and a tool-f
 
 test("a host list and a tool in it passes; a tool outside it is refused", () => {
   assert.deepEqual(check(withFiles({ [DRAFT]: workflow({ tools: ["browser"] }) }), { tools: ["browser"] }), []);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["fetch_page"] }) }), { tools: ["browser"] })), ["workflow"]);
+  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["read_page"] }) }), { tools: ["browser"] })), ["workflow"]);
 });
 
 test("a draft with a node type the DSL does not have is refused with the validator's own issue", () => {

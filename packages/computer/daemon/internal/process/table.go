@@ -18,7 +18,7 @@
 // packages/envd/internal/services/process (signal.go's signal names, list.go, and handler.go's pty read loop, which
 // ends on EIO). Changed for the open platform: ids are "p1", "p2", ...; the table is bounded and keeps ended
 // processes for reads; output goes to a ring per stream read by offset, not to subscribers; a signal goes to the
-// program's group through its guard; errors are the protocol's kinds.
+// program's group through its guard, INT on a terminal to its foreground group; errors are the protocol's kinds.
 
 package process
 
@@ -503,21 +503,40 @@ func (t *Table) Write(ctx context.Context, params WriteParams) (Empty, error) {
 	return Empty{}, nil
 }
 
-// Signal sends a signal to the program's process group, through its guard. A signal to a process that has ended does
-// nothing.
-func (t *Table) Signal(params SignalParams) (Empty, error) {
+// Signal sends a signal through the program's guard. Where it goes: INT to a process started with a pty is ^C, so it
+// goes to the terminal's foreground process group (the job a shell runs in the foreground, or the program itself when
+// it runs none), which must be in the program's own session: the program leads that session, so the group is under
+// its guard, and a group in another session is refused. A terminal with no foreground group left has INT go to the
+// program's own group, with a note that says so. Every other signal, and INT without a pty, goes to the program's
+// group. A signal to a process that has ended does nothing.
+func (t *Table) Signal(params SignalParams) (SignalResult, error) {
 	sig, ok := signals[params.Signal]
 	if !ok {
-		return Empty{}, rpc.Errorf(rpc.KindInvalid, "signal is TERM, INT, KILL or HUP, not %q", params.Signal)
+		return SignalResult{}, rpc.Errorf(rpc.KindInvalid, "signal is TERM, INT, KILL or HUP, not %q", params.Signal)
 	}
 	p, err := t.get(params.ID)
 	if err != nil {
-		return Empty{}, err
+		return SignalResult{}, err
 	}
 	if p.hasEnded() {
-		return Empty{}, nil
+		return SignalResult{}, nil
 	}
-	return Empty{}, p.g.Signal(sig)
+	if !p.pty || sig != syscall.SIGINT {
+		return SignalResult{}, p.g.Signal(sig, 0)
+	}
+	p.mu.Lock()
+	group, session, err := 0, 0, errNoForeground
+	if p.terminal != nil {
+		group, session, err = foreground(p.terminal)
+	}
+	p.mu.Unlock()
+	switch {
+	case err != nil:
+		return SignalResult{Note: err.Error() + "; INT went to the program's own group"}, p.g.Signal(sig, 0)
+	case session != p.pid:
+		return SignalResult{}, rpc.Errorf(rpc.KindDenied, "process %s's terminal belongs to another session: its foreground group %d is in session %d, not the program's, %d; INT was not sent", p.id, group, session, p.pid)
+	}
+	return SignalResult{}, p.g.Signal(sig, group)
 }
 
 func (t *Table) Resize(params ResizeParams) (Empty, error) {

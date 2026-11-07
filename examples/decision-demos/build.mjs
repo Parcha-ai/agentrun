@@ -525,7 +525,7 @@ const merchantMcc = {
   root: {
     node: "chain",
     steps: [
-      { node: "call", label: "fetch_site", via: "tool", tool: "fetch_page", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 45 },
+      { node: "call", label: "fetch_site", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 45 },
       { node: "escalate", label: "site_unreadable", when: { predicate: "field_equals", path: "page.ok", value: false }, kind: "merchant_review", stage: "merchant-mcc", summary: "A person reviews {merchant_name}: its page at {url} could not be read." },
       { node: "code", label: "mcc_candidates", as: "mcc_codes", code: `(s) => ${JSON.stringify(MCC.map(([code, description]) => ({ code, description })))}` },
       {

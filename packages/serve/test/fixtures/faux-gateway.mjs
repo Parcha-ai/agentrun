@@ -6,6 +6,9 @@
 //   POST /v1/chat/completions   OpenAI Chat Completions
 // A base with a path (`/api/v1/...`, as OpenRouter serves them) is answered the same: the route is the path's end. Any
 // other path is recorded and answered 404, so a request sent to the wrong place shows in `requests` and fails its run.
+// A POST whose body is not JSON is answered 400 and not recorded. A GET under the API's paths (`/v1/models`) is recorded and
+// answered 404, as any other request; one outside them (a stranger's bare `GET /` probing loopback ports, F2/F3) is
+// answered 404 and not recorded.
 // Streams when the request asks to (`stream: true`), else one JSON answer. A Responses or Chat Completions stream ends
 // with `data: [DONE]`, as Chat Completions streams do: pi's OpenAI client stops on it in either, and codex's stand-in
 // app-server reads to it.
@@ -45,9 +48,14 @@ export async function startFauxGateway(options = {}) {
       try {
         body = raw ? JSON.parse(raw) : null;
       } catch {
+        // A POST whose body is not JSON is no model request: answered 400 and never recorded among a test's requests.
+        if (req.method === "POST") return void res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "not a model request: its body is not JSON" } }));
         body = raw;
       }
       const [path, ...rest] = (req.url ?? "/").split("?");
+      // A request outside the API's own paths (none under /v1/) that is no POST is no client's: a stranger's probe of a
+      // loopback port (a bare `GET /`, F2/F3). Answered 404 and never recorded among a test's requests.
+      if (req.method !== "POST" && !path.includes("/v1/")) return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
       const request = { method: req.method ?? "", path, query: rest.join("?"), headers: Object.fromEntries(RECORDED_HEADERS.map((name) => [name, req.headers[name]])), body };
       requests.push(request);
       const stream = body?.stream === true;

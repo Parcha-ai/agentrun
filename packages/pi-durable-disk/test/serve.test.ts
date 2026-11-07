@@ -369,7 +369,7 @@ describe("the bearer token", () => {
     }
     await assert.rejects(serveRun({ url: "ftp://run-host.example:21" }), (e: unknown) => (e as { code?: string }).code === "SERVE_URL_INVALID");
     const server = await serveRun({ url: "https://run-host.example:8443" });
-    assert.equal(server.url, "https://run-host.example:8443", "run.json's holder carries the given address, not the bound one");
+    assert.equal(server.url, "https://run-host.example:8443", "the run's holder carries the given address, not the bound one");
     await server.close();
   });
 

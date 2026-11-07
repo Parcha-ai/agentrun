@@ -36,7 +36,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionPort, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, type NoteRequest, RUNNER_RECORDS, type SessionPort, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import { foldSession, INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { failureText } from "@parcha/agentrun-kernel/process";
 import { BARRIER, syncNow, type DoorContext, type DoorEvent, type DoorHook, type DurableRun } from "@parcha/pi-durable-disk";
@@ -59,6 +59,14 @@ export { BOOKED } from "./turn-end.js";
 export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
+/** For tests only: how long each of a harness run's root writes waits first, as on a store slow to write; only under a
+ *  test runner (node --test's NODE_TEST_CONTEXT), at most a second. */
+export const ROOT_WRITE_DELAY_ENV = "AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS";
+export function rootWriteDelayMs(env: NodeJS.ProcessEnv = process.env): number {
+  if (!env.NODE_TEST_CONTEXT) return 0;
+  const ms = Number(env[ROOT_WRITE_DELAY_ENV]);
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 1_000) : 0;
+}
 /** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
 export { MESSAGE, MESSAGE_END } from "./turn-end.js";
 /** A turn's end on the root (turn-end.ts): the message it took, the session's own outcome (`completed`, `interrupted`,
@@ -210,26 +218,33 @@ export function adapterRun(
   // keeps it to once per cap across processes. Both are decided as the proxy takes the note into a request, with what is
   // left then, and the row is written, and the note counted sent, only once that request is admitted carrying it
   // (`noted`), as pi's judge does: nothing is recorded for a note no request carried.
-  // `costs`: the session's own model's priced requests, side calls left out. `due`: an admission found the wrap-up due
-  // with nothing priced yet (step 0: that request at its input and a typical answer standing in for a typical one), which
-  // the proxy measures only after it has placed a note: the next request takes it, in step 0's words as pi says them,
-  // however its first request is priced by then. In memory only, as nothing was told: a process opened again reads the
-  // costs, and words the note by them. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
+  // `costs`: the session's own model's priced requests, side calls left out; a process opened again reads them back.
+  // With none, step 0: the request taking the note is judged on itself, its input and a typical answer (CapGuard.typicalUsd),
+  // as pi's judge does, and told in that request. `taken`: the row of the note the proxy last took, until its request's admission. `row`: that row
   // once admitted, held while the turn it is told in has its person's (or the server's) message still to be written
   // (`entryDue`, sendOf), so the Timeline shows that message first and the note after it.
   type WrapRow = { key: string; capUsd: number; leftUsd: number; words: string };
-  const wrap: { costs: number[]; sent: boolean; due: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, due: false, entryDue: false };
+  const wrap: { costs: number[]; sent: boolean; taken?: WrapRow; entryDue: boolean; row?: WrapRow } = { costs: [], sent: false, entryDue: false };
   /** The note for the request the model proxy is placing it in (ModelPort.note), when the wrap-up is due: what is left
    *  of the cap as admission counts it now (`spentUsd`: what the run spent; what its requests and paid calls in flight
    *  are held at) under three times the session's own model's typical request, or an earlier admission found it due. */
-  const takeNote = (spentUsd: number | null): string | undefined => {
+  const takeNote = (spentUsd: number | null, model?: string, request?: NoteRequest): string | undefined => {
     wrap.taken = undefined;
     if (budgetUsd === undefined || wrap.sent || spentUsd === null) return undefined;
     const held = inFlight.total() + paidHolds();
-    const due = wrap.costs.length > 0 ? wrapUpDue(budgetUsd, spentUsd, held, typicalCost(wrap.costs, 0)) : undefined;
-    if (!due && !wrap.due) return undefined;
-    const leftUsd = due?.leftUsd ?? budgetUsd - spentUsd - held;
-    wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd, wrap.due) };
+    // The request taking the note, priced as its admission will price it: its own bound and asks as its client sent them,
+    // after the previous request on its model when there is one (the cache), else uncached. Nothing kept in memory, so a
+    // process opened again judges its first request so too.
+    const before = model ? previous.get(model) : undefined;
+    const asked = request ? { ...request, ...(before ? { previous: before } : {}) } : undefined;
+    // Due by the typical (the measured one once a cost is priced; before that, step 0, this request's own input and a
+    // typical answer, as pi's judge does) or by this request's least, room for about one more.
+    const typical = wrap.costs.length > 0 ? typicalCost(wrap.costs, 0) : asked ? cap?.typicalUsd?.(asked) : undefined;
+    const due = wrapUpDue(budgetUsd, spentUsd, held, typical ?? 0, asked ? cap?.leastUsd?.(asked) : undefined);
+    if (!due) return undefined;
+    const leftUsd = due.leftUsd;
+    // Worded by what was priced as it is taken: the budget's words with nothing priced, else "finish now".
+    wrap.taken = { key: spec.key, capUsd: budgetUsd, leftUsd, words: wrapUpWords(leftUsd, wrap.costs.length === 0) };
     return wrap.taken.words;
   };
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
@@ -272,7 +287,10 @@ export function adapterRun(
     }
     inFlight.admitted(answer?.holdUsd);
     const side = (request as { side?: unknown }).side === true;
-    const inputTokensMax = withoutNote ? (plainInput as number) : request.inputTokensMax;
+    // The bound its `previous` is read against for the next request on its model: the body as its client sent it, without
+    // the note (the note goes after the client's content, in this request alone, so the next request's cached prefix is the
+    // client's body). Its hold above is what it sends, the note included. A host request is marked: it is never `previous`.
+    const inputTokensMax = noted && typeof plainInput === "number" ? plainInput : request.inputTokensMax;
     admittedNext = typeof model === "string" ? { model, ...(inputTokensMax === undefined ? {} : { inputTokensMax }), boundUsd: answer?.boundUsd ?? 0, ...(side ? { side } : {}), ...(host ? { host: true as const } : {}) } : undefined;
     if (!answer) return undefined;
     // Admitted carrying the note: it is sent, once per cap, and its row says so. Only the admission of the request that
@@ -280,15 +298,6 @@ export function adapterRun(
     // credential between the two) leaves it for that request.
     const data = noted && !withoutNote && !side ? wrap.taken : undefined;
     if (noted) wrap.taken = undefined;
-    // None priced yet: this request at its input and a typical answer is the typical one, and what is left as its admission counts it
-    // (spent, and what requests and paid calls in flight are held at) under three times it makes the note due for the
-    // next request. Never a side call's: the note is for the session's own model.
-    if (!data && !side && budgetUsd !== undefined && !wrap.sent && wrap.costs.length === 0) {
-      const spentNow = plus(request.spentUsd, charged);
-      const held = request.inFlight.reduce((sum, r) => sum + (r.holdUsd ?? 0), paidHolds());
-      // Its input and a typical answer (WRAP_UP_STEP0_ANSWER_TOKENS), never its whole output allowance.
-      if (spentNow !== null && wrapUpDue(budgetUsd, spentNow, held, answer.typicalUsd ?? answer.holdUsd)) wrap.due = true;
-    }
     if (data && !wrap.sent) {
       wrap.sent = true;
       if (wrap.entryDue) wrap.row = data;
@@ -311,9 +320,23 @@ export function adapterRun(
   // The call the gate parked, until the next message starts a turn: no request leaves meanwhile, and the turn is
   // interrupted once the call's result is in. Not a failure: the turn ends as the person's answer will resume it.
   let parked: ParkedCall | undefined;
+  // The parked call answered allow (the gate's unpark): the run's own requests beside the harness's (the approved call's
+  // node) are admitted from then, while the harness's own stay held until the next message's turn. Apart from `parked`,
+  // which names the call whose result still ends the parked turn: an allow that lands while the harness is still
+  // recording that result leaves it, so the turn is interrupted as it would be without the allow.
+  let approved = false;
   const PARKED = new Error("the turn ended: a tool call waits for a person's approval");
   // Each call's arguments, by its id, for a park named by tool and arguments (endsTurn).
   const argsOf = new Map<string, unknown>();
+  /** Results of calls whose answer is not on the root yet, by call id: written right after the entry that holds the call
+   *  (flush), so a result is never above its call. A crash before that leaves the session's record, which the next open
+   *  writes from (settleCutCalls). */
+  const deferred = new Map<string, (tx: Tx) => Promise<unknown>>();
+  /** The side calls' requests (a title, a summary on another model): their cost is their own, never the content's. */
+  const sides = new Set<number>();
+  /** What each earlier request streamed, closed at the next request's start, oldest first, waiting to be written with its
+   *  own request's cost (flush). */
+  const segments: { request: number | undefined; text: string; calls: ToolCall[] }[] = [];
   /** The calls the root holds from an earlier process (read at the open): one run again after a crash is not written twice. */
   const onRoot = new Set<string>();
   const results: ToolResults = new Map();
@@ -368,7 +391,9 @@ export function adapterRun(
   let writing = Promise.resolve();
   const later = (work: () => Promise<void>) => (writing = writing.then(work, work));
 
-  const commit = <T>(change: (tx: Tx) => Promise<T>) => run!.harness.commit(change, context);
+  // A test's seam (ROOT_WRITE_DELAY_ENV): each root write waits first, as on a store slow to write. None outside a test runner.
+  const slowWrites = rootWriteDelayMs();
+  const commit = <T>(change: (tx: Tx) => Promise<T>) => (slowWrites ? new Promise<void>((resolve) => setTimeout(resolve, slowWrites)).then(() => run!.harness.commit(change, context)) : run!.harness.commit(change, context));
 
   /** A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
    *  own (one of `writes`, the flush's commit), so the run's spend counts it, once; any other is a duplicate. */
@@ -380,8 +405,10 @@ export function adapterRun(
   };
   const writtenAt = () => costed.findIndex((c) => written.has(c.request));
 
-  /** Writes what the current request has: its entry with the content so far and the oldest cost not yet written.
-   *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost.
+  /** Writes each request's content as its own entry, with that request's own cost: first the segments closed at a
+   *  request's start (what the request before it streamed), in order, then what the current request has so far.
+   *  Content with no cost yet waits for its own, and holds every later one behind it, but at a turn's end (`final`) it
+   *  is written as a request of unknown cost. A side call's cost, and a cost with no content, is an entry of its own.
    *  Everything a flush writes is one commit, and `end` (a turn's end: its error and TURN_END) is the last of it, so a
    *  turn's end is in the commit of its last entries. The bookkeeping goes first: a commit the store refuses ends the
    *  process, and the next open reads the root again. */
@@ -395,47 +422,85 @@ export function adapterRun(
       // Each cost for a request already written, wherever it sits: a response is booked when its stream closes, so a
       // late cost can come in after a later request's.
       for (let at = writtenAt(); at >= 0; at = writtenAt()) priceLate(costed.splice(at, 1)[0]!, writes);
-      if ((!text && !calls.length && !costed.length) || (!costed.length && !final)) return commitAll();
-      const request = costed.shift();
-      const content = { text, calls };
-      text = "";
-      calls = [];
-      // At a turn's end with no cost in: the request still unbooked is the one this content answers. It is written at
-      // unknown cost and marked booked, so a later open never writes it again.
-      const ownOpen = [...open].filter((n) => !hosts.has(n));
-      const unbooked = !request && final && ownOpen.length ? Math.min(...ownOpen) : undefined;
-      if (unbooked !== undefined) open.delete(unbooked);
-      const marked = request?.request ?? unbooked;
-      if (marked !== undefined) answered.add(marked);
-      writes.push(async (tx) => {
-        const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
-        // The turn's answer so far: its last request with text and no call.
-        if (content.text && !content.calls.length) answer = entry.id as number;
-        // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
-        if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
-        if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
-      });
-      if (marked !== undefined) written.add(marked);
-      if (request) priced.add(request.request);
-      else if (marked !== undefined) unpriced.add(marked);
-      // More costs than content: each later one still gets its own entry, cost only. One that came in meanwhile for a
-      // request already written is a late cost, or a duplicate.
-      while (costed.length) {
-        const next = costed.shift()!;
-        if (written.has(next.request)) {
-          priceLate(next, writes);
-          continue;
-        }
-        answered.add(next.request);
-        writes.push(async (tx) => {
-          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
-        });
-        written.add(next.request);
-        priced.add(next.request);
+      // A side call's cost (a title, a summary: no content of the session's) is its own entry, cost only, whenever it
+      // comes in: never the cost of the content streaming meanwhile.
+      for (let at = costed.findIndex((c) => sides.has(c.request)); at >= 0; at = costed.findIndex((c) => sides.has(c.request))) costOnly(costed.splice(at, 1)[0]!, writes);
+      // The segments, oldest first: each written with its own request's cost, or waiting for it.
+      while (segments.length && entryOf(segments[0]!, final, writes)) segments.shift();
+      if (segments.length) return commitAll();
+      // Then what the current request has so far.
+      if (text || calls.length) {
+        const content = { request: current, text, calls };
+        if (entryOf(content, final, writes)) {
+          text = "";
+          calls = [];
+        } else return commitAll();
       }
+      // More costs than content: each later one still gets its own entry, cost only, or is a late cost.
+      while (costed.length) costOnly(costed.shift()!, writes);
       await commitAll();
     });
+
+  /** `content`'s entry, as its request's (`content.request`), into `writes`: with that request's own cost when it is in;
+   *  else, at a turn's end, at an unknown cost, booked so a later open never writes it again; else not yet (false). The
+   *  content of a request already written is its continuation, shown and never counted again. */
+  const entryOf = (content: { request: number | undefined; text: string; calls: ToolCall[] }, final: boolean, writes: ((tx: Tx) => Promise<unknown>)[]): boolean => {
+    const owner = content.request;
+    const results = async (tx: Tx) => {
+      // The results of its calls that ended before this entry was written, in order, right after it.
+      for (const call of content.calls) {
+        const result = deferred.get(call.id);
+        deferred.delete(call.id);
+        if (result) await result(tx);
+      }
+    };
+    if (owner !== undefined && answered.has(owner)) {
+      writes.push(async (tx) => {
+        await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request: owner } });
+        const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(owner), undefined, content.text, content.calls) as never] });
+        if (content.text && !content.calls.length) answer = entry.id as number;
+        await results(tx);
+      });
+      return true;
+    }
+    const at = owner === undefined ? (costed.length ? 0 : -1) : costed.findIndex((c) => c.request === owner);
+    if (at < 0 && !final) return false;
+    const request = at >= 0 ? costed.splice(at, 1)[0] : undefined;
+    // At a turn's end with no cost in: its own request, still unbooked, is written at unknown cost and marked booked.
+    // Content with no request of this process's own (a call a resumed turn ran before any request here) is the oldest
+    // session request still unbooked: never a side call's or the host's own, which stream nothing of the session's.
+    const mains = owner === undefined ? [...open].filter((r) => !sides.has(r) && !hosts.has(r)) : [];
+    const unbooked = !request ? (owner !== undefined && open.has(owner) ? owner : mains.length ? Math.min(...mains) : undefined) : undefined;
+    if (unbooked !== undefined) open.delete(unbooked);
+    const marked = request?.request ?? unbooked ?? owner;
+    if (marked !== undefined) answered.add(marked);
+    writes.push(async (tx) => {
+      const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
+      // The turn's answer so far: its last request with text and no call.
+      if (content.text && !content.calls.length) answer = entry.id as number;
+      // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
+      if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
+      if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
+      await results(tx);
+    });
+    if (marked !== undefined) written.add(marked);
+    if (request) priced.add(request.request);
+    else if (marked !== undefined) unpriced.add(marked);
+    return true;
+  };
+
+  /** A request's cost with no content of its own (a side call's, or more costs than content): its own entry, cost only,
+   *  or for a request already written, its late cost. */
+  const costOnly = (next: Pending, writes: ((tx: Tx) => Promise<unknown>)[]) => {
+    if (written.has(next.request)) return priceLate(next, writes);
+    answered.add(next.request);
+    writes.push(async (tx) => {
+      await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
+    });
+    written.add(next.request);
+    priced.add(next.request);
+  };
 
   const onModel = (event: ModelPortEvent): Promise<void> | undefined => {
     if (event.type === "request_start") {
@@ -445,16 +510,24 @@ export function adapterRun(
       admittedNext = undefined;
       if (admitted) sentOf.set(event.turn, admitted);
       const bound: Record<string, number> = admitted && admitted.boundUsd > 0 ? { [BOUND_FIELD]: admitted.boundUsd } : {};
-      open.add(event.turn);
-      models.set(event.turn, event.model);
       // A request the run sends beside the harness's (its host label: a learned workflow's node) is the session's like
       // any, marked as it leaves and booked once it answers, but it is never the harness's current request: the harness's
-      // text and calls are never its content, and its entry holds its cost alone (below).
+      // text and calls are never its content, and its entry holds its cost alone, once, at its end (below), never through
+      // the side calls' cost-only entries. A side call of the harness's own (a title, a summary) streams nothing of the
+      // session's: what streams meanwhile stays the current request's. Any other request of the session's closes what
+      // the one before it streamed, now, as that request's own segment (flush writes it with that request's cost), before
+      // anything of the new one can stream.
       if (event.host !== undefined) hosts.add(event.turn);
+      else if (admitted?.side) sides.add(event.turn);
       else {
+        if (text || calls.length) segments.push({ request: current, text, calls });
+        text = "";
+        calls = [];
         current = event.turn;
-        void flush();
       }
+      open.add(event.turn);
+      models.set(event.turn, event.model);
+      void flush();
       // Marked on the root before it leaves, as a pi run's request is (request-start.ts): one never answered, a run that
       // ends without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
       // The runner awaits this before the request is sent, and the mark is synced first, so a lost box never loses the
@@ -468,8 +541,8 @@ export function adapterRun(
       // or it was cut: nothing cached to count on). A host request's is never the harness's previous one.
       const sent = sentOf.get(event.turn);
       sentOf.delete(event.turn);
-      // A priced request of the session's own model: the wrap-up's typical cost counts it (a side call, the host's own
-      // among them, it never counts).
+      // A priced request of the session's own model: the wrap-up's typical cost counts it (step 0 ends with the first; a
+      // side call, the host's own among them, it never counts).
       const costUsd = pricedUsd(event.usage.usd);
       if (sent && !sent.side && costUsd !== undefined) wrap.costs.push(costUsd);
       const last = sent && !sent.host && event.usage.usd !== null && !event.usage.cut ? previousOf(event.usage, sent.inputTokensMax, now()) : undefined;
@@ -496,7 +569,7 @@ export function adapterRun(
       // in with no turn running, which no turn's flush would write. If that write fails, the next open writes it from
       // the session's booking, once.
       // And content with a call waits for this cost to be written: the call shows from then.
-      if (written.has(event.turn) || turn === undefined || calls.length) flush().catch(() => undefined);
+      if (written.has(event.turn) || turn === undefined || calls.length || segments.length) flush().catch(() => undefined);
     }
   };
 
@@ -549,15 +622,18 @@ export function adapterRun(
       }
     }
     else if (event.type === "tool_end") {
+      const said = results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.");
+      const result = (tx: Tx) => tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
+        model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: said }], isError: event.isError, timestamp: now() } as never],
+        data: { diagnostics: [] },
+      });
+      // A result is written only after its call's entry is on the root. A call still in the answer not yet written (one
+      // that ended before its request's cost came in) has its result written with that entry, right after it; any other
+      // call's entry is written, or queued, before this result.
+      const waiting = calls.some((call) => call.id === event.callId) || segments.some((segment) => segment.calls.some((call) => call.id === event.callId));
+      if (waiting) deferred.set(event.callId, result);
       void flush();
-      later(() =>
-        commit(async (tx) => {
-          await tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
-            model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.") }], isError: event.isError, timestamp: now() } as never],
-            data: { diagnostics: [] },
-          });
-        }).then(() => undefined),
-      );
+      if (!waiting) later(() => commit(async (tx) => void (await result(tx))).then(() => undefined));
       // The parked call's result is in: its turn ends here, settled once the interrupt is done (runTurns).
       if (endsTurn(parked, { callId: event.callId, tool: event.name, args: argsOf.get(event.callId) }) && !stopping) stopping = session?.interrupt();
     }
@@ -587,6 +663,7 @@ export function adapterRun(
   /** The person's message: the session's new turn, then its entry and its end on the root. */
   const sendOf = (message: Message) => async () => {
     parked = undefined;
+    approved = false;
     argsOf.clear();
     await message.recorded;
     taking = message.id;
@@ -831,8 +908,9 @@ export function adapterRun(
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
         onEvent: onModel,
-        note: () => takeNote(plus(booking.spentUsd(), charged)),
-        stopped: () => halted ?? cancelStop() ?? (parked === undefined ? undefined : PARKED),
+        // The booking's spend is the run's one meter (a learned node's requests are the session's: no side spend of their own).
+        note: (model: string, request?: NoteRequest) => takeNote(plus(booking.spentUsd(), charged), model, request),
+        stopped: (request) => halted ?? cancelStop() ?? (parked === undefined || (approved && request.host !== undefined) ? undefined : PARKED),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {
@@ -915,7 +993,7 @@ export function adapterRun(
       // The answers from now on: each resumes the session with one message of its own.
       // The allow un-parks the run before the approved call runs: its own model requests (a learned workflow's node, on
       // the session's route) go out; the harness's own wait for the resume's turn, which the park left them for.
-      gate?.start(resume, () => void (parked = undefined));
+      gate?.start(resume, () => void (approved = true));
     },
   };
 }

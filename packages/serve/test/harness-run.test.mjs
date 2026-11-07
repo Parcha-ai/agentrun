@@ -272,9 +272,9 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`fetch_page, web_fetch's legacy name, runs on ${harness}: the definition saves with no warning, its run is not refused, and web_fetch reads the page`, { timeout: 60_000 }, async (t) => {
+  test(`web_fetch runs on ${harness} as a host tool: the definition saves with no warning, its run is not refused, and it reads the page through the guarded fetch`, { timeout: 60_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB });
-    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["fetch_page"] }));
+    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["web_fetch"] }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
     const run = await api("POST", `/agents/web-${harness}/runs`, { input: { content: "hi" } });
@@ -465,7 +465,7 @@ for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a follow-up sent while a turn works waits its turn; the run does not end when the first turn does, only once the follow-up is answered`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
-    const runId = await started(api, `held-${harness}`, `Hold the answer until ${go}.`, harness, ["fetch_page"]);
+    const runId = await started(api, `held-${harness}`, `Hold the answer until ${go}.`, harness, ["web_fetch"]);
     // The turn runs, held on its fetch until the file exists: its call shows only once it ends (the bridge writes a call
     // with its result), so the turn is read from the run, working with the person's message in.
     await follow(api, runId, ["working"], { deadlineMs: 30_000 });

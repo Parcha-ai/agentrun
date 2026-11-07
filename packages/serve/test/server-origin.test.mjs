@@ -49,7 +49,7 @@ for (const harness of ["pi", "claude-agent", "opencode"]) {
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
     const id = `origin-${harness}`;
-    assert.equal((await api("POST", "/agents", agent(id, harness === "pi" ? { tools: [] } : { harness, instructions: `Hold the answer until ${go}.`, tools: ["fetch_page"] }))).status, 201);
+    assert.equal((await api("POST", "/agents", agent(id, harness === "pi" ? { tools: [] } : { harness, instructions: `Hold the answer until ${go}.`, tools: ["web_fetch"] }))).status, 201);
     const run = await api("POST", `/agents/${id}/runs`, { input: { content: harness === "pi" ? `Hold the answer until ${go}.` : "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
     const runId = run.body.run_id;

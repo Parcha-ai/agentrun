@@ -604,7 +604,7 @@ test("two paid requests asked for at once are admitted one after the other: the 
   const gate = new Promise((resolve) => { release = resolve; });
   let held = 0;
   // The session's writer, with the first append held open.
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { held += 1; if (held === 1) await gate; await inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { held += 1; if (held === 1) await gate; await inner.append(records); } };
   const starts = [];
   const asked = [];
   const booking = await modelPortFor(writer, { key: 'chat:together', beforeRequest: (r) => { asked.push(r.turn); }, onEvent: (e) => { if (e.type === 'request_start') starts.push(e.turn); } });
@@ -651,7 +651,7 @@ test("the host sees the requests in flight, so a budget holds each one's worst c
 test("modelPortFor with no stop of its own: a paid request whose cost can't be recorded stops the booking, and no later request is admitted", async () => {
   const inner = await memorySessionStore().open('chat:costfail');
   let failTurn = true;
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
   const booking = await modelPortFor(writer, { key: 'chat:costfail' });
   const ticket = await booking.models.beforeRequest({ model: 'm' });
   await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
@@ -659,10 +659,24 @@ test("modelPortFor with no stop of its own: a paid request whose cost can't be r
   assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
 });
 
+test("a host's own request whose cost can't be recorded stops the booking while the harness's own are held (a parked turn whose call was allowed): no later request is admitted, the host's own included", async () => {
+  const inner = await memorySessionStore().open('chat:hostcostfail');
+  let failTurn = true;
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
+  // The host's stop as a parked turn's allow leaves it (serve's harness-app): the harness's own requests held, the
+  // host's own (a request with a host label: the approved call's node) admitted.
+  const parked = new Error("the turn ended: a tool call waits for a person's approval");
+  const booking = await modelPortFor(writer, { key: 'chat:hostcostfail', stopped: (request) => (request.host === undefined ? parked : undefined) });
+  const ticket = await booking.models.beforeRequest({ model: 'm', host: 'learned_workflow' });
+  await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
+  await assert.rejects(booking.models.beforeRequest({ model: 'm', host: 'learned_workflow' }), (e) => e instanceof HarnessRunError && e.reason === 'model_error' && /could not be recorded/.test(e.message), "the host's next request is refused: its cost would go uncounted");
+  assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
+});
+
 test("a request whose admission record can't be written is refused and costs no turn: the next one is admitted as turn 1, within a limit of 1", async () => {
   const inner = await memorySessionStore().open('chat:reqfail');
   let failRequest = true;
-  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (failRequest && records.some((r) => r.kind === RUNNER_RECORDS.request)) { failRequest = false; throw new Error('write failed'); } await inner.append(records); } };
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failRequest && records.some((r) => r.kind === RUNNER_RECORDS.request)) { failRequest = false; throw new Error('write failed'); } await inner.append(records); } };
   const booking = await modelPortFor(writer, { key: 'chat:reqfail', maxTurns: 1 });
   await assert.rejects(booking.models.beforeRequest({ model: 'm' }), /write failed/);
   assert.equal(booking.turns(), 0, 'the refused request is no turn');
@@ -677,7 +691,7 @@ test('bookCut called twice at once books a cut request once, with one request_en
   await first.models.beforeRequest({ model: 'm' });
   // The next process, whose writes take a moment: both bookCut calls start before either write lands.
   const inner = await store.open(key);
-  const writer = { key, read: () => inner.read(), append: async (records) => { await new Promise((resolve) => setTimeout(resolve, 20)); await inner.append(records); } };
+  const writer = { key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { await new Promise((resolve) => setTimeout(resolve, 20)); await inner.append(records); } };
   const ends = [];
   const second = await modelPortFor(writer, { key, onEvent: (e) => { if (e.type === 'request_end') ends.push(e.turn); } });
   await Promise.all([second.bookCut(), second.bookCut()]);
@@ -690,7 +704,7 @@ test("a resumed node whose store stalls while booking a cut request still stops 
   const key = 'step:s1';
   // An earlier process admitted a paid request and was cut off before its answer.
   await (await inner.open(key)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: 'm' } }]);
-  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, read: () => w.read(), append: (records) => (records.some((r) => r.data?.cut) ? new Promise(() => {}) : w.append(records)) }; } };
+  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, sync: () => w.sync(), read: () => w.read(), append: (records) => (records.some((r) => r.data?.cut) ? new Promise(() => {}) : w.append(records)) }; } };
   let opened = 0;
   const planned = plannedAdapter([]);
   const adapter = { ...planned, open: (...args) => { opened += 1; return planned.open(...args); } };
@@ -706,7 +720,7 @@ test('a bookCut whose write fails can be called again: the next call books the c
   await (await modelPortFor(await store.open(key), { key })).models.beforeRequest({ model: 'm' });
   const inner = await store.open(key);
   let failOnce = true;
-  const writer = { key, read: () => inner.read(), append: async (records) => { if (failOnce) { failOnce = false; throw new Error('store hiccup'); } await inner.append(records); } };
+  const writer = { key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failOnce) { failOnce = false; throw new Error('store hiccup'); } await inner.append(records); } };
   const booking = await modelPortFor(writer, { key });
   await assert.rejects(booking.bookCut(), /store hiccup/);
   await booking.bookCut();
@@ -721,7 +735,7 @@ test('a node stopped while it books a cut request opens no session', async () =>
   const held = new Promise((resolve) => { release = resolve; });
   let booking = false;
   // The cut booking's write waits until released; the node is stopped meanwhile, then the write lands.
-  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, read: () => w.read(), append: async (records) => { if (records.some((r) => r.data?.cut)) { booking = true; await held; } return w.append(records); } }; } };
+  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, sync: () => w.sync(), read: () => w.read(), append: async (records) => { if (records.some((r) => r.data?.cut)) { booking = true; await held; } return w.append(records); } }; } };
   let opened = 0;
   const planned = plannedAdapter([]);
   const adapter = { ...planned, open: (...args) => { opened += 1; return planned.open(...args); } };

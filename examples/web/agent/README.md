@@ -46,12 +46,13 @@ console.log(run.dir);'
 node examples/web/agent/start-run.mjs examples/web/.data/agent-home/runs/run-1
 ```
 
-The run is `pi-durable-disk run --dir <home>/runs/<id> --app examples/web/agent/app.ts --serve 0`. Its directory holds
-`run.json`, `store/run.sqlite` and `work/`, the workspace and the only place the model's file tools reach. While
-`run.json` says `running`, its `holder.serve` is the run's door on loopback:
+The run is `pi-durable-disk run --dir <home>/runs/<id> --epoch N --app examples/web/agent/app.ts --serve 0`, N its last
+generation plus 1. Its directory holds `store/run.sqlite` (with the run's record) and `work/`, the workspace and the only
+place the model's file tools reach. The run prints its door, on loopback, as its first line, and start-run.mjs keeps it in
+the run's `web.json` while the run is up:
 
 ```sh
-door=$(node -p "require('./examples/web/.data/agent-home/runs/run-1/run.json').holder.serve")
+door=$(node -p "require('./examples/web/.data/agent-home/runs/run-1/web.json').door.serve")
 curl -s "$door/submit" -H 'content-type: application/json' \
   -d '{"requestId":"ask-1","content":"Log in to https://the-internet.herokuapp.com/login and read the secure area page. Write report.md and pages.csv.","wait":true}'
 curl -sN "$door/events"
@@ -80,7 +81,7 @@ the definition's prompt and tools and the browser's configuration in the commit 
 | `RECORD_REDACT` | no | With `RECORD_DIR`: a JSON array of words the recording must not hold, taken out wherever they appear. |
 
 SIGTERM stops a run. It releases its browser first (Browserbase saves the sign-in into its context, and nothing paid
-stays open; a local Chrome writes its cookies when start-run.mjs closes it), then lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same directory again resumes it. Then
+stays open; a local Chrome writes its cookies when start-run.mjs closes it), then lets go of the run (its record says `sleeping`) and exits 0. Starting the same directory again resumes it. Then
 `carryBack(home, { runId }, { outcome })` returns the run's sign-in to the home; the server does this once a run has
 answered.
 

@@ -48,7 +48,7 @@ import { forModel } from "./result.js";
 import { builtinHarness } from "./harness-table.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
-import { LEGACY_NAMES, readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
+import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -107,9 +107,7 @@ const HOST_TOOLS_SERVER = "hands";
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway for a
  *  registration it marks (GATED_BY_GATEWAY), else where its tool is wrapped. */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
-  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key,
-  // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
-  if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
+  // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];

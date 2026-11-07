@@ -10,7 +10,7 @@ import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
 import { bookRequest, type Ended } from "./booking.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
+import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 /** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
  *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
@@ -136,13 +136,14 @@ export interface ModelPortOptions {
   records?: readonly SessionRecord[];
   /** How a record is written (default: the writer's append, which a newer open fences). */
   append?: (records: SessionRecord[]) => Promise<void>;
-  /** The attempt has stopped: the error a new paid request is refused with. */
-  stopped?: () => Error | undefined;
+  /** The attempt has stopped: the error a new paid request is refused with. Told the request's host label, for a host
+   *  that admits its own requests (ModelRequest.host) while the harness's own are held. */
+  stopped?: (request: { host?: string }) => Error | undefined;
   /** A pause is draining the attempt: the error a new paid request is refused with, while the attempt itself goes on. A
    *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
   draining?: () => Error | undefined;
   /** A note the host has for the session's next main-model request, taken by the call (ModelPort.note). */
-  note?: (model: string) => string | undefined;
+  note?: (model: string, request?: NoteRequest) => string | undefined;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
   stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string) => Error;
 }
@@ -238,7 +239,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
   const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, side, noted, inputTokensMaxWithoutNote, host }: ModelRequest): Promise<ModelTicket> => {
     let inputTokensMax = measured;
-    const stopped = options.stopped?.() ?? failed;
+    const stopped = options.stopped?.(host === undefined ? {} : { host }) ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
@@ -257,7 +258,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (limited !== undefined && !(Number.isSafeInteger(limited) && limited > 0)) throw end("refused", `the request was not sent: its output limit (${String(limited)}) is not a whole number of tokens above 0`);
     // A stop or a pause that came while the host was checking: nothing was written for this request, so it is refused, not
     // sent. After the write below it is committed (refusing it then would leave a recorded request that was never sent).
-    const late = options.stopped?.() ?? failed ?? options.draining?.();
+    const late = options.stopped?.(host === undefined ? {} : { host }) ?? failed ?? options.draining?.();
     if (late) throw late;
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
@@ -271,7 +272,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
     // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
     // Its record is written, so it costs a turn of the cap, never money.
-    const stoppedNow = options.stopped?.();
+    const stoppedNow = options.stopped?.(host === undefined ? {} : { host });
     if (stoppedNow) {
       answered.add(turn);
       // Through the booking's own write: a response's ids still waiting to be carried go with the withdrawal.
@@ -289,7 +290,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     }
     // A stop that came while the mark was made: the request has not left either. Booked withdrawn as above, and its end
     // told to the host, whose mark has it started: at $0, so the host never reads it cut at an unknown price.
-    const stoppedLate = options.stopped?.();
+    const stoppedLate = options.stopped?.(host === undefined ? {} : { host });
     if (stoppedLate) {
       answered.add(turn);
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
@@ -344,8 +345,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         const covers = (r: SessionRecord) => usage.providerIds !== undefined && (r.data as { turn?: number }).turn === turn;
         await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}) } }], covers);
       } catch (error) {
-        // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
-        if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted. Asked
+        // with the request's own host label, as its admission was: a stop that holds only the harness's own requests (a
+        // parked turn's) never hides the failure from the host's.
+        const host = hosts.get(turn);
+        if (!options.stopped?.(host === undefined ? {} : { host })) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
         throw error;
       }
       answered.add(turn);

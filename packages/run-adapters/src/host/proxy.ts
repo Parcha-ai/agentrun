@@ -17,7 +17,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { type McpHandler, mcpRoute } from "./mcp-route.js";
-import { CONTENT_FILTERED, type McpClient, type SessionMcp } from "../types.js";
+import { CONTENT_FILTERED, type McpClient, type NoteRequest, type SessionMcp } from "../types.js";
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
@@ -208,8 +208,9 @@ export interface ModelProxyHooks {
    *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
   responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
   /** A note the host has for the session's next main-model request (the spend cap's wrap-up), taken by this call: the
-   *  proxy asks only for a paid request on the session's model whose policy can place one (`addNote`). */
-  note?(model: string): string | undefined;
+   *  proxy asks only for a paid request on the session's model whose policy can place one (`addNote`), with that request
+   *  as its client sent it (NoteRequest: its input bound and output asks, measured before the note is placed). */
+  note?(model: string, request?: NoteRequest): string | undefined;
 }
 
 export interface ModelProxyOptions {
@@ -569,9 +570,21 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // sent it is kept (`plain`): a request the cap admits only without the note's bytes goes as that (ModelTicket.noteDropped).
     let noted = false;
     let plain: Record<string, unknown> | undefined;
-    // Never on the host's own request (`host`): the note is for the harness's model, in its own conversation.
+    // Never on the host's own request (`host`): the note is for the harness's model, in its own conversation, so a host
+    // request is neither measured for it nor noted.
     if (!route.free && asked === model && host === undefined && policy.addNote && hooks.note) {
-      const note = hooks.note(asked);
+      // The request as its client sent it, measured first, so the host prices it as its admission will (the wrap-up's least).
+      let request: NoteRequest = {};
+      try {
+        const measured = inputTokensMaxOf(policy, body, JSON.stringify(body), say);
+        const askedOut = policy.outputAsked?.(body);
+        const leastOut = policy.outputLeast?.(body);
+        const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+        request = { ...(count(measured) === undefined ? {} : { inputTokensMax: measured as number }), ...(count(askedOut) === undefined ? {} : { outputTokensAsked: askedOut as number }), ...(count(leastOut) === undefined ? {} : { outputTokensLeast: leastOut as number }) };
+      } catch {
+        request = {};
+      }
+      const note = hooks.note(asked, request);
       if (note) {
         try {
           const without = body;

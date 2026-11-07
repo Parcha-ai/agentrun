@@ -58,7 +58,7 @@ for (const harness of ["claude-agent", "codex"]) {
     let closed = false;
     t.after(() => (closed ? undefined : one.close()));
     let api = client(one.baseUrl, one.token);
-    assert.equal((await api("POST", "/agents", agent(harness, { harness, instructions: `Queue a follow-up behind a turn held until ${go}.`, tools: ["fetch_page"] }))).status, 201);
+    assert.equal((await api("POST", "/agents", agent(harness, { harness, instructions: `Queue a follow-up behind a turn held until ${go}.`, tools: ["web_fetch"] }))).status, 201);
     const { body } = await api("POST", `/agents/${harness}/runs`, { input: { content: "hi" } });
     const runId = body.run_id;
     for (const end = Date.now() + 55_000; ; await sleep(50)) {
