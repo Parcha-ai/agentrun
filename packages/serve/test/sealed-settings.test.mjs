@@ -7,7 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SealedSettings, settingsFile } from "../dist/sealed-settings.js";
+import { openServerSecrets } from "../dist/server-secrets.js";
 import { MIN_KEY_BYTES, signatureOf, verify } from "../dist/standard-webhooks.js";
+import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 
 const spec = { scope: "server", fields: { signing: { minBytes: MIN_KEY_BYTES }, token: {} } };
 
@@ -69,4 +71,22 @@ test("a given value the redaction of the server's secrets would pass over is ref
     assert.throws(() => store.set("server", "token", value), (error) => error.code === "input_invalid" && error.extra.fields[0].field === "token", JSON.stringify(value));
   }
   assert.equal(store.get("server", "token"), undefined, "nothing kept");
+});
+
+test("at the open, a server with no seal key says once that the sealed settings it holds are not read, and a leftover trigger-secrets.json is said with what to do", async (t) => {
+  const data = await dir(t);
+  const key = randomBytes(32);
+  const kept = new SealedSettings(data, "slackish", spec, key, () => {});
+  kept.set("server", "token", "a-long-enough-token");
+  kept.set("server", "signing", `whsec_${randomBytes(32).toString("base64")}`);
+  const said = [];
+  new SealedSettings(data, "slackish", spec, undefined, (fields) => said.push(fields));
+  assert.deepEqual(said.map((s) => [s.condition, s.adapter]), [["trigger_settings_no_seal_key", "slackish"]], "one line for the store, not one a value");
+  await writeFile(join(data, "trigger-secrets.json"), `${JSON.stringify({ v: 1, secrets: { trg_1: "sealed" } })}\n`);
+  const opened = [];
+  openServerSecrets(data, { AGENTRUN_SEAL_KEY: key.toString("base64") }, TRIGGER_ADAPTERS, (fields) => opened.push(fields));
+  const leftover = opened.filter((s) => s.condition === "trigger_secrets_left_over");
+  assert.equal(leftover.length, 1, JSON.stringify(opened));
+  assert.match(leftover[0].file, /trigger-secrets\.json$/);
+  assert.match(leftover[0].effect, /POST \/v2\/triggers\/\{id\}\/secret/);
 });
