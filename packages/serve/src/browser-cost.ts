@@ -148,14 +148,23 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     }
   }
 
+  /** Whether the run's own close began (`closing()`): the end pi gives the Session's close after that keeps the count. */
+  let closingBegun = false;
+  /** The run's close begins: called by the run's own close path (tools.ts beforeRelease) before the Harness closes. */
+  function closing(): void {
+    closingBegun = true;
+  }
+
   /** Applies each browser charge `harness` commits, and each change of pi-browser's inventory (the document of kind
    *  `inventory`), once the commit is in: the charges first, so a release billed and ended in one commit is billed from
    *  its reserve before it goes. */
   function watch(harness: Pick<Session, "observeCommits">, inventory = "browser.inventory"): void {
     // pi 1.5 detaches an observer whose advance throws, for good: every later charge would then go uncounted, silently.
-    // So nothing leaves advance. A charge it fails to count, or an end before the run's own (a listener error, a failed
-    // Session), makes the run's spend unknown (spent null), which a capped run's next paid request or call is refused
-    // on, as it refuses any unknown spend; an uncapped run goes on, with one line that says so.
+    // So nothing leaves advance. A charge it fails to count, or any end before the run's own close began (`closing()`:
+    // a listener error, a failed Session, pi closing it for its own reasons), makes the run's spend unknown (spent null),
+    // which a capped run's next paid request or call is refused on, as it refuses any unknown spend; an uncapped run goes
+    // on, with one line that says so. The end of the run's own close (pi gives a normal close as `failed` with "session
+    // closed") keeps the count: it is known by our close having begun, never by pi's words.
     let said = false;
     const uncounted = (why: string) => {
       addSpend(null);
@@ -178,7 +187,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         }
       },
       end: (end) => {
-        if (end.kind !== "ended") uncounted(`its commits stopped reaching the count: ${end.kind}${"error" in end ? `, ${String((end.error as Error)?.message ?? end.error)}` : ""}`);
+        if (!closingBegun) uncounted(`its commits stopped reaching the count before the run closed: ${end.kind}${"error" in end ? `, ${String((end.error as Error)?.message ?? end.error)}` : ""}`);
       },
     });
   }
@@ -225,5 +234,5 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     return forModel(JSON.stringify({ error: why }), { isError: true });
   }
 
-  return { onCharge, watch, reopened, capped, opening, stretch };
+  return { onCharge, watch, closing, reopened, capped, opening, stretch };
 }
