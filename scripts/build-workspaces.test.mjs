@@ -108,3 +108,18 @@ test("pi-leg builds its set through build-workspaces.mjs, never npm's -w order",
   assert.match(source, /build-workspaces\.mjs/);
   assert.doesNotMatch(source, /\['run', 'build', '--if-present', \.\.\./);
 });
+
+// The build loop itself (buildAll): each package with a build script once, in the order given; a package with none is
+// skipped; the first build that fails stops it, and nothing after it is built.
+test('the build loop builds each package once in order, skips one with no build, and stops at the first failure', async () => {
+  const mod = await ordering();
+  assert.ok(mod?.buildAll, 'scripts/build-workspaces.mjs exports buildAll');
+  const packages = [{ name: 'a', deps: [], build: true }, { name: 'b', deps: ['a'], build: false }, { name: 'c', deps: ['b'], build: true }, { name: 'd', deps: ['c'], build: true }];
+  const order = mod.buildOrder(packages);
+  const calls = [];
+  assert.deepEqual(mod.buildAll(packages, order, (name) => (calls.push(name), 0)), { built: ['a', 'c', 'd'] });
+  assert.deepEqual(calls, ['a', 'c', 'd'], 'each once, in order, b (no build) skipped');
+  calls.length = 0;
+  assert.deepEqual(mod.buildAll(packages, order, (name) => (calls.push(name), name === 'c' ? 2 : 0)), { built: ['a'], failed: 'c', status: 2 });
+  assert.deepEqual(calls, ['a', 'c'], 'nothing after the failed build ran');
+});

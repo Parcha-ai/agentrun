@@ -372,3 +372,19 @@ test('a companion that stays at the lockfile\'s version fails the leg before it 
   assert.match(out.stdout, /FAILED: @parcha\/agentrun-pi resolves .*@earendil-works\/pi-codemode 1\.2\.0 \(from @parcha\/agentrun-pi's pi-coding-agent\)/);
   assert.doesNotMatch(out.stdout, /\$ npm run build/);
 });
+
+// pi-leg runs its build (build-workspaces.mjs) with this Node, whose path can hold a space ("/home/Jane Doe/..."): the
+// executable is passed whole, never split on whitespace. A command named as text (`--npm "npx --yes npm@11.21.0"`)
+// still splits into its words.
+test('run() passes an executable path with a space whole, and still splits a command given as text', async () => {
+  const mod = await import('./pi-leg.mjs');
+  assert.equal(typeof mod.run, 'function', 'pi-leg.mjs exports run');
+  const dir = mkdtempSync(join(tmpdir(), 'pi leg space-'));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  const node = join(dir, 'node with space');
+  spawnSync('ln', ['-s', process.execPath, node]);
+  assert.equal(mod.run([node], ['-e', 'process.exit(7)'], { stdio: 'ignore' }), 7, 'the linked Node ran, with its argument');
+  assert.equal(mod.run(`${process.execPath} -e`, ['process.exit(5)'], { stdio: 'ignore' }), 5, 'a command as text splits');
+  const source = readFileSync(script, 'utf8');
+  assert.match(source, /run\(\[process\.execPath\], \[/, "pi-leg's build passes this Node whole");
+});
