@@ -248,9 +248,17 @@ export function personHands(options: {
    *  the first hold is taken, or refused. While anyone needs it, it is held again each holdMs (a take-over kept alive by
    *  input has no end of its own): with no room, a take-over gives the browser back (`cap`, in the cap's words). */
   /** `until`: how far (ms, on this clock) what is held covers; an ask that joins needs it to reach its own expiry. */
-  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string; since: number; until: number };
+  /** `turns`: what extends `until` (a re-hold, an ask's reach, a hold again after a refusal) runs one at a time, each
+   *  from `until` as the one before left it: two that awaited the cap side by side would each hold the same stretch. */
+  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string; since: number; until: number; turns: Promise<unknown> };
   const now = options.now ?? Date.now;
   const ledgers = new Map<string, Ledger>();
+  /** `work` on `ledger` once every extension before it is done. */
+  const inTurn = <T>(ledger: Ledger, work: () => Promise<T>): Promise<T> => {
+    const run = ledger.turns.then(work, work);
+    ledger.turns = run.catch(() => undefined);
+    return run;
+  };
   /** `user`'s share of session `tag`'s person time: held now when nobody holds it (`what` names it in the cap's words), and,
    *  with `reach` (an ask's expiry), held through it: what an earlier user holds falls short of a later ask's expiry, and
    *  the stretch between is held for it, or it is refused. */
@@ -261,36 +269,41 @@ export function personHands(options: {
         // The first hold refused (or failed): the ledger is gone, and this one asks the cap for itself, in its own words.
         const first = await known.ready.catch(() => ({ refused: "the person's time could not be held" }));
         if (first || ledgers.get(tag) !== known) continue;
-        // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
-        // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
-        if (known.refused) {
-          const hold = await options.personTime(what, holdMs / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
-          if ("refused" in hold) return { refused: hold.refused };
-          if (ledgers.get(tag) !== known) {
-            hold.drop();
-            continue;
+        const joined = await inTurn(known, async (): Promise<{ refused: string } | undefined | "gone"> => {
+          if (ledgers.get(tag) !== known) return "gone";
+          // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
+          // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
+          if (known.refused) {
+            const hold = await options.personTime(what, holdMs / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
+            if ("refused" in hold) return { refused: hold.refused };
+            if (ledgers.get(tag) !== known) {
+              hold.drop();
+              return "gone";
+            }
+            known.holds.push(hold);
+            known.refused = undefined;
+            known.until = Math.max(known.until, now() + holdMs);
+            if (known.timer !== undefined) timers.clear(known.timer);
+            again(tag, known);
           }
-          known.holds.push(hold);
-          known.refused = undefined;
-          known.until = Math.max(known.until, now() + holdMs);
-          if (known.timer !== undefined) timers.clear(known.timer);
-          again(tag, known);
-        }
-        // An ask whose expiry falls past what is held: the stretch between, held for it under the cap, or it is refused.
-        if (reach !== undefined && reach > known.until) {
-          const hold = await options.personTime(what, (reach - known.until) / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
-          if ("refused" in hold) return { refused: hold.refused };
-          if (ledgers.get(tag) !== known) {
-            hold.drop();
-            continue;
+          // An ask whose expiry falls past what is held: the stretch between, held for it under the cap, or it is refused.
+          if (reach !== undefined && reach > known.until) {
+            const hold = await options.personTime(what, (reach - known.until) / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
+            if ("refused" in hold) return { refused: hold.refused };
+            if (ledgers.get(tag) !== known) {
+              hold.drop();
+              return "gone";
+            }
+            known.holds.push(hold);
+            known.until = reach;
           }
-          known.holds.push(hold);
-          known.until = reach;
-        }
-        known.users.add(user);
-        return undefined;
+          known.users.add(user);
+          return undefined;
+        });
+        if (joined === "gone") continue;
+        return joined;
       }
-      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now(), until: now() + holdMs };
+      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now(), until: now() + holdMs, turns: Promise.resolve() };
       ledger.ready = options.personTime(what, holdMs / 1000, { pauses }).then(
         (hold) => {
           if (!("refused" in hold)) {
@@ -313,7 +326,7 @@ export function personHands(options: {
   /** Holds session `tag`'s person time again holdMs from now, and so on while anyone needs it. The holds add up: the time
    *  already spent is booked at the session's next charge, so until then each stretch stays held. */
   const again = (tag: string, ledger: Ledger): void => {
-    ledger.timer = timers.set(() => void (async () => {
+    ledger.timer = timers.set(() => void inTurn(ledger, async () => {
       if (ledgers.get(tag) !== ledger) return;
       // Only past what is held already (an ask that joined may have held further): every minute held once.
       const seconds = Math.max(0, now() + holdMs - ledger.until) / 1000;
@@ -331,7 +344,7 @@ export function personHands(options: {
       ledger.refused = hold.refused;
       if (ledger.users.has(TAKE_USER)) options.gates(tag).give?.("cap", hold.refused);
       for (const user of [...ledger.users]) if (user.startsWith("ask:")) capAsk(user.slice(4), hold.refused);
-    })(), holdMs);
+    }), holdMs);
   };
   /** `user` is done with session `tag`: the last one out drops what was held. */
   const release = (tag: string, user: string): void => {

@@ -299,6 +299,35 @@ test("a process that takes up an earlier process's ask holds the person's time a
   assert.equal(openAsk(root), undefined, "nothing is left waiting: it ended");
 });
 
+test("an ask that arrives while the take-over's re-hold waits on the cap holds nothing the re-hold holds: one stretch, held once", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const root = await scratch(t);
+  const clock = fakeClock(Date.now());
+  const holdMs = 15 * 60_000;
+  const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
+  const held = [];
+  let answerRehold;
+  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => {
+    // The re-hold's answer from the cap is slow: the ask arrives while it waits.
+    if (what === "more of your time in the browser") await new Promise((resolve) => { answerRehold = resolve; });
+    held.push([what, Math.round(seconds)]);
+    return { drop() {} };
+  } });
+  t.after(() => person.close());
+  const tag = "ar-run-40-1";
+  gates(tag).setPresent(true);
+  const take = await person.take(tag);
+  gates(tag).take((why) => take.end(why));
+  for (let minute = 0; minute < 15; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
+  assert.ok(answerRehold, "the re-hold at 15 minutes is waiting on the cap");
+  const asked = person.handoff.request(ask(40, tag));
+  await sleep(20);
+  answerRehold();
+  await asked;
+  await sleep(20);
+  assert.deepEqual(held, [["taking over the browser", 900], ["more of your time in the browser", 900]], "the stretch from 15 to 30 minutes is held once, not again for the ask");
+});
+
 test("a take-over's row is written when its hold goes live, and a take whose hold never started is let go with no row", async (t) => {
   const root = await scratch(t);
   const { person, held } = hands(root);
