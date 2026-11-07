@@ -160,7 +160,7 @@ test("CIMD only on a public https address: the client id is this server's metada
   assert.equal(pub.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.equal(pub.searchParams.get("redirect_uri"), `https://agents.example.com${CALLBACK}`);
   assert.ok(!as.log.some((entry) => entry.path === "/register"), "no registration with a metadata document");
-  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321");
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   const local = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.notEqual(local.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.ok(as.log.some((entry) => entry.path === "/register"), "on loopback http it registers instead");
@@ -363,7 +363,7 @@ async function publicNetwork(metadata = {}, answers) {
 /** A store on a scratch directory reaching the network `net`, under seal key `key`. */
 async function storeOn(t, key, net, data) {
   const store = new McpServers(data ?? (await scratch(t)), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
-  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321");
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   return store;
 }
 
@@ -865,7 +865,7 @@ test("with a LOOPBACK public address (a local https proxy in front of the listen
   const key = sealKey();
   const sent = offLoopback(t);
   const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
-  // The public address browsers use is itself on loopback (a local proxy, e.g. https://localhost:8443 in front of the
+  // The public address browsers use is itself on loopback (a local https proxy on another port, in front of the
   // listener): a request to it reaches this server through the proxy. Stand-ins for both record what reaches them.
   const proxy = await targetOn(t, "127.0.0.1"); // key-gate: this server's own public address on loopback, which an authorization server must not reach
   const listener = await targetOn(t, "127.0.0.1"); // key-gate: this server's own listening address, which an authorization server must not reach

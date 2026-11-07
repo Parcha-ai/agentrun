@@ -208,8 +208,8 @@ export class McpSignIns {
    *  authorization server may name. Set by McpServers.attach. */
   listening = "";
   /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
-   *  and its public address too when that is on loopback (a local proxy in front of the listener, such as
-   *  https://localhost:8443, reaches this server). */
+   *  and its public address too when that is on loopback (a local https proxy on another port, in front of the
+   *  listener, reaches this server). */
   get own(): string[] {
     const base = URL.parse(this.base);
     return [this.listening, ...(base && LOOPBACK.test(base.hostname) ? [this.base] : [])].filter(Boolean);
