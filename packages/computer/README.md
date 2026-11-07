@@ -242,10 +242,10 @@ the platform the key table and exec need; kind names the shape the tools need. O
 
 **Daemon mode.** `capabilities().daemon` says who answers the methods. `pid1`: computerd init is the computer's main
 process, so its exit ends the computer (Docker). `child`: the vendor's own agent is the main process and starts init at
-boot; init's exit does not end the computer, and it must not run under a supervisor that restarts it. `none`: no
-computerd runs, and the provider answers the same methods itself, from our server (adb, a vendor API). Either way a
-connection's `client` is a `ComputerClient` (`call(method, params, { signal })` and `close()`): `DaemonClient` over a
-stream, or a provider's in-process client.
+boot; init's exit does not end the computer (Daytona, whose toolbox daemon runs init as a session command), and it
+must not run under a supervisor that restarts it. `none`: no computerd runs, and the provider answers the same methods
+itself, from our server (adb, a vendor API). Either way a connection's `client` is a `ComputerClient` (`call(method,
+params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
 
 **Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
 `screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`. Each is optional unless
