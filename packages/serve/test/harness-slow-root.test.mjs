@@ -130,12 +130,13 @@ test("claude-agent: on a store slow to write, the cap counts what each request c
   assert.deepEqual([last.status, view.pending?.kind, view.pending?.spent_usd], ["input_required", "budget", 0.003], JSON.stringify(view.pending ?? view));
 });
 
-for (const on of ["claude-agent", "codex"]) {
-  test(`${on}: on a store slow to write, a side call admitted and answered while a request still streams leaves each its own text and cost`, async (t) => {
+for (const [on, capped] of [["claude-agent", false], ["codex", false], ["claude-agent", true], ["codex", true]]) {
+  test(`${on}${capped ? ", capped" : ""}: on a store slow to write, a side call admitted and answered while a request still streams leaves each its own text and cost`, async (t) => {
     withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
     assert.equal((await api("POST", "/agents", agent("overlap", { harness: on, instructions: "Write beside a side call on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
-    const runId = (await api("POST", "/agents/overlap/runs", { input: { content: "Write alpha to a.md." } })).body.run_id;
+    // Capped, every request is admitted through the cap's check and held at its bound while in flight.
+    const runId = (await api("POST", "/agents/overlap/runs", { input: { content: "Write alpha to a.md." }, ...(capped ? { max_cost_usd: 5 } : {}) })).body.run_id;
     const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 30_000 });
     assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
     const root = rootOf(data, runId);
