@@ -180,8 +180,8 @@ export const NORMAL_PRECONDITIONS = {
     what: "the kernel's run-journal writer has `sync` (SessionWriter requires it): an effect with no barrier to call is refused, not run",
   },
   endToEndBoxLoss: {
-    done: true,
-    what: "a box-loss test through the real chokepoints on a NORMAL run's store: the tool gate and the kernel drive (serve's barriers-box-loss.test.mjs), the side-request mark (side-request-box-loss.test.mjs)",
+    done: false,
+    what: "the tool gate and kernel drive proofs bite now (barriers-box-loss); the side-request proof (side-request-box-loss) bites only at NORMAL, so 2b flips this with its evidence",
   },
   retryMarkSynced: {
     done: false,

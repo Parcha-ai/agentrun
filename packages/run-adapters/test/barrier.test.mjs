@@ -113,4 +113,5 @@ test('a writer with no sync: an effect that may not run twice is refused, with w
   const drive = await openDrive({ writer, signal: new AbortController().signal });
   await assert.rejects(drive.effect('tool:c1', { name: 'tool.pay', replay: 'never', input: {} }, async () => { log.push('run'); }), /has no sync to make its start durable/);
   assert.equal(log.includes('run'), false, 'the effect never ran');
+  assert.deepEqual(log.filter((entry) => entry.includes(KERNEL_RECORDS.start)), [], 'no start was written, so no intent is left without an outcome');
 });

@@ -3,8 +3,11 @@
 // and synced before the request leaves. claude-agent on the faux harness, whose script holds a request admitted and never
 // answered, saying so in a file the moment it is admitted. The run's process carries pi-durable-disk's fsync-snapshot
 // shim, which keeps each store file as it stood at its last sync; with the request admitted, those copies are put back
-// in place of the store's files and the process is killed: what a lost box leaves on its disk. The store then holds the
-// request's start mark, so the run's spend counts it.
+// in place of the store's files, the files are copied, and the process is killed: the copy is what a lost box leaves on
+// its disk. It holds the request's start mark; the server then takes the run back and opens it again, and the run's
+// usage counts the cut request beside the request its next process sends.
+// The files are put back BEFORE the kill, unlike the box-loss tests that open their own store: here the server takes
+// the run back the moment its process dies, and that checkpoints the live WAL into the database file.
 // At FULL (the run's store on main today) every commit syncs, so this passes with or without the barrier; it bites at
 // NORMAL, shown red on the flip branch with the barrier removed, and runs at NORMAL in CI once the flip lands.
 import assert from "node:assert/strict";
@@ -32,7 +35,7 @@ function marksIn(store, kind, scratchDir) {
   }
 }
 
-test("a non-pi harness's model request through a box loss: its start mark is in the store the box leaves", { skip: process.platform !== "linux" && "the shim preloads on Linux", timeout: 240_000 }, async (t) => {
+test("a non-pi harness's model request through a box loss: its start mark is in the store the box leaves, and the run opened again counts it", { skip: process.platform !== "linux" && "the shim preloads on Linux", timeout: 240_000 }, async (t) => {
   const dir = await scratch(t);
   const lib = join(dir, "shim.so");
   const built = spawnSync("cc", ["-shared", "-fPIC", "-O2", "-o", lib, SHIM, "-ldl"], { encoding: "utf8" });
@@ -58,9 +61,23 @@ test("a non-pi harness's model request through a box loss: its start mark is in 
   if (existsSync(`${store}.synced`)) renameSync(`${store}.synced`, store);
   if (existsSync(`${store}-wal.synced`)) renameSync(`${store}-wal.synced`, `${store}-wal`);
   else rmSync(`${store}-wal`, { force: true });
-  process.kill(holder, "SIGKILL");
+  // The box's disk, read before the process dies: once it is gone the server takes the run back, opening the store's
+  // files and checkpointing them, so the copy is taken while nothing but the dying process (on its old, unlinked
+  // descriptors) holds them.
   const marks = marksIn(store, REQUEST_STARTED, join(dir, "read"));
+  // The signal goes, so the next one is the next process's admitted request.
+  rmSync(signal, { force: true });
+  process.kill(holder, "SIGKILL");
   assert.equal(marks.length, 1, `the request's start mark is in the store the box left: ${JSON.stringify(marks)}`);
   assert.equal(marks[0].data.request, 1);
+  // The run opened again: the server takes it back and relaunches it, and its next request is in flight. The run's usage
+  // counts the cut request too: two requests, the cut one first.
+  for (const end = Date.now() + 120_000; !existsSync(signal); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, "the run opened again and its next request is in flight");
+  let usage;
+  for (const end = Date.now() + 60_000; ; await new Promise((resolve) => setTimeout(resolve, 200))) {
+    usage = (await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((row) => row.kind === "usage")?.usage;
+    if (usage?.requests >= 2 || Date.now() > end) break;
+  }
+  assert.equal(usage?.requests, 2, `the run's usage counts the cut request beside the next one: ${JSON.stringify(usage)}`);
   await api("POST", `/runs/${runId}/cancel`, {});
 });
