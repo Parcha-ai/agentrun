@@ -46,7 +46,7 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  `sideFirst`: one admitted before this request, then `say` streamed before this request is admitted: text of the
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
  *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
-export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
+export type FauxRequest = { tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -165,7 +165,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
             // A note its host has for this request, taken before it is measured, as the model proxy takes it: its bytes count
             // in what the request is admitted at, and it is filed as sent once the request is admitted carrying it.
-            const note = io.models.note?.("faux");
+            const note = io.models.note?.("faux", { inputTokensMax: measured, ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) });
             if ("sideAfterNote" in action && action.sideAfterNote) {
               const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
               await io.models.afterRequest({ input: 10, output: 5, usd: action.sideAfterNote.usd }, side || undefined);
@@ -179,7 +179,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
               io.onEvent({ type: "text", delta: say });
             }
             // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
-            const asked = "outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {};
+            const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) };
             const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
             if (note && !ticket?.noteDropped) await append(FAUX_RECORDS.note, { text: note });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }

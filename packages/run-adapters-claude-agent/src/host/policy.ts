@@ -407,17 +407,23 @@ export function anthropicServerInputOverhead(body: Record<string, unknown>, sear
 
 /** `body` (a Messages body) with `text` as a note the model reads after everything the Claude CLI sent: one text block, in
  *  a <system-reminder>, at the end of the last user message (after its tool results), or a user message of its own after
- *  a last message that is not one. It carries no cache_control: every cache marker stays on the block it was on, so the
- *  cached prefix ends where it did. The CLI's transcript never holds it. */
+ *  a last message that is not one. A system message the CLI ends a request with (its environment note at a turn's start)
+ *  stays last: the API takes one only before an assistant message or at the end, so the note goes in the user message
+ *  before it. It carries no cache_control: every cache marker stays on the block it was on, so the cached prefix ends
+ *  where it did. The CLI's transcript never holds it. */
 export function addAnthropicNote(body: Record<string, unknown>, text: string): Record<string, unknown> {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const note = { type: "text", text: `<system-reminder>${text}</system-reminder>` };
-  const last = messages.at(-1);
+  // The system messages the request ends with, kept after the note.
+  let end = messages.length;
+  while (end > 0 && isPlain(messages[end - 1]) && (messages[end - 1] as { role?: unknown }).role === "system") end -= 1;
+  const trailing = messages.slice(end);
+  const last = messages[end - 1];
   if (isPlain(last) && last.role === "user") {
     const content = typeof last.content === "string" ? [{ type: "text", text: last.content }] : Array.isArray(last.content) ? last.content : [];
-    return { ...body, messages: [...messages.slice(0, -1), { ...last, content: [...content, note] }] };
+    return { ...body, messages: [...messages.slice(0, end - 1), { ...last, content: [...content, note] }, ...trailing] };
   }
-  return { ...body, messages: [...messages, { role: "user", content: [note] }] };
+  return { ...body, messages: [...messages.slice(0, end), { role: "user", content: [note] }, ...trailing] };
 }
 
 export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy {

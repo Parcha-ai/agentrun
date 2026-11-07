@@ -506,8 +506,10 @@ func (t *Table) Write(ctx context.Context, params WriteParams) (Empty, error) {
 // Signal sends a signal through the program's guard. Where it goes: INT to a process started with a pty is ^C, so it
 // goes to the terminal's foreground process group (the job a shell runs in the foreground, or the program itself when
 // it runs none), which must be in the program's own session: the program leads that session, so the group is under
-// its guard, and a group in another session is refused. A terminal with no foreground group left has INT go to the
-// program's own group, with a note that says so. Every other signal, and INT without a pty, goes to the program's
+// its guard, and a group in another session is refused. The guard checks the group again right before it signals it:
+// one with no process left in the program's session by then (it ended, and its id may have gone to a group in another
+// session) is not signalled, and the note says INT was not sent. A terminal with no foreground group left has INT go
+// to the program's own group, with a note that says so. Every other signal, and INT without a pty, goes to the program's
 // group. A signal to a process that has ended does nothing.
 func (t *Table) Signal(params SignalParams) (SignalResult, error) {
 	sig, ok := signals[params.Signal]
@@ -522,7 +524,7 @@ func (t *Table) Signal(params SignalParams) (SignalResult, error) {
 		return SignalResult{}, nil
 	}
 	if !p.pty || sig != syscall.SIGINT {
-		return SignalResult{}, p.g.Signal(sig, 0)
+		return SignalResult{}, p.g.Signal(sig)
 	}
 	p.mu.Lock()
 	group, session, err := 0, 0, errNoForeground
@@ -532,11 +534,15 @@ func (t *Table) Signal(params SignalParams) (SignalResult, error) {
 	p.mu.Unlock()
 	switch {
 	case err != nil:
-		return SignalResult{Note: err.Error() + "; INT went to the program's own group"}, p.g.Signal(sig, 0)
+		return SignalResult{Note: err.Error() + "; INT went to the program's own group"}, p.g.Signal(sig)
 	case session != p.pid:
 		return SignalResult{}, rpc.Errorf(rpc.KindDenied, "process %s's terminal belongs to another session: its foreground group %d is in session %d, not the program's, %d; INT was not sent", p.id, group, session, p.pid)
 	}
-	return SignalResult{}, p.g.Signal(sig, group)
+	sent, why, err := p.g.SignalGroup(sig, group)
+	if err != nil || sent {
+		return SignalResult{}, err
+	}
+	return SignalResult{Note: why + "; INT was not sent"}, nil
 }
 
 func (t *Table) Resize(params ResizeParams) (Empty, error) {

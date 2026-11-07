@@ -659,6 +659,26 @@ test("modelPortFor with no stop of its own: a paid request whose cost can't be r
   assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
 });
 
+test("a turn parked on a call's approval is no stop of the booking: a request of the harness's own whose cost can't be recorded while it is parked still stops the booking, and once the park lets go the next request is refused", async () => {
+  const kernel = await import('@parcha/agentrun-kernel');
+  const TurnParked = kernel.TurnParked ?? class extends Error {};
+  const inner = await memorySessionStore().open('chat:parkedfail');
+  let failTurn = true;
+  const writer = { key: inner.key, sync: () => inner.sync(), read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
+  // The host's stops: a park while a call waits on a person (it ends the turn, not the booking), and the stop it is asked for.
+  let parked;
+  const stops = [];
+  const booking = await modelPortFor(writer, { key: 'chat:parkedfail', stopped: () => parked, stop: (reason, message) => (stops.push(reason), new HarnessRunError(reason, 1, 0, { message })) });
+  const ticket = await booking.models.beforeRequest({ model: 'm' });
+  // The proxy ends the client's answer before it books, so the turn can park between the two.
+  parked = new TurnParked("the turn ended: a tool call waits for a person's approval");
+  await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
+  assert.deepEqual(stops, ['model_error'], 'the booking is stopped though the turn is parked');
+  parked = undefined;
+  await assert.rejects(booking.models.beforeRequest({ model: 'm' }), (e) => /could not be recorded/.test(e.message), 'once the park lets go, the next paid request is refused');
+  assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
+});
+
 test("a request whose admission record can't be written is refused and costs no turn: the next one is admitted as turn 1, within a limit of 1", async () => {
   const inner = await memorySessionStore().open('chat:reqfail');
   let failRequest = true;

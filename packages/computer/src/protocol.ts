@@ -303,7 +303,12 @@ export interface ProcessSignalParams {
 }
 
 export interface ProcessSignalResult {
-	/** Set only when INT on a terminal found no foreground group (the program let go of it, or is ending) and went to the program's own group: why. */
+	/**
+	 * Set only for INT on a terminal: when it found no foreground group (the program let go of it, or is ending) and went
+	 * to the program's own group, or when the foreground group had no process left in the program's session by the time
+	 * the guard came to signal it (it ended, and its id may have gone to a group in another session) and INT was not
+	 * sent: why.
+	 */
 	note?: string;
 }
 

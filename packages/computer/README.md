@@ -106,7 +106,9 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   sends it, so it ends the job a shell runs in the foreground and the shell reads on. The daemon reads that group on
   the terminal it holds (TIOCGPGRP) and has the guard signal it only when it is in the program's own session (and so
   under the guard); a terminal the program handed to another session is refused as `denied`, and nothing is
-  signalled. A terminal with no foreground group left (the program let go of it, or is ending) has `INT` go to the
+  signalled. The group can end between that check and the signal, and its id go to a group in another session, so the
+  guard checks again right before it signals: a group with no process left in the program's session is not signalled,
+  and the reply says `INT` was not sent: `{note}`. A terminal with no foreground group left (the program let go of it, or is ending) has `INT` go to the
   program's group, and the reply says so: `{note}`. `TERM`, `KILL` and `HUP` always go to the program's group.
 - Starts take turns. A `process.start` cancelled while it waits for its turn, or before its program runs, is `aborted`,
   and nothing it started is left.
