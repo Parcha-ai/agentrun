@@ -407,3 +407,16 @@ test("a grant whose server is no longer saved, or whose tool a refresh removed, 
   assert.throws(() => mcpPinOf(["mcp:fake/add", "mcp:fake/sub"], saved), /^Error: The MCP tool mcp:fake\/sub cannot be pinned: sub is no longer one of its tools since the last refresh\.$/);
   assert.deepEqual(Object.keys(mcpPinOf(["mcp:fake/add", "read"], saved)), ["fake"], "a name that is no MCP tool's is not the pin's");
 });
+
+test("a server that can't be reached reads so, at its address with a short reason and that nothing was sent, never the MCP SDK's own words", async (t) => {
+  // A port nothing listens on: the server's address once it was saved, and gone since.
+  const closed = createServer();
+  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${closed.address().port}/mcp`;
+  await new Promise((resolve) => closed.close(resolve));
+  const { gateway } = await setup(t, { url });
+  const said = await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal() });
+  assert.equal(said.isError, true);
+  assert.equal(textOf(said), `The MCP server fake could not be reached at ${new URL(url).origin} (connection refused); nothing was sent.`);
+  assert.doesNotMatch(textOf(said), /Version negotiation|fetch failed/);
+});
