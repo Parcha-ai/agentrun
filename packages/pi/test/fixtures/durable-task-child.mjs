@@ -8,6 +8,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { recoveryBound, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
@@ -55,7 +56,7 @@ if (mode) {
   }) });
   const registry = createRegistry();
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
   // A kill point that is a commit: the process dies once the commit is durable, before anything after it runs.
   harness.observeCommits({ end() {}, advance: (publication) => {
     for (const change of publication.changes) {

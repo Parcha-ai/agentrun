@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { runWorkflow } from '@parcha/agentrun-dsl';
@@ -60,7 +61,7 @@ const hostOf = (runEffect) => {
 async function open(file, flow) {
   const registry = createRegistry();
   registry.install(flow.extension);
-  return Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  return Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
 }
 const fileOf = () => join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
 /** The journal in an operator's hands, outside any task. */

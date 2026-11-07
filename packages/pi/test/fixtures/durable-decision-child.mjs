@@ -5,6 +5,7 @@
 // run's state. With REPLAY=0 the host records rows and does not answer from them. KEYS (default `run-1`) lists the run
 // keys `start` starts, one after the other, each with the same workflow and input. Rows go to stdout as JSON.
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { withRecovery } from '@parcha/agentrun-dsl/recovery';
@@ -41,7 +42,7 @@ if (mode) {
   });
   const registry = createRegistry();
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
   harness.observeCommits({ end() {}, advance: (publication) => {
     for (const change of publication.changes) if (change.type === 'document' && change.value && change.record.kind === 'agentrun.decisions') kill('after-decision');
   } });

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry, defineExtension, defineTask } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import * as recovery from '@parcha/agentrun-dsl/recovery';
@@ -45,7 +46,7 @@ async function runTask(file, key) {
   const flow = createWorkflowExtension({ options: () => ({ files }), run: () => ({ adapters: { runEffect: async () => ({ price: 21 }) } }) });
   const registry = createRegistry();
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
   try { await (await flow.start(harness, { key, workflow: WORKFLOW, input: { sku: 'A-1' } }, ctx)).wait(ctx); } finally { await harness.close(ctx); }
 }
 
@@ -107,7 +108,7 @@ test('polled with after = last as commits land, the document lines are one read\
 
 test('a driver checkpoint prunes what a bare export sees: a line before the earliest surviving driver revision has no gen, and a recorder reading each commit saw them all', async () => {
   const file = fileOf();
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
   const polled = [];
   let last = 0;
   const poll = () => { const read = recordingLines(file, { after: last }); polled.push(...read.lines); last = read.last; };
@@ -221,7 +222,7 @@ test('an execution path is read back from the ids the DSL builds: an effect\'s i
 
 test('two journals in one store: a commit\'s generation is its own driver revisions\', in the recorder as in the export', async () => {
   const file = fileOf();
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
   const recorded = [];
   const stop = recordCommits(harness, { write: (lines) => { recorded.push(...lines); } });
   try {
@@ -317,7 +318,7 @@ test('a real store: a fork made under a task is a pi.conversation line from reco
     abort: async (_task, runtime, context) => { await runtime.commit(async () => ({ status: 'terminal', outcome: { status: 'aborted' } }), context); } });
   const registry = createRegistry();
   registry.install(defineExtension({ name: 'recording-test', tasks: [Owner] }));
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
   const recorded = [];
   let created;
   try {
@@ -344,7 +345,7 @@ test('a real store: a fork made under a task is a pi.conversation line from reco
   const exported = recordingLines(file).lines.filter((line) => line.kind === 'pi.conversation');
   assert.deepEqual(exported.map((line) => line.data).sort((a, b) => a.id - b.id), live.map((line) => line.data).sort((a, b) => a.id - b.id), 'the export and the live recorder agree');
   const storage = await openNodeSqliteStorage(file);
-  const again = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const again = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   try {
     const snapshot = await snapshotLines(storage, { at: lastCommit(file), context: ctx });
     assert.deepEqual(snapshot.filter((line) => line.kind === 'pi.conversation').map((line) => line.data).sort((a, b) => a.id - b.id), live.map((line) => line.data).sort((a, b) => a.id - b.id), 'the snapshot at open agrees too');

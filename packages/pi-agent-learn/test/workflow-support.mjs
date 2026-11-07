@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { workspaceFiles } from "@parcha/agentrun-dsl/recovery";
@@ -84,7 +85,7 @@ export async function runStoreWith(runs) {
   });
   const registry = createRegistry();
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
   try {
     for (const run of runs) {
       const started = await flow.start(harness, { key: run.key, workflow: run.workflow, input: run.input }, ctx, run.stop ? { stop: { action: run.stop, source: "test" } } : undefined);
@@ -119,7 +120,7 @@ export async function liveRun(runs) {
   const registry = createRegistry();
   registry.install(agentLearn());
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(path.join(root, "run.sqlite")), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(path.join(root, "run.sqlite")), { registry, models: createModels() }, ctx);
   for (const run of runs) await (await flow.start(harness, { key: run.key, workflow: run.workflow, input: run.input }, ctx)).wait(ctx);
   return { harness, close: () => harness.close(ctx) };
 }

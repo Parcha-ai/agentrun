@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { workflowSha256 } from "@parcha/agentrun-dsl";
@@ -29,7 +30,7 @@ async function servingRun({ price = 21, down = false } = {}) {
   });
   const registry = createRegistry();
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(store), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(store), { registry, models: createModels() }, ctx);
   return { harness, flow, store, close: () => harness.close(ctx) };
 }
 

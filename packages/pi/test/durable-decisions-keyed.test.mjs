@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, defineDoc, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, decisionRecovery, durableDecisions, readDecisions, recordingLines } from '@parcha/agentrun-pi/durable';
@@ -16,7 +17,7 @@ const root = mkdtempSync(join(tmpdir(), 'agentrun-decisions-keyed-'));
 after(() => rmSync(root, { recursive: true, force: true }));
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 const fileOf = () => join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
-const open = async (file) => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+const open = async (file) => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
 
 // What a receipt weighs on the wire is part of the claim, so a row is the size a real one is (about 0.9 KB).
 const row = (i, extra = {}) => ({
