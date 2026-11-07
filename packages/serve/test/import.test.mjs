@@ -19,7 +19,7 @@ import { summaryLines } from "../dist/import-summary.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, runDir, scratch } from "./support.mjs";
+import { agent, client, FAUX, runDir, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CANARY = "CANARY-VALUE-7f3e9d2c1b0a6e5d";
@@ -527,6 +527,46 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   }
   assert.ok(dry.includes("4 secrets would be removed"), dry.filter((l) => /removed/.test(l)).join(" "));
   assert.ok(lines.includes("4 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("a webhook trigger's key or the outbound webhook's, pasted into sessions as base64, base64url or hex, is cut out of what the import keeps and prints", async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const seal = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let open = true;
+  t.after(() => open && server.close());
+  const api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("target"))).status, 201);
+  const trigger = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
+  const outbound = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
+  await server.close();
+  open = false;
+  const forms = {};
+  for (const [what, secret] of [["trigger", trigger.body.secret], ["outbound", outbound.body.secret]]) {
+    const key = Buffer.from(secret.slice("whsec_".length), "base64");
+    Object.assign(forms, { [`${what} base64`]: secret.slice("whsec_".length), [`${what} base64url`]: key.toString("base64url"), [`${what} hex`]: key.toString("hex") });
+  }
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: `The trigger's key is ${forms["trigger base64"]}, or ${forms["trigger base64url"]}.`, output: `hex ${forms["trigger hex"]}` });
+  codexSession(at, site, 2, { prompt: `The webhook's key is ${forms["outbound base64"]}, or ${forms["outbound base64url"]}.` });
+  piSession(at, site, 3, { prompt: `As hex: ${forms["outbound hex"]}.` });
+  const had = new Map(keptUnder(data));
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", ...seal }, out: (line) => lines.push(line) }), 0);
+  const wrote = keptUnder(data).filter(([path, bytes]) => !had.get(path)?.equals(bytes));
+  assert.ok(wrote.length > 0, "the import wrote");
+  for (const [form, value] of Object.entries(forms)) {
+    assert.deepEqual(wrote.filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `the ${form} key: in no byte the import wrote`);
+    assert.ok(!lines.some((line) => line.includes(value)), `the ${form} key: in no printed line`);
+  }
 });
 
 test("an import that cannot open this server's webhook secret (no seal key, or another one) says so once, its dry run too, and imports all the same; with the key it says nothing", async (t) => {
