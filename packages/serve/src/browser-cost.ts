@@ -76,8 +76,18 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  the session leaves the inventory. The minutes are held once: a call's hold leaves out what is carried (capped). */
   const carried = new Map<string, Array<{ hold: Hold; from: number; to: number }>>();
   const dropCarried = (tag: string) => { for (const { hold } of carried.get(tag) ?? []) hold.drop(); carried.delete(tag); };
-  /** The carried time a charge through `through` (ms) books goes; a stretch that runs past it keeps what is after it. */
+  /** A person's time on a session that is still under way (a take-over, an ask): each stretch its holds cover, from `from`
+   *  to `to` (ms), while held. The part of it already run is in its hold, so a call's hold leaves it out, as carried time;
+   *  a charge that books it takes it off the hold. */
+  const active = new Map<string, Set<{ hold: Hold; from: number; to: number }>>();
+  /** The carried time a charge through `through` (ms) books goes; a stretch that runs past it keeps what is after it. A
+   *  person's stretch still under way keeps only what is after it, held until its holder drops it. */
   const bookCarried = (tag: string, through: number) => {
+    for (const stretch of active.get(tag) ?? []) {
+      if (stretch.from >= through) continue;
+      stretch.from = Math.min(through, stretch.to);
+      stretch.hold.usd = microUsd(usdOf((stretch.to - stretch.from) / 1000));
+    }
     const kept = (carried.get(tag) ?? []).filter((stretch) => {
       if (stretch.to <= through) {
         stretch.hold.drop();
@@ -94,7 +104,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   };
   /** What is carried for `tag` and falls after `since` (ms): the part of a session's run since its last charge that a call's
    *  hold must not count again. */
-  const carriedSince = (tag: string, since: number) => (carried.get(tag) ?? []).reduce((sum, { from, to }) => sum + usdOf(Math.max(0, to - Math.max(from, since)) / 1000), 0);
+  const carriedSince = (tag: string, since: number, now: number) =>
+    (carried.get(tag) ?? []).reduce((sum, { from, to }) => sum + usdOf(Math.max(0, to - Math.max(from, since)) / 1000), 0) +
+    // A person who has the browser now: what of their held time has run is held already, as carried time is.
+    [...(active.get(tag) ?? [])].reduce((sum, { from, to }) => sum + usdOf(Math.max(0, Math.min(to, now) - Math.max(from, since)) / 1000), 0);
   /** Each call under way, by its id: its conversation and its hold. */
   const calls = new Map<string, { cid: number; hold: Hold }>();
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
@@ -194,8 +207,9 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         const now = Date.now();
         const mine = [...sessions].filter(([, s]) => s.cid === api.conversationId);
         const ranS = mine.reduce((sum, [, s]) => sum + Math.max(0, now - s.at) / 1000, 0);
-        // A person's time in that run is held already, carried: the call holds the rest of it, so the minutes count once.
-        const carriedUsd = mine.reduce((sum, [tag, s]) => sum + carriedSince(tag, s.at), 0);
+        // A person's time in that run is held already, carried or still under way: the call holds the rest of it, so the
+        // minutes count once.
+        const carriedUsd = mine.reduce((sum, [tag, s]) => sum + carriedSince(tag, s.at, now), 0);
         // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
         const usd = microUsd(Math.max(0, usdOf(ranS) - carriedUsd) + 2 * stretch);
         const basis = `${provider}'s session time at $${rate} an hour: the ${Math.round(ranS)} s its session ran since its last charge, and twice the next stretch of ${stretchS} s (its ${price.minimumS} s minimum, the ${idleS} s idle window and ${RELEASE_ALLOWANCE_S} s for its release)`;
@@ -222,8 +236,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   /** A person's time with a session, held up front under the run's cap (a take-over from the live view, an agent's ask for a person): the next
    *  `seconds` of session time at the provider's price, the most the person's time may last before it expires, held before it starts and refused
    *  in the cap's words when the cap has no room for it. The hold is the caller's to drop when the person's time ends; the time itself is booked
-   *  as any session time is, at the session's next charge. A free provider's time holds nothing. */
-  async function personTime(what: string, seconds: number, options: { pauses?: boolean } = {}): Promise<{ refused: string } | { drop(): void }> {
+   *  as any session time is, at the session's next charge. A free provider's time holds nothing. With `tag` (its session)
+   *  and `from` (ms, where the stretch it holds starts; now by default), the stretch is known while held: a call meanwhile
+   *  leaves out what of it has run, and a charge that books it takes it off the hold. */
+  async function personTime(what: string, seconds: number, options: { pauses?: boolean; tag?: string; from?: number } = {}): Promise<{ refused: string } | { drop(): void }> {
     const cap = runCap();
     if (cap !== undefined && rate === null) return { refused: `${SPEND_CAP_REACHED}: ${what} did not start. ${provider}'s session time has no price here (${priceEnvOf(provider)} gives one), so the run's cap of $${cap} cannot be kept.` };
     // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
@@ -231,8 +247,21 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const basis = `${provider}'s session time at $${rate} an hour for the ${Math.round(seconds / 60)} minutes it may last`;
     // A refusal pauses the run at its next request (paidCall) only for the agent's own step (an ask); `pauses: false` for a
     // person's take-over, which is no step of the agent's.
-    const paid = await paidCall(what, async () => keepHold(usd), () => undefined, { usd, basis }, options);
-    return "refused" in paid ? { refused: paid.refused } : paid.result;
+    const paid = await paidCall(what, async () => keepHold(usd), () => undefined, { usd, basis }, { pauses: options.pauses });
+    if ("refused" in paid) return { refused: paid.refused };
+    const hold = paid.result;
+    const tag = options.tag;
+    if (tag === undefined || !rate) return hold;
+    const from = options.from ?? Date.now();
+    const stretch = { hold, from, to: from + seconds * 1000 };
+    active.set(tag, (active.get(tag) ?? new Set()).add(stretch));
+    return {
+      drop: () => {
+        const on = active.get(tag);
+        if (on?.delete(stretch) && !on.size) active.delete(tag);
+        hold.drop();
+      },
+    };
   }
 
   /** The person's time on session `tag` that just ended (`seconds` of it), held at the provider's price until the session's

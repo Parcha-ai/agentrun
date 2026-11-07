@@ -220,7 +220,7 @@ export function personHands(options: {
   gates: (tag: string) => { give?(why: "answered" | "cap", message?: string): boolean };
   /** `pauses: false`: a refusal does not pause the agent's run (the person's own take-over, a re-hold): only the agent's own
    *  step, its ask, does (cap.ts paidCall). */
-  personTime(what: string, seconds: number, options?: { pauses?: boolean }): Promise<{ refused: string } | { drop(): void }>;
+  personTime(what: string, seconds: number, options?: { pauses?: boolean; tag?: string; from?: number }): Promise<{ refused: string } | { drop(): void }>;
   note: Note;
   holdMs?: number;
   pollMs?: number;
@@ -274,7 +274,7 @@ export function personHands(options: {
           // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
           // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
           if (known.refused) {
-            const hold = await options.personTime(what, holdMs / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
+            const hold = await options.personTime(what, holdMs / 1000, { pauses, tag, from: now() }).catch(() => ({ refused: "the person's time could not be held" }));
             if ("refused" in hold) return { refused: hold.refused };
             if (ledgers.get(tag) !== known) {
               hold.drop();
@@ -288,7 +288,7 @@ export function personHands(options: {
           }
           // An ask whose expiry falls past what is held: the stretch between, held for it under the cap, or it is refused.
           if (reach !== undefined && reach > known.until) {
-            const hold = await options.personTime(what, (reach - known.until) / 1000, { pauses }).catch(() => ({ refused: "the person's time could not be held" }));
+            const hold = await options.personTime(what, (reach - known.until) / 1000, { pauses, tag, from: known.until }).catch(() => ({ refused: "the person's time could not be held" }));
             if ("refused" in hold) return { refused: hold.refused };
             if (ledgers.get(tag) !== known) {
               hold.drop();
@@ -304,7 +304,7 @@ export function personHands(options: {
         return joined;
       }
       const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now(), until: now() + holdMs, turns: Promise.resolve() };
-      ledger.ready = options.personTime(what, holdMs / 1000, { pauses }).then(
+      ledger.ready = options.personTime(what, holdMs / 1000, { pauses, tag, from: ledger.since }).then(
         (hold) => {
           if (!("refused" in hold)) {
             ledger.holds.push(hold);
@@ -331,7 +331,7 @@ export function personHands(options: {
       // Only past what is held already (an ask that joined may have held further): every minute held once.
       const seconds = Math.max(0, now() + holdMs - ledger.until) / 1000;
       if (seconds <= 0) return void again(tag, ledger);
-      const hold = await options.personTime("more of your time in the browser", seconds, { pauses: false }).catch(() => ({ refused: "the person's time could not be held" }));
+      const hold = await options.personTime("more of your time in the browser", seconds, { pauses: false, tag, from: ledger.until }).catch(() => ({ refused: "the person's time could not be held" }));
       if (ledgers.get(tag) !== ledger) return void ("refused" in hold || hold.drop());
       if (!("refused" in hold)) {
         ledger.holds.push(hold);
