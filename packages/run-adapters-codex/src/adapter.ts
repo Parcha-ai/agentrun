@@ -105,7 +105,8 @@ export function kernelTool(tool: HostTool): KernelTool {
       // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
       if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
-      return result.text;
+      // With its images, recorded with the outcome: the answer to Codex carries them after the text (code-mode.ts withImages).
+      return result.images?.length ? { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) } : result.text;
     },
   };
 }
@@ -247,6 +248,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(io.cwd ? { cwd: io.cwd } : {}),
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
+            // The built-ins are off: Codex's own apply_patch, with no environment to run in, is offered to no model
+            // (catalog.ts). A stand-in runs no Codex, so it has no catalog to read.
+            ...(checked !== undefined ? { catalog: { command: checked, ...(options.log ? { log: options.log } : {}) } } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
             // A granted MCP server's tools: Codex's own MCP client calls them at the proxy (mcp.ts).
             ...(spec.mcp?.servers.length ? { mcp: spec.mcp } : {}),
