@@ -6,7 +6,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { defineDocFamily, type ConversationId, type Extension, type Harness, type JsonObject } from '@earendil-works/pi-durable';
+import type { JsonValue } from '@earendil-works/chord';
+import { defineDocFamily, type ConversationId, type Extension, type Harness, type JsonObject, type ToolRegistration } from '@earendil-works/pi-durable';
+import type { TSchema } from 'typebox';
 import type { LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 
@@ -30,7 +32,16 @@ export type Shown = { conversationId: string; callId: string; args: Record<strin
 
 /** The screenshot each conversation last took, from a hook installed before vision's guard: the guard then hands the image to the eyes and the
  *  lead never holds it. `keep` stores an image's bytes (a recording's blob) and returns its SHA-256. It changes no result. */
-export function shownShots(options: { keep?: (bytes: Buffer, extension: string) => string; onShown?: (shown: Shown) => void } = {}) {
+/** What shownShots gives: its `note`, its `extension` and its `of`, typed here so the published types name TypeBox's
+ *  `TSchema` from typebox, never through a pi package (pi-ai 1.5 drops that re-export). */
+export type ShownShots = {
+  note: (conversationId: string, tool: string, path: string | undefined, bytes: Buffer, mimeType: string) => void;
+  extension: Extension<ToolRegistration<TSchema, JsonValue>>;
+  /** The images the eyes were shown for this look (see `of` below). */
+  of: (conversationId: string, record: LookRecord | undefined, tool: string) => { receipt: string | null; images: ShownImage[] } | undefined;
+};
+
+export function shownShots(options: { keep?: (bytes: Buffer, extension: string) => string; onShown?: (shown: Shown) => void } = {}): ShownShots {
   // Each conversation's reads, newest last: a look finds the read it was of by its path (a screenshot by its receipt), never "the last one".
   const byConversation = new Map<string, { tool: string; receipt: string | null; images: ShownImage[]; path?: string }[]>();
   const extension = {

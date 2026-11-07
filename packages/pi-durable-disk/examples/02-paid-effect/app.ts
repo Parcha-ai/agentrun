@@ -8,7 +8,8 @@
 import { appendFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxToolCall, fauxProvider, Type } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxToolCall, fauxProvider } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Conversation, EntryRecord } from "@earendil-works/pi-durable";
