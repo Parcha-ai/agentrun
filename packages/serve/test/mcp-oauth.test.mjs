@@ -861,6 +861,26 @@ test("with a public address for browsers, this server's own listening port is st
   assert.equal(started.searchParams.get("redirect_uri"), `https://agents.example.test${CALLBACK}`, "the browser still comes back at the public address");
 });
 
+test("with a LOOPBACK public address (a local https proxy in front of the listener), that proxy's port is refused to a loopback MCP server's authorization server too, and hears nothing", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  // The public address browsers use is itself on loopback (a local proxy, e.g. https://localhost:8443 in front of the
+  // listener): a request to it reaches this server through the proxy. Stand-ins for both record what reaches them.
+  const proxy = await targetOn(t, "127.0.0.1"); // key-gate: this server's own public address on loopback, which an authorization server must not reach
+  const listener = await targetOn(t, "127.0.0.1"); // key-gate: this server's own listening address, which an authorization server must not reach
+  for (const [what, metadata] of [["token endpoint", { token_endpoint: `${proxy.origin}/x` }], ["registration endpoint", { registration_endpoint: `${proxy.origin}/x` }]]) {
+    const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+    t.after(() => mcp.close());
+    const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+    store.attach(proxy.origin, listener.origin);
+    await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
+  }
+  assert.deepEqual(proxy.hits, [], "the public (proxy) port heard nothing");
+  assert.deepEqual(listener.hits, [], "the listening port heard nothing");
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+});
+
 test("a server started with a public address refuses a loopback MCP server's authorization server that names the port it listens on", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { baseUrl, token } = await serve(t, { publicUrl: "https://agents.example.test" });
