@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { agentFolderOf, readJson } from "./files.js";
-import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, type NoteRuns, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, changedOrder, checkOut, currentLearning, detailShown, git, line, mainOf, type NoteRuns, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -348,43 +348,52 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
   return { limit, at: { sha: named[1]!, offset: Number(named[2]) } };
 }
 
-/** For tests: how many times a pending count was read from a folder (once per commit of its main). */
+/** For tests: how many times a folder's statuses were read (once per commit of its main). */
 export const pendingTestHooks = { reads: 0 };
-/** By agent: its folder's main commit and how many of its items wait for the owner's OK there. */
-const pendingBy = new Map<string, { sha: string; pending: number }>();
-const pendingReads = new Map<string, Promise<number>>();
+/** By agent: its folder's main commit and each learned item's status there. */
+const statusBy = new Map<string, { sha: string; status: ReadonlyMap<string, string> }>();
+const statusReads = new Map<string, Promise<ReadonlyMap<string, string>>>();
 
-/** How many of agent `agentId`'s learned items wait for its owner's OK on its folder's main: notes, skills and workflow
- *  drafts held with `status: pending`, as the learning view reads them (notesAt, learnedAt). Read once per commit of
- *  main (a list of agents asks for every agent): the commit is resolved each time, the folder only when it moved. A
- *  folder never made has none waiting; one that cannot be read is undefined (the caller shows no count). */
-export async function pendingCount(data: string, agentId: string): Promise<number | undefined> {
+/** Each learned item's status on agent `agentId`'s folder's main, by file (a note's; a skill's SKILL.md; a workflow
+ *  draft's workflow.json, as its README.md says it), as the learning view reads them (notesAt, learnedAt): `active`,
+ *  `pending`, `superseded` or `retired`. Read once per commit of main (a list asks for many runs): the commit is
+ *  resolved each time, the folder only when it moved. A folder never made holds none; one that cannot be read is
+ *  undefined. */
+export async function statusesOf(data: string, agentId: string): Promise<ReadonlyMap<string, string> | undefined> {
   try {
     const { home, repo } = await placeOf(data, agentId);
-    // A folder never made (no .git) holds nothing yet: 0. One whose .git git cannot read (an invalid repository, git
-    // missing) is unknown: undefined, so the count is left out rather than shown as 0.
+    // A folder never made (no .git) holds nothing yet. One whose .git git cannot read (an invalid repository, git
+    // missing) is unknown: undefined, so a caller says nothing it cannot read.
     if (existsSync(join(repo, ".git")) && !(await git(home, repo, ["rev-parse", "--git-dir"]).then(() => true, () => false))) return undefined;
     const sha = await mainOf(home, repo);
-    if (!sha) return 0;
-    const known = pendingBy.get(agentId);
-    if (known?.sha === sha) return known.pending;
+    if (!sha) return new Map();
+    const known = statusBy.get(agentId);
+    if (known?.sha === sha) return known.status;
     // Requests that miss together share one read of the commit (cleared once it settles, so a failure is not kept).
     const key = `${agentId}\0${sha}`;
-    let reading = pendingReads.get(key);
+    let reading = statusReads.get(key);
     if (!reading) {
       pendingTestHooks.reads += 1;
       reading = Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha)]).then(([{ notes }, { skills, workflows }]) => {
-        const pending = notes.filter((note) => note.status === "pending").length + [...skills, ...workflows].filter((item) => item.status === "pending").length;
-        pendingBy.set(agentId, { sha, pending });
-        return pending;
+        const status = new Map<string, string>([...notes.map((note): [string, string] => [note.file, note.status]), ...[...skills, ...workflows].map((item): [string, string] => [item.file, item.status])]);
+        statusBy.set(agentId, { sha, status });
+        return status;
       });
-      pendingReads.set(key, reading);
-      void reading.finally(() => pendingReads.delete(key)).catch(() => undefined);
+      statusReads.set(key, reading);
+      void reading.finally(() => statusReads.delete(key)).catch(() => undefined);
     }
     return await reading;
   } catch {
     return undefined;
   }
+}
+
+/** How many of agent `agentId`'s learned items wait for its owner's OK on its folder's main (statusesOf): notes, skills
+ *  and workflow drafts held with `status: pending`. A folder never made has none waiting; one that cannot be read is
+ *  undefined (the caller shows no count). */
+export async function pendingCount(data: string, agentId: string): Promise<number | undefined> {
+  const status = await statusesOf(data, agentId);
+  return status === undefined ? undefined : [...status.values()].filter((value) => value === "pending").length;
 }
 
 /** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
@@ -682,8 +691,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
 
 /** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn: its detail cut of the
  *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
-export async function runLearning(run: Run, shown: Shown, secrets: readonly string[]) {
-  const learning = run.meta.learning;
+export async function runLearning(run: Run, shown: Shown, secrets: readonly string[], data: string) {
+  // What it held for its owner's OK as it reads now (learning.ts currentLearning); its record stays as the merge wrote it.
+  const learning = run.meta.learning && currentLearning(run.meta.learning, await statusesOf(data, run.agentId));
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
   const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;

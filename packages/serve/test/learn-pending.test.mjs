@@ -10,6 +10,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CAPS } from "../dist/learn/check.js";
+import { currentLearning } from "../dist/learning.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -213,6 +214,18 @@ for (const act of ["approve", "retire"]) {
     assert.deepEqual(record.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }]);
   });
 }
+
+test("what a run held reads as it stands on main now: a skill approved since is the run's, its pending gone; one retired is said no more; a run whose every item was retired says so; still pending, it waits; no status read, as written", () => {
+  const held = { state: "merged", reason: null, detail: "stored", at: "2026-11-07T00:00:00Z", pending: [{ file: "a.md", name: "A" }], skills: [{ file: "skills/s/SKILL.md", name: "s", pending: true }], workflows: [{ file: "workflows/w/workflow.json", name: "w", pending: true }] };
+  const now = (status) => currentLearning(held, new Map(Object.entries(status)));
+  assert.deepEqual(now({ "a.md": "pending", "skills/s/SKILL.md": "pending", "workflows/w/workflow.json": "pending" }), held, "all still wait");
+  const approved = now({ "a.md": "active", "skills/s/SKILL.md": "active", "workflows/w/workflow.json": "retired" });
+  assert.deepEqual([approved.pending, approved.learned, approved.skills, approved.workflows], [undefined, [{ file: "a.md", name: "A", supersedes: [] }], [{ file: "skills/s/SKILL.md", name: "s" }], []]);
+  const retired = now({ "a.md": "retired", "skills/s/SKILL.md": "retired" });
+  assert.deepEqual([retired.pending, retired.learned, retired.skills, retired.workflows, retired.detail], [undefined, undefined, [], [], "What it learned was retired since."]);
+  assert.equal(currentLearning(held, undefined), held, "a folder not read: as written");
+  assert.equal(currentLearning({ ...held, state: "dropped" }, new Map()).pending, held.pending, "only a merge holds anything");
+});
 
 test("approving a pending note takes the owner's password session in the console alone: the server's token (what an agent's MCP client or a script holds), and the run's door token are 403, and no credential or a cookie from another origin 401; the console makes it active, in MEMORY.md and the next run, logged as by {user, via: console} without its text; capabilities say approve to that session alone", { timeout: 180_000 }, async (t) => {
   const server = await learnedPending(t, { accounts: true, openSetup: true });

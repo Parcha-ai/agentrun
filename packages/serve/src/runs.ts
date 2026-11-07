@@ -3757,6 +3757,8 @@ export class Runs {
     // After the read: the run may have moved on while it waited, and every field below is of this one moment.
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
+    // What it held for its owner's OK as it reads now: approved or retired since, it waits no more (learning-run.ts current).
+    const learning = await this.learning.current(run.agentId, run.meta.learning);
     // The whole text of the answer the run's turn ended on (answerOfRun), never the line the store keeps, which is cut;
     // the store's line only for a run whose rows are not read (an import's).
     // A run whose words are withheld (meta.unshown) answers nothing: its row's line is its own words too.
@@ -3794,7 +3796,7 @@ export class Runs {
       imported_from: run.imported ?? null,
       trigger: run.meta.trigger ?? null,
       // The notes it read once it settled: while it runs, or runs again for a follow-up, they are still being read.
-      learning: this.learning.view(run.meta.learning, TERMINAL.has(status) && run.settled),
+      learning: this.learning.view(learning, TERMINAL.has(status) && run.settled),
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
       last_progress_at: progress === undefined ? null : new Date(progress).toISOString(),
     };
@@ -3832,7 +3834,7 @@ export class Runs {
       imported_from: row.importedFrom ?? null,
       trigger: triggerOf(meta),
       // Its row says it ended: what serve.json holds of its learning is as it settled.
-      learning: this.learning.short(isObject(meta?.learning) ? (meta.learning as Learning) : null, true),
+      learning: this.learning.short(isObject(meta?.learning) ? ((await this.learning.current(row.agent, meta.learning as Learning)) ?? null) : null, true),
     };
   }
 

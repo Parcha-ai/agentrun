@@ -1457,7 +1457,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const limit = asked === null ? PAGE_ROWS : Number(asked);
     const pageOf = async (from: number, wait: number) => {
       const page = await runs.page(run, from, wait, limit);
-      return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final, cost: runs.cost(run) };
+      // Its learning row as it reads now: what it held for its owner's OK, approved or retired since, waits no more.
+      const rows = page.rows.some((row) => row.kind === "learning") ? await runs.learning.rowsNow(run.agentId, run.meta.learning, page.rows) : page.rows;
+      return { run_id: run.id, status: page.status, state: page.state, reset: page.reset, rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final: page.final, cost: runs.cost(run) };
     };
     if (!String(req.headers.accept ?? "").includes("text/event-stream")) {
       const page = await pageOf(after, waitMs);
@@ -2263,7 +2265,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
       case "getRunLearning":
-        return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets()));
+        return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets(), data));
       case "getRunLearningDiff":
         return send(res, 200, await runDiff(data, await needRun(id), secretsShown(learningSecrets())));
       case "getWebhook":

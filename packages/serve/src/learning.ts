@@ -36,7 +36,7 @@ import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
-import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
+import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 import { readWorkText } from "./workspace.js";
 
@@ -153,6 +153,24 @@ export function notesView({ state, given, read: opened, learned, pending, skills
   const [kept, drafts] = [files(skills), files(workflows)];
   return { ...(started.length ? { given: started } : {}), ...(read.length ? { read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}), ...(kept.length ? { skills: kept } : {}), ...(drafts.length ? { workflows: drafts } : {}) };
 }
+/** A merged run's learning as it reads now: what it held for the owner's OK checked against each item's status on
+ *  main now (`status`, by file: a note's, a skill's SKILL.md, a draft's workflow.json). Still pending, it waits; approved
+ *  (active), it is learned, as a merge that held nothing says it; retired or gone, it is no longer said. The record keeps
+ *  what the merge wrote; only its reads change. No status (the folder unread): as written. */
+export function currentLearning(learning: Learning, status: ReadonlyMap<string, string> | undefined): Learning {
+  if (!status || learning.state !== "merged") return learning;
+  const of = (file: unknown) => (typeof file === "string" ? status.get(file) : undefined);
+  const held = Array.isArray(learning.pending) ? learning.pending : [];
+  const approved = held.filter((note) => of(note?.file) === "active").map(({ file, name }) => ({ file, name, supersedes: [] as string[] }));
+  const files = (list: LearnedFile[] | undefined) => (Array.isArray(list) ? list.flatMap((item) => (!item?.pending || of(item.file) === "pending" ? [item] : of(item.file) === "active" ? [{ file: item.file, name: item.name }] : [])) : list);
+  const { pending: _pending, learned, skills, workflows, ...rest } = learning;
+  const waits = held.filter((note) => of(note?.file) === "pending");
+  const kept = [...(Array.isArray(learned) ? learned : []), ...approved];
+  const [madeSkills, madeDrafts] = [files(skills), files(workflows)];
+  const gone = !kept.length && !waits.length && !madeSkills?.length && !madeDrafts?.length;
+  return { ...rest, ...(gone ? { detail: said.retiredSince } : {}), ...(kept.length ? { learned: kept } : learned ? { learned } : {}), ...(waits.length ? { pending: waits } : {}), ...(madeSkills ? { skills: madeSkills } : {}), ...(madeDrafts ? { workflows: madeDrafts } : {}) };
+}
+
 /** A run's learning in a person's words as a read shows them (learning-words.ts wordsOf): each part cut of the host's
  *  secrets as they are now (`shown`) first, then the words cut short to `max`, so a secret is never shown in part. */
 export const detailShown = (learning: Learning, shown: Shown, max = DETAIL_MAX): string | null => {
