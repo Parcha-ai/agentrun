@@ -97,9 +97,11 @@ export class McpServers {
     return this.key ? "sealed" : "unavailable";
   }
 
-  /** This server's address as a browser reaches it: an OAuth sign-in's callback is under it. */
-  attach(base: string): void {
+  /** This server's address as a browser reaches it (`base`: an OAuth sign-in's callback is under it), and where it
+   *  listens (`listening`, the same when no public address is set): a loopback authorization server never reaches that port. */
+  attach(base: string, listening = base): void {
     this.signIns.base = base.replace(/\/+$/, "");
+    this.signIns.listening = listening.replace(/\/+$/, "");
   }
 
   clientDocument() {
@@ -314,7 +316,7 @@ export class McpServers {
       // Tried twice when the authorization server does not answer (a timeout, a 5xx, the network): only a refusal is final.
       for (let tries = 0; set.tokens.refresh_token && !next && !no && tries < 2 && !this.stopped.signal.aborted; tries++) {
         try {
-          next = await refreshed(set, kept.url, this.stopped.signal, this.network, this.signIns.base);
+          next = await refreshed(set, kept.url, this.stopped.signal, this.network, this.signIns.listening);
         } catch (error) {
           no = await refused(error);
         }

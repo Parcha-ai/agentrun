@@ -75,7 +75,7 @@ type Seen = { refused?: string; failed?: { what: string; status?: number; why?: 
  *  server's code, verifier, secret or refresh token to a service on this machine or its network, by its metadata or by
  *  its name's next answer. The one exception, for development and tests, is a loopback MCP server's (`mcpUrl`): its
  *  authorization server may be on the same loopback host, never another loopback address nor this server's own port
- *  (`own`, this server's address), so it cannot reach this server or another service on this machine (loopbackAllowed). */
+ *  (`own`, where this server listens), so it cannot reach this server or another service on this machine (loopbackAllowed). */
 const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNetwork, seen: Seen = {}, own?: string, ms = REQUEST_MS) => async (input: string | URL | Request, init?: RequestInit) => {
   // Started before the address check: its name lookup is bounded by the same timeout and the server's stop.
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]);
@@ -111,14 +111,15 @@ async function noted(sent: Promise<Response>, what: string, seen: Seen): Promise
 const portOf = (url: URL) => Number(url.port || (url.protocol === "https:" ? 443 : 80));
 /** Whether `url` is an endpoint a loopback MCP server's authorization server may use on loopback (a development-only
  *  allowance): the MCP server's own loopback host exactly as it is written (never another loopback address, the IPv6
- *  loopback, or a name for this machine in its place), on any port but this server's own (`own`). Any other loopback endpoint is checked
- *  as any address is, and refused. */
+ *  loopback, or a name for this machine in its place), on any port but the one this server listens on (`own`, its
+ *  listening address, never the public one browsers use, which names no local port). Any other loopback endpoint is
+ *  checked as any address is, and refused. */
 function loopbackAllowed(url: string | URL, mcpUrl: string, own: string | undefined): boolean {
   const at = typeof url === "string" ? URL.parse(url) : url;
   const mcp = URL.parse(mcpUrl);
   if (!at || !mcp || !LOOPBACK.test(mcp.hostname) || at.hostname !== mcp.hostname) return false;
   const self = own ? URL.parse(own) : null;
-  return !(self && LOOPBACK.test(self.hostname) && portOf(self) === portOf(at));
+  return !(self && portOf(self) === portOf(at));
 }
 
 /** `url`, which the authorization server named as its `what`, for an MCP server off loopback: refused when it is on
@@ -199,6 +200,9 @@ export class McpSignIns {
   /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash:
    *  set by McpServers.attach as the server starts listening. */
   base = "";
+  /** Where this server listens (`http://<host>:<port>`), whatever `base` is: its port is never an endpoint a loopback
+   *  authorization server may name. Set by McpServers.attach. */
+  listening = "";
 
   /** CIMD only from a public https address: an authorization server must be able to fetch the document. */
   private get metadataUrl(): string | undefined {
@@ -225,7 +229,7 @@ export class McpSignIns {
     const seen: Seen = {};
     const provider = this.provider(entry, { state, redirect: (to) => void (opened = to), seen });
     try {
-      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, this.base) });
+      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, this.listening) });
     } catch (error) {
       // Named by the endpoint and its status, never by what the authorization server said: its answer is not passed on.
       const { OAuthError } = await sdk();
@@ -251,7 +255,7 @@ export class McpSignIns {
   async finish(entry: Pending, code: string, iss: string | undefined, stop?: AbortSignal): Promise<TokenSet> {
     let tokens: OAuthTokens | undefined;
     const provider = this.provider(entry, { saved: (got) => void (tokens = got) });
-    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, this.base) });
+    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, this.listening) });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
     const scope = tokens.scope ?? entry.scope;
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
@@ -273,7 +277,7 @@ export class McpSignIns {
       codeVerifier: () => entry.verifier ?? "",
       // Checked before anything discovery found is used: registration, the page the owner opens, the code exchange.
       saveDiscoveryState: async (state) => {
-        const why = await discoveryRefusal(state, this.network, entry.url, this.base);
+        const why = await discoveryRefusal(state, this.network, entry.url, this.listening);
         if (why) {
           if (hooks.seen) hooks.seen.refused ??= why;
           throw new Error(why);
