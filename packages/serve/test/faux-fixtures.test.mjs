@@ -1,7 +1,8 @@
 // The tests' fake model endpoints on loopback (fixtures/faux-upstream.mjs, fixtures/faux-gateway.mjs) take any connection
 // on their port, a stranger's too: another process on the box probes loopback ports with a bare `GET /` and no body (F3,
-// a Go HTTP client). Such a request is answered 400 and is no model request: it never throws into the test, and the
-// requests a test asserts on stay exactly the ones it sent.
+// a Go HTTP client). The upstream answers a request with no JSON body 400 and files no call for it; the gateway keeps its
+// contract for a GET under its API paths (404, recorded: faux-gateway.test.mjs), answers one outside them (`GET /`) 404
+// unrecorded, and a POST with no JSON body 400, unrecorded. Neither throws into the test.
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -40,14 +41,17 @@ test("the fake upstream answers a bare GET / with no body 400, mid-test, and fil
   assert.deepEqual(filed.map((call) => call.path), ["/v1/messages"], "the stranger's request is not filed");
 });
 
-test("the fake gateway answers a bare GET / with no body 400, mid-test, and does not record it among its requests", async (t) => {
+test("the fake gateway answers a bare GET / with no body 404, unrecorded, mid-test, never throws, and a POST whose body is not JSON 400, unrecorded: its requests read as the test sent them", async (t) => {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   const first = await fetch(`${gw.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "not-a-secret", "anthropic-version": "2023-06-01" }, body: JSON.stringify({ ...MESSAGE, stream: false }) });
   assert.equal(first.status, 200);
   await first.text();
   const stranger = await probe(gw.url);
-  assert.equal(stranger.status, 400, "a request that is no model request is refused");
+  assert.equal(stranger.status, 404, "the gateway's contract for a GET (faux-gateway.test.mjs): not answered");
   await stranger.text();
-  assert.deepEqual(gw.requests.map((request) => [request.method, request.path]), [["POST", "/v1/messages"]], "only the test's own request is recorded");
+  const garbled = await fetch(`${gw.url}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: "not json" });
+  assert.equal(garbled.status, 400, "a POST that is no model request is refused");
+  await garbled.text();
+  assert.deepEqual(gw.requests.map((request) => [request.method, request.path]), [["POST", "/v1/messages"]], "only the test's own request is recorded: the stranger's GET / and the garbled POST are not");
 });
