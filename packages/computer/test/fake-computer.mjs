@@ -163,6 +163,8 @@ function fakeDaemon(hello, computer) {
  * - `brokenMount`: "unbound" (the mount is read back, but nothing is bound at /workspace), "no-read-back" (attach and
  *   list report no mount), "token-in-read-back" (attach reports the token), "token-in-label" (the computer carries the
  *   token as a label), "check-ignores" (check() takes any mount kind, declared or not).
+ * - `listIgnoresLabels`: list() gives every computer, whatever labels it was asked for.
+ * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
  */
 export function fakeComputers({
 	id = "fake",
@@ -200,6 +202,8 @@ export function fakeComputers({
 	mount,
 	disks = {},
 	brokenMount,
+	listIgnoresLabels = false,
+	failRelease,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. */
 	const readBack = (asked) => {
@@ -281,7 +285,7 @@ export function fakeComputers({
 		},
 		async list(labels) {
 			calls.push(["list", labels]);
-			const found = [...computers.values()].filter((c) => Object.entries(labels).every(([k, v]) => c.labels[k] === v));
+			const found = [...computers.values()].filter((c) => listIgnoresLabels || Object.entries(labels).every(([k, v]) => c.labels[k] === v));
 			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount) })));
 		},
 		async network(ref, policy) {
@@ -313,6 +317,9 @@ export function fakeComputers({
 			if (releaseHangs) return new Promise(() => {});
 			if (how === "stop" && stopIgnored) return ok(undefined);
 			const record = computers.get(ref.name);
+			if (record && failRelease && Object.entries(failRelease).every(([k, v]) => record.labels[k] === v)) {
+				return fail("refused", `the fake cannot ${how} ${ref.name}`);
+			}
 			if (how === "stop" && !release.includes("stop") && !stopAnyway) return fail("unsupported", "this fake has no stop that keeps a computer; release it with delete");
 			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
 			if (record && how === "stop") record.state = "stopped";
