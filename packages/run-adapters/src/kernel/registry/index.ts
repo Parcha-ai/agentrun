@@ -1,6 +1,6 @@
 // The kernel's one tool registry: the host tools' definitions, words and limits, the gate's shell family, the run's
 // hands, and the executors the kernel owns. Unused on main until the cutover wires serve onto it.
-export { BACKGROUND_EXECUTORS, endBackground } from "./background.js";
+export { BACKGROUND_EXECUTORS, endBackground, NEEDS_A_COMPUTER } from "./background.js";
 export { boundedBash } from "./bash.js";
 export { bashTimeoutWords, hostToolDefs } from "./defs.js";
 export type { ShellPlace, ToolDef } from "./defs.js";
