@@ -111,10 +111,14 @@ describe("the agent page's sign-ins", () => {
     expect(p.rows()).toHaveLength(1);
   });
 
-  it("is not there on a server that serves no sign_ins, nor with none saved for an agent with no vendor browser", async () => {
-    expect((await show(agentWith(undefined))).section()).toBeNull();
-    act(() => root?.unmount()); document.body.innerHTML = "";
+  it("is not there with none saved for an agent with no vendor browser", async () => {
     expect((await show(agentWith([], "unavailable: no browser key"))).section()).toBeNull();
+  });
+
+  it("an agent read with no sign_ins list is read as none saved (the server always serves it): a vendor browser's line", async () => {
+    const p = await show(agentWith(undefined, "kernel"));
+    expect(p.section()!.textContent).toContain("No saved sign-ins");
+    expect(p.rows()).toHaveLength(0);
   });
 
   it("with none saved for an agent with a vendor browser, says so in a line", async () => {
