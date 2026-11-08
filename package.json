@@ -35,6 +35,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "ajv": "^8.18.0",
+    "e2b": "2.63.0",
+    "modal": "0.11.1",
     "typescript": "5.9.3",
     "typescript-json-schema": "^0.68.0",
     "yaml": "2.9.0",
