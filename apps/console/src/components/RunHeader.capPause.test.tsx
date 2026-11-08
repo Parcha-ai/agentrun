@@ -77,6 +77,20 @@ describe("RunHeader on a run paused at its spend cap", () => {
     expect(mount(base()).button("Raise the cap")).toBeDefined();
   });
 
+  // A workflow run takes a cap too (serve's #1861): paused at it, the same one way in, the banner's raise.
+  it("a workflow run paused at its cap: the banner's raise, and no raise in the header", () => {
+    const run = { ...paused(), kind: "workflow" } as Run;
+    expect(mount(run).button("Raise the cap")).toBeUndefined();
+    expect(mount(base({ kind: "workflow" })).button("Raise the cap")).toBeDefined();
+    const f = runFixture("run.input_required.waiting.1");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(RunDetail, { run, agentName: "Calc", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions, onMessage: () => {}, tab: "report" })));
+    roots.push(() => act(() => root.unmount()));
+    expect(host.querySelectorAll('form[aria-label="Raise the cap"]')).toHaveLength(1);
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).toContain("Raise the cap and continue");
+  });
+
   it("the header shows what it spent of its served cap, and the new cap once raised", () => {
     const t = mount(paused());
     expect(t.cost()).toBe("$0.52 est. of $0.60 cap");
