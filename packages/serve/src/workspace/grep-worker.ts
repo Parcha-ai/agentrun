@@ -1,7 +1,7 @@
 // LocalWorkspace's grep, in a worker thread: the caller's regex runs here, so one that backtracks without end blocks
 // this thread, never the runner's, and local.ts terminates it at the deadline. It searches the folder `dir` names (on
 // Linux, /proc/self/fd/<fd> of a folder local.ts holds open for it), or the one file `only` in it, opening every entry
-// with O_NOFOLLOW: a link is skipped, never followed. Matches are posted a file at a time; the last message is
+// with O_NOFOLLOW: a link is skipped, never followed. Each match is posted as it is found; the last message is
 // `{ done: false | "max" }`.
 import { closeSync, constants, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { parentPort, workerData } from "node:worker_threads";
@@ -58,17 +58,14 @@ function run(job: GrepJob, post: (message: unknown) => void): void {
     if (bytes.subarray(0, job.probe).includes(0)) return;
     const lines = bytes.toString("utf8").split("\n");
     if (lines.at(-1) === "") lines.pop();
-    const matches: Match[] = [];
-    try {
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]!.endsWith("\r") ? lines[i]!.slice(0, -1) : lines[i]!;
-        if (!regex.test(line)) continue;
-        if (found === job.limit) throw STOP;
-        found++;
-        matches.push({ path: rel, line: i + 1, text: line.length > job.lineMax ? line.slice(0, job.lineMax) : line });
-      }
-    } finally {
-      if (matches.length > 0) post({ matches });
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!.endsWith("\r") ? lines[i]!.slice(0, -1) : lines[i]!;
+      if (!regex.test(line)) continue;
+      if (found === job.limit) throw STOP;
+      found++;
+      // Posted at once: the next line's test may be the one the deadline stops, and this match must not go with it.
+      const match: Match = { path: rel, line: i + 1, text: line.length > job.lineMax ? line.slice(0, job.lineMax) : line };
+      post({ matches: [match] });
     }
   };
   /** Entry `name` of folder `dir`, opened without following a link, searched if it is a file or a folder. */

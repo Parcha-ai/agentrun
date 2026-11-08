@@ -344,7 +344,9 @@ class LocalWorkspace implements Workspace {
    *  through can be let go. */
   static #searchIn(job: GrepJob, timeMs: number): Promise<GrepResult> {
     return new Promise<GrepResult>((resolve, reject) => {
-      const worker = new Worker(GREP_WORKER, { workerData: job });
+      // No process flags: the worker needs none, and some it would inherit refuse a worker started from a file (the
+      // launcher's `--input-type=module -e`).
+      const worker = new Worker(GREP_WORKER, { workerData: job, execArgv: [] });
       const matches: GrepMatch[] = [];
       let done: GrepResult["truncated"] | undefined;
       let timedOut = false;

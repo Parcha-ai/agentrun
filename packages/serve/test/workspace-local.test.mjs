@@ -109,6 +109,16 @@ test("local: exec's default output cap keeps 16 MiB whole (a learning seed's git
   assert.equal(EXEC_OUTPUT_MAX, 16 * 1024 * 1024);
 });
 
+test("local: grep works in a process started as the launcher starts serve (node --input-type=module -e)", async () => {
+  const { root } = scratch();
+  await localWorkspace(root).write("notes.md", "one needle\n");
+  const index = new URL("../dist/workspace/index.js", import.meta.url).href;
+  const code = `import { localWorkspace } from ${JSON.stringify(index)}; const found = await localWorkspace(process.argv[1]).grep("needle"); process.stdout.write(JSON.stringify(found));`;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", code, root], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { matches: [{ path: "notes.md", line: 1, text: "one needle" }], truncated: false });
+});
+
 test("local: a read past READ_MAX is TOO_LARGE", async () => {
   const { root } = scratch();
   const workspace = localWorkspace(root);
