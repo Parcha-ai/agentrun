@@ -21,6 +21,14 @@ test("pi through the adapter: the cap's refusal with retry digits in its words i
   assert.ok(ms < 10_000, `no retry backoff: ${ms} ms`);
 });
 
+test("pi through the adapter: a refusal no raise can fix (the run's spend unknown) fails the run in the cap's own words, never as a run that gave no answer", async (t) => {
+  const { row, asked, sent } = await capRun(t, { script: [{ say: "never sent" }], beforeRequest: beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, spentUsd: () => null }) });
+  const words = "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.";
+  assert.equal(asked[0]?.answer?.refuse, words);
+  assert.equal(sent.length, 0, "nothing reached the provider");
+  assert.deepEqual([row.state, row.summary], ["failed", words], JSON.stringify(row));
+});
+
 test("one ledger: a pi run's requests are judged by beforeRequestOf through the one rule, and createCap's own ledger books nothing", async (t) => {
   const { capRule } = cap;
   const ledger = await import("../../run-adapters/dist/kernel/cap/ledger.js");
