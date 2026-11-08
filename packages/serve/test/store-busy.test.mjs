@@ -162,15 +162,15 @@ test("an edit whose commit meets a reader of the agent store waits for it, then 
 
 test("the agent home's own busy (a home held past its deadline) answers 409 home_busy with retry_after_ms, never 500", async (t) => {
   const { api } = await serve(t);
-  // The store's createAgent throws pi-durable-agent's AgentHomeError("busy"), as a home another writer holds past its
+  // The store's createAgentWith throws pi-durable-agent's AgentHomeError("busy"), as a home another writer holds past its
   // deadline does: the same module the server runs.
   const probe = await scratch(t);
   const store = openStore(probe);
   const proto = Object.getPrototypeOf(store);
   store.close();
-  const createAgent = proto.createAgent;
-  proto.createAgent = function () { throw new AgentHomeError("busy", "the agent home is held by another writer"); };
-  t.after(() => void (proto.createAgent = createAgent));
+  const createAgentWith = proto.createAgentWith;
+  proto.createAgentWith = async function () { throw new AgentHomeError("busy", "the agent home is held by another writer"); };
+  t.after(() => void (proto.createAgentWith = createAgentWith));
   const answer = await api("POST", "/agents", agent("held-home"));
   assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
 });
