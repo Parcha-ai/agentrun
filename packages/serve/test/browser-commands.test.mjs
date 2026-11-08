@@ -31,8 +31,8 @@ const waiting = (id, over = {}) => ({
   kind: BROWSER_HANDOVER_KIND,
   data: { state: "waiting", id, session: "s1", instruction: "Click login", completion_condition: "You are signed in", asked_at: new Date(NOW).toISOString(), expires_at: new Date(NOW + 60_000).toISOString(), ...over },
 });
-const answered = (id, state) => ({ kind: BROWSER_HANDOVER_KIND, data: { state, id } });
-const handBackCmd = (ask, outcome) => ({ id: 1, runId: "run-1", kind: BROWSER_HAND_BACK, body: { ask, outcome }, createdAt: NOW, takenAt: null, refused: null, tries: 0 });
+const answered = (id, state, at) => ({ kind: BROWSER_HANDOVER_KIND, data: { state, id, ...(at !== undefined ? { at } : {}) } });
+const handBackCmd = (ask, outcome, at = NOW) => ({ id: 1, runId: "run-1", kind: BROWSER_HAND_BACK, body: { ask, outcome, at }, createdAt: NOW, takenAt: null, refused: null, tries: 0 });
 
 // ---- reader: browserAsk ---------------------------------------------------------------------------------------------
 
@@ -68,6 +68,14 @@ test("handBackTarget reports an answered ask's answer", () => {
   assert.deepEqual(handBackTarget([waiting("ask-1"), answered("ask-1", "cancelled")], [], NOW + 1_000), { id: "ask-1", answer: "cancelled" });
 });
 
+test("handBackTarget carries the answer's own time, from the journal entry", () => {
+  assert.deepEqual(handBackTarget([waiting("ask-1"), answered("ask-1", "done", NOW + 700)], [], NOW + 1_000), { id: "ask-1", answer: "done", at: NOW + 700 });
+});
+
+test("handBackTarget carries the answer's own time, from a person's command", () => {
+  assert.deepEqual(handBackTarget([waiting("ask-1")], [handBackCmd("ask-1", "done", NOW + 500)], NOW + 1_000), { id: "ask-1", answer: "done", at: NOW + 500 });
+});
+
 test("handBackTarget reports an expired ask as expired", () => {
   assert.deepEqual(handBackTarget([waiting("ask-1")], [], NOW + 120_000), { id: "ask-1", answer: "expired" });
 });
@@ -78,14 +86,14 @@ test("handBackTarget is undefined when the run asked nothing", () => {
 
 // ---- writer: browserHandBack ----------------------------------------------------------------------------------------
 
-test("browserHandBack writes one hand-over command for an open ask", async () => {
+test("browserHandBack writes one hand-over command carrying the person's answer time", async () => {
   const store = await freshStore();
-  const answer = await browserHandBack(store, "run-1", "done", { id: "ask-1" });
+  const answer = await browserHandBack(store, "run-1", "done", { id: "ask-1" }, NOW + 900);
   assert.deepEqual(answer, { outcome: "done", first: true });
   const rows = await store.commands("run-1", 0);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].kind, BROWSER_HAND_BACK);
-  assert.deepEqual(rows[0].body, { ask: "ask-1", outcome: "done" });
+  assert.deepEqual(rows[0].body, { ask: "ask-1", outcome: "done", at: NOW + 900 });
 });
 
 test("browserHandBack on a run that asked nothing is 404, nothing written", async () => {
@@ -121,12 +129,12 @@ test("answering an expired ask is 409 with the expiry words", async () => {
   );
 });
 
-test("first wins across the command path: once a hand-over command is in, a second answer sees it", async () => {
+test("first wins across the command path: once a hand-over command is in, a second answer sees it, with its time", async () => {
   const store = await freshStore();
-  await browserHandBack(store, "run-1", "done", { id: "ask-1" });
-  // The view folds the command into the ask's answer; the writer's target now carries it.
+  await browserHandBack(store, "run-1", "done", { id: "ask-1" }, NOW + 900);
+  // The view folds the command into the ask's answer and its time; the writer's target now carries them.
   const target = handBackTarget([waiting("ask-1")], await store.commands("run-1", 0), NOW + 1_000);
-  assert.deepEqual(target, { id: "ask-1", answer: "done" });
+  assert.deepEqual(target, { id: "ask-1", answer: "done", at: NOW + 900 });
   const again = await browserHandBack(store, "run-1", "done", target);
   assert.deepEqual(again, { outcome: "done", first: false });
   assert.equal((await store.commands("run-1", 0)).length, 1);
