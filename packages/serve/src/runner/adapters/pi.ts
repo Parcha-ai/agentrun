@@ -15,7 +15,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { type Conversation, defineExtension, defineTool, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
+import { type ModelProxy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
@@ -65,7 +65,7 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
 }
 
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
-  const { run, model } = options;
+  const { model } = options;
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
@@ -79,6 +79,19 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
     ...(options.provider.headers ? { headers: options.provider.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
   }, randomBytes(32).toString("base64url"));
+  // An open that fails from here (the claim lost while the session opened) closes the proxy: its server would hold the
+  // runner's process open.
+  try {
+    return await sessionOn(proxy, options, spec, io, context);
+  } catch (error) {
+    await proxy.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+/** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
+async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context): Promise<AdapterSession> {
+  const { run, model } = options;
   const models = createModels();
   models.setProvider(createProvider({
     id: PROVIDER,
