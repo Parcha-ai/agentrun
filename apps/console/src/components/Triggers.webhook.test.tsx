@@ -32,6 +32,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 // `held`: the new secret's answer waits for it (a rotation still out).
 function server({ triggers = [NIGHTLY, HOOK], create, held }: { triggers?: Trigger[]; create?: (call: Call) => Response; held?: Promise<void> } = {}) {
   const calls: Call[] = [];
+  // Its own copies: a PATCH here never leaks into the next test's triggers.
+  triggers = triggers.map((t) => structuredClone(t));
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, key: new Headers(init?.headers).get("idempotency-key") };
     calls.push(call);
@@ -198,5 +200,28 @@ describe("Triggers: schedules and webhooks", () => {
     const t = await open(server().v2, { trigger: "trg_w" });
     await t.click(/^Copy URL$/);
     expect(t.text()).toContain("Select it and copy it");
+  });
+
+  it("the made page names the scheme the server saved, not the form's pick", async () => {
+    const s = server({ create: (call) => json(201, { ...HOOK, ...(call.body as object), id: "trg_new", source: { kind: "webhook", signature: "github" }, secret: SECRET }) });
+    const t = await open(s.v2, { trigger: null, kind: "webhook" });
+    await t.set("name", "on deploy");
+    await t.set("agent", "triage");
+    await t.set("content", "Check the deploy.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create webhook$/);
+    expect(t.text()).toContain("signed with this secret (GitHub's (X-Hub-Signature-256))");
+  });
+
+  it("a webhook with accept filters says what it accepts, in the list and on its page, never that every signed request starts a run", async () => {
+    const FILTERED: Trigger = { ...HOOK, id: "trg_f", name: "prod deploys", source: { kind: "webhook", signature: "standard", accept: [{ event: "deploy.finished", actions: ["succeeded"], where: [{ pointer: "/env", in: ["prod"] }, { pointer: "/ref", prefix: "refs/tags/" }] }] } };
+    const list = await open(server({ triggers: [FILTERED] }).v2, {});
+    const row = list.host.querySelector('[data-trigger="trg_f"]')!.textContent ?? "";
+    expect(row).toContain("Only signed requests for deploy.finished (succeeded)");
+    expect(row).not.toContain("On each signed request");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const page = await open(server({ triggers: [FILTERED] }).v2, { trigger: "trg_f" });
+    expect(page.text()).toContain("deploy.finished (succeeded) where /env is one of \"prod\" and /ref starts with \"refs/tags/\"");
+    expect(page.text()).not.toContain("on each signed request");
   });
 });
