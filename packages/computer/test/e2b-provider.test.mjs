@@ -549,6 +549,29 @@ test("attach() by id or by labels reads the spec back and checks the daemon; one
 	assert.deepEqual(fake.kills, []);
 });
 
+test("a bridge whose start lands after attach gave up on it is killed and disconnected as it lands", async () => {
+	const controller = new AbortController();
+	let held = false;
+	const onStep = async (step) => {
+		if (step !== "commands.run stdio" || held) return;
+		held = true;
+		// The caller gives up while E2B is still starting the bridge, which E2B then starts all the same.
+		controller.abort();
+		await sleep(50);
+	};
+	const { provider, fake } = setup({}, { onStep });
+	const { ref } = seeded(fake);
+	const attached = await provider.attach({ id: ref.id }, { signal: controller.signal });
+	assert.equal(attached.ok, false);
+	assert.equal(attached.error.code, "aborted");
+	for (let i = 0; i < 100 && !(fake.bridges[0]?.handle.killed && fake.bridges[0]?.handle.disconnected); i++) await sleep(10);
+	assert.equal(fake.bridges.length, 1, "E2B started the bridge after the abort");
+	const [{ handle }] = fake.bridges;
+	assert.ok(handle.killed, "the late bridge was killed");
+	assert.ok(handle.disconnected, "and disconnected");
+	assert.match(attached.error.message, /a bridge that starts after this is killed/);
+});
+
 test("network none: a probe whose targets only accepted keeps the computer, the accepts named; one answering target refuses it, whatever the others accepted", async () => {
 	const quiet = setup({}, { box: { accepted: ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"] } });
 	const made = await quiet.provider.create(SPEC);
