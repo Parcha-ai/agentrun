@@ -168,7 +168,7 @@ test("a run of several actions on a real Chrome stops before an action that woul
     res.writeHead(404); res.end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
+  t.after(() => server.close(), { timeout: 30_000 });
   const base = `http://127.0.0.1:${server.address().port}`;
   const root = await scratch(t, "stagehand-doc-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK_ONLY] } });
