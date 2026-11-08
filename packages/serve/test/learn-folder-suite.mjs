@@ -8,7 +8,7 @@ import {
   blobOid, DIFFS_DIR, FolderBusy, folderTestHooks, forgetBodies, commitChange, learningInit, learningRepair, nextSnapshot, parseRead,
   readLearning, readRunDiff, readSnapshot, SCRIPT_FILE, SNAPSHOT_FILE, snapshotOfRead, writeLearning,
 } from "../dist/learn/folder.js";
-import { learningCommit } from "../dist/learn/commit.js";
+import { learningCommit, readMain } from "../dist/learn/commit.js";
 import { makeProposalCheck, seedBase } from "../dist/learn/seed-check.js";
 import { buildIndex, parseNoteFile, retire, approve, mergedNote, supersede, held, released, retiredLearned } from "../dist/learn/index.js";
 
@@ -384,5 +384,27 @@ export function folderSuite(backend, make) {
     const edit = await check({ ...common, changes: [{ path: "check-units.md", status: "modified", mode: "100644", bytes: Buffer.from(TABLES) }] });
     assert.deepEqual([edit.ok, edit.problems.map((p) => p.rule)], [false, ["edited"]]);
     assert.equal(ended, 2, "the folder is ended after each check");
+  });
+
+  test(`${backend}: learningCommit as the runner's learning loop calls it (no supersede named): the new notes' own front matter marks what they supersede, a held one marks nothing, the run's risky mark is never kept; readMain gives the grader main from the snapshot`, async () => {
+    const { ws } = await make();
+    await learningCommit(ws, { kind: "person", action: "created", file: "check-units.md", text: UNITS, ifMatch: null });
+    const V2 = note("Units v2", "Convert to the answer's unit", "Better.\n", "supersedes: [check-units.md]\nrisky: false\n");
+    const main = await readMain(ws, { notes: [{ file: "units-v2.md", text: V2 }] });
+    const unitsOid = (await readSnapshot(ws)).notes[0].oid;
+    assert.deepEqual(main, { active: [{ file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing" }], superseded: [{ file: "check-units.md", text: UNITS }], graded: { "check-units.md": unitsOid } });
+    assert.deepEqual(await readMain(ws, { notes: [{ file: "check-units.md", text: UNITS }] }), { problems: [{ rule: "exists", path: "check-units.md", detail: "the folder has a note by this name" }] });
+    const HELD = note("Held v3", "A risky rule", "Hold it.\n", "supersedes: [check-units.md]\nrisky: true\n");
+    const one = await learningCommit(ws, { kind: "merge", runId: "run-h", reason: "Held.", files: [{ path: "held-v3.md", text: HELD }], held: ["held-v3.md"], graded: {} });
+    assert.equal(one.ok, true, JSON.stringify(one));
+    let snap = await matchesMain(ws);
+    assert.deepEqual(snap.notes.map((n) => [n.file, n.status]), [["check-units.md", "active"], ["held-v3.md", "pending"]], "a held note supersedes nothing");
+    assert.doesNotMatch(text(await ws.read("held-v3.md")), /^risky:/m);
+    const two = await learningCommit(ws, { kind: "merge", runId: "run-v2", reason: "General.", files: [{ path: "units-v2.md", text: V2 }], graded: main.graded });
+    assert.equal(two.ok, true, JSON.stringify(two));
+    snap = await matchesMain(ws);
+    assert.deepEqual(snap.notes.map((n) => [n.file, n.status, n.superseded_by]), [["units-v2.md", "active", null], ["check-units.md", "superseded", "units-v2.md"], ["held-v3.md", "pending", null]], "the view's order: active first, then the newest change");
+    assert.doesNotMatch(text(await ws.read("units-v2.md")), /^risky:/m);
+    assert.equal(text(await ws.read("MEMORY.md")), indexOf({ "units-v2.md": V2 }));
   });
 }
