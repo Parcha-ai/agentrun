@@ -201,11 +201,12 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 }
 
 /** The computerd calls that may change the folder: each syncs before it answers. */
-const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.end", "exec.run", "process.write", "process.signal", "process.wait"]);
+const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.end", "exec.run", "process.start", "process.write", "process.signal", "process.wait"]);
 
 /**
  * A computerd client whose every call that may change the folder (files.write, move, remove and mkdir; tar.push.end;
- * exec.run; process.write and signal; a process seen ended, by process.wait or a process.read that says so) syncs
+ * exec.run; process.start, which makes its log and the folders above it; process.write and signal; a process seen
+ * ended, by process.wait or a process.read that says so) syncs
  * before it answers, through mount.sync, coalesced: a call during a sync in flight waits for it, then shares one more.
  * A failed sync fails the call in words; a call that failed still syncs, and answers its own error.
  */
