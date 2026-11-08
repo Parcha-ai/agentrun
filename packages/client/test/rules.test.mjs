@@ -325,7 +325,7 @@ test("a caller's abort while a refusal's body is still coming is the caller's ab
     headed();
   });
   const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
-  for (const call of [(signal) => client.agents.list({ signal }), (signal) => client.agents.get("a", { signal })]) {
+  for (const call of [(signal) => client.agents.list(undefined, { signal }), (signal) => client.agents.get("a", { signal })]) {
     const controller = new AbortController();
     const reason = new Error("the caller let go");
     const head = new Promise((resolve) => (headed = resolve));
