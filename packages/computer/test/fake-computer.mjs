@@ -59,20 +59,20 @@ function output(argv, { uid, status, users, user, probe, pathSockets = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
 	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
-		// computerd probe --connect <target>...: the interfaces the computer's programs see, and each target refused
+		// computerd probe --connect <target>...: the interfaces the computer's programs see, the path unix sockets they
+		// connect to (none listed when pathSockets is "no list", a daemon too old to list them), and each target refused
 		// unless the fake's vendor agent answers it.
 		const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
 		const answered = targets.filter((target) => probe.answers.includes(target));
 		const results = targets.map((target) => ({ target, protocol: "any", outcome: answered.includes(target) ? "answered" : "refused", bytes: answered.includes(target) ? 12 : 0, detail: "" }));
-		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], reached: answered, accepted: [], results })}\n`;
+		const sockets = pathSockets === "no list" ? {} : { sockets: pathSockets };
+		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, reached: answered, accepted: [], results })}\n`;
 	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
 		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
 		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
 	}
 	if (argv[0] === "env") return "PATH=/usr/bin:/bin\nHOME=/home/fake\n";
-	// The isolation check's listing of path unix sockets (a python3 walk): each the computer's user connects to.
-	if (argv[0] === "sh" && argv[2]?.includes("S_ISSOCK")) return pathSockets === "no python3" ? "no python3\n" : pathSockets.map((path) => `connects ${path}\n`).join("");
 	if (argv[0] === "sh" && argv[2]?.includes('echo ok > "$HOME/x"')) return "ok\n";
 	return `${argv.slice(1).join(" ")}\n`;
 }
