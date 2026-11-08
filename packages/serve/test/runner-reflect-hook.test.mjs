@@ -25,7 +25,12 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
     runId: "run-1", agentId: "agent-1", claim, outcome, signal: new AbortController().signal,
-    ask: async (prompt, opts) => (calls.asked.push({ prompt, opts }), answer),
+    ask: async (prompt, opts) => {
+      calls.asked.push({ prompt, opts });
+      // The turn and at most one re-ask: a third ask fails the test where it happens, never spinning.
+      if (calls.asked.length > 2) throw new Error(`the end-of-run turn was asked ${calls.asked.length} times`);
+      return answer;
+    },
   });
   return { hook, input, calls };
 }
