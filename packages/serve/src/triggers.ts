@@ -900,8 +900,9 @@ export class Triggers {
     const when = local(Date.parse(firing.nominal_at), adapter.zone?.(trigger.source) ?? "UTC");
     const what = `the ${adapter.label} "${trigger.name}"`;
     const line = firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : adapterIn(this.adapters, firing.by)?.delivery === "push" ? `(From ${what}, received at ${when}.)` : `(Started by ${what} for ${when}.)`;
-    // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag cannot end the block.
-    const payload = firing.payload === undefined ? "" : `\n\n<trigger-payload source="${firing.by}"${tagAttrs(firing.attrs)} untrusted>\n${firing.payload.replaceAll("</trigger-payload", "<\\/trigger-payload")}\n</trigger-payload>`;
+    // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag, in any case, cannot end
+    // the block.
+    const payload = firing.payload === undefined ? "" : `\n\n<trigger-payload source="${firing.by}"${tagAttrs(firing.attrs)} untrusted>\n${firing.payload.replace(/<(\/trigger-payload)/gi, "<\\$1")}\n</trigger-payload>`;
     const { input } = trigger.target;
     return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
   }
