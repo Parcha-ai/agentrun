@@ -91,7 +91,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const source = own || !ID.test(name) ? undefined : deps.hooked(name, adapter.id);
   const pathTrigger = source ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
-  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, now, key ? source : undefined);
+  // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.
+  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, Date.now(), key ? source : undefined);
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
   const handshake = push.handshake?.(req.headers as Headers, body);
   if (handshake) return handshake;
@@ -105,9 +106,12 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
     deps.say({ condition: "hook_unparsed", source: adapter.id, route });
     return { status: 200, body: { firings: [] } };
   }
-  // A trigger's own path: its one event is its firing, answered as the firing.
+  // A trigger's own path: each event is its own firing. One (a webhook's request) is answered as its firing; more, as a
+  // server-wide source's are, by the firings they made.
   if (pathTrigger) {
-    const { created, firing } = deps.receive(pathTrigger, events[0]!.key, events[0]!.text, events[0]!.attrs);
+    const fired = events.map((event) => deps.receive(pathTrigger, event.key, event.text, event.attrs));
+    if (fired.length > 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
+    const { created, firing } = fired[0]!;
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
   }
   // A server-wide source's: each event fires the one trigger that listens on its scope (a scope belongs to one trigger:

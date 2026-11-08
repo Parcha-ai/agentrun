@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { SealedSettings } from "../dist/sealed-settings.js";
 import { headersRefusal, MIN_KEY_BYTES, verify } from "../dist/standard-webhooks.js";
+import { openapiDocument } from "../dist/openapi.js";
 import { TRIGGER_ADAPTERS } from "../dist/trigger-adapters.js";
 import { agent, client, FAUX, scratch, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
@@ -210,4 +211,95 @@ test("a source's handshake answers only a request that passed its check: an unsi
   assert.deepEqual([unsigned.status, unsigned.body?.error?.code], [401, "unauthenticated"], "never answered before the check");
   const signed = await post(server.baseUrl, "/hooks/ping", challenge, { secret });
   assert.deepEqual([signed.status, signed.body], [200, { challenge: "c-123" }]);
+});
+
+test("a signature is checked against the clock when the body has arrived, not when its headers did: a timestamp at 299 s whose body takes 2 s more is the one 401", { timeout: 60_000 }, async (t) => {
+  const { server, api } = await pingServer(t);
+  assert.equal((await api("POST", "/agents", agent("hooked"))).status, 201);
+  const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const { port, hostname: host } = new URL(server.baseUrl);
+  const body = "{}";
+  const at = Math.floor(Date.now() / 1000) - 299;
+  const signature = new Webhook(made.body.secret).sign("msg_slow", new Date(at * 1000), body);
+  const answer = await new Promise((resolve, reject) => {
+    const socket = connect(Number(port), host);
+    let text = "";
+    socket.on("data", (chunk) => (text += chunk));
+    socket.on("close", () => resolve(text));
+    socket.on("error", reject);
+    socket.write(`POST /v2/hooks/${made.body.id} HTTP/1.1\r\nHost: ${host}\r\nwebhook-id: msg_slow\r\nwebhook-timestamp: ${at}\r\nwebhook-signature: ${signature}\r\ncontent-type: application/json\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n`);
+    // The body held back past the tolerance's edge.
+    setTimeout(() => socket.write(body), 2_500).unref();
+    setTimeout(() => reject(new Error(`no answer within 15 s: ${text}`)), 15_000).unref();
+  });
+  assert.match(answer, /^HTTP\/1\.1 401 /, answer);
+});
+
+test("a trigger's own hook path takes every event its source parses from one request: each is its own firing, and the answer lists them", { timeout: 120_000 }, async (t) => {
+  // A source whose settings are a trigger's and whose request holds a list of events, each with its id.
+  const pair = {
+    id: "pair", label: "pair trigger", delivery: "push", owner: false, describe: '{kind: "pair"}', fires: "a pair", schemas: [],
+    settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
+    push: {
+      maxBodyBytes: 4096, key: "secret", headers: headersRefusal, verify,
+      parse(_headers, body) {
+        try {
+          return JSON.parse(body.toString("utf8")).events.map((e) => ({ key: e.id, text: e.text }));
+        } catch {
+          return [];
+        }
+      },
+    },
+    parse: (value, _now, _bad, issues) => (issues.push(...Object.keys(value).filter((k) => k !== "kind").map((k) => ({ field: `source.${k}`, reason: "not_allowed", message: k }))), { kind: "pair" }),
+    wellFormed: () => true,
+  };
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [TRIGGER_ADAPTERS.find((a) => a.id === "schedule"), pair] });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("paired"))).status, 201);
+  const made = await api("POST", "/triggers", { name: "pairs", source: { kind: "pair" }, target: { kind: "start_run", agent_id: "paired", input: { content: "A pair." }, max_cost_usd: 0.5 } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const res = await post(server.baseUrl, `/hooks/${made.body.id}`, JSON.stringify({ events: [{ id: "e-1", text: "one" }, { id: "e-2", text: "two" }] }), { secret: made.body.secret });
+  assert.equal(res.status, 202, JSON.stringify(res.body));
+  assert.deepEqual(res.body.firings?.map((f) => f.by), ["pair", "pair"], JSON.stringify(res.body));
+  assert.equal((await firings(api, made.body.id, 2)).length, 2, "each event its own firing");
+});
+
+test("the document shows each server-wide pushed source's hook in the registry, with its own answer and limits; every hook documents its 408", async () => {
+  // A registry member, not a test's own array: the registry's sources are documented as the server serves them.
+  TRIGGER_ADAPTERS.push(ping);
+  try {
+    const doc = openapiDocument(() => undefined);
+    const hook = doc.paths["/hooks/ping"]?.post;
+    assert.ok(hook, `documented: ${Object.keys(doc.paths).filter((p) => p.startsWith("/hooks")).join(", ")}`);
+    const accepted = hook.responses["202"].content["application/json"].schema;
+    assert.ok(JSON.stringify(accepted).includes("firings"), `its own answer, the firings it made: ${JSON.stringify(accepted)}`);
+    assert.ok(hook.description.includes(String(ping.push.maxBodyBytes)), "its own body limit");
+    assert.ok(!hook.description.includes("webhook-id"), "no other source's headers");
+    for (const path of ["/hooks/{trigger_id}", "/hooks/ping"]) assert.ok(doc.paths[path].post.responses["408"], `${path}: its 408`);
+  } finally {
+    TRIGGER_ADAPTERS.splice(TRIGGER_ADAPTERS.indexOf(ping), 1);
+  }
+});
+
+test("with no log, what the push handler says goes to stderr, as the triggers' own lines do", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, ping] });
+  t.after(() => server.close());
+  const written = [];
+  const write = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => (written.push(String(chunk)), write.call(process.stderr, chunk, ...rest));
+  try {
+    assert.equal((await post(server.baseUrl, "/hooks/ping", "not json", { secret })).status, 200);
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.ok(written.some((line) => line.includes("condition=hook_unparsed")), `said on stderr: ${JSON.stringify(written)}`);
 });
