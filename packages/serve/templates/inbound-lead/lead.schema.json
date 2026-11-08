@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lead.schema.json",
+  "title": "Inbound lead brief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lead", "person", "company", "flags", "fit", "next_step", "unknowns", "posted", "sources"],
+  "$defs": {
+    "source": {
+      "description": "where a fact came from: \"submission\", \"learned:<note file>\", or the http(s) URL of a page fetched or a search result",
+      "type": "string",
+      "pattern": "^(submission|learned:[A-Za-z0-9][A-Za-z0-9._-]*\\.md|https?://\\S+)$"
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim", "source"],
+      "properties": {
+        "claim": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "source": { "$ref": "#/$defs/source" }
+      }
+    },
+    "text_or_null": {
+      "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 500 }, { "type": "null" }]
+    }
+  },
+  "properties": {
+    "lead": {
+      "description": "the submission as received, each field copied, null when absent; never filled from research",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "email", "company", "title", "message_summary"],
+      "properties": {
+        "name": { "$ref": "#/$defs/text_or_null" },
+        "email": { "$ref": "#/$defs/text_or_null" },
+        "company": { "$ref": "#/$defs/text_or_null" },
+        "title": { "$ref": "#/$defs/text_or_null" },
+        "message_summary": { "$ref": "#/$defs/text_or_null" },
+        "crm_record_id": { "anyOf": [{ "type": "string", "pattern": "^[0-9]{1,20}$" }, { "type": "null" }] }
+      }
+    },
+    "person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "seniority", "profile_url", "facts"],
+      "properties": {
+        "role": { "$ref": "#/$defs/text_or_null" },
+        "seniority": { "enum": ["c_level", "vp", "director", "manager", "individual_contributor", "founder", "student", "unknown"] },
+        "profile_url": {
+          "description": "a public professional profile (LinkedIn, the company's team page) that a source shows is this person; null when none was found",
+          "anyOf": [{ "type": "string", "pattern": "^https?://\\S+$" }, { "type": "null" }]
+        },
+        "facts": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/fact" } }
+      }
+    },
+    "company": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "domain", "what_it_does", "size", "region", "industry", "funding", "tech_signals", "facts"],
+      "properties": {
+        "name": { "$ref": "#/$defs/text_or_null" },
+        "domain": { "anyOf": [{ "type": "string", "pattern": "^[a-z0-9.-]+\\.[a-z]{2,}$" }, { "type": "null" }] },
+        "what_it_does": { "$ref": "#/$defs/text_or_null" },
+        "size": { "$ref": "#/$defs/text_or_null" },
+        "region": { "$ref": "#/$defs/text_or_null" },
+        "industry": { "$ref": "#/$defs/text_or_null" },
+        "funding": { "$ref": "#/$defs/text_or_null" },
+        "tech_signals": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
+        "facts": { "type": "array", "maxItems": 15, "items": { "$ref": "#/$defs/fact" } }
+      }
+    },
+    "flags": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "detail"],
+        "properties": {
+          "kind": { "enum": ["disposable_email", "personal_email", "competitor", "student", "suspicious_input", "mismatch"] },
+          "detail": { "type": "string", "minLength": 1, "maxLength": 300 }
+        }
+      }
+    },
+    "fit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "confidence", "criteria", "reasons_for", "reasons_against"],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "criteria": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["criterion", "kind", "origin", "status", "evidence", "source"],
+            "properties": {
+              "criterion": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "kind": { "enum": ["must", "nice", "disqualifier"] },
+              "origin": { "enum": ["icp", "learned"] },
+              "note": { "type": "string", "description": "the learned note's file, when origin is learned", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.md$" },
+              "status": { "enum": ["met", "missed", "unknown"] },
+              "evidence": { "type": "string", "minLength": 1, "maxLength": 500, "description": "what shows the status; for unknown, what was looked for and not found" },
+              "source": { "anyOf": [{ "$ref": "#/$defs/source" }, { "type": "null" }], "description": "null only when the status is unknown" }
+            }
+          }
+        },
+        "reasons_for": { "type": "array", "maxItems": 6, "items": { "type": "string", "minLength": 1, "maxLength": 300 } },
+        "reasons_against": { "type": "array", "maxItems": 6, "items": { "type": "string", "minLength": 1, "maxLength": 300 } }
+      }
+    },
+    "next_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "reason"],
+      "properties": {
+        "action": { "enum": ["book_call", "nurture", "disqualify"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "unknowns": {
+      "description": "what the brief couldn't establish and would change the score, each one line",
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    },
+    "posted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["to", "done", "detail"],
+      "properties": {
+        "to": { "enum": ["crm", "slack", "none"] },
+        "done": { "type": "boolean" },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 300, "description": "the record or channel written, or why nothing was" }
+      }
+    },
+    "sources": {
+      "description": "every URL a fact, a criterion or a flag cites, once each",
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "title"],
+        "properties": {
+          "url": { "type": "string", "pattern": "^https?://\\S+$" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    }
+  }
+}

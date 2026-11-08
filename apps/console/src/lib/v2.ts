@@ -43,17 +43,23 @@ export type Cost = components["Cost"];
 
 export type Run = components["Run"];
 
-/** A schedule (GET /v2/triggers/{id}). */
+/** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;
-/** When a schedule fires (serve's trigger/1). */
+/** What fires a trigger (serve's trigger/1): a schedule's times, or a webhook's signed requests. */
 export type TriggerSource = Trigger["source"];
 /** What a firing does: start a run of `agent_id` with `input`, capped at `max_cost_usd`. */
 export type TriggerTarget = Extract<Trigger["target"], { kind: "start_run" }>;
 /** One firing: by the schedule or by hand (Run now), for `nominal_at`, and what came of it. */
 export type Firing = NonNullable<Trigger["last_firing"]>;
 export type FiringStatus = Firing["status"];
-/** A create's or an edit's body. */
+/** An edit's body. */
 export type TriggerInput = Body<"updateTrigger">;
+/** A create's body (POST /v2/triggers). */
+export type TriggerCreate = Body<"createTrigger">;
+/** A create's answer: the trigger, and a webhook's `secret` that once, or `note` in its place on a retry under the same key. */
+export type TriggerMade = Answer<"createTrigger">;
+/** A webhook trigger's new signing secret (POST /v2/triggers/{id}/secret), shown that once. */
+export type TriggerSecret = Answer<"rotateTriggerSecret">;
 /** A question the run asked a person (ask_person): a message answers it. */
 export type PendingQuestion = Extract<NonNullable<Run["pending"]>, { kind: "question" }>;
 /** A tool call set to ask, waiting for the owner's approval (approvals/1): POST /v2/runs/{id}/approvals/{id} answers it. */

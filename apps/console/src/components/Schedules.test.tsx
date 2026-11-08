@@ -12,7 +12,7 @@ import type { Firing, Trigger } from "@/lib/v2";
 const NIGHTLY: Trigger = {
   id: "trg_1", name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" },
   target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
-  catchup_window_s: 300, failures_in_a_row: 0, disabled: null, last_run_id: null,
+  catchup_window_s: 300, max_active_runs: null, failures_in_a_row: 0, disabled: null, last_run_id: null,
   created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z",
   last_firing: { key: "fir_a", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "skipped", at: "2026-11-04T09:30:01Z", run_id: null, reason: "The last run is still working.", error: null },
 };
@@ -107,42 +107,42 @@ describe("the schedules list", () => {
   it("names each schedule, its agent, when it fires, its next time, whether it is paused, and how its last firing went", async () => {
     const paused: Trigger = { ...NIGHTLY, id: "trg_2", name: "every five", enabled: false, next_at: null, source: { kind: "schedule", every_s: 300, start_at: "2026-11-04T00:00:00Z" }, last_firing: null };
     const t = await open(server({ triggers: [NIGHTLY, paused] }).v2, {});
-    const rows = [...t.host.querySelectorAll("[data-schedule]")];
-    expect(rows.map((r) => r.getAttribute("data-schedule"))).toEqual(["trg_1", "trg_2"]);
+    const rows = [...t.host.querySelectorAll("[data-trigger]")];
+    expect(rows.map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_1", "trg_2"]);
     expect(rows[0].textContent).toContain("nightly triage");
     expect(rows[0].textContent).toContain("Triage");
     expect(rows[0].textContent).toContain("Cron 30 1 * * * · America/Los_Angeles");
     expect(rows[0].textContent).toContain("Nov 5, 9:30 AM");
     expect(rows[0].textContent).toContain("Skipped: The last run is still working.");
-    expect(rows[0].querySelector('a[href="#/schedules/trg_1"]')).not.toBeNull();
+    expect(rows[0].querySelector('a[href="#/triggers/trg_1"]')).not.toBeNull();
     expect(rows[1].textContent).toContain("Every 5 minutes");
     expect(rows[1].textContent).toContain("Paused");
     expect(rows[1].textContent).toContain("Not fired yet");
     await t.click(/^New schedule$/);
-    expect(t.went).toEqual(["#/schedules/new"]);
+    expect(t.went).toEqual(["#/triggers/new"]);
   });
   // A schedule fires while its page is open: the page reads again on its own, so a new firing shows with no reload.
   it("reads the schedules again while it is open", async () => {
     const triggers = [NIGHTLY];
     const t = await open(server({ triggers }).v2, {}, undefined, 30);
-    expect(t.host.querySelectorAll("[data-schedule]")).toHaveLength(1);
+    expect(t.host.querySelectorAll("[data-trigger]")).toHaveLength(1);
     triggers.push({ ...NIGHTLY, id: "trg_2", name: "every five" });
-    for (let i = 0; i < 20 && t.host.querySelectorAll("[data-schedule]").length < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-    expect(t.host.querySelectorAll("[data-schedule]")).toHaveLength(2);
+    for (let i = 0; i < 20 && t.host.querySelectorAll("[data-trigger]").length < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(t.host.querySelectorAll("[data-trigger]")).toHaveLength(2);
   });
-  // GET /triggers also lists webhooks and schedules that send a message to a run: this page shows the schedules that
-  // start runs, and says how many others there are, never a broken row for them.
-  it("shows the schedules that start runs, and counts the other triggers it does not show", async () => {
+  // GET /triggers lists every kind: schedules and webhooks each show as a row with its kind, and a schedule that sends a
+  // message to a run shows too, its target said, never a broken row.
+  it("shows every trigger: schedules, webhooks and messages to a run", async () => {
     const hook = { ...NIGHTLY, id: "trg_hook", name: "on push", source: { kind: "webhook" } } as unknown as Trigger;
     const message = { ...NIGHTLY, id: "trg_msg", name: "nudge", target: { kind: "message_run", run_id: "r1", input: { content: "Go on." } } } as unknown as Trigger;
     const t = await open(server({ triggers: [NIGHTLY, hook, message] }).v2, {});
-    expect([...t.host.querySelectorAll("[data-schedule]")].map((r) => r.getAttribute("data-schedule"))).toEqual(["trg_1"]);
-    expect(t.text()).toContain("2 other triggers (webhooks, messages to a run) are not shown here.");
+    expect([...t.host.querySelectorAll("[data-trigger]")].map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_1", "trg_hook", "trg_msg"]);
+    expect(t.text()).not.toContain("not shown here");
     expect(t.text()).not.toContain("undefined");
   });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
-    expect(t.text()).toContain("No schedules yet.");
+    expect(t.text()).toContain("No triggers yet.");
     expect(t.button(/^New schedule$/)).toBeTruthy();
   });
 });
@@ -150,7 +150,7 @@ describe("the schedules list", () => {
 describe("a new schedule", () => {
   it("sends the cron line in its zone, the agent, the input and the cap, then opens the schedule", async () => {
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: null });
+    const t = await open(v2, { trigger: null });
     await t.set("name", "nightly triage");
     await t.set("cron", "30 1 * * *");
     await t.set("timezone", "America/Los_Angeles");
@@ -158,15 +158,15 @@ describe("a new schedule", () => {
     await t.set("content", "Triage last night's issues.");
     await t.set("maxCost", "2");
     await t.click(/^Create schedule$/);
-    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: "/v2/triggers", key: null, body: {
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: "/v2/triggers", key: expect.stringMatching(/.+/), body: {
       name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" },
       target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
     } }]);
-    expect(t.went).toEqual(["#/schedules/trg_new"]);
+    expect(t.went).toEqual(["#/triggers/trg_new"]);
   });
   it("sends every N minutes, or one time, as the kind picked", async () => {
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: null });
+    const t = await open(v2, { trigger: null });
     await t.choose("every");
     await t.set("every", "5");
     await t.set("agent", "triage");
@@ -178,7 +178,7 @@ describe("a new schedule", () => {
   it("takes one time in the browser's own zone, says the instant it becomes, and asks no zone for it", async () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: null });
+    const t = await open(v2, { trigger: null });
     await t.choose("at");
     expect(t.host.querySelector('[name="timezone"]')).toBeNull();
     await t.set("at", "2026-11-05T01:30");
@@ -190,14 +190,14 @@ describe("a new schedule", () => {
     expect((calls.find((c) => c.method === "POST")!.body as { source: unknown }).source).toEqual({ kind: "schedule", at: "2026-11-05T09:30:00Z" });
   });
   it("says the shortest interval the server takes, from what it serves", async () => {
-    const t = await open(server().v2, { schedule: null }, 120);
+    const t = await open(server().v2, { trigger: null }, 120);
     await t.choose("every");
     expect(t.text()).toContain("At least 2 minutes.");
   });
   // The server takes no cap when the agent has a default (each firing uses the agent's): the field is optional then.
   it("leaves the cap out on an agent with a default cap, and says the default under the field", async () => {
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: null });
+    const t = await open(v2, { trigger: null });
     await t.set("cron", "* * * * *");
     await t.set("agent", "story");
     await t.set("content", "Say hello.");
@@ -210,7 +210,7 @@ describe("a new schedule", () => {
   it("says the server's refusal under the cap when the agent's default was taken away meanwhile", async () => {
     const message = "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's.";
     const { v2 } = server({ write: () => refuse([{ field: "target.max_cost_usd", reason: "missing", message }]) });
-    const t = await open(v2, { schedule: null });
+    const t = await open(v2, { trigger: null });
     await t.set("cron", "* * * * *");
     await t.set("agent", "story");
     await t.set("content", "Say hello.");
@@ -219,7 +219,7 @@ describe("a new schedule", () => {
   });
   it("says a missing cap under its field and sends nothing", async () => {
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: null });
+    const t = await open(v2, { trigger: null });
     await t.set("cron", "30 1 * * *");
     await t.set("agent", "triage");
     await t.set("content", "Triage.");
@@ -230,7 +230,7 @@ describe("a new schedule", () => {
   it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
     const message = "the agent flow has no current revision";
     const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "invalid", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });
-    const t = await open(v2, { schedule: null });
+    const t = await open(v2, { trigger: null });
     await t.set("cron", "30 1 * *");
     await t.set("agent", "flow");
     await t.set("content", "Refund.");
@@ -249,7 +249,7 @@ describe("one schedule", () => {
       firing({ key: "f2", status: "missed", count: 3, reason: "The server was down or its timer late." }),
       firing({ key: "f1", status: "failed", error: { code: "agent_not_runnable", message: "No model." } }),
     ] };
-    const t = await open(server({ firings }).v2, { schedule: "trg_1" });
+    const t = await open(server({ firings }).v2, { trigger: "trg_1" });
     expect(t.text()).toContain("nightly triage");
     expect(t.text()).toContain("Cron 30 1 * * * · America/Los_Angeles");
     expect(t.text()).toContain("$2.00 a run");
@@ -265,14 +265,14 @@ describe("one schedule", () => {
   it("says its times in the viewer's own zone, with no UTC on them", async () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     const firings = { trg_1: [firing({ key: "f1", status: "started", run_id: "r1" })] };
-    const t = await open(server({ firings }).v2, { schedule: "trg_1" });
+    const t = await open(server({ firings }).v2, { trigger: "trg_1" });
     expect(t.text()).toContain("next Nov 5, 1:30 AM");
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
     expect(t.text()).not.toContain("UTC");
   });
   it("reads its firings again while it is open, so a timed firing and its run show with no reload", async () => {
     const firings: Record<string, Firing[]> = {};
-    const t = await open(server({ firings }).v2, { schedule: "trg_1" }, undefined, 30);
+    const t = await open(server({ firings }).v2, { trigger: "trg_1" }, undefined, 30);
     expect(t.host.querySelectorAll("[data-firing]")).toHaveLength(0);
     firings.trg_1 = [firing({ key: "f9", status: "started", run_id: "01a1a88f-5f5c-7ce4-a912-fb765b62e88b" })];
     for (let i = 0; i < 20 && !t.host.querySelector("[data-firing]"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
@@ -287,7 +287,7 @@ describe("one schedule", () => {
     try {
       const firings: Record<string, Firing[]> = {};
       const s = server({ firings });
-      const t = await open(s.v2, { schedule: "trg_1" }, undefined, 30);
+      const t = await open(s.v2, { trigger: "trg_1" }, undefined, 30);
       const reads = () => s.calls.filter((c) => c.method === "GET" && c.path === "/v2/triggers/trg_1/firings").length;
       expect(reads()).toBe(1);
       firings.trg_1 = [firing({ key: "f9", status: "started", run_id: "r9" })];
@@ -306,20 +306,20 @@ describe("one schedule", () => {
   });
   it("says a schedule with no cap of its own runs under the agent's default, never an undefined cap", async () => {
     const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
-    const t = await open(server({ triggers: [own] }).v2, { schedule: "trg_1" });
+    const t = await open(server({ triggers: [own] }).v2, { trigger: "trg_1" });
     expect(t.text()).toContain("Agent's default ($0.50)");
     expect(t.text()).not.toContain("undefined");
   });
-  it("says a trigger this page does not show is not a schedule that starts runs, with nothing to change it", async () => {
-    const hook = { ...NIGHTLY, id: "trg_hook", name: "on push", source: { kind: "webhook" } } as unknown as Trigger;
-    const t = await open(server({ triggers: [hook] }).v2, { schedule: "trg_hook" });
-    expect(t.text()).toContain("This trigger is not a schedule that starts runs (a webhook, or messages to a run): this page does not show it.");
+  it("says a trigger that messages a run is not one this page opens, with nothing to change it", async () => {
+    const message = { ...NIGHTLY, id: "trg_msg", name: "nudge", target: { kind: "message_run", run_id: "r1", input: { content: "Go on." } } } as unknown as Trigger;
+    const t = await open(server({ triggers: [message] }).v2, { trigger: "trg_msg" });
+    expect(t.text()).toContain("This trigger sends its firings to a run: this page doesn't open it yet.");
     expect(t.button(/^Pause$|^Resume$|^Edit$|^Run now$|^Delete$/)).toBeUndefined();
     expect(t.text()).not.toContain("undefined");
   });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: "trg_1" });
+    const t = await open(v2, { trigger: "trg_1" });
     await t.click(/^Pause$/);
     await t.click(/^Resume$/);
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ enabled: false }, { enabled: true }]);
@@ -327,7 +327,7 @@ describe("one schedule", () => {
   // A background read asked before an action, answered after it, says how things stood before: it is dropped.
   it("keeps a Pause when a read asked before it answers after it", async () => {
     const s = server();
-    const t = await open(s.v2, { schedule: "trg_1" }, undefined, 30);
+    const t = await open(s.v2, { trigger: "trg_1" }, undefined, 30);
     const reads = () => s.calls.filter((c) => c.method === "GET" && c.path === "/v2/triggers/trg_1").length;
     const before = reads();
     s.hold.on = true;
@@ -344,7 +344,7 @@ describe("one schedule", () => {
   });
   it("keeps Run now's firing when a read asked before it answers after it", async () => {
     const s = server();
-    const t = await open(s.v2, { schedule: "trg_1" }, undefined, 30);
+    const t = await open(s.v2, { trigger: "trg_1" }, undefined, 30);
     const reads = () => s.calls.filter((c) => c.method === "GET" && c.path === "/v2/triggers/trg_1/firings").length;
     const before = reads();
     s.hold.on = true;
@@ -362,7 +362,7 @@ describe("one schedule", () => {
   });
   it("runs now once per click: a second click while the first is out sends nothing, the next click a new key", async () => {
     const s = server();
-    const t = await open(s.v2, { schedule: "trg_1" });
+    const t = await open(s.v2, { trigger: "trg_1" });
     await act(async () => { t.button(/^Run now$/)!.click(); t.button(/^Run now|^Starting/)!.click(); });
     await t.settle();
     const fires = () => s.calls.filter((c) => c.method === "POST" && c.path.endsWith("/fire"));
@@ -379,12 +379,12 @@ describe("one schedule", () => {
   });
   it("deletes after a confirm, and goes back to the list", async () => {
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: "trg_1" });
+    const t = await open(v2, { trigger: "trg_1" });
     await t.click(/^Delete$/);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([]);
     await t.click(/^Yes, delete$/);
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v2/triggers/trg_1"]);
-    expect(t.went).toEqual(["#/schedules"]);
+    expect(t.went).toEqual(["#/triggers"]);
   });
 });
 
@@ -393,7 +393,7 @@ describe("editing a schedule", () => {
   it("saves a name alone on a schedule with no cap of its own", async () => {
     const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
     const { v2, calls } = server({ triggers: [own] });
-    const t = await open(v2, { schedule: "trg_1", edit: true });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
     expect((t.host.querySelector('[name="maxCost"]') as HTMLInputElement).value).toBe("");
     await t.set("name", "nightly");
     await t.click(/^Save changes$/);
@@ -405,7 +405,7 @@ describe("editing a schedule", () => {
     // A start the server set when it was made (to the second) reads back to the second.
     const every: Trigger = { ...NIGHTLY, source: { kind: "schedule", every_s: 300, start_at: "2026-11-04T00:07:31Z" } };
     const { v2, calls } = server({ triggers: [every] });
-    const t = await open(v2, { schedule: "trg_1", edit: true });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
     await t.set("name", "nightly");
     expect(t.text()).not.toContain("Changing when restarts the schedule from now.");
     await t.click(/^Save changes$/);
@@ -416,26 +416,26 @@ describe("editing a schedule", () => {
   it("says under a time left alone the instant the save keeps", async () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     const once: Trigger = { ...NIGHTLY, source: { kind: "schedule", at: "2027-11-07T09:30:00Z" } };
-    const t = await open(server({ triggers: [once] }).v2, { schedule: "trg_1", edit: true });
+    const t = await open(server({ triggers: [once] }).v2, { trigger: "trg_1", edit: true });
     expect(t.text()).toContain("= Nov 7, 9:30 AM UTC");
     act(() => root?.unmount());
     const every: Trigger = { ...NIGHTLY, source: { kind: "schedule", every_s: 300, start_at: "2027-11-07T09:30:00Z" } };
-    const u = await open(server({ triggers: [every] }).v2, { schedule: "trg_1", edit: true });
+    const u = await open(server({ triggers: [every] }).v2, { trigger: "trg_1", edit: true });
     expect(u.text()).toContain("= Nov 7, 9:30 AM UTC");
   });
   it("says a changed when restarts the schedule from now", async () => {
-    const t = await open(server().v2, { schedule: "trg_1", edit: true });
+    const t = await open(server().v2, { trigger: "trg_1", edit: true });
     await t.set("cron", "0 2 * * *");
     expect(t.text()).toContain("Changing when restarts the schedule from now.");
   });
   it("opens with its fields, and saves only what changed", async () => {
     const { v2, calls } = server();
-    const t = await open(v2, { schedule: "trg_1", edit: true });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
     expect((t.host.querySelector('[name="cron"]') as HTMLInputElement).value).toBe("30 1 * * *");
     expect((t.host.querySelector('[name="maxCost"]') as HTMLInputElement).value).toBe("2");
     await t.set("maxCost", "3");
     await t.click(/^Save changes$/);
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 3 } }]);
-    expect(t.went).toEqual(["#/schedules/trg_1"]);
+    expect(t.went).toEqual(["#/triggers/trg_1"]);
   });
 });

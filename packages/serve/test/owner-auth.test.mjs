@@ -36,7 +36,7 @@ test("the first visit sets the password and signs in: the printed link lands on 
   const session = async (cookie) => (await call(server.port, { path: "/v2/auth/session", headers: cookie ? { cookie } : {} })).json;
   assert.deepEqual((await call(server.port, { path: "/setup" })).headers.location, "/", "the printed link sends the browser to the console, its #code kept");
   assert.equal((await call(server.port, { path: "/" })).status, 200);
-  assert.deepEqual(await session(), { password_set: false, signed_in: false }, "the console asks for the first password");
+  assert.deepEqual(await session(), { password_set: false, signed_in: false, setup_code: false }, "the console asks for the first password, with no code on an open setup");
   const made = await setup(server, { password: PASSWORD });
   assert.deepEqual([made.status, made.json.signed_in], [201, true], made.text);
   assert.equal((await agents(server, cookieOf(made))).status, 200, "the 201 carries the owner's session");
@@ -69,15 +69,81 @@ test("the password is 12 characters or more, counted as characters, and at most 
   assert.equal((await setup(server, { password: "🔑".repeat(12) })).status, 201, "twelve characters, though more bytes");
 });
 
-test("at a public address setup takes the printed code (or the token): none or a wrong one is a 403, the fifth wrong one voids it", async (t) => {
+/** The setup links the server prints while `body` runs (Owner prints them to stdout): their codes, in order. */
+async function printedCodes(body) {
+  const codes = [];
+  const write = process.stdout.write;
+  process.stdout.write = function (chunk, ...rest) {
+    for (const m of String(chunk).matchAll(/^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22})$/gm)) codes.push(m[1]);
+    return write.call(this, chunk, ...rest);
+  };
+  try { await body(); } finally { process.stdout.write = write; }
+  return codes;
+}
+
+test("at a public address setup takes the printed code (or the token): a wrong one is a 403, and the fifth voids it and prints a new one, which the refusal says", async (t) => {
   const server = await serve(t, { accounts: true });
   const code = new URL(server.setupUrl).hash.slice("#code=".length);
   assert.match(code, /^[A-Za-z0-9_-]{22}$/);
-  assert.equal((await setup(server, { password: PASSWORD })).status, 403);
-  for (let i = 0; i < 4; i++) assert.equal((await setup(server, { password: PASSWORD, code: "wrong" })).status, 403);
-  assert.equal((await setup(server, { password: PASSWORD, code })).status, 403, "the fifth wrong code voided it");
+  let fifth;
+  const printed = await printedCodes(async () => {
+    for (let i = 0; i < 4; i++) assert.equal((await setup(server, { password: PASSWORD, code: "wrong" })).status, 403);
+    fifth = await setup(server, { password: PASSWORD, code: "wrong" });
+  });
+  assert.equal(fifth.status, 403);
+  assert.match(fifth.json.error.message, /a new one is in the server's log/, "the voiding try says a new code was printed");
+  assert.equal(printed.length, 1, "a new code is printed when the fifth wrong one voids the old");
+  assert.notEqual(printed[0], code);
+  const old = await setup(server, { password: PASSWORD, code });
+  assert.equal(old.status, 403, "the voided code is refused");
+  assert.equal((await setup(server, { password: PASSWORD, code: printed[0] })).status, 201, "the new printed code sets the password");
+});
+
+test("at a public address a setup with no code is refused and never counts against the printed code: after five, the code from the log still sets the password", async (t) => {
+  const server = await serve(t, { accounts: true });
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  const printed = await printedCodes(async () => {
+    for (const body of [{ password: PASSWORD }, { password: PASSWORD, code: "" }, { password: PASSWORD }, { password: PASSWORD }, { password: PASSWORD }, { password: PASSWORD }]) {
+      const r = await setup(server, body);
+      assert.equal(r.status, 403);
+      assert.match(r.json.error.message, /setup code/, r.text);
+    }
+  });
+  assert.deepEqual(printed, [], "no new code: the printed one still stands");
+  assert.equal((await setup(server, { password: PASSWORD, code })).status, 201, "the code from the log, after six tries with none");
+});
+
+test("the server's API token in the code field stands in for the setup code; a wrong token counts as a wrong code", async (t) => {
+  const server = await serve(t, { accounts: true });
+  assert.equal((await setup(server, { password: PASSWORD, code: server.token })).status, 201, "the token as the code");
+  const other = await serve(t, { accounts: true });
+  let fifth;
+  const printed = await printedCodes(async () => {
+    for (let i = 0; i < 4; i++) assert.equal((await setup(other, { password: PASSWORD, code: `${other.token}x` })).status, 403);
+    fifth = await setup(other, { password: PASSWORD, code: `${other.token}x` });
+  });
+  assert.match(fifth.json.error.message, /a new one is in the server's log/, "five wrong tokens void the code, as five wrong codes do");
+  assert.equal(printed.length, 1);
+  assert.ok(!fifth.text.includes(other.token), "the refusal never says the token");
+});
+
+test("the token stands in for the setup code at a public address", async (t) => {
+  const server = await serve(t, { accounts: true });
   const byToken = await setup(server, { password: PASSWORD }, { ...json, authorization: `Bearer ${server.token}` });
-  assert.equal(byToken.status, 201, "the token stands in for the code");
+  assert.equal(byToken.status, 201);
+});
+
+test("the session read says whether setup takes a code, never the code: true at a public address, false on open setup, absent once a password is set", async (t) => {
+  const session = async (server) => (await call(server.port, { path: "/v2/auth/session" })).json;
+  const coded = await serve(t, { accounts: true });
+  const code = new URL(coded.setupUrl).hash.slice("#code=".length);
+  const before = await session(coded);
+  assert.deepEqual(before, { password_set: false, signed_in: false, setup_code: true });
+  assert.ok(!JSON.stringify(before).includes(code), "the code itself is never in the answer");
+  const open = await serve(t, { accounts: true, openSetup: true });
+  assert.deepEqual(await session(open), { password_set: false, signed_in: false, setup_code: false });
+  assert.equal((await setup(coded, { password: PASSWORD, code })).status, 201);
+  assert.deepEqual(await session(coded), { password_set: true, signed_in: false }, "no setup_code once a password is set");
 });
 
 test("sign-in: the password gives a session cookie, HttpOnly, SameSite=Strict, Path=/, 30 days; a wrong one is a 401 and sets nothing", async (t) => {
@@ -156,7 +222,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract, health and an MCP server's OAuth callback and client document; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval or a run's live browser view, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract, health and an MCP server's OAuth callback and client document; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live browser view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -178,8 +244,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
       else if (route.name === "receiveHook") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
       // Approving or restoring a note and answering a tool call's approval take the owner's session alone: a token,
       // whoever holds it, is 403 (learn-pending.test.mjs, learn-restore.test.mjs, tool-gate.test.mjs). So does a run's live
-      // browser view, a full-control credential for its session (browser-live.test.mjs).
-      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // browser view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
+      // browser-take-over.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // An OAuth callback takes neither: only the cookie its own start set in the browser that started it.
       else if (route.name === "mcpOAuthCallback") assert.equal(res.status, 403, `${route.method} ${path}: ${res.status} ${res.text}`);
       else assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
