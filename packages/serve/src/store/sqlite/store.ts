@@ -12,7 +12,7 @@ import {
   type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
@@ -204,6 +204,7 @@ class SqliteStore implements Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly learning: Learning;
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
   readonly triggerSettings: TriggerSettings;
@@ -491,6 +492,22 @@ class SqliteStore implements Store {
           params: [claim.runId, claim.runId, claim.epoch],
         }]);
       },
+    };
+
+    type ProposalRecord = { run_id: string; agent_id: string; turn: string; proposal: string; created_at: number };
+    const proposalOf = (row: ProposalRecord): LearningProposal => ({
+      runId: row.run_id, agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal), createdAt: row.created_at,
+    });
+    this.learning = {
+      proposal: async (runId) => {
+        const row = await db.get<ProposalRecord>("SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE run_id = ?", runId);
+        return row ? proposalOf(row) : undefined;
+      },
+      proposals: async (agentId, { limit = 100 } = {}) =>
+        (await db.all<ProposalRecord>(
+          "SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
+          agentId, limit,
+        )).map(proposalOf),
     };
 
     this.settings = {

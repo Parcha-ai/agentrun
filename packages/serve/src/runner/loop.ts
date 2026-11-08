@@ -38,7 +38,8 @@ import {
 } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
-import type { Claim, Command, CommandOutcome, HeldState, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import type { AlsoRow, Claim, Command, CommandOutcome, EndOfRunAnswer, HeldState, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { sideEffect } from "./side-effects.js";
 import type { Staged } from "../store/store.js";
 
@@ -68,6 +69,11 @@ export interface PiRunSpec {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit). Default
    *  DEFAULT_RESTART_LIMIT, pi's own; always finite. */
   readonly restartLimit?: number;
+  /** The run's agent: named to the end-of-run step (LoopDeps.endOfRun), which a spec without it cannot be asked. */
+  readonly agentId?: string;
+  /** The run's work folder, as its file tools resolve a path: what the end-of-run turn's refusal under work/.learning/
+   *  reads an absolute path against. Absent: a relative path, or the box's, still counts. */
+  readonly workRoot?: string;
 }
 
 /** pi's own default restart limit (pi-durable 1.5.0 agent settings). */
@@ -263,6 +269,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     const asked = findData<AskData>(entries, KINDS.ask, (data) => data.callId === approval) !== undefined;
     return asked && findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === approval) === undefined;
   };
+  /** While the end-of-run turn runs: its writes and edits under work/.learning/ are refused (REFLECT_NOTE_ONLY). */
+  let reflecting = false;
 
   /** Places a steer in the run's turn; its row is taken by pi's own commit of that submission. */
   const steer = async (command: Command): Promise<CommandOutcome> => {
@@ -372,6 +380,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
           hook(ToolTask, {
             beforeTool: async (toolCall, _api, hookContext: Context) => {
               const call: ToolCall = { callId: toolCall.id, tool: toolCall.name as never, args: (toolCall.arguments ?? {}) as Record<string, unknown> };
+              // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
+              if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { block: REFLECT_NOTE_ONLY };
               await hooks.beforeIntent(call);
               const decision = spec.gate?.(call) ?? "allow";
               if (decision === "deny") return { block: `Permission denied: ${call.tool} is set to deny.` };
@@ -438,9 +448,17 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         await harness.waitForIdle(context);
         const record = await input.status(context);
         const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
-        if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
         const failed = record.status !== "done";
-        return await writeEnd(harness, root, gate, failed ? { state: "failed", summary: "the run gave no answer" } : { state: "ended" }, []);
+        const data: EndData = cutOff ? { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` } : failed ? { state: "failed", summary: "the run gave no answer" } : { state: "ended" };
+        // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
+        // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
+        const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
+        if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [step.commandId]);
+        if (step.kind === "interrupted") {
+          gate.seal(new Interrupted(stopReason?.kind ?? "its claim's signal aborted"));
+          return { state: "interrupted" };
+        }
+        return await writeEnd(harness, root, gate, data, [], step.also);
       }
     } catch (error) {
       // A sealed journal (a lost claim, a shutdown) or an aborted claim: nothing more is written, the next claim resumes.
@@ -495,9 +513,59 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     clearTimeout(timer);
   }
 
-  /** The end commit: an `agentrun.end` entry carrying the run row's final patch and the rows it takes. */
-  async function writeEnd(harness: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[]): Promise<LoopEnd> {
-    const ended = theGate.expect(writesEntry(KINDS.end), { run: { state: data.state, ...(data.summary ? { summary: data.summary } : {}) }, ...(take.length ? { take } : {}) });
+  /** The end-of-run step (LoopDeps.endOfRun), asked once: the rows to stage with the end; `stopped` when a person's stop
+   *  came during it; `interrupted` when the claim was lost or the runner is closing (no end is written, and the next claim
+   *  asks it again). A step that throws on its own writes the end without rows: the run's end never waits on it. */
+  async function endOfRunStep(claim: Claim, spec: PiRunSpec, outcome: "completed" | "failed"): Promise<{ kind: "rows"; also: readonly AlsoRow[] } | { kind: "stopped"; commandId: number } | { kind: "interrupted" }> {
+    const cut = (): { kind: "stopped"; commandId: number } | { kind: "interrupted" } | undefined => {
+      if (stopReason?.kind === "command") return { kind: "stopped", commandId: stopReason.commandId };
+      if (stopReason || deps.signal.aborted) return { kind: "interrupted" };
+      return undefined;
+    };
+    if (!deps.endOfRun) return { kind: "rows", also: [] };
+    if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
+    try {
+      const rows = await deps.endOfRun({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, prompt, opts.deadlineMs) });
+      return cut() ?? { kind: "rows", also: rows?.also ?? [] };
+    } catch (error) {
+      return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${(error as Error).message}`), { kind: "rows", also: [] });
+    }
+  }
+
+  /** The end-of-run turn: one more input through the run's root, its request id one per run (a repeat is answered from
+   *  its submission, so a later claim never asks the model again), its writes under work/.learning/ refused while it runs.
+   *  Aborted at `deadlineMs`. A stop or a lost claim cuts it: it throws, and the step sees why. */
+  async function askEndOfRun(claim: Claim, prompt: string, deadlineMs: number): Promise<EndOfRunAnswer> {
+    if (!root || !harness || !gate) throw new Error("the run's session is not open");
+    const session = harness;
+    const conversation = root;
+    reflecting = true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const turn = await conversation.submit({ type: "input", content: prompt, requestId: reflectRequestId(claim.runId), whenBusy: "followUp" }, context);
+      const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), deadlineMs)));
+      const end = await Promise.race([turn.wait(context).then(() => "ended" as const), timeout, stopping.then(() => "stop" as const), session.closed.then(() => "closed" as const)]);
+      if (end === "stop" || end === "closed") throw new Interrupted(stopReason?.kind ?? "the Session closed");
+      if (end === "timeout") {
+        await turn.abort(context).catch(() => {});
+        await conversation.abort(context).catch(() => {});
+        await session.waitForIdle(context).catch(() => {});
+        return { timedOut: true };
+      }
+      const record = await turn.status(context);
+      if (record.status !== "done") return { failed: { code: "unanswered", message: "the end-of-run turn gave no answer" } };
+      const answer = (await entriesOf(gate.journal, conversation.id, context)).find((entry) => entry.id === record.answer);
+      return { ended: true, answer: answerText(answer) };
+    } finally {
+      clearTimeout(timer);
+      reflecting = false;
+    }
+  }
+
+  /** The end commit: an `agentrun.end` entry carrying the run row's final patch, the rows staged with it, and the rows it
+   *  takes. */
+  async function writeEnd(harness: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[], also: readonly AlsoRow[] = []): Promise<LoopEnd> {
+    const ended = theGate.expect(writesEntry(KINDS.end), { run: { state: data.state, ...(data.summary ? { summary: data.summary } : {}) }, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue }), context);
     await ended;
     return data.state === "failed" ? { state: "failed", error: { code: "run-failed", message: data.summary ?? "the run failed" } } : { state: data.state };

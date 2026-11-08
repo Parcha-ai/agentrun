@@ -52,6 +52,20 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
+      // The run's kept learning, of the run's own agent; kept once (an end replayed after a crash keeps the first).
+      case "learning_proposals":
+        await tx.run(
+          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, created_at) SELECT id, agent_id, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
+          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), now, claim.runId,
+        );
+        break;
+      // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing).
+      case "learning_run":
+        await tx.run(
+          "INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) SELECT ?, agent_id, revision_id, 'queued', 0, ? FROM runs WHERE id = ? ON CONFLICT (id) DO NOTHING",
+          each.row.id, now, claim.runId,
+        );
+        break;
     }
   }
   return runOf(row);
