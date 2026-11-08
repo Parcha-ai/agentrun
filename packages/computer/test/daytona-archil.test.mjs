@@ -93,8 +93,8 @@ test("create: preflight, mount (the token on its stdin alone), serve, each as ro
 	assert.ok(exec.every((r) => r.body.suppressInputEcho === true), "no command echoes its input");
 });
 
-test("attach and list read the mount back under the epoch label, exclusive; network() says the tools' network is init's own namespace, and refuses any policy but none", async () => {
-	const { provider } = setup();
+test("attach and list read the mount back under the epoch label, exclusive; network() reads none from the daemon (lo alone), and refuses any policy but none", async () => {
+	const { provider, fake } = setup();
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
 	const attached = await provider.attach({ id: made.value.id });
@@ -104,15 +104,18 @@ test("attach and list read the mount back under the epoch label, exclusive; netw
 	assert.equal(listed.ok, true);
 	assert.deepEqual(listed.value[0].mount, readBackOf(MOUNT, 3));
 	assert.ok(!JSON.stringify([attached, listed]).includes(TOKEN));
-	// The tools' network is init's own namespace (computerd init --own-network), which the daemon reads back; until that
-	// lands, network() says so in words, and attach does not refuse the computer for it. It takes no policy but none.
-	const read = await provider.network(made.value);
-	assert.equal(read.ok, true);
-	assert.match(read.value.other, /own-network/);
-	assert.deepEqual(attached.value.spec.network, read.value);
+	// Daytona's own network is open for root (the archil client reaches Archil); the tools' is init's own namespace,
+	// read back from the daemon: "none" while it holds lo alone. It takes no policy but none.
+	assert.deepEqual(await provider.network(made.value), { ok: true, value: "none" });
+	assert.equal(attached.value.spec.network, "none");
+	assert.equal(listed.value[0].network, "none");
 	const opened = await provider.network(made.value, "open");
 	assert.equal(opened.ok, false);
-	assert.match(opened.error.message, /Archil/);
+	// A daemon that reads back another interface is not "none", in words.
+	fake.knobs.interfaces = ["lo", "eth0"];
+	const wider = await provider.network(made.value);
+	assert.equal(wider.ok, true);
+	assert.match(wider.value.other, /eth0/);
 });
 
 test("the takeover: the run's lower epochs are deleted before any mount, then the folder is revoked; a release that fails mounts nothing", async () => {
