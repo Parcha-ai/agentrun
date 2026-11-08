@@ -43,7 +43,7 @@ class Demo(unittest.TestCase):
         started = client.runs.start("notes", {"input": {"content": "Write notes.md with three facts about the Moon."}, "max_cost_usd": 5})
         self.assertEqual(started["agent_id"], "notes")
         done = client.runs.wait(started["run_id"], timeout=60)
-        self.assertEqual((done["run_id"], done["status"], done["cost"]["cap_usd"]), (started["run_id"], "completed", 5))
+        self.assertEqual((done["run_id"], done["status"], done["cost"].get("cap_usd")), (started["run_id"], "completed", 5))
         listed = client.runs.list(limit=10)
         self.assertTrue(any(run["run_id"] == started["run_id"] for run in listed["runs"]), "the run is listed")
         self.assertTrue(any(run["run_id"] == started["run_id"] for run in client.agents.runs("notes")["runs"]), "and in the agent's runs")
@@ -66,13 +66,13 @@ class Demo(unittest.TestCase):
         capped = client.runs.start("notes", {"input": {"content": "Write moon.md with everything known about the Moon."}, "max_cost_usd": 0.05})
         stopped = client.runs.wait(capped["run_id"])
         pending: Any = stopped.get("pending") or {}
-        self.assertEqual((stopped["status"], pending.get("kind"), stopped["cost"]["cap_usd"]), ("input_required", "budget", 0.05))
+        self.assertEqual((stopped["status"], pending.get("kind"), stopped["cost"].get("cap_usd")), ("input_required", "budget", 0.05))
         self.assertGreater(pending["suggested_cap_usd"], 0.05)
         raise_ = client.runs.raise_cap(capped["run_id"], {"max_cost_usd": 1})
         self.assertEqual((raise_["resumed"], raise_["max_cost_usd"]), (True, 1))
         self.assertIn(raise_["status"], ("queued", "working"), f"right after the raise: {raise_}")
         raised = client.runs.wait(capped["run_id"])
-        self.assertEqual((raised["run_id"], raised["status"], raised.get("pending"), raised["cost"]["cap_usd"]), (capped["run_id"], "completed", None, 1))
+        self.assertEqual((raised["run_id"], raised["status"], raised.get("pending"), raised["cost"].get("cap_usd")), (capped["run_id"], "completed", None, 1))
         self.assertRegex(client.runs.read_file(capped["run_id"], "moon.md").decode(), r"^# .+\n$", "it wrote moon.md once it went on")
 
         # Following a run live gives every row the timeline holds once it ended, each once.

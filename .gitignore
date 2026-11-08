@@ -31,3 +31,7 @@ precap.md
 # Lean build output
 spec/lean/.lake/
 
+
+# Python bytecode (python/)
+__pycache__/
+*.pyc

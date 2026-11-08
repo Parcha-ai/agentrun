@@ -204,7 +204,7 @@ class Rules(unittest.TestCase):
         assert isinstance(refusal, AgentRunRefused)
         self.assertEqual((refusal.status, refusal.code, refusal.error), (422, "input_invalid", {"code": "input_invalid"}))
         self.assertNotIn(secret, printed(refusal))
-        raw = self.thrown(client.mcp_servers.save, "docs", b'{"url": "x"}')  # type: ignore[arg-type]
+        raw = self.thrown(client.mcp_servers.save, "docs", b'{"url": "x"}')
         self.assertIsInstance(raw, AgentRunUsage, "a secret body goes as JSON only")
 
     def test_a_body_whose_url_reaches_a_secret_route_is_a_secret_body_too_json_only_its_values_cut(self) -> None:
