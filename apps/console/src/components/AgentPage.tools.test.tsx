@@ -116,6 +116,50 @@ describe("AgentPage, the agent's tools", () => {
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("two saves in a row: only the newest re-read lands, so an older answer arriving last never puts the old setting back", async () => {
+    // Reads: 1 the page's, 2 the first save's own read, 3 the re-read after the first save (held, answered last, on the
+    // first save's revision), 4 the second save's own read, 5 the re-read after the second save.
+    let current: Agent = { ...agentFixture("invoice-checker"), tools: [WEB_FETCH, BASH] };
+    let reads = 0;
+    let release: () => void = () => {};
+    const v2 = {
+      getAgent: async () => {
+        const n = ++reads;
+        const now = { agent: current, etag: `"r${n}"` };
+        if (n === 3) await new Promise<void>((r) => { release = r; });
+        return now;
+      },
+      listAgentRuns: async () => ({ runs: [], next_cursor: null }),
+      statsOver: async () => { throw new Error("no stats here"); },
+      agentLearning: async () => EMPTY,
+      updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => {
+        const { tools: _served, ...saved } = { ...current, revision: `r${current.revisions + 1}`, revisions: current.revisions + 1, definition: body.definition };
+        current = { ...saved, tools: [WEB_FETCH, BASH] };
+        return { agent: saved, etag: `"${saved.revision}"` };
+      },
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: current.agent_id, go: () => {}, tab: "learning", learning: "on" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const toggle = () => act(async () => { (host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    const checked = () => host.querySelector('[role="switch"]')!.getAttribute("aria-checked");
+    expect(checked()).toBe("false");
+    await toggle();
+    await settle();
+    expect(checked()).toBe("true");
+    await toggle();
+    await settle();
+    expect(checked()).toBe("false");
+    // The first save's re-read answers last, on its older revision (learning on): it must not land.
+    await act(async () => { release(); });
+    await settle();
+    expect(reads).toBe(5);
+    expect(checked()).toBe("false");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("a workflow has no Tools fact", async () => {
     const { dd } = await open({ ...agentFixture("lead-scorer"), tools: [] });
     expect(dd).toBeNull();
