@@ -170,6 +170,12 @@ export const STORES = {
     effects: "none",
     what: "the server's lock file on its data root: an exclusive lock, no data",
   },
+  "one-store": {
+    opens: ["serve/src/store/sqlite/worker.ts"],
+    synchronous: "NORMAL",
+    effects: "none",
+    what: "the one store (store.sqlite in the data directory) and its owner lock: WAL at NORMAL, flush() one FULL commit; unused until the cutover, so no tool and no model runs through it yet (at the cutover its effects pass flush() barriers)",
+  },
 } as const satisfies Record<string, StoreRow>;
 
 export type StoreId = keyof typeof STORES;

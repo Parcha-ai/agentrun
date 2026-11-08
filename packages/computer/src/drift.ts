@@ -238,6 +238,56 @@ export function samePolicy(declared: NetworkSpec, read: NetworkPolicy): boolean 
 	return "allow" in declared && "allow" in read && sameAllow(declared.allow, read.allow);
 }
 
+/**
+ * What `computerd probe` reports from inside a computer: the uid:gid its programs run as, the kernel, reached (the
+ * targets that answered: bytes came back) and accepted (those that accepted a connection and sent nothing back). One
+ * rule for every provider that probes (README, "Network none, read from inside"): only an answer refuses network none.
+ */
+export interface ProbeReport {
+	uid: number;
+	gid: number;
+	kernel: string;
+	reached: string[];
+	accepted: string[];
+}
+
+const isAddresses = (value: unknown): value is string[] => Array.isArray(value) && value.every((one) => typeof one === "string");
+const isId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
+
+/**
+ * The probe's JSON line from exec.run's stdout (base64), or what is wrong with it in words. The accepted list is
+ * required: a report without it cannot tell a target that only accepted from one refused, so it is no read-back of
+ * network none.
+ */
+export function probeReportOf(stdout: string): ProbeReport | { not: string } {
+	const text = Buffer.from(stdout, "base64").toString("utf8");
+	const notReport = { not: `wrote what is not its report: ${text.slice(0, 200)}` };
+	let value: Partial<ProbeReport> | null;
+	try {
+		value = JSON.parse(text) as Partial<ProbeReport> | null;
+	} catch {
+		return notReport;
+	}
+	if (!(isId(value?.uid) && isId(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached))) return notReport;
+	if (!isAddresses(value.accepted)) {
+		return { not: `wrote a report with no accepted list, so a target that only accepted cannot be told from one refused: ${text.slice(0, 200)}` };
+	}
+	return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted };
+}
+
+/** Network none's drift by the probe: a target that answered, in words; none when nothing answered. */
+export function probeNetworkDrift(probe: ProbeReport): string[] {
+	return probe.reached.length > 0 ? [`network: declared none, read back an answer from ${probe.reached.join(", ")}`] : [];
+}
+
+/**
+ * What the probe recorded that does not refuse the computer: under network none, the targets that accepted a connection
+ * and sent nothing back. A firewall that accepts first and decides after looks so from inside; only an answer is drift.
+ */
+export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPolicy): string[] {
+	return network === "none" && probe.accepted.length > 0 ? [`network: none; accepted with no answer (no bytes came back): ${probe.accepted.join(", ")}`] : [];
+}
+
 type InspectMount = NonNullable<DockerInspect["Mounts"]>[number];
 /** One mount as a person reads it: "a read-write bind of /runs/r1". */
 const mountWords = (mount: InspectMount) => `a ${mount.RW === true ? "read-write" : "read-only"} ${mount.Type ?? "mount"} of ${mount.Source ?? mount.Name ?? "nothing"}`;

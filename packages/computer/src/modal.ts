@@ -6,7 +6,19 @@ import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, helloDrift, WORK } from "./drift.js";
+import {
+	COMPUTER_LABEL,
+	DAEMON_IN_COMPUTER,
+	DEADLINE_LABEL,
+	DEFAULT_CPUS,
+	DEFAULT_MEMORY_MB,
+	helloDrift,
+	type ProbeReport,
+	probeNetworkDrift,
+	probeNotes,
+	probeReportOf,
+	WORK,
+} from "./drift.js";
 import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -130,7 +142,7 @@ export interface ModalProviderOptions {
 	user?: string;
 	timeouts?: Partial<ModalTimeouts>;
 	/**
-	 * The addresses the probe tries, to show a computer with network none reaches nothing: host:port over TCP, or
+	 * The addresses the probe tries, to show none of them answers a computer with network none: host:port over TCP, or
 	 * host:port/udp, a DNS query over UDP.
 	 */
 	probeTargets?: string[];
@@ -384,18 +396,6 @@ interface Recorded {
 	runtime: "vm";
 }
 
-/**
- * What `computerd probe` reports from inside the computer: reached, the targets that answered (bytes came back), and
- * accepted, those that accepted a connection and sent nothing back.
- */
-interface ProbeReport {
-	uid: number;
-	gid: number;
-	kernel: string;
-	reached: string[];
-	accepted: string[];
-}
-
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
@@ -585,44 +585,14 @@ function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
 	return { other: `the tag ${SPEC_TAG} names no network this provider makes` };
 }
 
-const isAddresses = (value: unknown): value is string[] => Array.isArray(value) && value.every((one) => typeof one === "string");
-
-/**
- * The probe's report from its stdout, or what is wrong with it in words. The accepted list is required: a report
- * without it cannot tell a target that only accepted from one refused, so it is no read-back of network none.
- */
-function probeOf(stdout: string): ProbeReport | { not: string } {
-	const text = Buffer.from(stdout, "base64").toString("utf8");
-	const notReport = { not: `wrote what is not its report: ${text.slice(0, 200)}` };
-	let value: Partial<ProbeReport> | null;
-	try {
-		value = JSON.parse(text) as Partial<ProbeReport> | null;
-	} catch {
-		return notReport;
-	}
-	if (!(isWhole(value?.uid) && isWhole(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached))) return notReport;
-	if (!isAddresses(value.accepted)) {
-		return { not: `wrote a report with no accepted list, so a target that only accepted cannot be told from one refused: ${text.slice(0, 200)}` };
-	}
-	return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted };
-}
-
 /** Every way the probe's report differs from what the computer should be. */
 function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
 	const found: string[] = [];
 	const user = `${probe.uid}:${probe.gid}`;
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
 	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
-	if (expected.network === "none" && probe.reached.length > 0) found.push(`network: declared none, read back an answer from ${probe.reached.join(", ")}`);
+	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
 	return found;
-}
-
-/**
- * What the probe recorded that does not refuse the computer: under network none, the targets that accepted a connection
- * and sent nothing back. A firewall that accepts first and decides after looks so from inside; only an answer is drift.
- */
-function probeNotes(probe: ProbeReport, network: NetworkSpec): string[] {
-	return network === "none" && probe.accepted.length > 0 ? [`network: none; accepted with no answer (no bytes came back): ${probe.accepted.join(", ")}`] : [];
 }
 
 /** Every way the tags read back differ from those create gave. */
@@ -947,7 +917,7 @@ export class ModalProvider implements ComputerProvider {
 		if (exitCode !== 0) {
 			return fail("refused", `the probe in ${name} exited with ${exitCode}: ${Buffer.from(stderr, "base64").toString("utf8").trim().slice(0, 300)}`);
 		}
-		const report = probeOf(stdout);
+		const report = probeReportOf(stdout);
 		if ("not" in report) return fail("refused", `the probe in ${name} ${report.not}`);
 		return ok(report);
 	}
