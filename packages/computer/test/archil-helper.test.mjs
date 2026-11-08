@@ -28,9 +28,18 @@ const TOKEN = "tok-archil-helper-test-0123456789abcdef";
 const PROC = "proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=invisible 0 0\n";
 
 /** A copy of the helper over a scratch box: its archil a stand-in that records each call's arguments, whether the token
- *  was in its environment, and every process's arguments as `ps` shows them while it runs. */
-async function box(t) {
+ *  was in its environment, and every process's arguments as `ps` shows them while it runs. The helper's root is this
+ *  user (ROOT_UID), unless `root` is false: then root is another uid, and this user is not it. Its computerd is a
+ *  stand-in that records its arguments and what came on its stdin; the walk that holds computerd to root's alone stops at
+ *  the scratch directory (HELD_TOP), since the directories above it are no box's. */
+async function box(t, { root = true } = {}) {
   const dir = realpathSync(await scratch(t));
+  chmodSync(dir, 0o755);
+  const opt = join(dir, "opt");
+  mkdirSync(opt, { mode: 0o755 });
+  const computerd = join(opt, "computerd");
+  writeFileSync(computerd, `#!/bin/sh\n{ printf 'computerd %s\\n' "$*"; printf 'stdin %s\\n' "$(wc -c | tr -d ' ')"; } >> '${join(dir, "calls")}'\n`);
+  chmodSync(computerd, 0o755);
   const mp = join(dir, "workspace");
   mkdirSync(mp);
   const mounts = join(dir, "mounts");
@@ -47,7 +56,7 @@ async function box(t) {
   writeFileSync(mount, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${remounts}'\n[ -e '${remountable}' ] || { echo 'mount: /proc: permission denied.' >&2; exit 32; }\n[ "$*" = '-o remount,hidepid=2 /proc' ] || exit 1\nsed -i 's#^proc /proc proc \\([^ ]*\\) #proc /proc proc \\1,hidepid=invisible #' '${mounts}'\n`);
   chmodSync(mount, 0o755);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], IPTABLES: ["/usr/sbin/iptables", fakeIptables(dir, "iptables")], IP6TABLES: ["/usr/sbin/ip6tables", fakeIptables(dir, "ip6tables")], GETENT: ["/usr/bin/getent", fakeGetent(dir)], STATUS: ["/proc/self/status", fakeStatus(dir)], IF_INET6: ["/proc/net/if_inet6", fakeInet6(dir)], TOOL: ["agentrun-tool", userInfo().username] };
+  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], IPTABLES: ["/usr/sbin/iptables", fakeIptables(dir, "iptables")], IP6TABLES: ["/usr/sbin/ip6tables", fakeIptables(dir, "ip6tables")], GETENT: ["/usr/bin/getent", fakeGetent(dir)], STATUS: ["/proc/self/status", fakeStatus(dir)], IF_INET6: ["/proc/net/if_inet6", fakeInet6(dir)], TOOL: ["agentrun-tool", userInfo().username], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -60,7 +69,7 @@ async function box(t) {
     const ran = spawnSync(helper, args, { input: stdin, encoding: "utf8", env: { PATH: process.env.PATH } });
     return { status: ran.status, stderr: ran.stderr, calls: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean) : [] };
   };
-  return { dir, mp, mounts, run, remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
+  return { dir, mp, mounts, run, computerd, sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
 }
 
 test("mount: the client alone, with fixed arguments; the token in its environment, never an argument any process shows", async (t) => {
@@ -82,12 +91,90 @@ test("an owner-qualified disk name is a disk too", async (t) => {
   assert.equal(b.run(["mount", "someone@example.com/agents-disk", REGION, FOLDER]).status, 0);
 });
 
-test("sync and checkin act on the mount alone, and only once it is an archil mount", async (t) => {
+test("checkin acts on the mount alone, and only once it is an archil mount", async (t) => {
   const b = await box(t);
-  for (const verb of ["sync", "checkin"]) assert.equal(b.run([verb]).status, 3, `${verb} before any mount: nothing is held`);
+  assert.equal(b.run(["checkin"]).status, 3, "checkin before any mount: nothing is held");
   b.mounted();
-  for (const verb of ["sync", "checkin"]) assert.equal(b.run([verb], "").status, 0);
-  assert.deepEqual(b.run([]).calls.filter((line) => line.startsWith("argv")), [`argv sync ${b.mp}`, `argv checkin ${b.mp}`]);
+  assert.equal(b.run(["checkin"], "").status, 0);
+  assert.deepEqual(b.run([]).calls.filter((line) => line.startsWith("argv")), [`argv checkin ${b.mp}`]);
+});
+
+test("sync is no verb of the helper's: the resident serve syncs; a sync exits 2 and runs nothing, mounted or not", async (t) => {
+  const b = await box(t);
+  for (const mounted of [false, true]) {
+    if (mounted) b.mounted();
+    const ran = b.run(["sync"], "");
+    assert.equal(ran.status, 2, ran.stderr);
+    assert.match(ran.stderr, /^agentrun-archil: say netlock, mount, revoke, serve or checkin\n$/);
+    assert.deepEqual(ran.calls, []);
+  }
+});
+
+test("run by anyone but root, every verb exits 2 and runs nothing: the provider runs it as root through its own exec, never through sudo", async (t) => {
+  const b = await box(t, { root: false });
+  b.mounted();
+  for (const args of [["netlock", REGION], ["mount", DISK, REGION, FOLDER], ["revoke", DISK, REGION, FOLDER], ["serve"], ["checkin"]]) {
+    const ran = b.run(args);
+    assert.equal(ran.status, 2, `${args[0]}: ${ran.stderr}`);
+    assert.match(ran.stderr, /^agentrun-archil: run it as root, through the provider's own exec\n$/, args[0]);
+    assert.deepEqual(ran.calls, [], args[0]);
+    assert.deepEqual(b.remounts(), [], `${args[0]}: no remount`);
+    assert.equal(existsSync(join(b.dir, "iptables.OUTPUT")), false, `${args[0]}: no rule`);
+  }
+});
+
+test("serve: with the archil mount, it becomes computerd sync-serve with fixed arguments alone, and no token: its stdin is not passed on", async (t) => {
+  const b = await box(t);
+  b.mounted();
+  const ran = b.run(["serve"]);
+  assert.equal(ran.status, 0, ran.stderr);
+  const gid = spawnSync("id", ["-g", userInfo().username], { encoding: "utf8" }).stdout.trim();
+  assert.deepEqual(ran.calls, [`computerd sync-serve --socket ${b.sock} --mountpoint ${b.mp} --mounts ${b.mounts} --archil ${join(b.dir, "archil")} --gid ${gid}`, "stdin 0"]);
+});
+
+test("serve takes no argument, and serves only an archil mount: an argument exits 2, nothing mounted exits 3, and neither runs anything", async (t) => {
+  const b = await box(t);
+  const bare = b.run(["serve"], "");
+  assert.equal(bare.status, 3, bare.stderr);
+  assert.match(bare.stderr, /nothing is mounted at /);
+  b.mounted();
+  for (const args of [["serve", "x"], ["serve", "--socket", "/tmp/s"], ["serve", ""]]) {
+    const ran = b.run(args, "");
+    assert.equal(ran.status, 2, `${JSON.stringify(args)}: ${ran.stderr}`);
+  }
+  const other = await box(t);
+  writeFileSync(other.mounts, `${PROC}tmpfs ${other.mp} tmpfs rw 0 0\n`);
+  assert.equal(other.run(["serve"], "").status, 3, "another kind of mount is no archil mount");
+  for (const each of [b, other]) assert.deepEqual(each.run([]).calls, []);
+});
+
+test("serve runs computerd only while it is root's alone: a file or a folder above it another user may change, or not root's, exits 4 and runs nothing", async (t) => {
+  const spoils = [
+    ["group-writable", (b) => chmodSync(b.computerd, 0o775)],
+    ["world-writable folder", (b) => chmodSync(join(b.dir, "opt"), 0o777)],
+    ["a link", (b) => { rmSync(b.computerd); symlinkSync(join(b.dir, "archil"), b.computerd); }],
+    ["missing", (b) => rmSync(b.computerd)],
+  ];
+  for (const [what, spoil] of spoils) {
+    const b = await box(t);
+    b.mounted();
+    spoil(b);
+    const ran = b.run(["serve"], "");
+    assert.equal(ran.status, 4, `${what}: ${ran.stderr}`);
+    assert.match(ran.stderr, /computerd .* is not root's alone/, what);
+    assert.deepEqual(ran.calls, [], what);
+  }
+});
+
+test("checkin first takes serve's socket away, so the resident serve exits, then lets go of the folder", async (t) => {
+  const b = await box(t);
+  b.mounted();
+  mkdirSync(join(b.dir, "run"));
+  writeFileSync(b.sock, "");
+  const ran = b.run(["checkin"], "");
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.equal(existsSync(b.sock), false, "the socket is gone");
+  assert.deepEqual(ran.calls, [`argv checkin ${b.mp}`]);
 });
 
 test("a mount of a folder already mounted there answers at once and runs nothing", async (t) => {
