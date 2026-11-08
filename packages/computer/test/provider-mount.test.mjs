@@ -28,9 +28,9 @@ test("Docker: MOUNT is [\"bind\"], what its provider declares", () => {
 	assert.deepEqual([...docker.MOUNT], declared(fakeDocker({ desktop: {} }).provider), "a desktop takes the same mount");
 });
 
-test("Modal: MOUNT is [] until D6, what its provider declares", () => {
+test("Modal: MOUNT is [\"archil\"], what its provider declares", () => {
 	const provider = new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: DAEMON_IMAGE });
-	assert.deepEqual([...modal.MOUNT], []);
+	assert.deepEqual([...modal.MOUNT], ["archil"]);
 	assert.deepEqual([...modal.MOUNT], declared(provider));
 });
 
