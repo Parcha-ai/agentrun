@@ -70,6 +70,9 @@ export const STORE_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_claimable ON runs (state, started_at)`,
+  // One run per imported session: Store.importRun is refused a session it already imported (as the old store's
+  // UNIQUE (source, session) did).
+  `CREATE UNIQUE INDEX IF NOT EXISTS runs_import ON runs (json_extract(imported_from, '$.source'), json_extract(imported_from, '$.session')) WHERE imported_from IS NOT NULL`,
 
   // Commands the server writes for a run, taken (or refused, with why) by its runner.
   `CREATE TABLE IF NOT EXISTS commands (

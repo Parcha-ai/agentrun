@@ -13,7 +13,8 @@ import { HARNESSES } from "./harness.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
 import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS, THINKING_LEVELS, type Tier } from "./model.js";
-import { mcpToolName } from "./tool-gate.js";
+import { mcpToolName, type PinScalar, type PinValue } from "./tool-gate.js";
+import { AGENT_LAYER_PINS, pinIssues } from "./tool-plane.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
@@ -48,9 +49,23 @@ const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 /** An MCP server a package uses: its tools, granted to the agent, and `allow`, those of them the package asks the owner to
- *  allow (a consent screen shows it). The package sets no permission itself: an apply's `grants`, the owner's answer, do. */
-export type McpNeed = { server: string; tools: string[]; required: boolean; allow: string[] };
-type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string };
+ *  allow (a consent screen shows it). The package sets no permission itself: an apply's `grants`, the owner's answer, do.
+ *  `pin`, by tool: the arguments each of its calls must carry (a value, or `${parameters.<name>}`), which apply writes as
+ *  the tool's pin in the agent's tool settings, so a send goes only to the destination the owner set. */
+export type McpNeed = { server: string; tools: string[]; required: boolean; allow: string[]; pin: Record<string, Record<string, PinValue>> };
+type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string; default?: string | number | boolean };
+/** Whether `value` is of the parameter type `type`. */
+const ofType = (type: Parameter["type"], value: unknown): boolean => (type === "integer" ? Number.isSafeInteger(value) : type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === type);
+/** Whether `text` matches `pattern`; a pattern that does not compile matches nothing (it is reported on its own). */
+const safeTest = (pattern: string, text: string): boolean => {
+  try {
+    return new RegExp(pattern, "u").test(text);
+  } catch {
+    return false;
+  }
+};
+/** A schedule's fields a parameter may fill: its time, read by the server as the schedule, and checked at apply. */
+const SCHEDULE_FIELDS = ["cron", "timezone"];
 export type Package = {
   name: string;
   /** The agent's name, placeholders unfilled; absent, the package's name. */
@@ -100,6 +115,45 @@ const filled = (value: unknown, given: Record<string, unknown>): unknown =>
   : Array.isArray(value) ? value.map((item) => filled(item, given))
   : isObject(value) ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, filled(item, given)]))
   : value;
+
+/** An mcp entry's `pin` read: by tool, each one of the entry's `tools`, its arguments checked by the one rule every pin
+ *  is (tool-plane.ts pinIssues, on the tool's gate name), text in it may hold `${parameters.<name>}` (checked with the
+ *  other placeholders). Each problem is told through `bad`; a tool whose pin reads is kept. */
+function pinOf(pin: unknown, server: string, tools: readonly string[], at: string, bad: (message: string) => void): Record<string, Record<string, PinValue>> {
+  const out: Record<string, Record<string, PinValue>> = {};
+  if (!isObject(pin)) return bad(`${at} is {<tool>: {<argument>: <value or \${parameters.<name>}, or a list of them>}}, by the entry's tools`), out;
+  for (const [tool, args] of Object.entries(pin)) {
+    if (!tools.includes(tool)) {
+      bad(`${at}.${tool}: ${tool} is not one of this entry's tools (${tools.join(", ")}): a pin fixes the arguments of a tool the package lists`);
+      continue;
+    }
+    const issues = pinIssues(args, `${at}.${tool}`, mcpToolName(server, tool));
+    for (const issue of issues) bad(issue.message);
+    if (!issues.length) out[tool] = args as Record<string, PinValue>;
+  }
+  return out;
+}
+
+/** A pin's scalar filled from the apply's `given` parameters: text that is one placeholder alone takes the parameter's
+ *  value as given (its type kept: an integer pins an integer); other text is filled as text. `empty`: the parameters its
+ *  placeholders name that were given no value (absent, or ""), so the pin cannot hold what the owner meant. */
+function scalarFilled(value: PinScalar, given: Record<string, unknown>): { value: PinScalar; empty: string[] } {
+  if (typeof value !== "string") return { value, empty: [] };
+  const named = [...value.matchAll(PLACEHOLDER)].map((match) => match[1]!);
+  const empty = named.filter((name) => !Object.hasOwn(given, name) || given[name] === undefined || given[name] === null || given[name] === "");
+  const whole = /^\$\{parameters\.([^}]*)\}$/.exec(value);
+  if (whole && !empty.length) {
+    const one = given[whole[1]!];
+    if (typeof one === "string" || typeof one === "number" || typeof one === "boolean") return { value: one, empty };
+  }
+  return { value: filled(value, given) as string, empty };
+}
+/** A pin's value filled (scalarFilled), each of a one-of list's in its order. */
+function pinFilled(value: PinValue, given: Record<string, unknown>): { value: PinValue; empty: string[] } {
+  if (!Array.isArray(value)) return scalarFilled(value as PinScalar, given);
+  const each = value.map((one) => scalarFilled(one, given));
+  return { value: each.map((one) => one.value), empty: each.flatMap((one) => one.empty) };
+}
 
 /** Reads `dir` checked whole: a valid package, or PackageError with every problem found. */
 export function readPackage(dir: string): Package {
@@ -184,19 +238,23 @@ export function readPackage(dir: string): Package {
   for (const [i, need] of (f.mcp === undefined ? [] : Array.isArray(f.mcp) ? f.mcp : (bad(MANIFEST, "mcp is a list of {server, tools, required?}"), [])).entries()) {
     const names = isObject(need) && Array.isArray(need.tools) ? need.tools : [];
     const allow = isObject(need) && need.allow !== undefined ? need.allow : [];
-    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required", "allow"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
+    const pin = isObject(need) && need.pin !== undefined ? need.pin : {};
+    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required", "allow", "pin"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && MCP_TOOL.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean")
       && Array.isArray(allow) && allow.every((tool) => names.includes(tool)) && new Set(allow).size === allow.length;
-    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow}`);
+    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names (${MCP_TOOL.source}), none twice, required?: true or false, allow?: the tools of its tools it asks the owner to allow, pin?: {<tool>: {<argument>: <value>}}}`);
     else if (mcp.some((m) => m.server === need.server)) bad(MANIFEST, `mcp[${i}]: the server ${need.server as string} is listed twice`);
-    else mcp.push({ server: need.server as string, tools: names as string[], required: need.required === true, allow: allow as string[] });
+    else {
+      const pinned = pinOf(pin, need.server as string, names as string[], `mcp[${i}].pin`, (message) => bad(MANIFEST, message));
+      mcp.push({ server: need.server as string, tools: names as string[], required: need.required === true, allow: allow as string[], pin: pinned });
+    }
   }
   // Computers by name come with the computer protocol; until then a package runs where this server puts a new agent.
   if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
   const parameters: Record<string, Parameter> = {};
   for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
-    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "description"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
+    const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
     if (!ok) {
-      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), description}, its name lowercase`);
+      bad(MANIFEST, `parameters.${key} is {type: ${PARAMETER_TYPES.join(" | ")}, required?, pattern? (strings), default?, description}, its name lowercase`);
       continue;
     }
     try {
@@ -204,7 +262,12 @@ export function readPackage(dir: string): Package {
     } catch {
       bad(MANIFEST, `parameters.${key}.pattern is not a regular expression`);
     }
-    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}) };
+    if (p.default !== undefined) {
+      if (!ofType(p.type as Parameter["type"], p.default)) bad(MANIFEST, `parameters.${key}.default is a ${p.type as string}, as the parameter is`);
+      else if (typeof p.pattern === "string" && typeof p.default === "string" && !safeTest(p.pattern, p.default)) bad(MANIFEST, `parameters.${key}.default does not match its pattern`);
+      if (p.required === true) bad(MANIFEST, `parameters.${key} is required and has a default: a default is for a parameter apply may leave out`);
+    }
+    parameters[key] = { type: p.type as Parameter["type"], required: p.required === true, description: p.description as string, ...(typeof p.pattern === "string" ? { pattern: p.pattern } : {}), ...(p.default !== undefined && ofType(p.type as Parameter["type"], p.default) ? { default: p.default as string | number | boolean } : {}) };
   }
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
@@ -236,14 +299,26 @@ export function readPackage(dir: string): Package {
   const checks = list(f.checks, "checks", (check) => NAME.test(check));
   const instructions = manifest?.body.trim() ?? "";
   if (manifest && !instructions) bad(MANIFEST, "its body is empty: the body is the agent's instructions");
-  for (const value of strings([instructions, triggers, f.display_name])) {
+  for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
-  // A placeholder fills text a run reads; a trigger's schedule and its other settings are the package's own, checked here.
+  // A placeholder fills text a run reads, and a schedule's time (its cron and timezone, read as the schedule at apply);
+  // a trigger's other settings are the package's own, checked here. A parameter that sets a time has a default, so the
+  // schedule the package ships is checked here too.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
-    const fixed = Object.entries(trigger).flatMap(([key, value]) => (key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const) : [[key, value] as const]));
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions or a trigger's target.input`);
+    const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
+    const fixed = Object.entries(trigger).flatMap(([key, value]) =>
+      key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
+      : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
+      : [[key, value] as const]);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, or an mcp pin's values`);
+    if (!timed) return;
+    for (const field of SCHEDULE_FIELDS) {
+      for (const [, used] of strings((trigger.source as Json)[field]).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) {
+        if (Object.hasOwn(parameters, used!) && parameters[used!]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.${field}, so it needs a default: the schedule the package ships is checked with it`);
+      }
+    }
   });
 
   // skills/<name>/SKILL.md, each named as its folder and described, as Agent Skills are; rules/*.md beside each.
@@ -310,21 +385,29 @@ export function readPackage(dir: string): Package {
     ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), checks, instructions, skills, evals,
   };
-  // What an apply makes, made here with a sample of each parameter and checked as POST /v2/agents and POST /v2/triggers
-  // check their bodies (all but the agent the trigger names, which an apply makes). A trigger's times are read as of the
-  // epoch, so its form is checked here and a date that has passed is the apply's refusal, never a server's start.
-  const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, SAMPLES[spec.type]]));
+  // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
+  // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
+  // trigger's times are read as of the epoch, so its form is checked here and a date that has passed is the apply's
+  // refusal, never a server's start.
+  const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? SAMPLES[spec.type]]));
   const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), mcp, defaultTools: [], grants: [] });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
-  // A trigger's input is its runs' input: the agent a package makes is agentic, so it takes DEFAULT_INPUT_SCHEMA's.
-  made.triggers.forEach((trigger, i) => {
-    const issues = triggerBodyIssues(TRIGGER_ADAPTERS, { ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, 0);
-    const input = isObject(trigger.target) ? trigger.target.input : undefined;
-    if (isObject(input)) issues.push(...inputIssues(input, DEFAULT_INPUT_SCHEMA, "target.input"));
-    for (const issue of issues) bad(MANIFEST, `triggers[${i}].${issue.field}: ${issue.message}`);
-  });
+  for (const issue of madeTriggerIssues(made.triggers, 0)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
+}
+
+/** What is wrong with the trigger bodies an apply makes (compiled's `triggers`), as POST /v2/triggers checks a body, all
+ *  but the agent each names (the one the apply makes), as of `now`, each field under `triggers.<i>`. A trigger's input is
+ *  its runs' input, and a package's agent is agentic, so each input is checked against DEFAULT_INPUT_SCHEMA too. The
+ *  validator runs it as of the epoch (a time's form only); an apply runs it before it makes anything. */
+export function madeTriggerIssues(made: Json[], now: number): InputIssue[] {
+  return made.flatMap((trigger, i) => {
+    const issues = triggerBodyIssues(TRIGGER_ADAPTERS, { ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, now);
+    const input = isObject(trigger.target) ? trigger.target.input : undefined;
+    if (isObject(input)) issues.push(...inputIssues(input, DEFAULT_INPUT_SCHEMA, "target.input"));
+    return issues.map((issue) => ({ ...issue, field: `triggers.${i}.${issue.field}` }));
+  });
 }
 
 /** Every package in `dir`: each folder in it, by name. One that does not check throws, so a broken one never serves. */
@@ -337,7 +420,7 @@ export function packageView(p: Package) {
   return {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, repository: p.repository ?? null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null,
-    mcp: p.mcp.map(({ server, tools, required, allow }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask" })) })), parameters: p.parameters, secrets: p.secrets,
+    mcp: p.mcp.map(({ server, tools, required, allow, pin }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
 }
@@ -359,14 +442,16 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
   const parameters: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(isObject(given) ? given : {})) {
     const spec = Object.hasOwn(p.parameters, key) ? p.parameters[key] : undefined;
-    const typed = spec && (spec.type === "integer" ? Number.isSafeInteger(value) : spec.type === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === spec.type);
+    const typed = spec && ofType(spec.type, value);
     if (!spec) issues.push({ field: `parameters.${key}`, reason: "not_allowed", message: `The package ${p.name} takes no parameter ${key}.` });
     else if (!typed) issues.push({ field: `parameters.${key}`, reason: "wrong_type", message: `parameters.${key} is a ${spec.type}: ${spec.description}` });
     else if (spec.pattern && !new RegExp(spec.pattern, "u").test(value as string)) issues.push({ field: `parameters.${key}`, reason: "bad_format", message: `parameters.${key} is ${spec.description}` });
     else parameters[key] = value as string | number | boolean;
   }
   for (const [key, spec] of Object.entries(p.parameters)) {
-    if (spec.required && isObject(given) && (!Object.hasOwn(given, key) || given[key] === undefined || given[key] === "")) issues.push({ field: `parameters.${key}`, reason: "missing", message: `parameters.${key} is required: ${spec.description}` });
+    const absent = isObject(given) && (!Object.hasOwn(given, key) || given[key] === undefined || given[key] === "");
+    if (spec.required && absent) issues.push({ field: `parameters.${key}`, reason: "missing", message: `parameters.${key} is required: ${spec.description}` });
+    else if (absent && spec.default !== undefined) parameters[key] = spec.default;
   }
   const overrides = body.overrides ?? {};
   if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?}" });
@@ -391,17 +476,39 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
  *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted beside
  *  the package's tools (or, when it names none, `defaultTools`, those this server gives a new agent), each at the
- *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[] }): { agent: Json; triggers: Json[] } {
+ *  owner's own setting; `grants`, the owner's answer at apply, alone are set to allow. A tool the package pins gets its
+ *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
+ *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
+ *  a send with no destination set never runs. While an agent's own settings keep no pin (`pins`, AGENT_LAYER_PINS by
+ *  default) a filled pin is not written: it is named in `unkept`, with its values, for the server's settings. */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; pins?: boolean }): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[]; unkept: { tool: string; pin: Record<string, PinValue> }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
   const tools = granted.length ? [...(p.tools ?? chosen.defaultTools), ...granted] : p.tools;
+  const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue> }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
+  const unpinned: { tool: string; parameters: string[] }[] = [];
+  const unkept: { tool: string; pin: Record<string, PinValue> }[] = [];
+  for (const { server, pin } of chosen.mcp) {
+    for (const [tool, args] of Object.entries(pin)) {
+      const name = mcpToolName(server, tool);
+      const each = Object.entries(args).map(([arg, value]) => [arg, pinFilled(value, parameters)] as const);
+      const empty = [...new Set(each.flatMap(([, one]) => one.empty))];
+      if (empty.length) {
+        settings[name] = { permission: "deny" };
+        unpinned.push({ tool: name, parameters: empty });
+      } else {
+        const filledPin = Object.fromEntries(each.map(([arg, one]) => [arg, one.value]));
+        if (chosen.pins ?? AGENT_LAYER_PINS) settings[name] = { ...settings[name], pin: filledPin };
+        else unkept.push({ tool: name, pin: filledPin });
+      }
+    }
+  }
   const definition = {
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
-    ...(tools ? { tools } : {}), ...(allowed.length ? { tool_settings: Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" }])) } : {}),
+    ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
   };
-  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json) };
+  return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned, unkept };
 }

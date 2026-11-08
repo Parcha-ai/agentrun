@@ -32,13 +32,17 @@
 // its execs one at a time and makes its writes wait for them; a 409 from another client's hold is tried again for up
 // to queueMs. Reads do not wait.
 //
-// Not yet: mountSpec and attach (an Archil folder in a computer is mounted by the computer's helper, module D6, with a
-// disk mount token this workspace has no way to make), and background programs, which need a computer (`process`
-// refuses every call, cause no-computer, as with any workspace that has none).
+// In a computer. mountSpec() is the Archil mount a computer makes of the root: the disk's id, its region and the root as
+// the folder (runKey), with the disk token from the function it was made with (the claim's, archil-claim.ts). attach()
+// goes through the shared attach path (attach.ts checkReadBack, then attachedWorkspace) with the check the claim builds:
+// the computer module's read-back of that mount under the claim's epoch. The read-back holds no token, so attach asks
+// for none. Once attached, the computer syncs the mount after each changing call (the attach contract), so attach adds no
+// sync of its own. Without a region and a token function, both are refused in words. Background programs need a
+// computer: here `process` refuses every call, cause no-computer, as with any workspace that has none.
 import type { MountSpec } from "@parcha/agentrun-computer";
 import { type ArchilDisk, type ArchilImage, type ArchilListPage, pinnedImage } from "./archil-disk.js";
 import { archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
-import { type AttachableComputer, type MountCheck, noProcesses } from "./attach.js";
+import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
 import {
@@ -62,10 +66,14 @@ export type ArchilWorkspaceOptions = {
   /** Told when an exec's cleanup leaves spill files behind (a failed delete, tried twice), with the keys and why; the
    *  exec's own result stands. Default: a process warning. */
   readonly onCleanupFailed?: (message: string) => void;
+  /** The disk's region (the server's Archil settings): a computer's mount names it. */
+  readonly region?: string;
+  /** The disk token a computer's mount takes, asked for when a mount is made (the claim's, archil-claim.ts). */
+  readonly mountToken?: () => string | Promise<string>;
 };
 
-/** Why an Archil workspace is not yet put in a computer. */
-const NOT_IN_A_COMPUTER = "an Archil folder in a computer is mounted by the computer's helper (module D6), not yet: this workspace has no disk mount token to give it";
+/** Why an Archil workspace made without what a mount needs is not put in a computer. */
+const NOT_IN_A_COMPUTER = "an Archil Workspace goes in a computer only when it is made with its disk's region and its disk token (the run's Archil claim): this one was not";
 
 const show = (path: string): string => JSON.stringify(path === "" ? "." : path);
 const statusOf = (error: unknown): number | undefined => {
@@ -117,6 +125,8 @@ class ArchilWorkspace implements Workspace {
   readonly #queueMs: number;
   readonly #image: ArchilImage | undefined;
   readonly #onCleanupFailed: (message: string) => void;
+  readonly #region: string | undefined;
+  readonly #mountToken: (() => string | Promise<string>) | undefined;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
   #execs: Promise<unknown> = Promise.resolve();
   #rooted = false;
@@ -136,6 +146,8 @@ class ArchilWorkspace implements Workspace {
     this.#queueMs = options.queueMs ?? DEFAULT_QUEUE_MS;
     this.#image = image;
     this.#onCleanupFailed = options.onCleanupFailed ?? ((message) => process.emitWarning(message, "ArchilWorkspaceCleanup"));
+    this.#region = options.region;
+    this.#mountToken = options.mountToken;
   }
 
   /** The key of relative path `rel` ("" for the root). */
@@ -641,14 +653,23 @@ class ArchilWorkspace implements Workspace {
   /** No computer: every background call is REFUSED, cause no-computer. */
   readonly process = noProcesses;
 
-  // TODO(D6): the archil MountSpec ({ kind: "archil", disk, region, folder, token }) and attach through attach.ts's
-  // checkReadBack and attachedWorkspace, once a disk mount token for the run is passed in (its source decided with D6).
-  async mountSpec(): Promise<MountSpec> {
-    throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
+  /** The Archil mount of the root with `token`: refused without a region and a token function. */
+  #mount(token: string): MountSpec {
+    if (this.#region === undefined || this.#mountToken === undefined) throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
+    return { kind: "archil", disk: this.#disk.id, region: this.#region, folder: this.#root, token };
   }
 
-  async attach(_computer: AttachableComputer, _check: MountCheck): Promise<Workspace> {
-    throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
+  /** The Archil mount a computer makes of this folder: the disk, its region, the root as the folder, and the token. */
+  async mountSpec(): Promise<MountSpec> {
+    this.#mount("");
+    return this.#mount(await this.#mountToken!());
+  }
+
+  async attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace> {
+    // The computer module's read-back never holds the token, so the mount is compared without one.
+    await checkReadBack(computer, this.#mount(""), check);
+    // The computer syncs the mount after each changing call (the attach contract): nothing more to make durable here.
+    return attachedWorkspace(this, computer, { synced: async () => true });
   }
 }
 
