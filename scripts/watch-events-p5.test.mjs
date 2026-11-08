@@ -1,6 +1,6 @@
 // pi 1.5 removed `watchEvents`, on which the live path was built. On the held branch pi/family-1.5 an adapter rebuilds it
-// on observeCommits (packages/pi-durable-disk/src/live-events.ts) for exactly two callers, until P5 moves the live path to
-// conversation.watch with ConversationTranscript and pi.live and deletes the adapter. This lists those callers: a new
+// on observeCommits (packages/pi-durable-disk/src/live-events.ts) for exactly one caller, until P5 moves the live path to
+// conversation.watch with ConversationTranscript and pi.live and deletes the adapter. This lists its callers: a new
 // one fails here, and so does one left after P5 (P5 empties CALLERS and deletes this test). Nothing in the sources
 // imports watchEvents from pi.
 import assert from 'node:assert/strict';
@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const ADAPTER = 'packages/pi-durable-disk/src/live-events.ts';
-/** The door's GET /events, and a recording's live pi lines: the adapter's callers until P5. */
-export const CALLERS = ['packages/harness/src/record.ts', 'packages/pi-durable-disk/src/serve.ts'];
+/** The door's GET /events: the adapter's caller until P5 (the recording's live pi lines went with #1922's reference host). */
+export const CALLERS = ['packages/pi-durable-disk/src/serve.ts'];
 
 /** Every .ts, .mts and .js file under each package's src/. */
 function sources() {

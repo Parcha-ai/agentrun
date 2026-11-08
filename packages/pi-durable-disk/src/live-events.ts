@@ -2,7 +2,7 @@
 // 1.1 gave as `watchEvents` (its harness/events.js, spec §9.4), which pi 1.5 removed. This adapter rebuilds it on 1.5:
 // the stored commits (Session.observeCommits) drive it, each translated from the conversation's state before and after
 // it, as 1.1 translated each publication. Held branch pi/family-1.5 until P5 moves the readers to conversation.watch with
-// ConversationTranscript and pi.live and deletes this (scripts/watch-events-p5.test.mjs lists the two callers).
+// ConversationTranscript and pi.live and deletes this (scripts/watch-events-p5.test.mjs lists its callers).
 //
 // The snapshot: the conversation's documents (pi.live, pi.inbox, pi.agent, pi.usage) are each followed by a document
 // observer (Session.observeDoc), attached atomically on the Session line: its value includes every commit before it and
