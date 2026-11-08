@@ -171,7 +171,7 @@ export interface E2BTimeouts {
 	pollMs: number;
 	/** How long create waits for the listing to show the new computer. */
 	listedMs: number;
-	/** Each root step of an Archil mount (the preflight, netlock, mount or revoke, serve), and its checkin at release. */
+	/** Each root step of an Archil mount (the preflight, mount or revoke, serve), and its checkin at release. */
 	mountMs: number;
 }
 

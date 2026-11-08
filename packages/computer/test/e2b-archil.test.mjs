@@ -111,7 +111,7 @@ test("E2B check(): an Archil spec takes network none, the run and epoch labels, 
 	assert.deepEqual(fake.calls, [], "no SDK call");
 });
 
-test("E2B create of an Archil computer: install, then preflight, netlock, the takeover, mount with the token on stdin, and serve, as root, before init starts; then the read-back", async () => {
+test("E2B create of an Archil computer: install, then preflight, the takeover, mount with the token on stdin, and serve, as root, before init starts; then the read-back", async () => {
 	const { provider, fake } = setup();
 	const created = await provider.create(SPEC);
 	assert.equal(created.ok, true, JSON.stringify(created));
@@ -124,14 +124,14 @@ test("E2B create of an Archil computer: install, then preflight, netlock, the ta
 
 	const { id } = newest(fake);
 	const events = eventsOf(fake, id).filter((what) => what.startsWith("run "));
-	assert.deepEqual(events.slice(0, 7), ["run install", "run preflight", "run netlock", "run mount", "run serve", "run init", "run stdio"]);
+	assert.deepEqual(events.slice(0, 6), ["run install", "run preflight", "run mount", "run serve", "run init", "run stdio"]);
 	const after = eventsOf(fake, id).slice(eventsOf(fake, id).indexOf("run init"));
 	assert.ok(after.includes("daemon mount.sync"), "the read-back asks serve for a sync");
 	assert.ok(after.indexOf("daemon files.read") < after.indexOf("daemon mount.sync"));
 	const runs = fake.rootRuns.filter((run) => run.sandbox === id);
-	assert.deepEqual(runs[2].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
-	assert.equal(runs[2].stdin, `${TOKEN}\n`, "the token, one line on the mount's stdin");
-	for (const [n, run] of runs.entries()) if (n !== 2) assert.equal(run.stdin, undefined, `${run.verb} gets no stdin`);
+	assert.deepEqual(runs[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
+	assert.equal(runs[1].stdin, `${TOKEN}\n`, "the token, one line on the mount's stdin");
+	for (const [n, run] of runs.entries()) if (n !== 1) assert.equal(run.stdin, undefined, `${run.verb} gets no stdin`);
 	noToken(runs.map(({ argv }) => argv), "the root commands' command lines");
 	noToken(fake.calls, "the SDK calls");
 	const init = fake.calls.find(([name, , kind]) => name === "commands.run" && kind === "init");
@@ -157,7 +157,7 @@ test("E2B create of an Archil computer: the takeover releases the run's lower ep
 	const created = await provider.create(SPEC);
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock", "revoke", "serve"]);
+	assert.deepEqual(verbsOf(fake, id), ["preflight", "revoke", "serve"]);
 	assert.equal(fake.rootRuns.find((run) => run.sandbox === id && run.verb === "revoke").stdin, `${TOKEN}\n`);
 	assert.deepEqual(verbsOf(fake, old.ref.id), ["checkin"]);
 	assert.ok(fake.kills.includes(old.ref.id));
@@ -174,7 +174,7 @@ test("E2B create of an Archil computer: a higher epoch fences it; nothing is mou
 	assert.equal(created.ok, false);
 	assert.match(created.error.message, /fenced/);
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock"]);
+	assert.deepEqual(verbsOf(fake, id), ["preflight"]);
 	assert.equal(indexOf(fake, id, "run init"), -1);
 	assert.ok(fake.kills.includes(id));
 	assert.ok(!fake.kills.includes(newer.ref.id), "the newer claim's computer is left");
@@ -187,7 +187,7 @@ test("E2B create of an Archil computer: a failed step refuses in words that neve
 	assert.match(created.error.message, /mount/);
 	noToken(created, "the refusal");
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock", "mount"]);
+	assert.deepEqual(verbsOf(fake, id), ["preflight", "mount"]);
 	assert.equal(indexOf(fake, id, "run init"), -1, "init never started");
 	assert.ok(fake.kills.includes(id));
 });
@@ -209,7 +209,7 @@ test("E2B create of an Archil computer: a mount that does not read back as asked
 	assert.match(created.error.message, /mount: declared/);
 	assert.match(created.error.message, /dsk-0000000000000bad/);
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock", "mount", "serve", "checkin"]);
+	assert.deepEqual(verbsOf(fake, id), ["preflight", "mount", "serve", "checkin"]);
 	assert.ok(indexOf(fake, id, "run checkin") < indexOf(fake, id, "kill"));
 });
 

@@ -132,7 +132,7 @@ export interface ModalTimeouts {
 	releaseMs: number;
 	/** The first pause between two of those polls; the pauses double up to 5 s. */
 	releasePollMs: number;
-	/** Each root step of an Archil mount through exec (the preflight, netlock, mount or revoke, serve), and its checkin at release. */
+	/** Each root step of an Archil mount through exec (the preflight, mount or revoke, serve), and its checkin at release. */
 	mountMs: number;
 }
 
@@ -985,7 +985,7 @@ export class ModalProvider implements ComputerProvider {
 
 	/**
 	 * The longest an Archil computer's entrypoint waits for the gate after the upload: each root step (the preflight,
-	 * netlock, mount, a revoke, serve and the gate) within mountMs, and the takeover's listing and its releases.
+	 * mount, a revoke, serve and the gate) within mountMs, and the takeover's listing and its releases.
 	 */
 	#archilMs(): number {
 		const { mountMs, listMs, releaseMs } = this.#timeouts;

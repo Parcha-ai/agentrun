@@ -104,7 +104,7 @@ test("Modal check(): an Archil spec takes network none, the run and epoch labels
 	assert.deepEqual(fake.calls, [], "no SDK call");
 });
 
-test("Modal create of an Archil computer: preflight, netlock, the takeover, mount with the token on stdin, serve and the gate, as root through exec, before init starts; then the read-back", async () => {
+test("Modal create of an Archil computer: preflight, the takeover, mount with the token on stdin, serve and the gate, as root through exec, before init starts; then the read-back", async () => {
 	const { provider, fake } = setup();
 	const created = await provider.create(SPEC);
 	assert.equal(created.ok, true, JSON.stringify(created));
@@ -127,7 +127,6 @@ test("Modal create of an Archil computer: preflight, netlock, the takeover, moun
 	const { id } = newest(fake);
 	assert.deepEqual(eventsOf(fake, id), [
 		"exec preflight",
-		"exec netlock",
 		"exec mount",
 		"exec serve",
 		"exec gate",
@@ -138,9 +137,9 @@ test("Modal create of an Archil computer: preflight, netlock, the takeover, moun
 		"daemon mount.sync",
 	]);
 	const runs = fake.rootRuns.filter((run) => run.sandbox === id);
-	assert.deepEqual(runs[2].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
-	assert.equal(runs[2].stdin, `${TOKEN}\n`, "the token, one line on the mount's stdin");
-	for (const [n, run] of runs.entries()) if (n !== 2) assert.equal(run.stdin, undefined, `${run.verb} gets no stdin`);
+	assert.deepEqual(runs[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder]);
+	assert.equal(runs[1].stdin, `${TOKEN}\n`, "the token, one line on the mount's stdin");
+	for (const [n, run] of runs.entries()) if (n !== 1) assert.equal(run.stdin, undefined, `${run.verb} gets no stdin`);
 	// Nowhere else: no argv, tag, image layer or other SDK call holds it.
 	noToken(fake.calls, "the SDK calls");
 	noToken(runs.map(({ argv }) => argv), "the root commands' argv");
@@ -163,7 +162,7 @@ test("Modal create of an Archil computer without daemonImage: the daemon is uplo
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const { id } = newest(fake);
 	const events = eventsOf(fake, id);
-	assert.deepEqual(events.slice(0, 6), ["exec upload", "exec preflight", "exec netlock", "exec mount", "exec serve", "exec gate"]);
+	assert.deepEqual(events.slice(0, 5), ["exec upload", "exec preflight", "exec mount", "exec serve", "exec gate"]);
 	noToken(fake.calls, "the SDK calls");
 	noToken(fake.uploads.map(({ argv }) => argv), "the upload's argv");
 });
@@ -174,14 +173,14 @@ test("Modal create of an Archil computer: the takeover releases the run's lower 
 	const created = await provider.create(SPEC);
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock", "revoke", "serve", "gate"]);
+	assert.deepEqual(verbsOf(fake, id), ["preflight", "revoke", "serve", "gate"]);
 	assert.equal(fake.rootRuns.find((run) => run.sandbox === id && run.verb === "revoke").stdin, `${TOKEN}\n`);
 	assert.deepEqual(verbsOf(fake, old.id), ["checkin"], "the old computer lets go of the folder");
 	assert.equal(fake.sandboxes.get(old.id).running, false, "and is gone");
 	const revoked = indexOf(fake, id, "exec revoke");
 	assert.ok(indexOf(fake, old.id, "daemon mount.sync") < indexOf(fake, old.id, "exec checkin"), "the old one's final sync, then its checkin");
 	assert.ok(indexOf(fake, old.id, "sandbox.terminate") < revoked, "the old one is terminated before the revoke");
-	assert.ok(indexOf(fake, id, "exec netlock") < indexOf(fake, old.id, "exec checkin"), "the new one is proven and locked before the old one goes");
+	assert.ok(indexOf(fake, id, "exec preflight") < indexOf(fake, old.id, "exec checkin"), "the new one is proven before the old one goes");
 	noToken(fake.calls, "the SDK calls");
 });
 
@@ -193,7 +192,7 @@ test("Modal create of an Archil computer: a higher epoch fences it; nothing is m
 	assert.match(created.error.message, /fenced/);
 	noToken(created, "the refusal");
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock"], "no mount, no revoke");
+	assert.deepEqual(verbsOf(fake, id), ["preflight"], "no mount, no revoke");
 	assert.equal(fake.sandboxes.get(id).running, false, "the new sandbox is terminated");
 	assert.equal(fake.sandboxes.get(newer.id).running, true, "the newer claim's computer is left");
 	assert.deepEqual(verbsOf(fake, newer.id), []);
@@ -206,7 +205,7 @@ test("Modal create of an Archil computer: a failed step refuses in words that ne
 	assert.match(created.error.message, /mount/);
 	noToken(created, "the refusal");
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock", "mount"]);
+	assert.deepEqual(verbsOf(fake, id), ["preflight", "mount"]);
 	assert.ok(!eventsOf(fake, id).includes("exec stdio"), "no bridge: init never started");
 	assert.equal(fake.sandboxes.get(id).running, false);
 
@@ -235,7 +234,7 @@ test("Modal create of an Archil computer: a mount that does not read back as ask
 	assert.match(created.error.message, /dsk-0000000000000bad/);
 	noToken(created, "the refusal");
 	const { id } = newest(fake);
-	assert.deepEqual(verbsOf(fake, id), ["preflight", "netlock", "mount", "serve", "gate", "checkin"]);
+	assert.deepEqual(verbsOf(fake, id), ["preflight", "mount", "serve", "gate", "checkin"]);
 	assert.ok(indexOf(fake, id, "exec checkin") < indexOf(fake, id, "sandbox.terminate"));
 	assert.equal(fake.sandboxes.get(id).running, false);
 });
