@@ -402,3 +402,74 @@ func TestBecomeRefusesWhenItCannotEmptyTheBoundingSet(t *testing.T) {
 		}
 	}
 }
+
+// NoNewPrivsChildArg runs this test binary as noNewPrivsChild (see TestMain).
+const NoNewPrivsChildArg = "no-new-privs-on-every-thread"
+
+// noNewPrivsChild holds threads of its own, sets no_new_privs on every thread, and prints each thread's NoNewPrivs
+// from /proc/self/task, one "tid value" line each; or "unsupported" in a binary that links cgo, where Go cannot make
+// one call on every thread. It runs as a process of its own, since no_new_privs is never cleared.
+func noNewPrivsChild() int {
+	const held = 4
+	ready := make(chan struct{})
+	for range held {
+		go func() {
+			runtime.LockOSThread()
+			ready <- struct{}{}
+			select {}
+		}()
+	}
+	for range held {
+		<-ready
+	}
+	if err := noNewPrivsOnEveryThread(); err != nil {
+		if errors.Is(err, syscall.ENOTSUP) {
+			fmt.Println("unsupported")
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	tasks, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	for _, task := range tasks {
+		status, err := os.ReadFile(filepath.Join("/proc/self/task", task.Name(), "status"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		value := "missing"
+		for line := range strings.Lines(string(status)) {
+			if rest, ok := strings.CutPrefix(line, "NoNewPrivs:"); ok {
+				value = strings.TrimSpace(rest)
+			}
+		}
+		fmt.Println(task.Name(), value)
+	}
+	return 0
+}
+
+func TestNoNewPrivsHoldsOnEveryThread(t *testing.T) {
+	cmd := exec.Command(os.Args[0], NoNewPrivsChildArg)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("the child: %v; stderr: %s", err, stderr.String())
+	}
+	if strings.TrimSpace(string(out)) == "unsupported" {
+		t.Skip("this test binary links cgo, where Go cannot make one call on every thread; computerd is built with CGO_ENABLED=0, and CGO_ENABLED=0 go test runs this")
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 5 {
+		t.Fatalf("the child has %d threads (%q); want its own and the 4 it holds", len(lines), out)
+	}
+	for _, line := range lines {
+		if !strings.HasSuffix(line, " 1") {
+			t.Errorf("thread %s: NoNewPrivs is not 1; every thread of init must hold no_new_privs", line)
+		}
+	}
+}

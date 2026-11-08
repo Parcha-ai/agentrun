@@ -70,14 +70,15 @@ function fileBox(files, hostWork) {
   return { asked, sent, source: codingSource(BOX, { ...(hostWork ? { hostWork } : {}), env: async () => env }) };
 }
 
-test("read opens an image the model rendered outside work/, at a path in the run's box, and answers it as an image under both of pi's result keys", async () => {
+test("read opens an image the model rendered outside work/, at a path in the run's box, and answers it as an image under pi's result key", async () => {
   const { asked, source } = fileBox({ "/tmp/view/frame.png": PNG });
   const read = source.tools.find((tool) => tool.name === "read");
   const result = await read.execute({ path: "/tmp/view/frame.png" }, api(), {});
   assert.deepEqual(asked.map((a) => [a.path, a.limit]), [["/tmp/view/frame.png", READ_IMAGE_MAX_BYTES + 1]], "read through the box, at the box's own path, at most one byte over the bound");
   assert.match(asked[0].script, /head -c "\$2" -- "\$1" \| base64/);
-  // pi 1.1 reads `content`, 1.2 and 1.3 `output`: the same blocks under each (result.ts).
-  for (const key of ["content", "output"]) {
+  // pi 1.5 reads a result's blocks under `output` only (result.ts).
+  assert.equal("content" in result, false, "no pi 1.1 `content` key beside it");
+  for (const key of ["output"]) {
     const image = result[key]?.find((block) => block.type === "image");
     assert.ok(image, `${key}: ${JSON.stringify(result).slice(0, 300)}`);
     assert.deepEqual(Object.keys(image).sort(), ["data", "mimeType", "type"]);

@@ -164,6 +164,13 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
   if (env.AGENT_MODEL_BASE_URL) {
+    // A gateway its key may not go to (the one base rule, gatewayBase) runs no model, in its words: capabilities read it
+    // not ready, a save warns, and a run is refused before its process starts, so the key is never handed to one.
+    try {
+      gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+    } catch (error) {
+      return { why: (error as Error).message, host: true, needs: "key" };
+    }
     if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
@@ -456,7 +463,7 @@ export const anthropicRefusal = (models: { getProvider(id: string): object | und
  *  for an Anthropic model; every other provider runs as it does without the setting. Never throws. */
 export async function providerModels(env: NodeJS.ProcessEnv) {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  // With the models serve lists beside pi-ai's catalog (local-models.ts): OpenRouter's particle-1.
+  // With the prices serve sets over pi-ai's catalog (local-models.ts): OpenRouter's particle-1 at its list price.
   const models = withLocalModels(builtinModels({ authContext: authContextOf(env) }));
   if (!env.ANTHROPIC_BASE_URL) return models;
   const [{ createProvider }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);

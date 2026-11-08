@@ -7,10 +7,10 @@
 // computer this file makes carries a label with this run's id and is removed by its exact name in the after hook.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/index.js";
@@ -106,6 +106,9 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 		chmodSync(dir, 0o755);
 		const other = join(dir, "computerd");
 		copyFileSync(daemonPath, other);
+		// Another daemon is other bytes: the provider binds a copy named by their sha256, so the same bytes from another
+		// path are the same daemon. A byte past the end of the ELF file changes the hash and nothing it runs.
+		appendFileSync(other, "\n");
 		chmodSync(other, 0o755);
 		const created = await new DockerProvider({ daemonPath: other }).create({
 			image: "debian:bookworm-slim",
@@ -116,13 +119,17 @@ describe("attach to a Docker computer by Docker's names for it", { skip: LIVE ? 
 		assert.equal(created.ok, true, JSON.stringify(created));
 		const { name } = created.value;
 		made.push(name);
+		const sha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+		const [inspected] = JSON.parse(docker("inspect", name));
+		const otherCopy = inspected.Mounts.find((mount) => mount.Destination === "/opt/agentrun/computerd").Source;
+		assert.equal(basename(otherCopy), `computerd-${sha(other)}`, "the other provider bound its copy of the other daemon");
 		for (const target of [{ id: name }, { labels: { [RUN_LABEL]: run, role: "other" } }]) {
 			const attached = await provider.attach(target);
 			assert.equal(attached.ok, false, JSON.stringify(attached));
 			assert.equal(attached.error.code, "refused");
 			assert.ok(attached.error.message.includes(name), attached.error.message);
-			assert.ok(attached.error.message.includes(`daemon mount: declared ${daemonPath}`), attached.error.message);
-			assert.ok(attached.error.message.includes(other), attached.error.message);
+			assert.match(attached.error.message, new RegExp(`daemon mount: declared \\S*/computerd-${sha(daemonPath)} bound read-only`), attached.error.message);
+			assert.ok(attached.error.message.includes(otherCopy), attached.error.message);
 		}
 		assert.equal(docker("inspect", "--format", "{{.State.Running}}", name).trim(), "true", "attach did not make it, so it leaves it");
 		docker("rm", "--force", "--volumes", name);

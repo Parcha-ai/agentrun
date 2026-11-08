@@ -142,7 +142,7 @@ test("the signature covers the exact bytes: a body serialised again differently 
     const [firing] = await firings(api, id, n + 1);
     assert.equal(firing.status, "started", `${type}: ${JSON.stringify(firing)}`);
     const { content } = JSON.parse(await readFile(join(runDir(data, firing.run_id), "serve.json"), "utf8")).input;
-    assert.ok(content.includes(`<trigger-payload source="webhook" untrusted>\n${text}\n</trigger-payload>`), content);
+    assert.ok(content.includes(`<trigger-payload source="webhook" scheme="standard" untrusted>\n${text}\n</trigger-payload>`), content);
     await follow(api, firing.run_id, ["completed"]);
   }
 });

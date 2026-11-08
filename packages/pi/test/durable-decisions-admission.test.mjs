@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { DECISION_ROW_VERSION, appendDecision, readDecisions } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-decisions-admission-'));
 after(() => rmSync(root, { recursive: true, force: true }));
-const open = async (file) => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+const open = async (file) => Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
 const row = (extra = {}) => ({
   v: DECISION_ROW_VERSION, at: '2026-10-28T00:00:00.000Z', node: 'page guard', kind: 'judge', item: null, execution_path: null, request_sha256: 'a'.repeat(64),
   request_bytes: 4000, model: 'jev-1.14.0', questions: {}, answers: {}, rule: null, action: null, usage: { input_tokens: 1000, output_tokens: 0 }, cost_usd: 0.000042, latency_ms: 5, ...extra,

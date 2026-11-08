@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,6 +39,8 @@ func TestMain(m *testing.M) {
 			os.Exit(execrun.Guard())
 		case "stdio":
 			os.Exit(daemon.Bridge(daemon.SocketPath(), os.Stdin, os.Stdout, os.Stderr))
+		case daemon.NoNewPrivsChildArg:
+			os.Exit(daemon.NoNewPrivsChild())
 		}
 	}
 	if (len(os.Args) == 3 || len(os.Args) == 4) && os.Args[1] == "init" {
@@ -51,7 +54,12 @@ func TestMain(m *testing.M) {
 				os.Exit(99)
 			}
 		}
-		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), lifetime.New(deadline, most), log.New(os.Stderr, "computerd: ", 0)))
+		// egressEnv, when set, is the relay's listen address and the proxy's socket, as "<address>|<socket>".
+		var relay daemon.Egress
+		if value := os.Getenv(egressEnv); value != "" {
+			relay.Listen, relay.Socket, _ = strings.Cut(value, "|")
+		}
+		os.Exit(daemon.Init("0.0.0-test", daemon.SocketPath(), lifetime.New(deadline, most), relay, log.New(os.Stderr, "computerd: ", 0)))
 	}
 	// The drop is tested in a test binary without cgo, as computerd is built: a plain go test, with cgo on, runs these
 	// tests in one built again with CGO_ENABLED=0.
@@ -60,6 +68,9 @@ func TestMain(m *testing.M) {
 
 // patience bounds every wait in these tests. The host may be loaded: it is never a claim about speed.
 const patience = 30 * time.Second
+
+// egressEnv gives the init this test binary runs an egress relay: "<listen address>|<socket>".
+const egressEnv = "COMPUTERD_TEST_EGRESS"
 
 type initProcess struct {
 	cmd    *exec.Cmd
@@ -102,6 +113,12 @@ func startInitUntil(t *testing.T, deadline time.Time) *initProcess {
 // startInitWith runs init with a deadline and, unless it is zero, the most it may move to. Init gets no DISPLAY.
 func startInitWith(t *testing.T, deadline, most time.Time) *initProcess {
 	t.Helper()
+	return startInitEnv(t, deadline, most)
+}
+
+// startInitEnv is startInitWith with more environment for init: an egress relay's (egressEnv).
+func startInitEnv(t *testing.T, deadline, most time.Time, env ...string) *initProcess {
+	t.Helper()
 	socket := socketIn(t, 0o700)
 	in := &initProcess{socket: socket, log: &bytes.Buffer{}, ended: make(chan error, 1)}
 	args := []string{"init", deadline.UTC().Format(time.RFC3339Nano)}
@@ -115,6 +132,7 @@ func startInitWith(t *testing.T, deadline, most time.Time) *initProcess {
 		}
 	}
 	in.cmd.Env = append(in.cmd.Env, daemon.SocketEnv+"="+socket)
+	in.cmd.Env = append(in.cmd.Env, env...)
 	in.cmd.Stderr = in.log
 	if err := in.cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -640,5 +658,138 @@ func TestDeadlineExtendIsRefusedOnceInitIsEnding(t *testing.T) {
 	}
 	if !strings.Contains(r.Error.Message, "ending") || !strings.Contains(r.Error.Message, "deadline") {
 		t.Errorf("deadline.extend while init was ending was refused, but not in words: %q (%s)", r.Error.Message, r.Error.Data.Kind)
+	}
+}
+
+// echoProxy listens on a Unix socket and answers each connection with "proxy:" and all it read once the client's side
+// ends: a stand-in for the egress proxy.
+func echoProxy(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "egress-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "egress.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				read, _ := io.ReadAll(conn)
+				_, _ = conn.Write(append([]byte("proxy:"), read...))
+			}()
+		}
+	}()
+	return socket
+}
+
+func TestInitWithAnEgressSocketRelaysItsLoopbackToItAndSaysWhere(t *testing.T) {
+	socket := echoProxy(t)
+	in := startInitEnv(t, time.Now().Add(time.Hour), time.Time{}, egressEnv+"=127.0.0.1:0|"+socket)
+	said := regexp.MustCompile(`the egress relay listens on (127\.0\.0\.1:\d+) and relays to (\S+)`)
+	var address string
+	for bound := time.Now().Add(patience); address == ""; time.Sleep(10 * time.Millisecond) {
+		if found := said.FindStringSubmatch(in.log.String()); found != nil {
+			if found[2] != socket {
+				t.Fatalf("init relays to %s, not %s: %s", found[2], socket, in.log)
+			}
+			address = found[1]
+		} else if time.Now().After(bound) {
+			t.Fatalf("init did not say where its egress relay listens: %s", in.log)
+		}
+	}
+	conn, err := net.DialTimeout("tcp", address, patience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(patience))
+	if _, err := conn.Write([]byte("CONNECT pypi.org:443 HTTP/1.1\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.(*net.TCPConn).CloseWrite()
+	back, err := io.ReadAll(conn)
+	if err != nil || string(back) != "proxy:CONNECT pypi.org:443 HTTP/1.1\r\n\r\n" {
+		t.Fatalf("through init's relay: %q, %v", back, err)
+	}
+	// Every program init starts is told the relay is its proxy, and nothing else of init's environment.
+	var ran struct {
+		ExitCode *int   `json:"exitCode"`
+		Stdout   []byte `json:"stdout"`
+	}
+	c := dial(t, in.socket)
+	c.ok("exec.run", map[string]any{"argv": []string{"sh", "-c", "echo $HTTP_PROXY $HTTPS_PROXY $http_proxy $https_proxy $NO_PROXY $no_proxy"}, "timeoutMs": patience.Milliseconds()}, &ran)
+	proxy := "http://" + address
+	want := strings.Join([]string{proxy, proxy, proxy, proxy, "localhost,127.0.0.1,::1", "localhost,127.0.0.1,::1"}, " ") + "\n"
+	if ran.ExitCode == nil || *ran.ExitCode != 0 || string(ran.Stdout) != want {
+		t.Fatalf("a program's proxy variables: %+v %q; want %q", ran, ran.Stdout, want)
+	}
+	c.ok("exec.run", map[string]any{"argv": []string{"sh", "-c", "echo $HTTP_PROXY"}, "env": map[string]string{"HTTP_PROXY": "http://elsewhere.example"}, "timeoutMs": patience.Milliseconds()}, &ran)
+	if string(ran.Stdout) != "http://elsewhere.example\n" {
+		t.Fatalf("a request's own HTTP_PROXY is the program's: %q", ran.Stdout)
+	}
+	if err := in.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-in.ended:
+		in.ended <- err
+	case <-time.After(2 * patience):
+		t.Fatalf("init did not end after SIGTERM: %s", in.log)
+	}
+	if conn, err := net.DialTimeout("tcp", address, time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatalf("init's relay still listened on %s after init ended", address)
+	}
+}
+
+func TestInitWithNoEgressSocketGivesItsProgramsNoProxyVariables(t *testing.T) {
+	in := startInit(t)
+	var ran struct {
+		Stdout []byte `json:"stdout"`
+	}
+	dial(t, in.socket).ok("exec.run", map[string]any{"argv": []string{"sh", "-c", "echo x$HTTP_PROXY$HTTPS_PROXY$NO_PROXY"}, "timeoutMs": patience.Milliseconds()}, &ran)
+	if string(ran.Stdout) != "x\n" {
+		t.Fatalf("a program of an init with no relay has proxy variables: %q", ran.Stdout)
+	}
+}
+
+func TestInitRefusesToStartWhenItsEgressRelayCannotListen(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	cmd := exec.Command(os.Args[0], "init", time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))
+	cmd.Env = append(os.Environ(), daemon.SocketEnv+"="+socketIn(t, 0o700), egressEnv+"="+taken.Addr().String()+"|"+echoProxy(t))
+	var words bytes.Buffer
+	cmd.Stderr = &words
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("init with its relay's address taken: %v, want exit 1: %s", err, words.String())
+		}
+	case <-time.After(patience):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("init with its relay's address taken still ran: %s", words.String())
+	}
+	if !strings.Contains(words.String(), "egress relay") || !strings.Contains(words.String(), taken.Addr().String()) {
+		t.Fatalf("init did not say why in words: %q", words.String())
 	}
 }

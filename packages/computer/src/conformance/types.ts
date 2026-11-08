@@ -1,4 +1,5 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
+import type { MountKind, MountSpec } from "../mount.js";
 import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
@@ -7,12 +8,13 @@ import type { StartedFixture } from "./fixture.js";
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "screen" | "input" | "touch" | "apps" | "lifetime";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
- * stops a computer and keeps it, or a provider method that is optional (extend, stream), declared by being there.
+ * stops a computer and keeps it, a mount kind capabilities().mount declares, or a provider method that is optional
+ * (extend, stream), declared by being there.
  */
 export type Capability =
 	| Group
@@ -23,8 +25,24 @@ export type Capability =
 	| "user:root"
 	| "user:uid"
 	| "release:stop"
+	| "mount:bind"
+	| "mount:archil"
 	| "extend"
 	| "stream";
+
+/**
+ * A fresh run's folder for one mount kind, made by the provider's conformance module: the mount that reaches it, and its
+ * outside, where a computer does not run (the folder on the host for a bind, the disk's file API for Archil).
+ */
+export interface RunFolder {
+	mount: MountSpec;
+	/** A file of the folder, by its path relative to the folder, read from outside; undefined when there is none. */
+	read(path: string): Promise<Uint8Array | undefined>;
+	/** Writes a file of the folder from outside, by its path relative to the folder. */
+	write(path: string, data: Uint8Array): Promise<void>;
+	/** Removes the folder and what is in it; the runner calls it when the case ends. */
+	close(): Promise<void>;
+}
 
 /**
  * What a computer of this kind and daemon mode must declare: a case that needs one of these fails Core when it is
@@ -91,6 +109,8 @@ export interface CaseContext {
 	dir(): Promise<string>;
 	/** The same provider with a daemon that reports another version; skips the case when none was given. */
 	drifted(): Promise<ComputerProvider>;
+	/** A fresh run's folder for this mount kind, closed when the case ends; skips the case when the run can make none. */
+	runFolder(kind: MountKind): Promise<RunFolder>;
 	/**
 	 * Starts the run's fixture in the case's computer and waits until it is up: an app that logs each input event it
 	 * gets, so a case checks what an action did with no model. It is stopped when the case ends. Skips the case when the
@@ -173,6 +193,19 @@ export interface ConformanceReport {
 	 * after their case had ended (each deleted as it came).
 	 */
 	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[] };
+	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
+	notes?: string[];
+	/**
+	 * What create's read-back recorded of each computer the run made that does not refuse it (a probe target that
+	 * accepted and sent nothing back), one entry per note, naming the computer, in the order they came; absent when none.
+	 */
+	computerNotes?: ComputerNote[];
+}
+
+/** One note a create returned: the computer's name and the note's words. */
+export interface ComputerNote {
+	computer: string;
+	note: string;
 }
 
 export interface ConformanceOptions {
@@ -185,8 +218,15 @@ export interface ConformanceOptions {
 	cases?: Case[];
 	/** The same provider with a daemon that reports another version, for the drift cases. */
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
+	/**
+	 * A fresh run's folder for a mount kind, for the mount cases: the provider's conformance module makes it (a folder on
+	 * the Docker host for a bind), or gives undefined for a kind it cannot make. Without it, those cases skip in words.
+	 */
+	mountFor?: (kind: MountKind) => Promise<RunFolder | undefined> | RunFolder | undefined;
 	/** Called as each case ends. */
 	onResult?: (result: CaseResult) => void;
+	/** Notes the provider module gives for the report, printed before the verdict. */
+	notes?: string[];
 	/** The longest one case may run; default 180 s. */
 	caseTimeoutMs?: number;
 	/** How long a case waits on a program; default 30 s. */

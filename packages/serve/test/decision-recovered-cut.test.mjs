@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { decisionRecovery, durableDecisions } from "@parcha/agentrun-pi/durable";
@@ -21,7 +22,7 @@ const holdsRun = (text) => {
 
 test("a decision error cut at 64 KB with a held value across the cut, read back from the run's store: marked cut, and served with no part of it", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "decision-cut-")), "run.sqlite");
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
   // As the DSL stores it: the first 64 KB of a provider's error that repeats the value, the cut inside a copy.
   const error = `refused ${`${HELD} `.repeat(130)}`.slice(0, 65_536);
   const receipt = {

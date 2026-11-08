@@ -904,12 +904,11 @@ function siteTool<D extends PageDriver>(c: Custody<D>, sites: NonNullable<Browse
   });
 }
 
-/** pi-durable 1.2 on: a Session that a storage error failed ends with reason "failed" (`closed`), and close begins at
- *  once (`subscribeClose`). Before 1.2 a Session has no such end, and a failed commit poisons it with no sign. */
+/** A Session that a storage error failed ends `{ kind: "failed" }` (`closed`, pi-durable's SessionEnd), and close begins
+ *  at once (`subscribeClose`). */
 function endingOf(harness: Harness): Custody<PageDriver>["ending"] {
-  const closed = (harness as unknown as { closed?: Promise<{ reason: string }> }).closed;
-  if (typeof closed?.then !== "function") return null;
-  const ending = { closing: false, failed: closed.then((end) => end.reason === "failed", () => false) };
+  const closed = harness.closed;
+  const ending = { closing: false, failed: closed.then((end) => end.kind === "failed", () => false) };
   try { harness.subscribeClose(() => { ending.closing = true; }); } catch { ending.closing = true; }
   return ending;
 }

@@ -79,6 +79,8 @@
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
+    "listTemplates": ["template", "list"],
+    "applyTemplate": ["template", "apply"],
     "listToolKeys": ["tool-keys", "list"],
     "saveToolKey": ["tool-keys", "save"],
     "deleteToolKey": ["tool-keys", "delete"],

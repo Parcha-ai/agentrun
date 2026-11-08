@@ -30,6 +30,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == staleForegroundCommand {
 		os.Exit(staleForeground())
 	}
+	if len(os.Args) >= 3 && os.Args[1] == countSignalsCommand {
+		os.Exit(countSignals(os.Args[2:]))
+	}
 	os.Exit(m.Run())
 }
 
@@ -275,6 +278,10 @@ func TestTheRingKeepsTheLastBytesAndCountsWhatItDropped(t *testing.T) {
 	tbl := table(t, process.Options{RingBytes: 16})
 	p := start(t, tbl, process.StartParams{Argv: []string{"printf", "0123456789abcdefghij"}})
 	wait(t, tbl, p.ID)
+	// wait answers once the program has ended; its last bytes may still be on their way into the ring. A reader reads
+	// until exited, so the reads below see the whole ring however the pump and the wait are scheduled. What this first
+	// pass reads depends on how the pump split the bytes; the reads below check the ring.
+	readAll(t, tbl, p.ID, "stdout")
 	res, err := tbl.Read(context.Background(), process.ReadParams{ID: p.ID, Stream: "stdout", Offset: off(0)})
 	if err != nil || string(res.Data) != "456789abcdefghij" || res.Dropped != 4 || res.NextOffset != 20 || !res.Exited {
 		t.Fatalf("read below the ring: %+v %v", res, err)

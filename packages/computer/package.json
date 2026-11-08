@@ -7,7 +7,8 @@
     "agentrun",
     "computer",
     "sandbox",
-    "docker"
+    "docker",
+    "daytona"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -37,8 +38,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",
     "test:docker": "node --test --test-timeout=900000 test/docker/*.test.mjs",
+    "test:daytona": "node --test --test-timeout=1800000 test/daytona/*.test.mjs",
     "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
-    "conformance": "node dist/conformance/cli.js"
+    "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",
+    "conformance": "node dist/conformance/cli.js",
+    "daytona:sweep": "node dist/conformance/daytona-sweep.js"
   },
   "repository": {
     "type": "git",

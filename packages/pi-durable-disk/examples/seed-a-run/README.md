@@ -79,12 +79,10 @@ of the version you installed):
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 # save main.ts here, then
 node main.ts
 ```
-
-pi 1.4 is not supported yet; a later release widens the range.
 
 **From a checkout:**
 
