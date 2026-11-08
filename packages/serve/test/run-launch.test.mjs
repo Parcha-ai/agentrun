@@ -21,6 +21,39 @@ test("a launch body round-trips its per-run fields", () => {
   assert.deepEqual(read, launch);
 });
 
+test("a launch body round-trips every field a run's spec is built from", () => {
+  const launch = {
+    input: { content: "go" },
+    title: "A full run",
+    place: { mode: "sandbox", box: "docker" },
+    harness: "codex",
+    model: { provider: "anthropic", modelId: "claude-x" },
+    effort: "high",
+    maxCostUsd: 5,
+    capMode: "strict",
+    plane: { model: "a-model" },
+    approvers: true,
+    documents: "/docs",
+    boxAllow: ["example.com", "10.0.0.0/8"],
+    followUp: true,
+  };
+  assert.deepEqual(readLaunchBody(launchBody(launch)), launch);
+});
+
+test("box_allow round-trips the 'none' sentinel as well as a list", () => {
+  const read = readLaunchBody(launchBody({ input: {}, title: "", place: { mode: "runner" }, boxAllow: "none" }));
+  assert.equal(read.boxAllow, "none");
+});
+
+test("a built-in learning run's launch body reads without loss", () => {
+  // tl-jobs writes this exact body for a learning run (untangle/cutover-learning-run); the factory picks by its harness.
+  const body = { harness: "learning", input: { runId: "run-1" }, title: "Learn from run-1", place: { mode: "runner" } };
+  const read = readLaunchBody(body);
+  assert.deepEqual(read, { input: { runId: "run-1" }, title: "Learn from run-1", place: { mode: "runner" }, harness: "learning" });
+  // The loop factory reads the harness off the stored body itself, not only through readLaunchBody.
+  assert.equal(body.harness, "learning");
+});
+
 test("a launch body with no optional fields reads them absent", () => {
   const read = readLaunchBody(launchBody({ input: { ask: "x" }, title: "", place: { mode: "runner" } }));
   assert.deepEqual(read, { input: { ask: "x" }, title: "", place: { mode: "runner" } });
