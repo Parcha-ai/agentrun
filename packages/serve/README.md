@@ -1529,7 +1529,7 @@ change repeats fires once, at its first pass; one it skips fires at the first ti
 reckoned from the last nominal one, so a timer that wakes late does not drift. Every run a trigger starts is capped: by
 the target's `max_cost_usd`, else by the agent's default (its definition's `max_cost_usd`) as it stands when the firing
 starts. A target with neither is `422`, and a firing that finds neither (the default removed since) fails, so no trigger
-starts an uncapped run. A workflow agent is refused, since a workflow run's spend is not capped here. Each run's
+starts an uncapped run, a workflow agent's included ([workflow runs](#a-workflow-run-under-its-cap)). Each run's
 input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
 trigger and the firing, in the run's view and in the runs lists (`GET /v2/runs`, `GET /v2/agents/{id}/runs`) alike;
 a run a caller started has `trigger: null`.
@@ -1605,7 +1605,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd` (agentic only), the agent's default cap, kept by an edit that leaves it out and cleared only by 0, and `cap_mode` (agentic only), how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)). A field the store does not keep (`input_schema`, `output_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -2297,11 +2297,11 @@ log shows `by: {user: true, via: "console"}` at the commit's time, never the not
 
 ## Spend cap
 
-An agentic run may name `max_cost_usd` (a workflow run may not: `422`). A run that names none takes its agent's default,
+A run may name `max_cost_usd`, an agentic run or a workflow run ([below](#a-workflow-run-under-its-cap)). A run that names none takes its agent's default,
 the `max_cost_usd` of the revision it runs, kept with the revision; a run's own cap wins, since its caller chose it. A
 definition's `max_cost_usd` above 0 sets that default, and 0 clears it (no default); anything else is `422`. An edit that
 leaves the field out keeps the agent's default, as it keeps its harness and place: leaving a field out never removes a
-spend limit. A workflow definition keeps none: above 0 is `422 not_allowed`, and 0 changes nothing. The cap is checked in the run's own process
+spend limit. A workflow definition keeps one the same way. The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus what this request is expected to cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). A request costs its input, plus the output it
@@ -2480,8 +2480,8 @@ message, starts a turn that is judged as any other. A paid call refused because 
 still ends the run `failed`.
 
 `PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's current
-cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap or a workflow
-run; `409 not_continuable` for an ended run). The same raise sent again (a retry), within that tail, changes nothing and
+cap, its last raise included, by more than a float's tail (1e-9; `422` otherwise, and for a run with no cap;
+`409 not_continuable` for an ended run). A workflow run's raise is [below](#a-workflow-run-under-its-cap). The same raise sent again (a retry), within that tail, changes nothing and
 answers as the first did. The run's serve.json keeps the raise before any answer, with each raise in `cap_raised`, so its
 next process opens under it, as does a server started again; a raise it could not keep is not taken (an error answers it),
 and the same raise again is taken anew. A run paused at its cap goes on: the answer is `{run_id, max_cost_usd, resumed: true,
@@ -2514,6 +2514,34 @@ A run's `cost.usd` is $0 before its first model request (a run cancelled before 
 response reported no price or a request was cut before its end (a stop, a cancel, a crash): no request costs nothing,
 but a request of unknown price is unknown, never $0. A stopped request shows `null` whether or not its cap counted it at
 its held worst case.
+
+### A workflow run under its cap
+
+A workflow run is capped by the same checks, in its own process, each before the paid step is sent:
+
+| Step | Held at | Where |
+|---|---|---|
+| A model node's request | its expected cost, as an agentic run's request | the run's models (`cap.ts` capModels) |
+| A call node's `llm` call | the same | the same, as a side request |
+| A call node's paid tool call (Parallel's search or extract) | its fee | `paidCall`, as an agentic run's |
+| A decision on Parallel | its list price for one request, $0.001 | before the driver admits it (`decision-cap.ts`) |
+| A decision on Jev | TypeSafe's published price, $0.042 a million input tokens, one token a byte of its state and questions | the same |
+| A decision on an OpenRouter Decisions model | its catalog price: per request, per image, per input token, and per output token for 256 a question (`expected`) or the catalog's most (`strict`) | the same |
+
+What a decision charged is booked in the run's store as the cap counted it, so a run opened again counts it once. A step
+the cap has no room for is not sent and waits where it stands: the run is `input_required`, state `waiting`, with
+`pending.kind` budget and `pending.node` the node's label. A model node's request waits unsent; a call node's call
+ends its effect held, sending nothing, and goes again as a new effect once raised, never as the tool's own failure, which
+a map that collects failed items would take for an item's; a decision waits before the driver admits it, so it is never
+a request asked and unanswered. What a call node waited is not counted against its deadline. A pause holds the run's
+process for 10 minutes, then lets it go (nothing in flight but the waits): the run stays paused, and no process is
+started for it. `PATCH /runs/{run_id}` raises the cap as for an agentic run, with no follow-up turn: a waiting process
+judges its step again under the new cap, and a run whose process was let go is opened again under it, resuming from its
+journal, so no completed node is sent again (`resumed: true`, no `message_id`). A capped start is refused before anything is sent, as an
+agentic run's is, when a model one of its nodes or `llm` calls runs on has no price here, or a decision pins an
+OpenRouter Decisions model the catalog lists no price for: `409 agent_not_runnable`, each in `error.fields` with the
+node's label and its fix. A step no cap fixes all the same (a spend no one knows) ends the run `failed`,
+`spend_cap_reached`, in the cap's words, after the node's label.
 
 ## The faux model
 

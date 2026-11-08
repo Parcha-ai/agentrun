@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DockerProvider } from "../docker.js";
+import { type DockerDesktopOptions, DockerProvider } from "../docker.js";
 import type { ComputerProvider } from "../provider.js";
 
 export interface DockerConformance {
@@ -20,10 +20,12 @@ export interface DockerConformanceOptions {
 	docker?: string;
 	/** The longest `docker version` may take before it is killed and the run fails; default 30 s. */
 	timeoutMs?: number;
+	/** Desktop computers (kind desktop) on an image with an X server, such as test/fixtures/desktop/Dockerfile's. */
+	desktop?: DockerDesktopOptions;
 }
 
 /** Throws in words when Docker cannot be asked its architecture, in bounded time, or the daemon for it is not built. */
-export function dockerConformance({ docker = "docker", timeoutMs = 30_000 }: DockerConformanceOptions = {}): DockerConformance {
+export function dockerConformance({ docker = "docker", timeoutMs = 30_000, desktop }: DockerConformanceOptions = {}): DockerConformance {
 	let arch: string;
 	try {
 		arch = execFileSync(docker, ["version", "--format", "{{.Server.Arch}}"], {
@@ -38,7 +40,7 @@ export function dockerConformance({ docker = "docker", timeoutMs = 30_000 }: Doc
 	}
 	const daemonPath = fileURLToPath(new URL(`../computerd-linux-${arch}`, import.meta.url));
 	if (!existsSync(daemonPath)) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
-	const provider = new DockerProvider({ daemonPath, docker });
+	const provider = new DockerProvider({ daemonPath, docker, ...(desktop ? { desktop } : {}) });
 	let dir: string | undefined;
 	let built: Promise<ComputerProvider> | undefined;
 	const drifted = () =>
@@ -58,7 +60,7 @@ export function dockerConformance({ docker = "docker", timeoutMs = 30_000 }: Doc
 						return reject(new Error(`building a daemon of another version for the drift case: ${why}`));
 					}
 					chmodSync(out, 0o755);
-					resolve(new DockerProvider({ daemonPath: out, docker }));
+					resolve(new DockerProvider({ daemonPath: out, docker, ...(desktop ? { desktop } : {}) }));
 				},
 			);
 		}));

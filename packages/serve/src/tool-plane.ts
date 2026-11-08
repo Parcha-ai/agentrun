@@ -59,6 +59,10 @@ export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", 
 export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "web_fetch", "web_search", "learned_workflow"];
 /** The permissions `name` may be set to. */
 export const permissionsOf = (name: string): readonly Permission[] => (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name ? permissionsOf(SHELL_FAMILY[name]!) : ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
+/** A tool's permission as this server applies it to an agent that sets none, as capabilities and an MCP server's read
+ *  give it: the one in force under the server's settings (`permission`), the owner's default (`default_permission`) and
+ *  those it may be set to. An agent's read gives the same, the agent's own layer over it (agentTools). */
+export const serverGate = (name: string, settings: ToolSettingsMap) => ({ permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)] });
 /** The run's own tools beyond the table, each its own settings key, allowed by default like a table tool: the learned
  *  workflow a run's pin names runs as `learned_workflow` (learned-workflow.ts LEARNED_WORKFLOW_TOOL). */
 export const SERVE_OWN_TOOLS: readonly string[] = ["learned_workflow"];

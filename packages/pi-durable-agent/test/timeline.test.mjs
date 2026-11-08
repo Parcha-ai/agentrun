@@ -21,7 +21,7 @@ const KINDS = new Set([
 const page = (url, title) => `url: ${url}\ntitle: ${title}\nevidence: evidence/x.json\n---\nbody`;
 /** Userinfo is built at run time, so no credential-shaped URL sits in the source. */
 const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
-const SESSION = /Opened a live browser session/;
+const SESSION = /A live browser session started/;
 /** The rendered lines, without the cost row and the session-opened row, which most tests are not about. */
 const lines = (rows, options) =>
   renderText(groupTimeline(rows.filter((row) => row.kind !== "usage" && !SESSION.test(row.summary ?? ""))), options).split("\n").filter(Boolean);
