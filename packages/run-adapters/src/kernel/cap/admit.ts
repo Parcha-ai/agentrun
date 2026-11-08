@@ -3,7 +3,7 @@
 // way hold, plus what this step needs at the least, must stay within the cap, read before every check so a raise holds
 // from the next paid step. Each step holds under its own id until it settles; its start mark (with its hold) is written
 // before it leaves, its end mark (with what booking.ts booked) before its result comes back.
-import { Ledger } from "./ledger.js";
+import { Ledger, StepNotSettled } from "./ledger.js";
 import type { CapMarks, StartMark } from "./marks.js";
 import { ownCostsOf, spendOf, toldIn } from "./recover.js";
 import { capRule, noteFor, priced } from "./rule.js";
@@ -80,6 +80,10 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
   return {
     async admit(input: CapRequest): Promise<Admission> {
       const request = input.kind === "decision" ? asModel(input) : input;
+      // An id whose last step's marks are not all written is not used again until its settle is retried: else that retry
+      // finds the new step's hold and settles it at the old step's figure.
+      const last = settlements.get(request.id);
+      if (marks && last && (!last.endWritten || (last.tells && !last.toldWritten))) throw new StepNotSettled(request.id);
       const extra: Partial<StartMark> = request.kind === "tool" ? { tool: request.name } : { model: request.model.id, ...(request.side ? { side: true as const } : {}) };
       // Read before every check: a raise holds from the next paid step.
       const capUsd = options.capUsd();
