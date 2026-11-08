@@ -193,6 +193,38 @@ test("a link at work/background starts nothing, and a closed stdin says so", asy
   assert.equal(await errorOf(r.invoke("bash_input", { id: "2", text: "x" }, { hands })), "background process 2's stdin is closed: an earlier bash_input closed it");
 });
 
+test("a start cancelled while it waits its turn never starts, and answers as aborted", async (t) => {
+  const { hands } = localHands({ processes: true });
+  t.after(() => hands.processes.reap());
+  let release;
+  const held = new Promise((done) => (release = done));
+  hands.processes.beforeStart = () => held;
+  const r = registry();
+  const first = r.invoke("bash_background", { command: "sleep 30" }, { hands });
+  const cancel = new AbortController();
+  const second = r.invoke("bash_background", { command: "sleep 30" }, { hands, signal: cancel.signal });
+  await new Promise((done) => setTimeout(done, 50));
+  cancel.abort();
+  hands.processes.beforeStart = async () => {};
+  release();
+  assert.match((await first).text, /^Started background process 1 /);
+  await assert.rejects(second, (error) => error.name === "AbortError");
+  assert.equal(hands.processes.starts, 1);
+  assert.match((await r.invoke("bash_list", {}, { hands })).text, /^1 of at most 8 running\.\n1: is running;/);
+});
+
+test("closing a terminal's input after an earlier partial line ends the input: its line is sent, then the end", async (t) => {
+  const { hands } = localHands({ processes: true });
+  t.after(() => hands.processes.reap());
+  const r = registry();
+  await r.invoke("bash_background", { command: "cat", tty: true }, { hands });
+  await r.invoke("bash_input", { id: "1", text: "hello" }, { hands });
+  const closed = await r.invoke("bash_input", { id: "1", text: "", close: true }, { hands });
+  assert.equal(closed.text, "Wrote 0 bytes to background process 1's stdin, then closed it. Read what it answers with bash_output.");
+  await until(async () => /exited with code 0/.test((await r.invoke("bash_output", { id: "1" }, { hands })).text), "cat to end on the end of its input");
+  assert.match((await r.invoke("bash_output", { id: "1" }, { hands })).text, /\n\nhello$/);
+});
+
 test("with no computer's processes, each background tool refuses in words, and the run's end ends none", async () => {
   const { hands } = localHands();
   const r = registry();
