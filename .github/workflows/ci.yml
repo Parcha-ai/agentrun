@@ -200,6 +200,42 @@ jobs:
       - run: npm run build
       - run: npm run build-storybook
 
+  python-client:
+    # parcha-agentrun (python/), the Python client: its generated module is the server's document's, pyright passes it,
+    # and its tests pass on the oldest and the newest Python it supports, against loopback servers and the real server
+    # with the faux model, from the build job's output (here a server that is not built fails the demo, not skips it).
+    name: python-client (${{ matrix.python }})
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-22.23.2
+          path: ${{ runner.temp }}/build
+      - name: The build job's output, for this tree and this Node
+        run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
+      - run: node scripts/generate-clients.mjs --check
+      - run: npx pyright -p python
+      - name: The client's tests
+        env:
+          AGENTRUN_PYTHON_REQUIRE_SERVER: '1'
+        run: python -m unittest discover -s python/tests -v
+
   verify:
     # The required checks keep their names: verify (<node>) passes when every test shard and the console passed. It reads
     # `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x)
