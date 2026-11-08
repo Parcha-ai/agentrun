@@ -162,6 +162,8 @@ const js = `"use strict";
   // A take-over viewer drives only while it holds the browser: Take over asks for it, Hand back gives it back.
   var takeOver = false;
   var holding = false;
+  // Whether the take of the moment went live: one that ends before it did (the agent's step ran on) never gave the person the browser.
+  var heldThisTake = false;
   var handsEl = $("hands");
   var NOT_TAKEN = "Take over to drive the browser: your input is not sent until you do.";
   function showHands() {
@@ -179,7 +181,7 @@ const js = `"use strict";
   handsEl.addEventListener("click", function () {
     if (!ready || !takeOver || ws.readyState !== 1) return;
     ws.send(JSON.stringify({ type: holding ? "give" : "take" }));
-    if (!holding) say("Taking over the browser...");
+    if (!holding) { heldThisTake = false; say("Taking over the browser..."); }
   });
   function send(message) {
     if (readOnly) return;
@@ -235,6 +237,8 @@ const js = `"use strict";
 
   var HELD = { agent_acting: "The agent is acting, so that input was held. Try again in a moment.", no_page: "There is no page to drive yet.", bad_message: "That input was not understood.", read_only: "This view is view-only: your input is not sent.", not_taken: NOT_TAKEN, taking: "Taking over the browser: wait a moment." };
   var HOLD_ENDED = { given: "You handed the browser back to the agent.", answered: "The agent's request was answered, so the browser went back to the agent.", idle: "The browser went back to the agent: no input came from you for a while.", away: "The browser went back to the agent while this view was closed.", released: "The browser's session ended.", cap: "The browser went back to the agent: the run's spend cap has no room for more of your time." };
+  // Why a take ended before it went live: the person never had the browser, so it never "went back".
+  var NOT_STARTED = { idle: "the agent's step was still running when your time ran out", away: "this view was closed before the agent's step finished", released: "the browser's session ended", cap: "the run's spend cap has no room for more of your time", answered: "the agent's request was answered first", given: "you handed it back before it started" };
   var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this session.", released: "This session has been released.", bad_message: "The host did not understand this viewer." };
   ws.onmessage = function (event) {
     if (typeof event.data !== "string") {
@@ -245,8 +249,16 @@ const js = `"use strict";
     }
     var m;
     try { m = JSON.parse(event.data); } catch (e) { return; }
-    if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; takeOver = !readOnly && m.takeOver === true; holding = takeOver && m.held === true; if (readOnly) viewOnly(); showHands(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
-    else if (m.type === "hold") { holding = m.held === true; showHands(); setDrive(holding ? "person" : "idle"); say(holding ? "" : (typeof m.message === "string" && m.message ? (HOLD_ENDED[m.reason] || "The browser went back to the agent.") + " " + m.message : (HOLD_ENDED[m.reason] || "The browser went back to the agent."))); if (holding) focusScreen(); }
+    if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; takeOver = !readOnly && m.takeOver === true; holding = takeOver && m.held === true; heldThisTake = holding; if (readOnly) viewOnly(); showHands(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
+    else if (m.type === "hold") {
+      var started = heldThisTake;
+      holding = m.held === true;
+      if (holding) heldThisTake = true; else heldThisTake = false;
+      showHands(); setDrive(holding ? "person" : "idle");
+      var extra = typeof m.message === "string" && m.message ? " " + m.message : "";
+      say(holding ? "" : started ? (HOLD_ENDED[m.reason] || "The browser went back to the agent.") + extra : "Your take-over did not start: " + (NOT_STARTED[m.reason] || "the browser was not handed to you") + "." + extra);
+      if (holding) focusScreen();
+    }
     else if (m.type === "take_refused") say(typeof m.message === "string" && m.message ? m.message : "The browser could not be handed to you.");
     // The old page's picture goes with it, and so does the frame waiting; a decode in flight finishes without drawing.
     else if (m.type === "no_page") { noPage = true; generation += 1; waiting = null; ctx.clearRect(0, 0, canvas.width, canvas.height); stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }

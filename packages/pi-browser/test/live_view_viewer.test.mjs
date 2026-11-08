@@ -825,3 +825,39 @@ test("watch only reads as watching: its own banner (never that input is held), n
   const down = web.received.slice(before).find((m) => m.type === "mouse" && m.action === "down");
   assert.ok(Math.abs(down.x - 250) <= 2 && Math.abs(down.y - 125) <= 2, `the click lands where it was made on the page (${down.x}, ${down.y})`);
 });
+
+test("a take-over that never started says so in its own words; one that did start and ends says the browser went back", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-notstarted", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const viewer = await openTab(attached.sdkCdpUrl, `${web.base}/v/${web.id}#t=${TOKEN}`);
+  tabs.push(viewer);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "agent", takeOver: true, held: false });
+  const notice = () => viewer.evaluate(`document.getElementById("notice").hidden ? "" : document.getElementById("notice").textContent`);
+  const press = async () => {
+    const box = await viewer.evaluate(`(() => { const r = document.getElementById("hands").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await viewer.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+    await viewer.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  };
+  assert.ok(await until(async () => (await viewer.evaluate(`document.getElementById("hands").hidden`)) === false), "Take over shows");
+  await press();
+  assert.ok(await until(() => web.received.some((m) => m.type === "take")), "Take over sends take");
+  assert.ok(await until(async () => /Taking over/.test(await notice())), "taking over");
+  // The agent's step ran on, and the hold ended before it ever went live.
+  web.send({ type: "hold", held: false, reason: "idle" });
+  assert.ok(await until(async () => /^Your take-over did not start: /.test(await notice())), `a take that never started says so (${await notice()})`);
+  assert.doesNotMatch(await notice(), /went back to the agent/, "never that the browser went back: the person never had it");
+  // A take that did go live and then ends says the browser went back, as before.
+  await press();
+  web.send({ type: "hold", held: true });
+  web.send({ type: "hold", held: false, reason: "idle" });
+  assert.ok(await until(async () => /The browser went back to the agent: no input came from you for a while/.test(await notice())), "a held take's end says the browser went back");
+});
