@@ -189,6 +189,8 @@ export class RunStorage implements Journal {
   #closed = false;
   #closing: Promise<void> | undefined;
   #admittedReads = 0;
+  /** Commits asked for and not yet settled: close waits for them. */
+  readonly #pending = new Set<Promise<CommitResult>>();
   #readsDrained: (() => void) | undefined;
 
   /** The journal of `claim`'s run on `db` (the store's connection, its schema in place). Its id namespace is read, and made
@@ -247,8 +249,19 @@ export class RunStorage implements Journal {
    * state the earlier ones left; the first one refused ends the commit, the ones before it stand. A staged run patch is
    * written in the same transaction once a batch is stored.
    */
-  async commit(batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, _context: Context): Promise<CommitResult> {
+  async commit(batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, context: Context): Promise<CommitResult> {
     this.#assertOpen();
+    // Asked before a close: the close waits for it, so it never meets a connection its store closed after the journal's.
+    const work = this.#commit(batches, receive, context);
+    this.#pending.add(work);
+    try {
+      return await work;
+    } finally {
+      this.#pending.delete(work);
+    }
+  }
+
+  async #commit(batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, _context: Context): Promise<CommitResult> {
     await this.#opened();
     const seqs: Seq[] = [];
     let refused: { error: unknown } | undefined;
@@ -556,11 +569,14 @@ export class RunStorage implements Journal {
     return page(rows.map((row) => parseJson<DocumentRecord>(row.record!)), limit);
   }
 
-  /** Every later operation rejects; reads admitted before it end first. The store's connection stays open: the store owns it. */
+  /** Every later operation rejects; reads admitted and commits asked before it end first (a commit's outcome is its
+   *  caller's, never the close's). The store's connection stays open: the store owns it. */
   close(_context: Context): Promise<void> {
     if (this.#closing === undefined) {
       this.#closed = true;
-      this.#closing = this.#admittedReads > 0 ? new Promise<void>((resolve) => (this.#readsDrained = resolve)) : Promise.resolve();
+      const reads = this.#admittedReads > 0 ? new Promise<void>((resolve) => (this.#readsDrained = resolve)) : Promise.resolve();
+      const commits = [...this.#pending].map((commit) => commit.then(() => undefined, () => undefined));
+      this.#closing = Promise.all([reads, ...commits]).then(() => undefined);
     }
     return this.#closing;
   }
