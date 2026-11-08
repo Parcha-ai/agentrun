@@ -663,7 +663,13 @@ export class RunStorage implements Journal {
         documents.push({ ...head, retired: true });
         continue;
       }
-      // Its value at this seq; a document that keeps no history (`latest`) has only its value now.
+      // A document that keeps only its latest value (pi.live, pi.inbox, pi.usage) has no value at an older seq: it
+      // appears only in the commit that last wrote it (its newest revision's seq), as tasks and submissions do.
+      if (isCurrentOnly(record)) {
+        const newest = await tx.get<{ seq: number | null }>(`SELECT MAX(seq) AS seq FROM ${T.documentRevisions} WHERE run_id = ? AND document_id = ?`, run, id);
+        if (Number(newest?.seq) !== seq) continue;
+      }
+      // Its value at this seq (the latest-only one's, now, is this commit's).
       const stored = await this.#materializeDocument(tx, id, isCurrentOnly(record) ? "current" : (seq as unknown as DocumentPoint));
       if (stored) documents.push({ ...head, value: (stored as unknown as { value: JsonValue }).value });
     }
