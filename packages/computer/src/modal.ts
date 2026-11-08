@@ -222,6 +222,21 @@ const UPLOAD_SCRIPT = [
 ].join("\n");
 
 /**
+ * The image route's hold step, run as root while the computer's image is built, right after the daemon is copied in:
+ * the daemon's directory and binary are made root's (0755), a link is refused, and the whole path up to / is held to
+ * the same rule as the upload's. A path another user can change fails the build, so no computer is made from it.
+ */
+const HOLD_SCRIPT = [
+	"# agentrun-computer: hold",
+	'd=$1; b=${d%/*}',
+	HELD,
+	'held "${b%/*}" || exit 7',
+	'[ -L "$b" ] && { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 7; }',
+	'chown 0:0 "$b" "$d" && chmod 0755 "$b" "$d" || { echo "making $d root\'s failed"; exit 4; }',
+	'held "$d" || exit 7',
+].join("\n");
+
+/**
  * The commands the provider sends into a sandbox when it uploads the daemon, exactly: the sandbox's command
  * (entrypoint), the upload, and a connection's bridge (stdio). Exported so a test can run them where Modal would.
  */
@@ -236,6 +251,7 @@ export function modalCommands({
 	return {
 		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, "init", "--deadline", deadline, "--user", user],
 		upload: ["sh", "-c", UPLOAD_SCRIPT, "sh", daemon, sha256],
+		hold: ["sh", "-c", HOLD_SCRIPT, "sh", daemon],
 		stdio: [daemon, "stdio"],
 	};
 }
@@ -646,7 +662,10 @@ export class ModalProvider implements ComputerProvider {
 		// With daemonImage the daemon comes in as a layer of the computer's own image, there before the command starts.
 		// Without, the command is the entrypoint, which waits for the upload below. Either way the computer needs no
 		// network to get it. HOME is a directory init gives the computer's user.
-		const copy = this.#daemonImage === undefined ? [] : [`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`];
+		// The image route holds the daemon's path to root's alone in the image itself (exec form, no shell quoting): each
+		// connection runs it as root through Modal's exec, so a path a non-root computer user could change fails the build.
+		const copy =
+			this.#daemonImage === undefined ? [] : [`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`, `RUN ${JSON.stringify(modalCommands().hold)}`];
 		const image = this.#sdk.images.fromRegistry(spec.image).dockerfileCommands([...copy, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
 		const { uploadMs, callMs } = this.#timeouts;
 		const command =
