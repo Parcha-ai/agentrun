@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { createWorkflowExtension, nodeRunner, taskScope } from "@parcha/agentrun-pi/durable";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
-import { readWorkflowRun, startWorkflowRevision } from "@parcha/pi-durable-agent/workflow";
+import { startWorkflowRevision } from "@parcha/pi-durable-agent/workflow";
 import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 
@@ -59,14 +59,38 @@ async function runToTerminal(store, claim, { workflow, input }) {
   return harness;
 }
 
-/** Polls the run's journal until one of its nodes is working (the workflow has started a node). */
-async function untilWorking(store, runId, workflow) {
-  for (let i = 0; i < 400; i++) {
-    const view = await readWorkflowRun({ runId, storage: store.readJournal(runId), revision: { body: { workflow } } }, { context: BACKGROUND_CONTEXT });
-    if (Object.values(view.status).includes("working")) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error("the workflow never started a node");
+/** A loop whose first model node signals when it has started (so a test waits on an event, not a poll) and then holds until
+ *  its signal aborts (a cancel), after which — if run again on a resume — it runs for real. `control.started` resolves on
+ *  the node's start; `control.held` is shared across claims so a resumed run completes. */
+function heldNodeLoop(store, workflow, input, control, signal = new AbortController().signal) {
+  const specOf = async () => {
+    const { models, byTier } = await runModels({ [FAUX_ENV]: FAUX }, undefined, ["default"]);
+    return {
+      models, workflow, input, tools: inspectWorkflow(workflow).requires.tools, agentId: "agent-1", revisionId: "rev-1",
+      build: () => {
+        const nodes = nodeRunner({ agent: (node) => ({ model: byTier.get(node.tier ?? "default"), extensions: [], tools: [] }) });
+        return {
+          extensions: [nodes.extension],
+          host: { run: ({ runtime, context }) => {
+            const runNode = nodes.on(taskScope(runtime), context).runNode;
+            return { durableNodes: true, adapters: { runNode: async (params) => {
+              if (!control.held) {
+                control.held = true;
+                control.started?.();
+                await new Promise((_, reject) => {
+                  const s = params.signal;
+                  if (s?.aborted) return reject(s.reason);
+                  s?.addEventListener("abort", () => reject(s.reason), { once: true });
+                });
+              }
+              return runNode(params);
+            } } };
+          } },
+        };
+      },
+    };
+  };
+  return createWorkflowLoop(specOf)({ journal: (claim) => store.journal(claim), flush: () => store.flush(), signal });
 }
 
 test("the runner picks the workflow loop for a workflow revision, not an agentic one", () => {
@@ -86,9 +110,11 @@ test("a workflow run runs to its end through the loop: the run ends completed, i
 
 test("a cancel ends the run stopped, taking the stop row in the end commit", async (t) => {
   const { store, claim, workflow } = await claimedWorkflow(t);
-  const loop = loopOn(store, workflow, { question: "Take your time." });
+  let nodeStarted;
+  const startedP = new Promise((resolve) => (nodeStarted = resolve));
+  const loop = heldNodeLoop(store, workflow, { question: "What is six times seven?" }, { started: nodeStarted });
   const started = loop.start(claim);
-  await untilWorking(store, "run-1", workflow);
+  await startedP; // the node is running (an event, not a poll)
   const stop = await store.command("run-1", { kind: "stop", body: {} });
   await loop.stop({ kind: "command", commandId: stop.id });
   assert.deepEqual(await started, { state: "stopped" });
