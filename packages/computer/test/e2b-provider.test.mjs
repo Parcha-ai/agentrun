@@ -42,6 +42,7 @@ function setup(options = {}, fakeOptions = {}) {
 	return { fake, provider };
 }
 
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const only = (fake) => {
 	assert.equal(fake.sandboxes.size, 1, "one sandbox was made");
 	return [...fake.sandboxes.values()][0];
@@ -650,6 +651,66 @@ test("extend() moves E2B's timer, then init's deadline, and returns the end read
 	assert.equal(earlier.ok, true);
 	assert.equal(earlier.value.deadline.getTime(), before, "never earlier");
 	assert.equal(fake.calls.filter(([name]) => name === "Sandbox.setTimeout").length, 1);
+});
+
+test("two extends of one computer run one after the other: a slow, shorter one never pulls E2B's timer under the deadline the longer one returned", async () => {
+	let first = true;
+	const onStep = async (step) => {
+		if (step !== "Sandbox.setTimeout" || !first) return;
+		first = false;
+		await sleep(150);
+	};
+	const { provider, fake } = setup({}, { onStep });
+	const { ref, sb } = seeded(fake, { lifetimeMs: 45_000 });
+	// Both read the same old deadline at once; the shorter one's setTimeout is the slow one.
+	const [shorter, longer] = await Promise.all([provider.extend(ref, 300_000), provider.extend(ref, 900_000)]);
+	assert.equal(longer.ok, true, longer.ok ? "" : longer.error.message);
+	assert.ok(sb.endAt.getTime() >= longer.value.deadline.getTime(), `E2B ends it at ${sb.endAt.toISOString()}, before the deadline extend returned, ${longer.value.deadline.toISOString()}`);
+	assert.equal(sb.init.deadline, longer.value.deadline.toISOString(), "init holds the deadline the longer extend returned");
+	assert.equal(shorter.ok, true, shorter.ok ? "" : shorter.error.message);
+	assert.ok(shorter.value.deadline.getTime() <= longer.value.deadline.getTime());
+	const listed = await provider.list({});
+	assert.equal(listed.value[0].deadline.getTime(), longer.value.deadline.getTime());
+});
+
+test("an extend near the cap returns the deadline the daemon took, never past the most, and asks E2B for no timer past it", async () => {
+	let calledAt;
+	const onStep = async (step) => {
+		if (step !== "Sandbox.setTimeout") return;
+		calledAt = Date.now();
+		// The time spent sending setTimeout: E2B's end is its own now plus the timeout.
+		await sleep(1_500);
+	};
+	const { provider, fake } = setup({}, { onStep });
+	const { ref, sb } = seeded(fake, { lifetimeMs: 45_000 });
+	const most = new Date(Date.now() + 700_000).toISOString();
+	sb.metadata[MAX_LABEL] = most;
+	sb.init.max = most;
+	const extended = await provider.extend(ref, 699_000);
+	assert.equal(extended.ok, true, extended.ok ? "" : extended.error.message);
+	assert.ok(extended.value.deadline.getTime() <= Date.parse(most), `extend returned ${extended.value.deadline.toISOString()}, past the most, ${most}`);
+	assert.equal(extended.value.deadline.toISOString(), sb.init.deadline, "the deadline init took");
+	const [, , ms] = fake.calls.find(([name]) => name === "Sandbox.setTimeout");
+	assert.ok(calledAt + ms <= Date.parse(most), `E2B was asked for ${ms} ms at ${new Date(calledAt).toISOString()}, past ${most}`);
+	assert.equal(ms % 1000, 0, "E2B takes whole seconds");
+	const listed = await provider.list({});
+	assert.equal(listed.value[0].deadline.getTime(), extended.value.deadline.getTime(), "list() shows the deadline extend returned");
+});
+
+test("an extend that moves E2B's end by less than its rounding still shows in list() and attach(), as the deadline extend returned", async () => {
+	const { provider, fake } = setup();
+	const { ref, sb } = seeded(fake, { lifetimeMs: 600_000 });
+	const asked = Date.now();
+	const extended = await provider.extend(ref, 601_000);
+	assert.equal(extended.ok, true, extended.ok ? "" : extended.error.message);
+	assert.ok(extended.value.deadline.getTime() >= asked + 601_000, "at least what was asked");
+	assert.equal(sb.init.deadline, extended.value.deadline.toISOString());
+	assert.ok(sb.endAt.getTime() >= extended.value.deadline.getTime(), "E2B ends it no earlier than init");
+	const listed = await provider.list({});
+	assert.equal(listed.value[0].deadline.toISOString(), extended.value.deadline.toISOString(), "list() shows the extended deadline, not create's");
+	const attached = await provider.attach({ id: ref.id });
+	assert.equal(attached.ok, true, attached.ok ? "" : attached.error.message);
+	assert.equal(attached.value.spec.deadline.toISOString(), extended.value.deadline.toISOString(), "attach() shows it too");
 });
 
 test("an extend whose init will not move says what moved", async () => {
