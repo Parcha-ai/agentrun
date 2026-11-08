@@ -31,6 +31,9 @@ test("the run's end writes its kept proposal and a queued learning run of the sa
   const learning = await store.runs.get("run-1-learning");
   assert.deepEqual(learning && [learning.agentId, learning.revisionId, learning.state], ["agent-1", "rev-1", "queued"], "a queued learning run of the run's agent and revision");
   assert.ok((await store.runs.claimable({ limit: 10 })).includes("run-1-learning"), "claimable by any runner");
+  // Its launch row, in the same commit: harness "learning", its input the run that learned (the runner reads it at claim).
+  const launch = await store.runs.launch("run-1-learning");
+  assert.deepEqual([launch.body.harness, launch.body.input], ["learning", { runId: "run-1" }]);
 });
 
 test("a fenced end writes neither the proposal nor the learning run", async (t) => {
@@ -58,6 +61,7 @@ test("a learning run is started once: the same end written again by a resumed cl
   await store.runs.update(claim, {}, { also: [kept(), learningRun("run-1-learning")] });
   const rows = (await store.runs.claimable({ limit: 10 })).filter((id) => id.startsWith("run-1-learning"));
   assert.equal(rows.length, 1, "one learning run");
+  assert.equal((await store.runs.launch("run-1-learning")).body.harness, "learning", "and one launch row, kept");
 });
 
 test("an agent's kept proposals are read newest first, each with its run", async (t) => {

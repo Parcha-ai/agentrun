@@ -7,21 +7,37 @@
 // the run's own trigger with owner === (the source is a schedule, whose words its owner wrote when they set it up), else
 // that trigger's own with owner false, so a forged or lost origin never reads as the person's or the owner's.
 import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
+import type { Plane } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";
 import type { Place } from "./workspace/place.js";
 
-/** What a run is launched with: its first input and title, where it runs, its effort and per-run cap, and the trigger and
- *  origin that started it. The server writes it once at start; the runner reads it at each claim (its claim rebuilds the
- *  run from the store, this body included). */
+/** What a run is launched with: everything its runner needs to build the run's spec at its claim, nothing derived later.
+ *  The server writes it once at start; the runner reads it at each claim (its claim rebuilds the run from the store, this
+ *  body included). `harness` picks the loop's adapter (a built-in learning run names "learning"; absent, the revision's
+ *  harness is used); `input` is the start request's body for a person's or a trigger's run, or an object a built-in run
+ *  names (a learning run's `{ runId }`). `model`, `plane`, `approvers`, `documents` and `boxAllow` are the per-run choices
+ *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
-  /** The v2 start request's body, as the person or trigger gave it. */
+  /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
   readonly title: string;
   readonly place: Place;
+  /** The loop's adapter, when not the revision's: a built-in learning run names "learning". */
+  readonly harness?: string;
+  /** The run's model, pinned at start. */
+  readonly model?: { readonly provider: string; readonly modelId: string };
   readonly effort?: string;
   readonly maxCostUsd?: number;
   readonly capMode?: string;
+  /** The tool plane as the server resolved it at start (tool-plane.ts). */
+  readonly plane?: Plane;
+  /** Whether a person can answer a tool call's approval for this run. */
+  readonly approvers?: boolean;
+  /** The documents directory a workflow's reads are rooted at, when the server gives one. */
+  readonly documents?: string;
+  /** What a run's box may reach, as the server resolved it: the list, or "none". */
+  readonly boxAllow?: readonly string[] | "none";
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -43,6 +59,14 @@ function readPlace(value: unknown): Place | undefined {
   return undefined;
 }
 
+/** The run's model as read back, or undefined when the body names none. */
+const readModel = (value: unknown): { provider: string; modelId: string } | undefined =>
+  isObject(value) && typeof value.provider === "string" && typeof value.modelId === "string" ? { provider: value.provider, modelId: value.modelId } : undefined;
+
+/** What a box may reach as read back: a list of strings or "none", else undefined. */
+const readBoxAllow = (value: unknown): readonly string[] | "none" | undefined =>
+  value === "none" ? "none" : Array.isArray(value) && value.every((host) => typeof host === "string") ? (value as readonly string[]) : undefined;
+
 /** The input's origin kept through the fail-safe (#1856): the stored one only if it names `trigger` with
  *  owner === (its source is a schedule), else that trigger's own with owner false (its source a best-effort label: the
  *  stored one when it is a known source other than a schedule's, else "webhook"). A run with no trigger keeps none. */
@@ -54,15 +78,22 @@ export function keepInputOrigin(stored: unknown, trigger: RunTrigger | null): Me
   return { kind: "trigger", trigger_id: trigger.id, source, owner: false };
 }
 
-/** The JSON body the server stores for a run's launch. */
+/** The JSON body the server stores for a run's launch. `harness` is a top-level field, so the loop factory reads it from the
+ *  stored body without parsing the rest. */
 export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
     title: launch.title,
     place: launch.place,
+    ...(launch.harness !== undefined ? { harness: launch.harness } : {}),
+    ...(launch.model ? { model: launch.model } : {}),
     ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
     ...(launch.maxCostUsd !== undefined ? { max_cost_usd: launch.maxCostUsd } : {}),
     ...(launch.capMode !== undefined ? { cap_mode: launch.capMode } : {}),
+    ...(launch.plane ? { plane: launch.plane } : {}),
+    ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
+    ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
+    ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -77,13 +108,21 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   if (!place) return undefined;
   const trigger = readTrigger(stored.trigger);
   const inputOrigin = keepInputOrigin(stored.input_origin, trigger);
+  const model = readModel(stored.model);
+  const boxAllow = readBoxAllow(stored.box_allow);
   return {
     input: stored.input,
     title: typeof stored.title === "string" ? stored.title : "",
     place,
+    ...(typeof stored.harness === "string" ? { harness: stored.harness } : {}),
+    ...(model ? { model } : {}),
     ...(typeof stored.effort === "string" ? { effort: stored.effort } : {}),
     ...(typeof stored.max_cost_usd === "number" ? { maxCostUsd: stored.max_cost_usd } : {}),
     ...(typeof stored.cap_mode === "string" ? { capMode: stored.cap_mode } : {}),
+    ...(isObject(stored.plane) ? { plane: stored.plane as Plane } : {}),
+    ...(typeof stored.approvers === "boolean" ? { approvers: stored.approvers } : {}),
+    ...(typeof stored.documents === "string" ? { documents: stored.documents } : {}),
+    ...(boxAllow !== undefined ? { boxAllow } : {}),
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),

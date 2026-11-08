@@ -14,6 +14,8 @@
 import { answerOf, type Executor, type Hands, type ProcessInfo, type Processes, type ToolAnswer } from "./hands.js";
 import { BACKGROUND_DIR, BACKGROUND_INPUT_BYTES, BACKGROUND_LIST_MAX, BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES, BACKGROUND_SIGNALS } from "./limits.js";
 
+/** Every background tool's refusal with no computer (Mode 1 or Mode 2), as ruled. */
+export const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
 /** The terminal a `tty: true` process runs on. */
 const TTY_SIZE = Object.freeze({ cols: 80, rows: 24 });
 /** How long `bash_signal` waits for the process to end before it answers. */
@@ -156,18 +158,21 @@ async function startShell(processes: Processes, args: readonly string[], spec: O
   }
 }
 
-const bashBackground = async (processes: Processes, args: unknown, hands: Hands): Promise<ToolAnswer> => {
+const bashBackground = async (processes: Processes, args: unknown, hands: Hands, signal?: AbortSignal): Promise<ToolAnswer> => {
   const given = args as { command?: unknown; tty?: unknown };
   const command = typeof given.command === "string" ? given.command : "";
   const tty = given.tty === true;
   if (!command.trim()) throw new Error("command is the shell command to start");
   const { id, pid } = await inTurn(processes, async () => {
+    // A call cancelled while it waited its turn starts nothing.
+    signal?.throwIfAborted();
     const listed = await backgrounds(processes);
     const running = listed.filter((info) => info.running).length;
     if (running >= BACKGROUND_MAX) throw new Error(`${running} background processes already run in this run's box, the most at once (${BACKGROUND_MAX}): end one with bash_signal (bash_list shows them), or wait for one to exit, then start this again.`);
     const taken = await takenIn(hands);
     for (const info of listed) taken.add(idIn(info));
     let next = 1;
+    signal?.throwIfAborted();
     while (taken.has(String(next))) next++;
     try {
       const shell = await startShell(processes, [String(next), command], { cwd: ".", log: logOf(String(next)), waitGroup: true, orphans: "keep", ...(tty ? { pty: { ...TTY_SIZE } } : { stdin: true as const }) });
@@ -216,6 +221,14 @@ const bashOutput = async (processes: Processes, args: unknown): Promise<ToolAnsw
   return { text: `Background process ${id} ${stateWords(state)}. ${where}${cap}${text ? `\n\n${text}` : ""}`, details: { id, ...state, offset: at, next_offset: next, size, ...(capped ? { capped } : {}) } };
 };
 
+/** Each terminal process's state of its line: whether input written so far ends in a partial line. */
+const unterminated = new WeakMap<Processes, Map<string, boolean>>();
+function partialLines(processes: Processes): Map<string, boolean> {
+  let lines = unterminated.get(processes);
+  if (!lines) unterminated.set(processes, (lines = new Map()));
+  return lines;
+}
+
 const bashInput = async (processes: Processes, args: unknown): Promise<ToolAnswer> => {
   const given = args as { id?: unknown; text?: unknown; close?: unknown };
   const id = idOf(given.id);
@@ -226,8 +239,11 @@ const bashInput = async (processes: Processes, args: unknown): Promise<ToolAnswe
   if (!text && !close) throw new Error("text is what to write: give some, or close: true to close stdin");
   const info = await find(processes, id);
   if (!info.running) throw new Error(`background process ${id} ${stateWords(stateOf(info))}, so it takes no input`);
-  // Ctrl-D at a line's start is the end of input; after a partial line, the first one ends the line.
-  const eof = close && info.pty ? (text === "" || text.endsWith("\n") ? "\x04" : "\x04\x04") : "";
+  // Ctrl-D at a line's start is the end of input; after a partial line (this call's text, or an earlier call's left
+  // unterminated), the first one sends the line on and the second ends the input.
+  const lines = partialLines(processes);
+  const partial = text !== "" ? !text.endsWith("\n") : lines.get(info.handle) === true;
+  const eof = close && info.pty ? (partial ? "\x04\x04" : "\x04") : "";
   const data = new Uint8Array(Buffer.from(text + eof));
   try {
     await processes.write(info.handle, { ...(data.length > 0 ? { data } : {}), ...(close && !info.pty ? { close: true as const } : {}) });
@@ -235,6 +251,7 @@ const bashInput = async (processes: Processes, args: unknown): Promise<ToolAnswe
     if (/stdin is closed/.test(wordsOf(error))) throw new Error(`background process ${id}'s stdin is closed: an earlier bash_input closed it`);
     throw new Error(`process ${id} did not take its input: ${wordsOf(error)} (a process that does not read its stdin fills its pipe at 64 KiB)`);
   }
+  if (info.pty) lines.set(info.handle, !close && partial);
   return { text: `Wrote ${n(bytes)} bytes to background process ${id}'s stdin${close ? ", then closed it" : ""}. Read what it answers with bash_output.`, details: { id, bytes, ...(close ? { closed: true } : {}) } };
 };
 
@@ -276,11 +293,11 @@ const bashList = async (processes: Processes): Promise<ToolAnswer> => {
 };
 
 /** A background tool's run: refused in words where the run has no computer's processes. */
-const onProcesses = (name: string, run: (processes: Processes, args: unknown, hands: Hands) => Promise<ToolAnswer>): Executor => (args, call) => answerOf(call, async () => {
+const onProcesses = (name: string, run: (processes: Processes, args: unknown, hands: Hands, signal?: AbortSignal) => Promise<ToolAnswer>): Executor => (args, call) => answerOf(call, async () => {
   call.signal?.throwIfAborted();
   const processes = call.hands.processes;
-  if (!processes) throw new Error(`${name} needs a computer: with no computer, bash runs in the run's folder and background processes are not offered`);
-  return run(processes, args, call.hands);
+  if (!processes) throw new Error(NEEDS_A_COMPUTER);
+  return run(processes, args, call.hands, call.signal);
 });
 
 /** The background tools' executors, by name. */
