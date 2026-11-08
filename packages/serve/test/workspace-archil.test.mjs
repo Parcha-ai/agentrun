@@ -166,6 +166,8 @@ test("archil: exec calls onOutput once per stream, with everything, when the com
   });
   assert.deepEqual(chunks, [["stdout", "out\nmore\n"], ["stderr", "err\n"]]);
   assert.equal(text(result.stdout), "out\nmore\n");
+  const thrown = await workspace.exec(["bash", "-c", "echo fine"], { env: ENV, timeoutMs: 10_000, onOutput: () => { throw new Error("the caller's bug"); } });
+  assert.deepEqual([text(thrown.stdout), thrown.code], ["fine\n", 0], "an error the callback throws is not the call's");
 });
 
 test("archil: a symbolic link made by exec is ESCAPE as a later exec's cwd", async () => {
@@ -209,14 +211,16 @@ test("archil: grep maps to the disk's grep: sorted, its stop reasons, a file as 
   await refused(workspace.grep("needle"), "UNAVAILABLE");
 });
 
-test("archil: background programs are refused in the lead's words; attach is refused until the computer mount", async () => {
-  const { workspace } = fresh();
-  await assert.rejects(workspace.process({ argv: ["sleep", "1"] }), (error) => {
-    assert.equal(error.code, "REFUSED");
-    assert.equal(error.message, "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).");
-    return true;
-  });
-  await refused(workspace.attach({}), "REFUSED");
+test("archil: mountSpec and attach are refused in words until the computer's helper mounts an Archil folder; nothing is called", async () => {
+  const { disk, workspace } = fresh();
+  for (const call of [() => workspace.mountSpec(), () => workspace.attach({}, { readBackOf: () => ({}) })]) {
+    await assert.rejects(call(), (error) => {
+      assert.equal(error.code, "REFUSED");
+      assert.match(error.message, /mounted by the computer's helper \(module D6\), not yet/);
+      return true;
+    });
+  }
+  assert.deepEqual(disk.calls, []);
 });
 
 test("archil-disk: the SDK seam reads its key by name, sends a ranged read as a Range header and exec with the checkout, to a loopback server only", async () => {

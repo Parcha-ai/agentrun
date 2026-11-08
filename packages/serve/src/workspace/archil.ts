@@ -17,10 +17,14 @@
 // workspace runs its execs one at a time and makes its writes wait for them; a 409 from another client's checkout is
 // tried again for up to queueMs. Reads do not wait.
 //
-// Not here: attach (the computer mount does it), and background programs, which need a computer.
+// Not yet: mountSpec and attach (an Archil folder in a computer is mounted by the computer's helper, module D6, with a
+// disk mount token this workspace has no way to make), and background programs, which need a computer (`process`
+// refuses every call, cause no-computer, as with any workspace that has none).
 import { randomBytes } from "node:crypto";
+import type { MountSpec } from "@parcha/agentrun-computer";
 import type { ArchilDisk, ArchilListPage } from "./archil-disk.js";
 import { archilExec, DEFAULT_QUEUE_MS, MAX_EXEC_MS, STDIN_PREFIX } from "./archil-exec.js";
+import { type AttachableComputer, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
 import {
@@ -31,18 +35,13 @@ import {
 /** The most bytes one append call takes. */
 export const APPEND_MAX = 1024 * 1024;
 
-/** exec's options here: the port's, and onOutput, called once per stream, whole, when the command has ended. */
-export type ArchilExecOptions = ExecOptions & {
-  readonly onOutput?: (chunk: { readonly stream: "stdout" | "stderr"; readonly data: Uint8Array }) => void;
-};
-
 export type ArchilWorkspaceOptions = {
   /** How long a call waits for another client's checkout of the folder (default 60 s). */
   readonly queueMs?: number;
 };
 
-/** The lead's words for a background program with no computer. */
-export const BACKGROUND_REFUSED = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
+/** Why an Archil workspace is not yet put in a computer. */
+const NOT_IN_A_COMPUTER = "an Archil folder in a computer is mounted by the computer's helper (module D6), not yet: this workspace has no disk mount token to give it";
 
 const show = (path: string): string => JSON.stringify(path === "" ? "." : path);
 const statusOf = (error: unknown): number | undefined => {
@@ -377,7 +376,7 @@ class ArchilWorkspace implements Workspace {
     }
   }
 
-  async exec(argv: readonly string[], options: ArchilExecOptions): Promise<ExecResult> {
+  async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {
     if (!Array.isArray(argv) || argv.length === 0 || !argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) || argv[0] === "") {
       throw new WorkspaceError("REFUSED", "exec takes argv: a program and its arguments, strings with no NUL");
     }
@@ -401,8 +400,11 @@ class ArchilWorkspace implements Workspace {
           await this.#settle("", () => this.#disk.putObject(this.#key(stdinName), stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
         }
         const result = await archilExec(this.#disk, { root: this.#root, cwd, argv, env, timeoutMs, maxOutput, queueMs: this.#queueMs, ...(stdinName === undefined ? {} : { stdinName }) });
-        options.onOutput?.({ stream: "stdout", data: result.stdout });
-        options.onOutput?.({ stream: "stderr", data: Buffer.from(result.stderr, "utf8") });
+        // Archil answers once the command has ended: each stream once, whole (and capped). An error the caller's
+        // callback throws is not the call's.
+        for (const chunk of [{ stream: "stdout", data: result.stdout }, { stream: "stderr", data: Buffer.from(result.stderr, "utf8") }] as const) {
+          try { options.onOutput?.(chunk); } catch { /* the caller's callback */ }
+        }
         return result;
       } finally {
         // The line moves it into the container first; this is for a line that never ran.
@@ -421,13 +423,17 @@ class ArchilWorkspace implements Workspace {
     this.#rooted = true;
   }
 
-  async attach(_computer: unknown): Promise<unknown> {
-    throw new WorkspaceError("REFUSED", "attach comes with the computer mount");
+  /** No computer: every background call is REFUSED, cause no-computer. */
+  readonly process = noProcesses;
+
+  // TODO(D6): the archil MountSpec ({ kind: "archil", disk, region, folder, token }) and attach through attach.ts's
+  // checkReadBack and attachedWorkspace, once a disk mount token for the run is passed in (its source decided with D6).
+  async mountSpec(): Promise<MountSpec> {
+    throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
   }
 
-  /** A background program: refused, as with no computer it has nowhere to keep running. */
-  async process(_request: unknown): Promise<never> {
-    throw new WorkspaceError("REFUSED", BACKGROUND_REFUSED);
+  async attach(_computer: AttachableComputer, _check: MountCheck): Promise<Workspace> {
+    throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
   }
 }
 
