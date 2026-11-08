@@ -42,7 +42,7 @@ function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, r
   const factory = createLearningLoop({
     sourceOf: async () => ({ runId: "run-1", agentId: "agent-1", instructions: "Be brief." }),
     proposal: (runId) => store.learning.proposal(runId),
-    workspace: (agentId) => ({ agentId }),
+    folder: (agentId) => ({ workspace: { agentId }, end: async () => {} }),
     readMain,
     ask: async (request, signal) => {
       calls.ask.push({ request, aborted: signal.aborted });
@@ -65,7 +65,7 @@ test("a kept proposal is graded, then merged through the folder's one write, and
   assert.deepEqual(await loop.start(claim), { state: "ended" });
   assert.equal(calls.ask.length, 1, "the grader asked once");
   assert.equal(calls.commit.length, 1, "one merge");
-  assert.deepEqual(calls.commit[0].change, { kind: "merge", runId: "run-1", reason: "Worth keeping.", files: [{ path: "retries.md", text: NOTE.text }], graded: MAIN.graded });
+  assert.deepEqual(calls.commit[0].change, { kind: "merge", runId: "run-1", reason: "Worth keeping.", files: [{ path: "retries.md", text: NOTE.text }], graded: MAIN.graded, seed: PROPOSAL.seed });
   assert.deepEqual(await kindsOf(store, claim), [KINDS.learningGraded, KINDS.learningMerged]);
   assert.equal((await store.runs.get("learn-1")).state, "ended");
 });

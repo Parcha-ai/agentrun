@@ -177,13 +177,14 @@ test("attached: exec streams, gives onOutput every byte of a long output (its en
   const { root, computer, workspace } = await attached();
   realProcesses(computer, root);
   const seen = [];
-  let firstAt;
-  const started = Date.now();
-  const out = await workspace.exec(["bash", "-c", "printf one; sleep 1; head -c 400000 /dev/zero | tr '\\0' a; printf END"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 10_000, maxOutput: 1000, onOutput: ({ stream, data }) => {
-    firstAt ??= Date.now() - started;
+  // The program waits after "one" until the file "go" is there, which the test makes when onOutput gets "one": an exec
+  // that answered only at its end would never see it, and would end at its deadline.
+  const script = "printf one; while [ ! -e go ]; do sleep 0.01; done; head -c 400000 /dev/zero | tr '\\0' a; printf END";
+  const out = await workspace.exec(["bash", "-c", script], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 20_000, maxOutput: 1000, onOutput: ({ stream, data }) => {
+    if (seen.length === 0) writeFileSync(join(root, "go"), "");
     if (stream === "stdout") seen.push(Buffer.from(data));
   } });
-  assert.ok(seen.length > 1 && firstAt < 900, `it streams: the first piece came at ${firstAt} ms`);
+  assert.equal(out.timedOut, false, "it streamed: the first piece came before the program ended");
   const all = Buffer.concat(seen);
   assert.equal(all.length, 3 + 400_000 + 3, "every byte, past computerd's 360 KB head and past the cap");
   assert.equal(all.subarray(-3).toString(), "END", "the end of a long output is there");
@@ -195,16 +196,15 @@ test("attached: exec streams, gives onOutput every byte of a long output (its en
 test("attached: at the deadline, or an abort, exec sends KILL to the process and returns: timedOut, or an AbortError", async () => {
   const { root, computer, workspace } = await attached();
   realProcesses(computer, root);
-  let started = Date.now();
-  const slow = await workspace.exec(["sleep", "30"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 300 });
-  assert.deepEqual([slow.code, slow.signal, slow.timedOut], [null, "SIGKILL", true]);
-  assert.ok(Date.now() - started < 5_000);
+  const slow = await workspace.exec(["sleep", "300"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 300 });
+  assert.deepEqual([slow.code, slow.signal, slow.timedOut], [null, "SIGKILL", true], "ended at its deadline, by the KILL it sent");
   assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"));
+  // Aborted when the program has said it started, not after a clock: had the abort done nothing, the exec would answer
+  // at its deadline with a result, not reject.
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 300);
-  started = Date.now();
-  await assert.rejects(workspace.exec(["sleep", "30"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 20_000, signal: controller.signal }), (error) => error?.name === "AbortError");
-  assert.ok(Date.now() - started < 5_000);
+  computer.clear();
+  await assert.rejects(workspace.exec(["bash", "-c", "echo started; sleep 300"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 600_000, signal: controller.signal, onOutput: () => controller.abort() }), (error) => error?.name === "AbortError");
+  assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"), "the abort sent KILL");
   computer.clear();
   await assert.rejects(workspace.exec(["true"], { env: {}, timeoutMs: 1000, signal: AbortSignal.abort() }), (error) => error?.name === "AbortError");
   assert.deepEqual(computer.calls, [], "an aborted signal starts nothing");
