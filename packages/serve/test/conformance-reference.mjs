@@ -5,7 +5,10 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
-const { KERNEL_ENTRY, callsOf, journalEntries, messagesOf } = await import("../dist/runner/journal-reader.js");
+const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/journal-reader.js");
+const { KINDS } = await import("../dist/runner/journal-kinds.js");
+/** The reference's own bookkeeping entry: a commit that carries a run patch and no call or message. */
+const TURN_END = "reference.turn.end";
 
 const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
@@ -44,34 +47,32 @@ function referenceLoop({ script, tools, hooks }, deps) {
   /** Steers handed over since the last step: into the journal, their rows taken in that commit. */
   const writeSteers = async () => {
     const steers = MUTANT === "steer-at-end" ? [] : takeSteers();
-    for (const steer of steers) await append(KERNEL_ENTRY.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
+    for (const steer of steers) await append(KINDS.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
   };
+  /** The run ends stopped, why on its row (the end commit's summary), the stop row taken in the same commit. */
   const writeStop = async () => {
-    if (MUTANT === "stop-unwritten") {
-      journal.stage({ run: { state: "stopped" }, take: [stopReason.commandId] });
-      await append("agentrun.note", { text: "stopped" }, { run: { state: "stopped" }, take: [stopReason.commandId] });
-      return { state: "stopped" };
-    }
-    await append(KERNEL_ENTRY.message, { role: "stop", text: "stopped by a person" }, { run: { state: "stopped" }, take: [stopReason.commandId] });
+    const run = MUTANT === "stop-unwritten" ? { state: "stopped" } : { state: "stopped", summary: "stopped by a person" };
+    await append(TURN_END, {}, { run, take: [stopReason.commandId] });
     return { state: "stopped" };
   };
 
   /** The rule: intent, a flush before a side effect, route, result. */
   const invoke = async (call) => {
     const tool = tools[call.tool];
+    const start = { callId: call.callId, tool: call.tool, input: call.args, replaySafe: tool.replaySafe };
     if (MUTANT !== "intent-after-route") {
       await hooks.beforeIntent(call);
-      await append(KERNEL_ENTRY.intent, { callId: call.callId, tool: call.tool, replaySafe: tool.replaySafe });
+      await append(KINDS.callStart, start);
       if (!tool.replaySafe) await deps.flush();
     }
     const output = await tool.run(call.args, turn.signal);
     if (MUTANT === "intent-after-route") {
       await hooks.beforeIntent(call);
-      await append(KERNEL_ENTRY.intent, { callId: call.callId, tool: call.tool, replaySafe: tool.replaySafe });
+      await append(KINDS.callStart, start);
     }
     await hooks.beforeResult(call, output);
     const status = turn.signal.aborted ? "interrupted" : "done";
-    await append(KERNEL_ENTRY.result, { callId: call.callId, status, output });
+    await append(KINDS.callEnd, { callId: call.callId, status, output });
   };
 
   return {
@@ -84,9 +85,9 @@ function referenceLoop({ script, tools, hooks }, deps) {
         const rerun = MUTANT === "rerun-any" || (tool.replaySafe && MUTANT !== "replay-safe-interrupted");
         if (rerun) {
           const output = await tool.run({}, turn.signal);
-          await append(KERNEL_ENTRY.result, { callId: call.callId, status: "done", output });
+          await append(KINDS.callEnd, { callId: call.callId, status: "done", output });
         } else {
-          await append(KERNEL_ENTRY.result, { callId: call.callId, status: "interrupted" });
+          await append(KINDS.callEnd, { callId: call.callId, status: "interrupted" });
         }
       }
       entries = await journalEntries(journal, context);
@@ -102,11 +103,11 @@ function referenceLoop({ script, tools, hooks }, deps) {
           const callId = `call-${step}`;
           const tool = tools[next.call];
           if (tool.ask && MUTANT !== "ask-runs") {
-            const answered = entries.some((entry) => entry.kind === KERNEL_ENTRY.answer && entry.data.callId === callId);
+            const answered = entries.some((entry) => entry.kind === KINDS.answer && entry.data.callId === callId);
             if (!answered) {
-              const asked = entries.some((entry) => entry.kind === KERNEL_ENTRY.ask && entry.data.callId === callId);
+              const asked = entries.some((entry) => entry.kind === KINDS.ask && entry.data.callId === callId);
               if (!asked) {
-                await append(KERNEL_ENTRY.ask, { callId, tool: next.call }, { run: { state: "parked" } });
+                await append(KINDS.ask, { callId, tool: next.call }, { run: { state: "parked" } });
                 return { state: "parked" };
               }
               // Resumed on the command row: wait for the answer the runner hands over.
@@ -116,7 +117,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
                 await waitForCommand();
               }
               inbox.splice(inbox.indexOf(answer), 1);
-              await append(KERNEL_ENTRY.answer, { callId, approved: answer.kind === "approve" }, { take: [answer.id] });
+              await append(KINDS.answer, { callId, approved: answer.kind === "approve" }, { take: [answer.id] });
               if (answer.kind === "deny") continue;
             }
           }
@@ -127,15 +128,15 @@ function referenceLoop({ script, tools, hooks }, deps) {
           const text = "say" in next ? next.say : [...messagesOf(await journalEntries(journal, context))].reverse().find((m) => m.role === "steer")?.text ?? "";
           if (MUTANT === "steer-at-end") await writeSteersNow();
           const last = step === script.length - 1;
-          await append(KERNEL_ENTRY.message, { role: "model", text }, last ? { run: { state: "ended" } } : undefined);
+          await append(KINDS.message, { role: "model", text }, last ? { run: { state: "ended" } } : undefined);
           if (last) return { state: "ended" };
         }
       }
-      await append(KERNEL_ENTRY.message, { role: "model", text: "" }, { run: { state: "ended" } });
+      await append(KINDS.message, { role: "model", text: "" }, { run: { state: "ended" } });
       return { state: "ended" };
 
       async function writeSteersNow() {
-        for (const steer of takeSteers()) await append(KERNEL_ENTRY.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
+        for (const steer of takeSteers()) await append(KINDS.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
       }
     },
     async command(command) {

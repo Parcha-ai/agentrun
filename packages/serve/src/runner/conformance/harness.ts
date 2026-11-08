@@ -190,9 +190,9 @@ const CASES: readonly Case[] = [
       const slow = calls.find((call) => call.tool === "slow");
       const steered = messages.find((message) => message.role === "steer");
       const said = messages.filter((message) => message.role === "model");
-      assert.ok(slow?.resultEntry !== undefined && slow.status === "done", `slow ran to its result: ${JSON.stringify(calls)}`);
+      assert.ok(slow?.endEntry !== undefined && slow.status === "done", `slow ran to its end: ${JSON.stringify(calls)}`);
       assert.equal(steered?.text, "check the totals", `the steer is in the journal: ${JSON.stringify(messages)}`);
-      assert.ok(steered.entry > slow.resultEntry, "after the tool's result: mid-turn, not lost");
+      assert.ok(steered.entry > slow.endEntry, "after the tool's end: mid-turn, not lost");
       assert.deepEqual(said.map((message) => message.text), ["check the totals"], "the next step saw it");
       assert.ok(said[0]!.entry > steered.entry);
       assert.ok((await w.commandRow(steer.id)).takenAt !== null, "the steer row is taken");
@@ -200,20 +200,20 @@ const CASES: readonly Case[] = [
   },
   {
     id: "stop-ends-turn",
-    title: "stop ends the turn; the journal says why",
+    title: "stop ends the turn; the run says why",
     async body(subject, t) {
       const w = await world(subject, t);
       const { tools, slowStarted } = suiteTools();
       await w.start("runner-a", { script: [{ call: "slow" }, { say: "never" }], tools, hooks: quiet });
       await slowStarted;
       const stop = await sendCommand(w.server, RUN, { kind: "stop" });
-      await w.ended("stopped");
+      const row = await w.ended("stopped");
       const { calls, messages } = await w.read();
       assert.ok(calls.every((call) => call.status !== "pending"), `no call left pending: ${JSON.stringify(calls)}`);
       assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
-      const last = messages.at(-1);
-      assert.equal(last?.role, "stop", `the journal's last message says why: ${JSON.stringify(messages)}`);
-      assert.match(last!.text, /stopped/);
+      // Why it stopped is on the run row, staged in the end commit: one place for every harness.
+      assert.match(row.summary ?? "", /stopped/, `the run says why it stopped: ${JSON.stringify(row.summary)}`);
+      assert.ok(row.endedAt !== null, "its end commit stamped ended_at");
       assert.ok((await w.commandRow(stop.id)).takenAt !== null, "the stop row is taken");
     },
   },
