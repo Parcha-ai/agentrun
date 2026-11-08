@@ -1,47 +1,25 @@
 // The store's claim is the one fence for a run (design 2.1 and "the claim epoch is the one fence"): a claim moves the
 // run's epoch up by one, and every write a runner makes for the run carries the epoch it holds. A write under a stale
 // epoch is refused (Fenced) and writes nothing. A claim that ran out (claimed_until passed) is taken by the next claimer,
-// and of two claimers at once exactly one wins.
+// and of two claimers at once exactly one wins. Times are epoch ms.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
-import { Fenced } from "../../dist/store/store.js";
-import { openSqliteStore } from "../../dist/store/sqlite/store.js";
-
-/** A store file in a directory of its own, removed after the test; `clock` is the store's now, in ms. */
-async function opened(t, clock = { now: Date.parse("2026-11-08T05:00:00Z") }, file) {
-  const dir = file ? undefined : mkdtempSync(join(tmpdir(), "store-claim-"));
-  const path = file ?? join(dir, "store.sqlite");
-  const store = await openSqliteStore({ file: path, now: () => clock.now });
-  t.after(async () => {
-    await store.close();
-    if (dir) rmSync(dir, { recursive: true, force: true });
-  });
-  return { store, file: path, clock };
-}
-
-/** An agent, its revision and one queued run. */
-async function queued(store, runId = "run-1") {
-  await store.agents.put({ id: "agent-1", name: "Agent one" });
-  await store.agents.addRevision({ id: "rev-1", agentId: "agent-1", kind: "agentic", body: { instructions: "Answer." } });
-  await store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" });
-}
+import { Fenced } from "../dist/store/store.js";
+import { queued, storeOn } from "./store-helpers.mjs";
 
 test("a claim moves the run's epoch up by one and holds it running until claimed_until", async (t) => {
-  const { store, clock } = await opened(t);
+  const { store, clock } = await storeOn(t);
   await queued(store);
   assert.deepEqual(await store.runs.get("run-1").then((run) => [run.state, run.epoch, run.runner]), ["queued", 0, null]);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  assert.deepEqual(claim, { runId: "run-1", runner: "runner-a", epoch: 1, until: new Date(clock.now + 30_000).toISOString() });
+  assert.deepEqual(claim, { runId: "run-1", runner: "runner-a", epoch: 1, until: clock.now + 30_000 });
   const run = await store.runs.get("run-1");
-  assert.deepEqual([run.state, run.epoch, run.runner, run.claimedUntil], ["running", 1, "runner-a", claim.until]);
+  assert.deepEqual([run.state, run.epoch, run.runner, run.claimedUntil], ["running", 1, "runner-a", clock.now + 30_000]);
   assert.equal(await store.claim("run-1", "runner-b", { leaseMs: 30_000 }), null, "a live claim is not taken");
 });
 
 test("a run update under a stale epoch is refused (Fenced) and writes nothing", async (t) => {
-  const { store, clock } = await opened(t);
+  const { store, clock } = await storeOn(t);
   await queued(store);
   const first = await store.claim("run-1", "runner-a", { leaseMs: 1_000 });
   clock.now += 2_000;
@@ -54,16 +32,16 @@ test("a run update under a stale epoch is refused (Fenced) and writes nothing", 
   await assert.rejects(store.release(first), Fenced, "nor a stale release");
   assert.deepEqual(await store.runs.get("run-1"), before);
   await store.runs.update(second, { state: "ended", costUsd: 0.25, summary: "done" });
-  assert.deepEqual(await store.runs.get("run-1").then((run) => [run.state, run.costUsd, run.summary, run.epoch]), ["ended", 0.25, "done", 2]);
+  assert.deepEqual(await store.runs.get("run-1").then((run) => [run.state, run.costUsd, run.summary, run.epoch, run.endedAt]), ["ended", 0.25, "done", 2, clock.now]);
 });
 
 test("an expired claim is reclaimed by the next claimer, and the holder's renew before it runs out keeps it", async (t) => {
-  const { store, clock } = await opened(t);
+  const { store, clock } = await storeOn(t);
   await queued(store);
   const held = await store.claim("run-1", "runner-a", { leaseMs: 10_000 });
   clock.now += 8_000;
   const renewed = await store.renew(held, { leaseMs: 10_000 });
-  assert.equal(renewed.epoch, 1, "a renew keeps the epoch");
+  assert.deepEqual([renewed.epoch, renewed.until], [1, clock.now + 10_000], "a renew keeps the epoch");
   clock.now += 8_000;
   assert.equal(await store.claim("run-1", "runner-b", { leaseMs: 10_000 }), null, "renewed, it has not run out");
   clock.now += 3_000;
@@ -72,27 +50,28 @@ test("an expired claim is reclaimed by the next claimer, and the holder's renew 
 });
 
 test("two claimers at once on one queued run: exactly one wins", async (t) => {
-  const { store, file, clock } = await opened(t);
+  const { store, file, clock } = await storeOn(t);
   await queued(store);
-  // A second process's store on the same file (one connection per process).
-  const { store: other } = await opened(t, clock, file);
+  // A runner process's store on the same file (one connection per process).
+  const { store: other } = await storeOn(t, { clock, file, role: "runner" });
   const claims = await Promise.all([store.claim("run-1", "runner-a", { leaseMs: 30_000 }), other.claim("run-1", "runner-b", { leaseMs: 30_000 })]);
   assert.equal(claims.filter(Boolean).length, 1, JSON.stringify(claims));
   assert.equal(claims.find(Boolean).epoch, 1);
   assert.equal((await store.runs.get("run-1")).runner, claims.find(Boolean).runner);
 });
 
-test("a release gives the run back (no runner, no claimed_until) and the next claim moves the epoch again; an ended run is never claimed", async (t) => {
-  const { store } = await opened(t);
+test("a release at a park gives the run back with its state and wake_at; an ended run is never claimed", async (t) => {
+  const { store, clock } = await storeOn(t);
   await queued(store);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  await store.runs.update(claim, { state: "parked" });
-  await store.release(claim);
+  await store.release(claim, { state: "parked", wakeAt: clock.now + 60_000 });
   const run = await store.runs.get("run-1");
-  assert.deepEqual([run.state, run.runner, run.claimedUntil, run.epoch], ["parked", null, null, 1]);
+  assert.deepEqual([run.state, run.runner, run.claimedUntil, run.wakeAt, run.epoch], ["parked", null, null, clock.now + 60_000, 1]);
+  assert.equal(await store.claim("run-1", "runner-b", { leaseMs: 30_000 }), null, "parked with nothing to wake it: not claimable");
+  clock.now += 60_000;
   const again = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
-  assert.equal(again?.epoch, 2, "a released parked run is claimed again");
-  await store.runs.update(again, { state: "ended" });
-  await store.release(again);
+  assert.deepEqual([again?.epoch, (await store.runs.get("run-1")).state], [2, "running"], "its wake_at passed: claimed, running");
+  await store.release(again, { state: "ended" });
+  assert.deepEqual(await store.runs.get("run-1").then((r) => [r.state, r.wakeAt, r.endedAt]), ["ended", null, clock.now], "a release with no wakeAt clears it");
   assert.equal(await store.claim("run-1", "runner-c", { leaseMs: 30_000 }), null, "an ended run is final");
 });

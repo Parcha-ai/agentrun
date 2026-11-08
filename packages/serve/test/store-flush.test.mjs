@@ -10,10 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { before, test } from "node:test";
-import { openSqliteStore } from "../../dist/store/sqlite/store.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
 
-const WRITER = fileURLToPath(new URL("./fixtures/store-writer.mjs", import.meta.url));
-const SHIM_SRC = fileURLToPath(new URL("./fixtures/fsync-snapshot.c", import.meta.url));
+const WRITER = fileURLToPath(new URL("./store-fixtures/store-writer.mjs", import.meta.url));
+const SHIM_SRC = fileURLToPath(new URL("./store-fixtures/fsync-snapshot.c", import.meta.url));
 const LINUX = process.platform === "linux";
 
 let shim;

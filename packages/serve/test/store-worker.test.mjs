@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openSqliteStore } from "../../dist/store/sqlite/store.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
 
 /** The most a 10 ms timer may be late while the store works: far under a flush's disk wait on a busy box, far over a
  *  timer's own jitter. */
@@ -19,8 +19,7 @@ test("writes and flushes under load never stall the main event loop past a bound
     await store.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  await store.agents.put({ id: "agent-1", name: "Agent one" });
-  await store.agents.addRevision({ id: "rev-1", agentId: "agent-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
 
   let worst = 0;
   let last = performance.now();
