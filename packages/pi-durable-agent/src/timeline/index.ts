@@ -1,7 +1,7 @@
 export { groupTimeline, foldCalls, failedCall, type Call, type Fold, type Group } from "./group.js";
 export { callFailed, foldLabel, inputPreview, labelOf, nameOf, registerLabel, registerOutcome, registerTurnEnding, type FoldSpec, type LabelFn, type OutcomeFn, type ToolResultView } from "./labels.js";
 export { renderText } from "./render-text.js";
-export { COST_ENDED, COST_SO_FAR, costLabel, endedUsage, RUN_RESUMED, TURN_END } from "./timeline.js";
+export { costLabel, endedUsage, RUN_RESUMED, TURN_END } from "./timeline.js";
 export { isMessageRow, isUserEntry, MESSAGE_ORIGIN, messageOrigins, NOTE_SUFFIX, originMatcher, originOf, TRIGGER_SOURCES, type MessageOrigin, type TriggerSource } from "./origin.js";
 export { cut, scrubUrls } from "./util.js";
 export {
