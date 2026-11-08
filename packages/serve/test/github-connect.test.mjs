@@ -7,7 +7,7 @@ import { createHash, createVerify, generateKeyPairSync, randomUUID } from "node:
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { connect, connectable, deliver, failedWith, held, PUBLIC, SEAL, startConnect } from "./github-support.mjs";
+import { callback, CONNECTED, connect, connectable, deliver, failedWith, held, install, PUBLIC, SEAL, startConnect } from "./github-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { runDir, serve, withEnv } from "./support.mjs";
 import { firings, keyOf, made } from "./trigger-support.mjs";
@@ -69,7 +69,10 @@ test("the callback takes a state once, from the browser that started it: a bad, 
   assert.deepEqual(await sentTo(await back(started.body.state, {})), [302, failedWith("state_invalid")], "another browser: no cookie");
   const good = await back(started.body.state);
   assert.equal(good.status, 302, await good.text());
-  assert.equal(good.headers.get("location"), "https://github.com/apps/agentrun-test-app/installations/new");
+  const installAt = new URL(good.headers.get("location"));
+  assert.equal(`${installAt.origin}${installAt.pathname}`, "https://github.com/apps/agentrun-test-app/installations/new");
+  assert.match(installAt.searchParams.get("state") ?? "", /^[A-Za-z0-9_-]{32,}$/, "a fresh install state GitHub passes on to the setup URL");
+  assert.ok(good.headers.getSetCookie().some((line) => /Path=\/v2\/integrations\/github\/installed/.test(line) && /HttpOnly/.test(line)), "its cookie, on the installed redirect's path");
   assert.deepEqual(await sentTo(await back(started.body.state)), [302, failedWith("state_invalid")], "the same state again");
   const conversions = server.github.requests.filter((r) => r.url === "/app-manifests/code-1/conversions");
   assert.deepEqual(conversions.map((r) => r.method), ["POST"], "converted once");
@@ -129,8 +132,6 @@ test("an installation is recorded only as GitHub says it is the App's, asked wit
   const asked = server.github.requests.find((r) => r.url === "/app/installations/777");
   assert.match(String(asked.headers.authorization), /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/, "with the App's JWT");
   assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }]);
-  const unknown = await fetch(`${server.baseUrl}/integrations/github/installed?installation_id=778`, { redirect: "manual" });
-  assert.deepEqual([unknown.status, unknown.headers.get("location")], [302, failedWith("installation_unverified")], "one GitHub does not know as the App's is not recorded");
   assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }]);
 
   const made1 = await server.api("POST", "/triggers", { name: "reviews", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") });
@@ -184,7 +185,7 @@ test("demo: one signed pull_request reaches /v2/hooks/github and fires every git
   assert.notEqual(one.run_id, two.run_id, "each its own run");
   assert.deepEqual((await server.api("GET", `/triggers/${comments.id}/firings`)).body.firings, [], "not taken, not fired");
   const { content } = JSON.parse(await readFile(join(runDir(server.data, one.run_id), "serve.json"), "utf8")).input;
-  assert.ok(content.includes(`<trigger-payload source="github" scheme="github" event="pull_request" action="opened" delivery="${delivery}" installation="777" repo="acme/widgets" untrusted>`), content);
+  assert.ok(content.includes(`<trigger-payload source="github" scheme="github" event="pull_request" action="opened" delivery="${delivery}" installation="777" repo="acme/widgets" number="12" untrusted>`), content);
 
   const again = await deliver(server.baseUrl, secret, "pull_request", pr());
   assert.equal(again.status, 200, "the same signed body again starts nothing");
@@ -270,11 +271,11 @@ test("two Connects at once: the one whose code GitHub converts after the other's
 test("an installation checked while GitHub is disconnected and connected again, to another App, is dropped, not written into the new connection", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
   const started = await startConnect(server);
-  const cookie = String(started.headers.get("set-cookie")).split(";")[0];
-  assert.equal((await fetch(`${server.baseUrl}/integrations/github/callback?code=code-1&state=${started.body.state}`, { redirect: "manual", headers: { cookie } })).status, 302);
+  const back = await callback(server, "code-1", started.body.state, String(started.headers.get("set-cookie")).split(";")[0]);
+  assert.equal(back.status, 302);
   const hold = held();
   server.github.holds.installation = hold.promise;
-  const installing = fetch(`${server.baseUrl}/integrations/github/installed?installation_id=777`, { redirect: "manual" });
+  const installing = install(server, 777, back);
   while (!server.github.requests.some((r) => r.url === "/app/installations/777")) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal((await server.api("DELETE", "/integrations/github")).status, 200);
   const again = await startConnect(server);
@@ -290,6 +291,41 @@ test("Connect started at an address other than the public URL is refused before 
   const refused = await startConnect(server, {}, { wrong: true });
   assert.deepEqual([refused.status, refused.body.error?.code], [409, "github_wrong_origin"], JSON.stringify(refused.body));
   assert.equal(refused.body.error.message, `Open this server at ${PUBLIC} to connect GitHub.`);
-  assert.deepEqual(refused.body.error.details, { open: PUBLIC });
+  assert.deepEqual(refused.body.error.details, { public_url: PUBLIC }, "the URL as a field, for the console's link");
   assert.equal(refused.headers.get("set-cookie"), null, "no state cookie set");
+});
+
+test("the installed redirect records an installation only with the install state its callback sent to GitHub and that browser's cookie: without them it records nothing and lands on the console, as GitHub's own install pages do; with them, one GitHub does not know is installation_unverified", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  const started = await startConnect(server);
+  const back = await callback(server, "code-1", started.body.state, String(started.headers.get("set-cookie")).split(";")[0]);
+  const list = async () => (await server.api("GET", "/integrations/github")).body.installations;
+  for (const [what, options] of [["no state", { state: null, cookie: null }], ["no cookie", { cookie: null }], ["another state", { state: "not-a-state" }]]) {
+    const unbound = await install(server, 777, back, options);
+    assert.deepEqual([unbound.status, unbound.headers.get("location")], [302, CONNECTED], what);
+    assert.deepEqual(await list(), [], `${what}: nothing recorded (an install from GitHub's own pages arrives as its signed installation event)`);
+  }
+  const unknown = await install(server, 778, back);
+  assert.deepEqual([unknown.status, unknown.headers.get("location")], [302, failedWith("installation_unverified")], "bound, but GitHub does not know it as the App's");
+  assert.deepEqual(await list(), []);
+});
+
+test("a key whose last line is short shows nothing of itself where the server's secrets are cut: the whole key and every line are listed, the short one too", async (t) => {
+  const { openServerSecrets } = await import("../dist/server-secrets.js");
+  const { SealedSettings } = await import("../dist/sealed-settings.js");
+  const { redactedAnswer } = await import("../dist/key-refusal.js");
+  const { github } = await import("../dist/trigger-github.js");
+  const { scratch } = await import("./support.mjs");
+  const { randomBytes } = await import("node:crypto");
+  const data = await scratch(t);
+  const key = randomBytes(32);
+  const kind = ["RSA", "PRIVATE", "KEY-----"].join(" ");
+  const lines = [randomBytes(48).toString("base64"), randomBytes(48).toString("base64"), "Zq7=="];
+  const pem = `-----BEGIN ${kind}\n${lines.join("\n")}\n-----END ${kind}\n`;
+  new SealedSettings(data, "github", github.settings, key, () => {}).set("server", "private_key", pem);
+  const { secrets } = openServerSecrets(data, { AGENTRUN_SEAL_KEY: key.toString("base64") }, [github]);
+  const held = secrets.values();
+  for (const line of lines) assert.ok(held.includes(line), `listed: ${line}`);
+  const shown = redactedAnswer(`the run printed: ${pem} and ended`, held);
+  for (const line of lines) assert.ok(!shown.includes(line), `nothing of the key shows: ${shown}`);
 });

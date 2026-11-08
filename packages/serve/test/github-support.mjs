@@ -114,11 +114,26 @@ export async function connect(server) {
   const started = await startConnect(server);
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const cookie = String(started.headers.get("set-cookie") ?? "").split(";")[0];
-  const back = await fetch(`${server.baseUrl}/integrations/github/callback?code=code-1&state=${started.body.state}`, { redirect: "manual", headers: { cookie } });
-  assert.equal(back.status, 302, await back.text());
-  const installed = await fetch(`${server.baseUrl}/integrations/github/installed?installation_id=777&setup_action=install`, { redirect: "manual" });
+  const back = await callback(server, "code-1", started.body.state, cookie);
+  const installed = await install(server, 777, back);
   assert.deepEqual([installed.status, installed.headers.get("location")], [302, CONNECTED], await installed.text());
   return { started, cookie, back, installed };
+}
+
+/** GitHub's redirect back with `code`, from the browser holding `cookie`: its answer, and the install state the server
+ *  sends on to GitHub's install page (in its Location) with the cookie it sets for it. */
+export async function callback(server, code, state, cookie) {
+  const res = await fetch(`${server.baseUrl}/integrations/github/callback?code=${code}&state=${state}`, { redirect: "manual", headers: { cookie } });
+  const location = res.headers.get("location") ?? "";
+  const installState = URL.canParse(location) ? new URL(location).searchParams.get("state") : null;
+  const installCookie = res.headers.getSetCookie().map((line) => line.split(";")[0]).find((pair) => !pair.endsWith("=")) ?? "";
+  return { res, status: res.status, location, installState, installCookie };
+}
+
+/** GitHub's redirect after the App is installed: installation `id`, with the install state and cookie of `back` (a
+ *  callback's), or as given. */
+export function install(server, id, back = {}, { state = back.installState, cookie = back.installCookie } = {}) {
+  return fetch(`${server.baseUrl}/integrations/github/installed?installation_id=${id}&setup_action=install${state ? `&state=${state}` : ""}`, { redirect: "manual", headers: cookie ? { cookie } : {} });
 }
 
 /** A delivery from the App: `event` with `payload`, signed with its webhook secret (or `signature` as given). */

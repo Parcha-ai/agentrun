@@ -206,3 +206,41 @@ test("a github_app server moved to another origin keeps no static headers: the m
   assert.match(moved.body.error.message, /moved/);
   assert.deepEqual(b.log, [], "nothing reached the new address");
 });
+
+test("a pull_request's number and head sha, and a comment's number, ride on the payload's tag from the signed body, whatever the 16 KiB cut leaves of the payload; a comment's tag has no head_sha", { timeout: 120_000 }, async (t) => {
+  const { server } = await withGitHubMcp(t);
+  const { readFile: read } = await import("node:fs/promises");
+  assert.equal((await server.api("POST", "/agents", agent("long", { tools: [] }))).status, 201);
+  const make = async (name, accept) => (await server.api("POST", "/triggers", { name, source: { kind: "github", accept }, target: { kind: "start_run", agent_id: "long", input: { content: "Review it." }, max_cost_usd: 0.5 } })).body;
+  const prs = await make("prs", [{ event: "pull_request" }]);
+  const comments = await make("comments", [{ event: "issue_comment" }]);
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  // The PR's own description comes before its head: past the cut, so the payload loses number and head.sha.
+  const pr = { action: "opened", pull_request: { body: "x".repeat(40 * 1024), head: { sha }, number: 41 }, repository: { full_name: "acme/widgets" }, installation: { id: 777 } };
+  assert.equal((await deliver(server.baseUrl, server.github.app.webhook_secret, "pull_request", pr)).status, 202);
+  const comment = { action: "created", issue: { body: "y".repeat(40 * 1024), number: 42, pull_request: { url: "u" } }, comment: { body: "@bot review" }, repository: { full_name: "acme/widgets" }, installation: { id: 777 } };
+  assert.equal((await deliver(server.baseUrl, server.github.app.webhook_secret, "issue_comment", comment)).status, 202);
+  const tagOf = async (triggerId) => {
+    const [fired] = await firings(server.api, triggerId, 1);
+    const { content } = JSON.parse(await read(join(runDir(server.data, fired.run_id), "serve.json"), "utf8")).input;
+    assert.match(content, /\[cut: the payload was \d+ bytes, past 16384\]/, "the payload itself is cut");
+    return content.slice(content.indexOf("<trigger-payload "), content.indexOf(">", content.indexOf("<trigger-payload ")) + 1);
+  };
+  const prTag = await tagOf(prs.id);
+  assert.match(prTag, / number="41" /);
+  assert.match(prTag, new RegExp(` head_sha="${sha}" `));
+  const commentTag = await tagOf(comments.id);
+  assert.match(commentTag, / number="42" /);
+  assert.ok(!commentTag.includes("head_sha"), `a comment's tag has no head_sha at all: ${commentTag}`);
+});
+
+test("an org-level event with no repository reaching a github_app run's target mints no token: its calls answer in words", { timeout: 120_000 }, async (t) => {
+  const { server } = await withGitHubMcp(t);
+  assert.equal((await server.api("POST", "/agents", agent("org", { tools: ["mcp:gh/add"], tool_settings: ALLOW }))).status, 201);
+  const made = await server.api("POST", "/triggers", { name: "org", source: { kind: "github", accept: [{ event: "organization" }] }, target: { kind: "start_run", agent_id: "org", input: { content: 'Call mcp__gh__add with {"a":1,"b":1}' }, max_cost_usd: 0.5 } });
+  assert.equal((await deliver(server.baseUrl, server.github.app.webhook_secret, "organization", { action: "member_added", organization: { login: "acme" }, installation: { id: 777 } })).status, 202);
+  const [fired] = await firings(server.api, made.body.id, 1);
+  await follow(server.api, fired.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.match((await server.api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer, /No GitHub repository/);
+  assert.deepEqual(runTokens(server), [], "no token");
+});
