@@ -1537,7 +1537,7 @@ included. Runs start in the order their events came while the server has room; w
 again after a `429`, a later one can start first.
 
 Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
-`max_active_runs` (1 to 1,000; `null` clears it): past that many of its runs active, a firing waits due and is tried
+`max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
 again, as at a full server, and is never skipped. Only a trigger whose firings each start a run takes it (`422`
 otherwise). On a public repository, a rule for `issue_comment` or `issues` events needs a condition on
 `/comment/author_association` or `/issue/author_association` (`in: ["OWNER", "MEMBER", "COLLABORATOR"]`): without one,

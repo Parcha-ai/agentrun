@@ -223,8 +223,9 @@ function settingsOf(body: Json, issues: InputIssue[]): { catchup_window_s?: numb
   return { ...(typeof body.catchup_window_s === "number" ? { catchup_window_s: body.catchup_window_s } : {}), ...(typeof max === "number" || max === null ? { max_active_runs: max as number | null } : {}) };
 }
 const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s", "max_active_runs"];
-/** The highest max_active_runs a trigger may set. */
-const MAX_ACTIVE_RUNS = 1_000;
+/** The highest max_active_runs a trigger may set: its runs are counted from its history's started firings, of which at
+ *  least HISTORY_KEPT less DUE_KEPT and UNTOLD_KEPT (130) are always there, so a cap well under that holds. */
+export const MAX_ACTIVE_RUNS = 100;
 
 /** A trigger as triggers.json keeps it, whole: what the engine reads of it is there, of its type. */
 function wellFormed(adapters: readonly TriggerAdapter[], t: unknown): t is Trigger {
@@ -392,7 +393,7 @@ export class Triggers {
     return { created: true, firing: firingView(firing) };
   }
 
-  /** PATCH: any of name, enabled, source, target and catchup_window_s. Enabled again, or its source changed, a trigger goes on from now: a
+  /** PATCH: any of name, enabled, source, target, catchup_window_s and max_active_runs. Enabled again, or its source changed, a trigger goes on from now: a
    *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
    *  the target's check is done: an edit made meanwhile keeps its own. */
   async update(id: string, body: Json) {
@@ -401,7 +402,8 @@ export class Triggers {
     const source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
     const target = body.target === undefined ? undefined : targetOf(body.target, issues);
     const settings = settingsOf(body, issues);
-    // A cap kept, or set, needs a source whose firings each start a run: a PATCH that takes accept away clears it too.
+    // A cap kept, or set, needs a source whose firings each start a run: a PATCH that takes accept away is refused unless it
+    // also sends max_active_runs: null.
     const cap = settings.max_active_runs === undefined ? was.max_active_runs : settings.max_active_runs;
     if (typeof cap === "number" && (source || typeof settings.max_active_runs === "number")) issues.push(...this.capIssues(source ?? was.source));
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
@@ -806,7 +808,9 @@ export class Triggers {
    *  firing is about 170 bytes of JSON, a due webhook firing's payload at most 16 KiB more, and a trigger keeps at most
    *  HISTORY_KEPT (200) in its history and KEPT_FIRINGS (1,000) past it: about 230 KiB a trigger at its fullest, which
    *  measured about 3 ms a write (copy, JSON and fsync) on an SSD. Its history runs past HISTORY_KEPT by at most
-   *  UNTOLD_KEPT (50) failures not yet told and DUE_KEPT (20) due firings, whose payloads add at most 320 KiB. */
+   *  UNTOLD_KEPT (50) failures not yet told and DUE_KEPT (20) due firings, whose payloads add at most 320 KiB. A pushed
+   *  source's trigger also keeps its last day's keys (`seen`, SEEN_KEPT 5,000 of about 50 bytes): about 250 KiB more,
+   *  so about 800 KiB a webhook trigger at its fullest. */
   private commit<T>(change: () => T): T {
     if (this.closed) throw new ApiError("unavailable", "The server is stopping.");
     const before = structuredClone(this.triggers);
