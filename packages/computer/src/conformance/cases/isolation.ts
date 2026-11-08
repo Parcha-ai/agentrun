@@ -48,6 +48,8 @@ export const OUTSIDE_TARGETS = ["1.1.1.1:443", "example.com:443"];
 
 interface ProbeLine {
 	interfaces?: unknown;
+	quiet?: unknown;
+	raised?: unknown;
 	results?: Array<{ target?: unknown; outcome?: unknown; detail?: unknown }>;
 }
 
@@ -71,7 +73,12 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 	} catch {
 		return t.assert(false, `the probe wrote what is not its report: ${ran.out.slice(0, 200)}`);
 	}
-	t.deepEqual(probe.interfaces, ["lo"], "the interfaces a program of the computer's user sees: its own loopback alone");
+	t.deepEqual(probe.interfaces, ["lo"], "the live interfaces (up or addressed) a program of the computer's user sees: its own loopback alone");
+	// A kernel's fallback tunnels, down with no address, are quiet: recorded. One a program could bring up is a way out.
+	const quiet = Array.isArray(probe.quiet) ? probe.quiet.map(String) : [];
+	if (quiet.length > 0) t.observe(`quiet interfaces (down, no address) a program of the computer's user sees: ${quiet.join(", ")}`);
+	const raised = Array.isArray(probe.raised) ? probe.raised.map(String) : [];
+	t.assert(raised.length === 0, `a program of the computer's user brought up ${raised.join(", ")}, which no program of its own network may`);
 	for (const target of targets) {
 		const result = probe.results?.find((one) => one.target === target);
 		const what = agent.includes(target) ? "the vendor's agent" : "the outside";
