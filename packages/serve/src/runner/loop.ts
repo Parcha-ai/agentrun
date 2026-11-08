@@ -234,7 +234,6 @@ function heldStateOf(value: unknown): HeldState | undefined {
   return { tools, ...(text ? { partial: { text } } : {}) };
 }
 
-/** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
 /** Why the run fails, when the answer it would end on (the root's last pi.assistant) was cut at the model's output limit
  *  (stopReason "length"): unfinished, so never ended. A cut answer the run went on from (a later turn answered after it)
  *  is not its last, and changes nothing. */
@@ -244,6 +243,7 @@ function cutLast(entries: readonly EntryRecord[]): string | undefined {
   return message?.stopReason === "length" ? cutAtLimit(message.usage?.output) : undefined;
 }
 
+/** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
 function restartLimited(entries: readonly EntryRecord[]): string | undefined {
   for (const entry of entries) {
     if (entry.kind !== "pi.tool-result") continue;
