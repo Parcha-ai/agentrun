@@ -16,6 +16,8 @@ const exec = promisify(execFile);
 const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const manifest = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8"));
 const MOUNT_NAMES = ["MOUNT_KINDS", "WORKSPACE", "checkMount", "readBackOf"];
+/** The files the egress proxy container runs, from dist/docker (src/docker/egress.ts, CODE_FILES). */
+const EGRESS_CODE = ["egress-main.js", "egress-proxy.js", "egress-table.js"];
 
 test("the package is published, and its manifest exports ./mount beside the root, each with its types", () => {
 	assert.equal(manifest.private, undefined, "no private flag: a release publishes it");
@@ -61,13 +63,16 @@ test("a TypeScript host reads MountSpec, MountReadBack and MountKind from the su
 	assert.equal(result.code ?? 0, 0, `tsc: ${result.stdout ?? ""}${result.stderr ?? ""}`);
 });
 
-test("a pack holds dist, the README, LICENSE and NOTICE, and the daemon binaries the build made, executable", async () => {
+test("a pack holds dist, the README, LICENSE and NOTICE, the egress proxy's code, and the daemon binaries the build made, executable", async () => {
 	const { stdout } = await exec("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: PACKAGE, maxBuffer: 16 * 1024 * 1024 });
 	const [{ files }] = JSON.parse(stdout);
 	const paths = files.map((file) => file.path);
 	for (const path of paths) assert.match(path, /^(?:package\.json|README\.md|LICENSE|NOTICE|dist\/.+)$/, `${path} is outside dist, the README, LICENSE and NOTICE`);
 	for (const path of paths) assert.doesNotMatch(path, /\.(?:map|tsbuildinfo)$/, path);
 	for (const path of ["README.md", "LICENSE", "NOTICE", "dist/index.js", "dist/index.d.ts", "dist/mount.js", "dist/mount.d.ts"]) assert.ok(paths.includes(path), `the pack holds ${path}`);
+	// The Docker provider binds dist/docker and package.json into each egress proxy container, which runs these with Node
+	// alone: no other module of the package is there.
+	for (const file of EGRESS_CODE) assert.ok(paths.includes(`dist/docker/${file}`), `the pack holds the egress proxy's dist/docker/${file}`);
 	// `npm run build:daemon` writes them into dist, so a pack carries them when the build made them; the release's package
 	// check (scripts/verify-packages.mjs) requires them.
 	for (const arch of ["amd64", "arm64"]) {

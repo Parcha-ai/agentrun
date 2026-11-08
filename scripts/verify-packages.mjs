@@ -127,10 +127,12 @@ const usedEndpoints = new Set();
 // dist/computerd-linux-<arch> into each computer, Daytona and Modal upload it. `npm run build:daemon -w @parcha/agentrun-computer`
 // (Go, after `npm run build`) writes both, and the check below requires each, executable by everyone (every computer drops
 // every capability, so its root runs the mounted binary only if everyone may), an ELF for its architecture, stamped with the
-// package's version, the one its hello reports. Its ./mount subpath is what a host reads the mount rule from.
+// package's version, the one its hello reports. Its ./mount subpath is what a host reads the mount rule from. The Docker
+// provider binds dist/docker and package.json into each egress proxy container, which runs the egress files with Node alone.
 const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
+const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
-  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`)],
+  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`)],
 };
 
 try {
@@ -173,7 +175,7 @@ try {
         assert.ok(bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && bytes.readUInt16LE(18) === machine, `${name} is a Linux ${arch} ELF`);
         assert.ok(bytes.includes(Buffer.from(manifest.version)), `${name} is stamped with ${manifest.version}: build the daemon again after the version changes`);
       }
-      receipt.checks.push(`${manifest.name} holds LICENSE, NOTICE, its ./mount subpath, and the daemon for linux ${Object.keys(daemonMachines).join(' and ')}, each an executable ELF stamped ${manifest.version}.`);
+      receipt.checks.push(`${manifest.name} holds LICENSE, NOTICE, its ./mount subpath, the egress proxy's code, and the daemon for linux ${Object.keys(daemonMachines).join(' and ')}, each an executable ELF stamped ${manifest.version}.`);
     }
     for (const name of names.filter(n => !n.endsWith('/'))) {
       const content = await readFile(join(extracted, name), 'utf8');
@@ -420,6 +422,30 @@ console.log(JSON.stringify({ loaded: loaded.filter(url => !url.startsWith('node:
   assert.deepEqual(mountLoad.loaded, [mountLoad.resolved], 'importing @parcha/agentrun-computer/mount loads dist/mount.js and node built-ins alone');
   assert.deepEqual(mountLoad.names, ['MOUNT_KINDS', 'WORKSPACE', 'checkMount', 'readBackOf']);
   receipt.checks.push('The installed @parcha/agentrun-computer/mount loads dist/mount.js and node built-ins alone, in a fresh process: no provider, vendor SDK or conformance module.');
+  // The egress proxy runs in a bare Node container from two binds of the installed package: dist/docker at /code/docker and
+  // package.json at /code/package.json. Laid out the same way with nothing else beside it, the proxy refuses a missing list
+  // in words, and with one listens on its socket, logs its ready line, and ends itself at its deadline.
+  {
+    const installed = join(consumer, 'node_modules/@parcha/agentrun-computer');
+    const proxy = await mkdtemp(join(tmpdir(), 'agentrun-egress-'));
+    try {
+      await cp(join(installed, 'dist/docker'), join(proxy, 'code/docker'), { recursive: true });
+      await cp(join(installed, 'package.json'), join(proxy, 'code/package.json'));
+      await mkdir(join(proxy, 'egress'));
+      const main = join(proxy, 'code/docker/egress-main.js');
+      const refused = await run(process.execPath, [main], proxy, true);
+      assert.equal(refused.exitCode, 2, `the packed egress proxy refuses a missing list with exit 2: ${refused.stderr || refused.stdout}`);
+      assert.match(refused.stdout, /^egress: no host list was given/, 'the packed egress proxy says why it does not start');
+      const deadline = new Date(Date.now() + 3_000).toISOString();
+      const ran = await run(process.execPath, [main, '--socket', join(proxy, 'egress/egress.sock'), '--deadline', deadline, '--allow', 'example.org'], proxy, true);
+      assert.equal(ran.exitCode, 0, `the packed egress proxy runs to its deadline: ${ran.stderr || ran.stdout}`);
+      assert.match(ran.stdout, /^egress ready allow=example\.org$/m, 'the packed egress proxy logs its ready line');
+      assert.match(ran.stdout, /the deadline .* has come, the proxy ends/, 'the packed egress proxy ends itself at its deadline');
+    } finally {
+      await rm(proxy, { recursive: true, force: true });
+    }
+  }
+  receipt.checks.push('The installed @parcha/agentrun-computer egress proxy, laid out as its container binds it (dist/docker and package.json alone), refuses a missing list with exit 2, and with one logs its ready line and ends itself at its deadline.');
   if (requireConsole) {
     const index = await readFile(join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console/index.html'), 'utf8').catch(() => '');
     assert.match(index, /\ssrc="\.\/assets\/[^"]+\.js"/, 'the installed agentrun-serve has the console, dist/console/index.html');
