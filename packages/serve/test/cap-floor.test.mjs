@@ -155,7 +155,7 @@ test("pi: a floor measured under other host settings (here the host's thinking l
 });
 
 test("pi: only a fresh conversation's first request has a floor: a request after an answer (a follow-up in a later process) has none", async () => {
-  const floorOf = await piFloor("medium");
+  const floorOf = await piFloor({ effort: "medium" });
   const model = { id: "floor-1", name: "floor-1", api: "openai-responses", provider: "p", maxTokens: 64_000, contextWindow: 400_000, cost: { input: 10, output: 100, cacheRead: 0, cacheWrite: 0 } };
   const user = { role: "user", content: "Write one.md", timestamp: 1 };
   assert.ok(floorOf(model, { systemPrompt: "Answer.", messages: [user] }, {}), "the first request of a fresh conversation");

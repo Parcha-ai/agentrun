@@ -14,14 +14,25 @@
 //     the least (the hard minimum) and the typical (the advice), by effort.
 // A first request has no previous request, so its price is linear in its fresh input: the figures for another input are
 // the measured ones moved by the difference in its message's bytes at the measured price of a token (inputUsdPerToken).
-import { type FloorMark, money, raiseFigure } from "./cap.js";
+import { type FloorMark, type FloorRun, money, raiseFigure } from "./cap.js";
 import { ApiError } from "./errors.js";
+import { DEFAULT_HARNESS } from "./harness.js";
+import { hostModel } from "./model.js";
+
+/** The model setting a run of `revision` runs under, for its floor (FloorMark.setting): the revision's model, else the
+ *  host's default for its harness, the one the server picks at a launch (hostModel; `launched`, what it handed the run,
+ *  when it handed one). A floor measured under another setting is never applied. */
+export function floorSetting(env: NodeJS.ProcessEnv, revision: { kind: string; body: { model?: string; harness?: string } }, launched?: string): Pick<FloorRun, "setting"> {
+  if (revision.kind !== "agentic") return {};
+  const setting = revision.body.model ?? (launched || hostModel(env, "default", revision.body.harness ?? DEFAULT_HARNESS));
+  return setting ? { setting } : {};
+}
 
 /** The newest runs of an agent a floor is looked for in. */
 export const FLOOR_RUNS = 20;
-/** A run that measured a floor: its mark, the input it was started with, when it started (`at`), and the effort it was
- *  asked for (none: the agent's own). */
-export type MeasuredRun = { mark: FloorMark; input: unknown; at: string; effort?: string };
+/** A run that measured a floor: its mark, the input it was started with, and when it started (`at`). A run whose first
+ *  message carried a file list is none: its list's bytes are not its agent's. */
+export type MeasuredRun = { mark: FloorMark; input: unknown; at: string };
 /** The figures as the API serves them, in dollars to the micro-dollar. */
 export type FloorFigures = { least_usd: number; typical_usd: number };
 /** GET /v2/agents/{id}'s `cap_floor`. */
@@ -44,9 +55,11 @@ export function floorFor(measured: MeasuredRun, input: unknown): { leastUsd: num
   return { leastUsd: Math.max(0, mark.leastUsd + moved), typicalUsd: Math.max(0, mark.typicalUsd + moved) };
 }
 
-/** The agent's `cap_floor` from its measured runs, newest first: the newest one's input-free figures, and the newest of
- *  each effort it was measured at. Undefined with none. */
-export function capFloorView(measured: readonly MeasuredRun[]): CapFloor | undefined {
+/** The agent's `cap_floor` from its measured runs, newest first, of those measured under its model setting now
+ *  (`setting`, floorSetting): the newest one's input-free figures, and the newest of each thinking level it was measured
+ *  at. Undefined with none. */
+export function capFloorView(all: readonly MeasuredRun[], setting: string | undefined): CapFloor | undefined {
+  const measured = all.filter((run) => run.mark.setting === setting);
   const newest = measured[0];
   if (!newest) return undefined;
   const free = (run: MeasuredRun): FloorFigures => {
@@ -58,11 +71,13 @@ export function capFloorView(measured: readonly MeasuredRun[]): CapFloor | undef
   return { ...free(newest), model: newest.mark.model, ...(newest.mark.effort ? { effort: newest.mark.effort } : {}), measured_at: newest.at, by_effort: byEffort };
 }
 
-/** The refusal of a create whose `cap` is under the least its first request would need: measured on the newest run asked
- *  for the same effort (`effort`, none: the agent's own), that run's input moved to this one's. Undefined when the cap
- *  covers it, or no such run measured one. */
-export function belowLeast(cap: number, measured: readonly MeasuredRun[], input: unknown, effort: string | undefined): ApiError | undefined {
-  const same = measured.find((run) => run.effort === effort);
+/** The refusal of a create whose `cap` is under the least its first request would need: measured on the newest run under
+ *  what this one runs under (`run`: its thinking level and model setting now), that run's input moved to this one's.
+ *  Undefined when the cap covers it, or no such run measured one. `input`'s own files are not counted (a lower bound:
+ *  their list only adds to its first request), so a run with files is refused only when even its message is not
+ *  covered. */
+export function belowLeast(cap: number, measured: readonly MeasuredRun[], input: unknown, run: FloorRun): ApiError | undefined {
+  const same = measured.find((one) => one.mark.effort === run.effort && one.mark.setting === run.setting);
   if (!same) return undefined;
   const { leastUsd, typicalUsd } = floorFor(same, input);
   if (cap >= leastUsd) return undefined;

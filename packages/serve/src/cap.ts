@@ -760,13 +760,17 @@ export const FLOOR_FIELD = "floor";
  *  and least output (the figure the cap refuses it below), and `typicalUsd`, its input and WRAP_UP_STEP0_ANSWER_TOKENS of
  *  output (at most what it asks); `inputTokens`, its input bound, and `inputUsdPerToken`, what one more token of fresh
  *  input adds to both, so a run with another input is priced from it exactly (the price is linear in fresh input);
- *  `model`, the id it was priced on; `effort`, the thinking level its process ran at. A create reads the newest one of
- *  its agent (cap-floor.ts) and refuses a cap under the least. */
-export type FloorMark = { model: string; effort?: string; inputTokens: number; leastUsd: number; typicalUsd: number; inputUsdPerToken: number };
+ *  `model`, the id it was priced on; `effort`, the thinking level its process ran at; `setting`, the model setting it
+ *  ran under (its revision's model, else the host's default for its harness: hostModel), so a floor measured under
+ *  other host settings is never applied. A create reads the newest matching one of its agent's revision (cap-floor.ts)
+ *  and refuses a cap under the least. */
+export type FloorMark = { model: string; effort?: string; setting?: string; inputTokens: number; leastUsd: number; typicalUsd: number; inputUsdPerToken: number };
+/** What a run's floor is measured under: its thinking level (`effort`) and its model setting (`setting`). */
+export type FloorRun = { effort?: string; setting?: string };
 /** A first request's floor: `input` tokens (its bound), `asked` and `least` output, and `feeUsd`, priced at `price`. */
-export function floorFigures(price: (input: InputParts, output: number) => number, model: string, { input, asked, least, feeUsd = 0 }: { input: number; asked: number; least: number; feeUsd?: number }, effort?: string): FloorMark {
+export function floorFigures(price: (input: InputParts, output: number) => number, model: string, { input, asked, least, feeUsd = 0 }: { input: number; asked: number; least: number; feeUsd?: number }, { effort, setting }: FloorRun = {}): FloorMark {
   const priced = requestPrice(price, input, undefined, 0, "expected", feeUsd);
-  return { model, ...(effort ? { effort } : {}), inputTokens: input, leastUsd: priced.cost(least), typicalUsd: priced.cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked)), inputUsdPerToken: price({ cached: 0, fresh: 1 }, 0) - price({ cached: 0, fresh: 0 }, 0) };
+  return { model, ...(effort ? { effort } : {}), ...(setting ? { setting } : {}), inputTokens: input, leastUsd: priced.cost(least), typicalUsd: priced.cost(Math.min(WRAP_UP_STEP0_ANSWER_TOKENS, asked)), inputUsdPerToken: price({ cached: 0, fresh: 1 }, 0) - price({ cached: 0, fresh: 0 }, 0) };
 }
 /** The output a request on another harness asks and needs at least, as admission reads them (capBefore): what it asks,
  *  at most the model's ceiling `output`, and its least (1,024 tokens, or what its body says it needs), at most that. */
@@ -777,14 +781,14 @@ const cliOutputs = (output: number, { outputTokensAsked, outputTokensLeast }: { 
 /** A request on another harness as its floor (FloorMark), priced at `model`'s price as admission prices it; undefined
  *  for a model the cap cannot price (`listed: false`, no output ceiling) and for an input that was not measured. */
 export type FloorOf = (request: { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number }) => FloorMark | undefined;
-export async function cliFloor(model: Model<Api> | undefined, { listed = true, effort }: { listed?: boolean; effort?: string } = {}): Promise<FloorOf> {
+export async function cliFloor(model: Model<Api> | undefined, { listed = true, ...run }: { listed?: boolean } & FloorRun = {}): Promise<FloorOf> {
   const output = model && listed ? outputBound(model) : undefined;
   if (model === undefined || output === undefined) return () => undefined;
   const price = priceOf((await import("@earendil-works/pi-ai")).calculateCost, model);
   return (request) => {
     if (!(typeof request.inputTokensMax === "number" && Number.isFinite(request.inputTokensMax))) return undefined;
     const { asked, least } = cliOutputs(output, request);
-    return floorFigures(price, model.id, { input: request.inputTokensMax, asked: output === 0 ? 0 : asked, least: output === 0 ? 0 : least }, effort);
+    return floorFigures(price, model.id, { input: request.inputTokensMax, asked: output === 0 ? 0 : asked, least: output === 0 ? 0 : least }, run);
   };
 }
 
@@ -944,18 +948,21 @@ export function piOutputs(simple: SimpleOptions, model: Model<Api>, context: Con
   return { thinking, adaptive, budgeted, asked, least };
 }
 /** A pi request as its floor (FloorMark): its input bound and fee (requestParts, `overhead` as admission's), what it asks
- *  and needs at least (piOutputs), at its model's price. Undefined for a model with no output ceiling whose output is
- *  priced, and for an input that cannot be measured: admission refuses those under a cap, and they have no floor. */
+ *  and needs at least (piOutputs), at its model's price. Only a fresh conversation's first request has one (no answer in
+ *  its context): a request after an answer (a follow-up's, in a later process) carries the conversation before it.
+ *  Undefined too for a model with no output ceiling whose output is priced, and for an input that cannot be measured:
+ *  admission refuses those under a cap. */
 export type PiFloorOf = (model: Model<Api>, context: Context, options: PiOptions | undefined) => FloorMark | undefined;
-export async function piFloor(effort?: string, overhead: (model: Model<Api>, context: Context) => number | undefined = piOverhead): Promise<PiFloorOf> {
+export async function piFloor(measured: FloorRun = {}, overhead: (model: Model<Api>, context: Context) => number | undefined = piOverhead): Promise<PiFloorOf> {
   const [{ calculateCost }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   return (model, context, options) => {
+    if (context.messages.some((message) => message.role === "assistant")) return undefined;
     const ceiling = outputBound(model);
     const parts = ceiling === undefined ? undefined : partsOf(model, context);
     if (ceiling === undefined || parts === undefined) return undefined;
     const { asked, least } = ceiling === 0 ? { asked: 0, least: 0 } : piOutputs(simple, model, context, options, true, ceiling);
-    return floorFigures(priceOf(calculateCost, model), model.id, { input: parts.input, asked, least, feeUsd: parts.feeUsd }, effort);
+    return floorFigures(priceOf(calculateCost, model), model.id, { input: parts.input, asked, least, feeUsd: parts.feeUsd }, measured);
   };
 }
 

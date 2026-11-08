@@ -25,7 +25,7 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
-import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
+import { chooseModel, EFFORT_ENV, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, thinkingOf, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_INSTALLS, HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstall, removeFlatInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
@@ -56,7 +56,7 @@ import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
-import { belowLeast, capFloorView, FLOOR_RUNS, type MeasuredRun } from "./cap-floor.js";
+import { belowLeast, capFloorView, FLOOR_RUNS, floorSetting, type MeasuredRun } from "./cap-floor.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
@@ -1439,7 +1439,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // A cap under the least its first request needs, by the agent's newest run measured at this effort, is refused here,
     // with both figures, rather than started to pause at step 0 with nothing done (cap-floor.ts). None measured: started.
     if (cap !== undefined && revision.kind === "agentic") {
-      const refused = belowLeast(cap, await measuredRuns(entry.agent.id, revision), input, typeof body.effort === "string" ? body.effort : undefined);
+      const refused = belowLeast(cap, await measuredRuns(entry.agent.id, revision), input, floorRunOf(revision, typeof body.effort === "string" ? body.effort : undefined));
       if (refused) throw refused;
     }
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
@@ -1458,11 +1458,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const measured: MeasuredRun[] = [];
     for (const row of rows) {
       const run = await runs.get(row.id);
-      const mark = run ? runs.floorOf(run) : undefined;
-      if (run && mark) measured.push({ mark, input: run.meta.input, at: row.startedAt, ...(run.meta.effort ? { effort: run.meta.effort } : {}) });
+      // A run that was handed files told of them in its first message (run-manifest.ts firstMessage): not its agent's.
+      if (!run || (await readdir(join(run.dir, "work", "inputs")).then((names) => names.length > 0, () => false))) continue;
+      const mark = runs.floorOf(run);
+      if (mark) measured.push({ mark, input: run.meta.input, at: row.startedAt });
     }
     return measured;
   }
+
+  /** What a run of `revision` started now with `effort` runs under, for its floor: its thinking level (thinkingOf, as its
+   *  process reads it: its effort, else its revision's, else the host's) and its model setting (floorSetting). */
+  const floorRunOf = (revision: Revision, effort: string | undefined) => ({
+    effort: thinkingOf({ ...(process.env.AGENT_THINKING ? { AGENT_THINKING: process.env.AGENT_THINKING } : {}), ...(effort ? { [EFFORT_ENV]: effort } : {}) }, revision.kind === "agentic" ? revision.body.thinking : undefined),
+    ...floorSetting(env, revision as never),
+  });
 
   /** The revision a run of `entry` starts on: the one `body.revision` pins, else the agent's current; undefined when the
    *  pin names none, or the agent has no revision. */
@@ -1980,7 +1989,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
         const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision), caps.tools.map((tool) => tool.name)) : [];
         // The least a cap must be for one request of its current revision, as its newest runs measured it (cap-floor.ts).
-        const floor = entry.revision ? capFloorView(await measuredRuns(entry.agent.id, entry.revision)) : undefined;
+        const floor = entry.revision ? capFloorView(await measuredRuns(entry.agent.id, entry.revision), floorRunOf(entry.revision, undefined).setting) : undefined;
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), tools, ...(floor ? { cap_floor: floor } : {}) }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {

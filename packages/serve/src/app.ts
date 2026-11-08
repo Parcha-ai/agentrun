@@ -18,6 +18,7 @@ import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capModeOf, capOf, cliFloor, costsIn, piFloor, spentIn, wrapUpSentIn } from "./cap.js";
+import { floorSetting } from "./cap-floor.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
@@ -33,7 +34,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, FAUX_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { DEFAULT_MODEL_ENV, EFFORT_ENV, FAUX_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
@@ -129,11 +130,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   /** The session's port, once the harness's run is made (adapterRun): read at each request. */
   let sessionPort: ((label: string) => SessionPort | undefined) | undefined;
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
-  // The effort a run's floor is measured at (cap.ts FloorMark): the run's own, else the thinking level it runs at.
-  const floorEffort = process.env[EFFORT_ENV] || thinkingLevel;
-  // The process's first turn request records its floor (cap.ts FloorMark) on its start mark, capped or not, sent or
-  // refused: a create reads the agent's newest one (cap-floor.ts).
-  const floor = onHarness ? undefined : await piFloor(floorEffort);
+  // What a run's floor is measured under (cap.ts FloorMark): the thinking level it runs at, and its model setting, its
+  // revision's model else the host's default for its harness (hostModel, as the server picks it at the launch).
+  const floorRun = { effort: thinkingLevel, ...floorSetting(env, revision as never, process.env[DEFAULT_MODEL_ENV]) };
+  // A fresh run's first turn request records its floor (cap.ts FloorMark) on its start mark, capped or not, sent or
+  // refused: a create reads the revision's newest matching one (cap-floor.ts).
+  const floor = onHarness ? undefined : await piFloor(floorRun);
   const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root), { ...(floor ? { floor } : {}) });
   // The wrap-up on pi (cap.ts WrapUp): near its cap the run's own model is told once, under this cap, to finish. Not on
   // another harness: its guard tells the harness's model (harness-app.ts).
@@ -213,7 +215,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // same ceiling rule as pi's (cap.ts), at the price `priced` names (above).
     const guard = await capBefore(cap, chosen.models.getModel(priced!.provider, priced!.modelId) as never, { listed: !chosen.unpriced.has(priced!.modelId), mode });
     // The run's floor (cap.ts FloorMark), at the same price: its first harness request's, capped or not (harness-app.ts).
-    const floorOf = await cliFloor(chosen.models.getModel(priced!.provider, priced!.modelId) as never, { listed: !chosen.unpriced.has(priced!.modelId), effort: floorEffort });
+    const floorOf = await cliFloor(chosen.models.getModel(priced!.provider, priced!.modelId) as never, { listed: !chosen.unpriced.has(priced!.modelId), ...floorRun });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
