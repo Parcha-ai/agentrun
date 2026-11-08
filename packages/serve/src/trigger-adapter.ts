@@ -77,9 +77,12 @@ export type Push = {
   /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
   handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
   /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
-   *  said). */
-  parse(headers: Headers, body: Buffer): PushEvent[];
+   *  said). `ignored`: a request `source` does not take (its trigger's own filter), with why: answered 200
+   *  `{ok: "ignored"}`, and said. */
+  parse(headers: Headers, body: Buffer, source?: Source): PushEvent[] | PushIgnored;
 };
+/** A verified request its trigger's source does not take: why (`ignored`), and the event it was, when it names one. */
+export type PushIgnored = { ignored: string; event?: string };
 /** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
  *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
  *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */

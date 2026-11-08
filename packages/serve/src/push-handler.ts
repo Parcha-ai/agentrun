@@ -4,8 +4,9 @@
 // order, the same for every source: its headers, before a byte of the body is read; its body, cut at the source's
 // maxBodyBytes (413); its check against its key, or against the kernel's one decoy when there is none, so an unknown
 // trigger costs what a known one does; its handshake; its parse; its firing. Every refusal is the one 401, so nothing is
-// learned by asking. A request that passes its check and does not parse, or names no trigger of its source, is answered
-// 200 and said: the sender is who it says, and sending it again changes nothing.
+// learned by asking. A request that passes its check and does not parse, names no trigger of its source, or is an event
+// its trigger does not take (`{ok: "ignored"}`), is answered 200 and said: the sender is who it says, and sending it
+// again changes nothing.
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { ApiError } from "./errors.js";
@@ -94,7 +95,12 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
   const handshake = push.handshake?.(req.headers as Headers, body);
   if (handshake) return handshake;
-  const events = push.parse(req.headers as Headers, body);
+  const events = push.parse(req.headers as Headers, body, source);
+  // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
+  if (!Array.isArray(events)) {
+    deps.say({ condition: "hook_ignored", source: adapter.id, route, ...(pathTrigger ? { trigger: pathTrigger } : {}), reason: events.ignored, ...(events.event ? { event: events.event } : {}) });
+    return { status: 200, body: { ok: "ignored" } };
+  }
   if (!events.length) {
     deps.say({ condition: "hook_unparsed", source: adapter.id, route });
     return { status: 200, body: { firings: [] } };
