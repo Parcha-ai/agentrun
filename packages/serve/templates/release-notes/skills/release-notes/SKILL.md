@@ -96,26 +96,38 @@ Decide the two refs exactly, and write them in `range`.
 
 ### 3. The pull requests in the range
 
-The range is the commits reachable from `to` and not from `from`. There is no compare tool, so walk the commits:
+**Membership is decided by commits, never by dates.** A PR is in the release when one of its commits, or its merge
+commit, is reachable from `to` and not from `from`. A PR can merge into a development branch before the previous
+release and reach the release branch after it: its merge date is older than `from`, and it still belongs to this
+release. `merged_at` is never a filter; it may order lines, nothing more. There is no compare tool, so walk both ends:
 
-1. `list_commits` with `sha: <to sha>` and `perPage: 100`, page by page, until you reach the `from` sha. Keep each
-   commit's sha and the first line of its message. Stop after 5 pages (500 commits) and use the fallback below.
-2. Each commit names its PR: a squash merge ends its first line with `(#123)`, a merge commit starts
-   `Merge pull request #123 from`. A commit that names none: `search_pull_requests` with `repo:<owner/name> is:pr
-   is:merged <sha>` finds the PR whose head or merge it is; a direct push with no PR goes in `questions` as "a commit
-   with no PR" with its short sha and first line, never into the notes.
-3. On a history with merge commits, date order can mix in commits from before `from`: keep walking to the `from` sha,
-   and keep only PRs merged after `from_date`.
+1. **The new end.** `list_commits` with `sha: <to sha>` and `perPage: 100`, page by page. Keep each commit's sha, its
+   committer date and the first line of its message. GitHub lists them by date, not by ancestry, so reaching the `from`
+   sha doesn't end the range: older commits that `from` doesn't hold can come after it.
+2. **The previous end.** `list_commits` with `sha: <from sha>`, `perPage: 100`, page by page beside the first walk.
+3. **The range** is every commit of walk 1 that isn't in walk 2. Stop paging both once walk 1 has passed the `from` sha
+   and a whole page of walk 1 is already in walk 2 (from there the histories are shared). On a squash-merge history
+   that is one page past `from`. Stop after 5 pages of walk 1 (500 commits) and use the fallback below.
+4. **Each in-range commit names its PR**: a squash merge ends its first line with `(#123)`, a merge commit starts
+   `Merge pull request #123 from`. On a merge-commit history a PR's own commits come into the range with its merge
+   commit and need no lookup, and a branch merge that names no PR (`Merge branch 'develop'`) brings in PRs whose merge
+   commits are in the range too: skip both, and the release's own commit at `to` ("Release v1.5.0", a version bump). For any other commit that names no PR, `search_pull_requests` with
+   `repo:<owner/name> is:pr is:merged <sha>` finds the PR whose head or merge it is; a direct push with no PR goes in
+   `questions` as "a commit with no PR" with its short sha and first line, never into the notes.
 
-The range's PRs are exactly the numbers that walk found. Read them in bulk: `search_pull_requests` with
-`repo:<owner/name> is:pr is:merged merged:<from_date>..<to_date>`, `perPage: 100`, every page; each result carries the
-title, body, labels and author. A PR the walk found and the search missed: `pull_request_read` with `method: get`. A PR
-the search found and the walk didn't was merged elsewhere or after the cut: leave it out and name it in `questions` only
-if it was merged into the release's branch.
+The range's PRs are exactly the numbers step 4 found, whatever their merge dates. Read them in bulk:
+`search_pull_requests` with `repo:<owner/name> is:pr is:merged merged:>=<the oldest committer date among the in-range
+commits>`, `perPage: 100`, every page. That bound is only there to make the search cover them all (a PR's merge commit
+is no older than its merge), never to decide membership. Each result carries the title, body, labels, author and
+`merged_at`. Keep the results whose numbers step 4 found and ignore the rest. A PR step 4 found that the search missed:
+`pull_request_read` with `method: get`.
 
-**Fallback** (over 500 commits, or a `from` sha the walk never reaches): the range is
-`repo:<owner/name> is:pr is:merged base:<release branch> merged:<from_date>..<to_date>`, `range.method: "merged_date"`,
-and the intro says the range is by merge date.
+**Fallback, approximate** (over 500 commits, or a walk that never reaches the `from` sha): the range is
+`repo:<owner/name> is:pr is:merged base:<release branch> merged:<from_date>..<to_date>`, with `range.method:
+"merged_date"`. It is approximate because merge dates are not reachability: it misses a PR merged into another branch
+before `from` that reached the release branch after it, and it counts a PR merged into the branch inside the window that
+the tag doesn't hold (a tag cut from an older commit, or a backport branch). The intro says the range is by merge date
+and may miss or include a change, and `questions` asks the maintainer to check the table.
 
 ### 4. Change fragments (only when `changes_dir` is set)
 
@@ -247,7 +259,7 @@ edits and copies it: an issue. You make at most one write per run.
 
 ### 9. Answer
 
-Return exactly one fenced `json` block matching `notes.schema.json`, and nothing after it:
+Return exactly one fenced `json` block matching `notes.schema.json` (beside this SKILL.md: read it before you answer), and nothing after it:
 
 ```json
 {
