@@ -1551,8 +1551,10 @@ first past that, which the log says once (`condition=trigger_seen_full`). The ag
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="standard" untrusted>...</trigger-payload>`:
 whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
 reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
-(`delivery="..."`, GitHub's `X-GitHub-Delivery`), each when there is one, so an agent's instructions can read what it
-was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
+(`delivery="..."`, GitHub's `X-GitHub-Delivery`) and, for a GitHub delivery, its pull request or issue's `number="..."`
+(`pull_request.number`, else `issue.number`) and a pull request's `head_sha="..."` (40 hex; a comment event has none, so
+no `head_sha` at all), read from the signed body so the payload's cut never loses them, each when there is one, so an
+agent's instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
 the body, in any case, is defused.
 
 A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
@@ -1638,16 +1640,18 @@ callback and setup URLs, the permissions (pull requests write; contents, metadat
 "GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
 `AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
 App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
-(`409 github_wrong_origin`, "Open this server at <public URL> to connect GitHub.", the URL in `details.open`). Its
+(`409 github_wrong_origin`, "Open this server at <public URL> to connect GitHub.", the URL in `details.public_url`). Its
 `state` is random, used once, good for an hour, and bound to the browser that started it
 by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`.
 
 GitHub sends the browser back to `GET /v2/integrations/github/callback` with a code. The server converts it with GitHub
 and keeps the App's id, slug and client id, which are no secret, and its private key and webhook secret, which are,
 sealed in `DIR/trigger-settings-github.json`; GitHub's client secret is never kept, and no secret is logged or answered.
-The browser goes on to install the App; GitHub's redirect after (`/v2/integrations/github/installed`)
-records the installation once GitHub, asked with the App's own JWT, says it is the App's, and sends the browser to the
-console at the public URL, `<public>/#/settings/github?github=connected`. Neither leg ever answers an error body: a state
+The browser goes on to install the App, with a fresh install state GitHub passes on and its cookie on the installed
+path; GitHub's redirect after (`/v2/integrations/github/installed`) records the installation only with that state and
+cookie, once GitHub, asked with the App's own JWT, says it is the App's, and sends the browser to the console at the
+public URL, `<public>/#/settings/github?github=connected`. Without the state and cookie it records nothing and lands
+there too: an installation made from GitHub's own pages arrives as the App's signed installation event. Neither leg ever answers an error body: a state
 that is unknown, used, older than an hour or from another browser sends the browser to
 `<public>/#/settings/github?github=error&reason=state_invalid`,
 a code GitHub does not convert to `...&reason=conversion_failed`, one whose App GitHub made while another Connect kept
