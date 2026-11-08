@@ -74,6 +74,22 @@ test("each document's value is the one at that commit's seq, and a retired docum
   ]);
 });
 
+test("a document that keeps only its latest value (pi.live, pi.inbox, pi.usage) appears only in the commit that last wrote it: a reader of an older commit never sees a value written after it", async (t) => {
+  const { storage } = await journalOf(t);
+  const doc = await storage.mintId();
+  const latest = (value) => ({ type: "document.create", record: { id: doc, kind: "test.live", scope: { kind: "conversation", conversationId: ROOT }, history: "latest", fork: "asOf" }, content: { kind: "base", version: 1, value } });
+  await commitWrites(storage, [latest({ n: 1 })], context);
+  await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message", mark: "between" } }], context);
+  await commitWrites(storage, [change(doc, { n: 2 })], context);
+  // A reconnect that reads only the commit that created it, after a later one wrote it again.
+  assert.deepEqual(shape(await storage.commitsAfter(1, 1, context)).map(({ seq, documents }) => ({ seq, documents })), [{ seq: 2, documents: [] }], "never the value written at seq 4");
+  assert.deepEqual(shape(await storage.commitsAfter(1, 10, context)).map(({ seq, documents }) => ({ seq, documents })), [
+    { seq: 2, documents: [] },
+    { seq: 3, documents: [] },
+    { seq: 4, documents: [{ id: doc, kind: "test.live", conversationId: ROOT, value: { n: 2 } }] },
+  ]);
+});
+
 test("after a seq, at most `limit` commits, with `next` to read on from, and none past the last", async (t) => {
   const { storage } = await journalOf(t);
   for (const mark of ["x", "y", "z"]) await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message", mark } }], context);
