@@ -4,7 +4,6 @@ the timeline route's two forms, the long-polled JSON page and the event stream, 
 from __future__ import annotations
 
 import codecs
-import http.client
 import json
 import math
 import re
@@ -111,7 +110,8 @@ def events(stream: StreamedResponse) -> Iterator[Event]:
     """The events of a text/event-stream body as the HTML standard parses them, each once its blank line came, so an
     event cut off midway is never seen. `id` is the last id field seen, carried from event to event; only digits, the
     route's change numbers, are kept, so nothing else is ever sent back as a header."""
-    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    # utf-8-sig: a byte order mark the stream begins with is no part of its first field.
+    decoder = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
     buffer = ""
     name = ""
     data: List[str] = []
@@ -213,7 +213,8 @@ def _follow(send: Send, base_url: str, path: str, last: Optional[str], idle: flo
                         raise AgentRunRefused(TIMELINE, response.status, "bad_answer", None, f"The server answered {TIMELINE} with something other than an event stream.")
                     for event in events(stream):
                         if event.retry is not None:
-                            retry = event.retry / 1000
+                            # Capped as a Retry-After is: a server's retry is never a reason to wait longer.
+                            retry = min(event.retry / 1000, MAX_RETRY_AFTER)
                         if event.id is not None:
                             last = event.id
                         if event.event == "rows":
@@ -230,7 +231,7 @@ def _follow(send: Send, base_url: str, path: str, last: Optional[str], idle: flo
         except AgentRunError:
             # An outcome of this client's is the call's.
             raise
-        except (OSError, http.client.HTTPException) as error:
+        except Exception as error:  # noqa: BLE001 - whatever broke the stream's read is a dropped connection
             # What broke while the stream was read is a dropped connection.
             cause = "stream_silent" if isinstance(error, (socket.timeout, TimeoutError)) else "stream_broken"
         if reconnect:

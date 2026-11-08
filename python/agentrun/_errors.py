@@ -5,7 +5,7 @@ code."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, Literal, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, Literal, Optional, Tuple, Type
 
 if TYPE_CHECKING:
     from ._generated import Run
@@ -23,6 +23,17 @@ class AgentRunError(Exception):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+    def __reduce__(self) -> Tuple[Any, ...]:
+        # Rebuilt from its message and fields, not by calling its constructor again with the message alone.
+        return (_restore, (type(self), str(self), dict(self.__dict__)))
+
+
+def _restore(kind: Type[AgentRunError], message: str, fields: Dict[str, Any]) -> AgentRunError:
+    error = kind.__new__(kind)
+    Exception.__init__(error, message)
+    error.__dict__.update(fields)
+    return error
 
 
 class AgentRunRefused(AgentRunError):

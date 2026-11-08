@@ -33,6 +33,26 @@ URI_COMPONENT_SAFE = "-_.!~*'()"
 CHUNK = 64 * 1024
 
 
+class Secret(str):
+    """A str no printed form shows: its repr and str are [hidden], and pickle refuses it. What it holds goes on the wire
+    as it is (http.client encodes the str itself), and `reveal()` gives it back as a plain str."""
+
+    def __repr__(self) -> str:
+        return "[hidden]"
+
+    def __str__(self) -> str:
+        return "[hidden]"
+
+    def __format__(self, spec: str) -> str:
+        return "[hidden]"
+
+    def reveal(self) -> str:
+        return str.__str__(self)
+
+    def __reduce__(self) -> Any:
+        raise TypeError("a secret is not pickled")
+
+
 class Late(Exception):
     """Raised by `send` once an exchange's deadline passed: never seen by a caller."""
 
@@ -77,7 +97,7 @@ def retry_after_of(headers: Message) -> float:
     value = (headers.get("retry-after") or "").strip()
     if not value:
         return 0.0
-    if value.isdigit():
+    if re.fullmatch(r"[0-9]+", value):
         return float(value)
     try:
         return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
@@ -104,14 +124,15 @@ def segment_of(value: object, name: str, multi_segment: bool) -> str:
 
 
 # The causes of a connection that was never made: no server took it. Any other failure took a connection and dropped it.
-NOT_CONNECTED = frozenset({"ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_FAIL", "EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL", "connect_timeout"})
+NOT_CONNECTED = frozenset({"ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_FAIL", "EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL"})
 # The causes of a TLS handshake the client refused (a certificate it does not trust, a name it does not match).
 UNTRUSTED = re.compile(r"CERT|TLS|SSL|UNABLE_TO_")
 _EAI = {getattr(socket, name): name for name in dir(socket) if name.startswith("EAI_") and isinstance(getattr(socket, name), int)}
 
 
-def cause_of(error: BaseException, connected: bool) -> str:
-    """A failure's code, never its message: an OSError's message can quote what it failed on."""
+def cause_of(error: BaseException) -> str:
+    """A failure's code, never its message: an OSError's message can quote what it failed on. A try that ran out of its
+    time is a timeout, whether it was connecting, in its TLS handshake or reading."""
     if isinstance(error, ssl.SSLCertVerificationError):
         return "CERT_" + _code(getattr(error, "reason", None), "VERIFY_FAILED")
     if isinstance(error, ssl.SSLError):
@@ -120,7 +141,7 @@ def cause_of(error: BaseException, connected: bool) -> str:
         name = _EAI.get(error.errno or 0, "EAI_FAIL")
         return "ENOTFOUND" if name in ("EAI_NONAME", "EAI_NODATA") else name
     if isinstance(error, (socket.timeout, TimeoutError)):
-        return "timeout" if connected else "connect_timeout"
+        return "timeout"
     number = error.errno if isinstance(error, OSError) else None
     if isinstance(number, int) and number in errno.errorcode:
         return errno.errorcode[number]
@@ -302,35 +323,39 @@ class Origin:
 
 
 class Failure(Exception):
-    """A try that failed on the wire: its failure's code, and whether a connection was made."""
+    """A try that failed: its failure's code, whether it ran out of its time, and whether it is final (a failure that is
+    not the network's, which another try would only repeat)."""
 
-    def __init__(self, cause: str, connected: bool, late: bool) -> None:
+    def __init__(self, cause: str, late: bool, final: bool = False) -> None:
         super().__init__(cause)
         self.cause = cause
-        self.connected = connected
         self.late = late
+        self.final = final
 
 
-def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[str, str]], body: Optional[bytes], end: float, context: Optional[ssl.SSLContext]) -> Response:
-    """One request on a connection of its own, ended at `end` (on time.monotonic()): its answer with the head read, or
-    Failure."""
+def failure_of(error: BaseException, late: bool = False) -> Failure:
+    late = late or isinstance(error, (socket.timeout, TimeoutError))
+    return Failure("timeout" if late else cause_of(error), late, not isinstance(error, (OSError, http.client.HTTPException)))
+
+
+def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[str, str]], key: Secret, body: Optional[bytes], end: float, context: Optional[ssl.SSLContext]) -> Response:
+    """One request on a connection of its own, ended at `end` (on time.monotonic()), the key in its Authorization
+    header: its answer with the head read, or Failure. The header's value is a Secret, so no frame's locals show it."""
     clock = _Clock(end)
     connection = origin.connect(max(end - time.monotonic(), 0.001), context)
-    connected = False
     try:
         connection.connect()
-        connected = True
         if connection.sock is not None:
             connection.sock = cast(Any, _Socket(connection.sock, clock))
         connection.putrequest(method, target)
         for name, value in headers:
             connection.putheader(name, value)
+        connection.putheader("authorization", Secret("Bearer " + key.reveal()))
         if body is not None or method in ("POST", "PUT", "PATCH"):
             connection.putheader("content-length", str(len(body or b"")))
         connection.endheaders(body)
         answer = connection.getresponse()
-    except (OSError, http.client.HTTPException) as error:
+    except Exception as error:  # noqa: BLE001 - every failure of a try is its outcome, as a code
         connection.close()
-        late = clock.expired or isinstance(error, (socket.timeout, TimeoutError))
-        raise Failure(cause_of(error, connected), connected, late) from None
+        raise failure_of(error, clock.expired) from None
     return Response(connection, answer, clock)

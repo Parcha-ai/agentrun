@@ -6,7 +6,6 @@ Idempotency-Key, is tried again. A secret body's values are cut from the answer 
 
 from __future__ import annotations
 
-import http.client
 import itertools
 import json
 import math
@@ -29,9 +28,10 @@ from ._http import (
     Late,
     Origin,
     Response,
+    Secret,
     attempt,
     backoff,
-    cause_of,
+    failure_of,
     pause,
     retry_after_of,
     segment_of,
@@ -47,21 +47,12 @@ MAX_HOPS = 5
 USER_AGENT = "parcha-agentrun-python"
 # What a URL may hold as this client sends it: printable ASCII, no space.
 URL_TEXT = re.compile(r"[\x21-\x7e]*")
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
-class _Key:
-    """The API key, held where no printed form of the client shows it and pickle refuses it."""
-
-    __slots__ = ("value",)
-
-    def __init__(self, value: str) -> None:
-        self.value = value
-
-    def __repr__(self) -> str:
-        return "[hidden]"
-
-    def __reduce__(self) -> Any:
-        raise TypeError("the API key is not pickled")
+def _key_from_environment() -> Optional[Secret]:
+    value = os.environ.get("AGENTRUN_API_KEY")
+    return None if value is None else Secret(value)
 
 
 def _base_of(given: Optional[str], where: str) -> str:
@@ -80,6 +71,11 @@ def _base_of(given: Optional[str], where: str) -> str:
     dotted = any(re.sub("%2e", ".", segment, flags=re.IGNORECASE) in (".", "..") for segment in parts.path.split("/"))
     if parts.scheme not in ("http", "https") or not parts.hostname or "@" in parts.netloc or dotted:
         raise AgentRunUsage(why)
+    try:
+        # The host as a connection names it: a label IDNA refuses (empty, or over 63 characters) is refused here.
+        parts.hostname.encode("idna")
+    except UnicodeError:
+        raise AgentRunUsage(f"{where} names a host that is not a valid host name.") from None
     return given.rstrip("/")
 
 
@@ -112,7 +108,8 @@ def _query_text(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    return str(value)
+    # A lone surrogate has no UTF-8: it goes as U+FFFD, as URLSearchParams sends it.
+    return _SURROGATE.sub("\ufffd", str(value))
 
 
 def _secret_at(method: str, url: str) -> Optional[Operation]:
@@ -191,17 +188,19 @@ class AgentRun(Resources):
 
     runs: Runs
 
-    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 60.0, max_retries: int = 2) -> None:
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 60.0, max_retries: int = 4) -> None:
+        # The key is a Secret from its first line here on, the environment's too, so no frame's locals show it.
+        api_key = Secret(api_key) if isinstance(api_key, str) else api_key
         self.base_url = _base_of(base_url if base_url is not None else os.environ.get("AGENTRUN_BASE_URL"), "base_url" if base_url is not None else "AGENTRUN_BASE_URL")
-        key = api_key if api_key is not None else os.environ.get("AGENTRUN_API_KEY")
+        self.timeout = _positive(timeout, "timeout")
+        self.max_retries = _whole(max_retries, "max_retries")
+        key = api_key if api_key is not None else _key_from_environment()
         if not key:
             raise AgentRunAuthError("no_token", "No API key: pass api_key, or set AGENTRUN_API_KEY.")
         # Refused before it is sent: http.client would quote a bad header value in its error.
         if not isinstance(key, str) or BAD_HEADER.search(key) or re.search(r"\s", key):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise AgentRunAuthError("bad_header", "The API key is not a valid header value (it holds a space, a line break, a control character or a character outside Latin-1).")
-        self._key = _Key(key)
-        self.timeout = _positive(timeout, "timeout")
-        self.max_retries = _whole(max_retries, "max_retries")
+        self._key: Secret = key
         origin = _origin_of(self.base_url)
         assert origin is not None
         self._origin = origin
@@ -295,8 +294,8 @@ class AgentRun(Resources):
                 if response.ok and not x.streamed:
                     try:
                         response.read()
-                    except (OSError, http.client.HTTPException) as error:
-                        raise Failure("timeout" if response.timed_out else cause_of(error, True), True, response.timed_out) from None
+                    except Exception as error:  # noqa: BLE001 - every failure of a try is its outcome, as a code
+                        raise failure_of(error, response.timed_out) from None
             except Failure as failure:
                 if (failure.late and last) or time.monotonic() >= deadline:
                     raise Late() from None
@@ -305,12 +304,13 @@ class AgentRun(Resources):
                 # request, and so is a refused one once the server has answered before (it may be restarting); a
                 # timeout is not. A certificate the client refuses stays refused, so it is never tried again.
                 never_reached = not self._reached and cause in NOT_CONNECTED
-                if not x.retryable or never_reached or UNTRUSTED.search(cause) or cause == "timeout" or tries > self.max_retries:
+                if failure.final or not x.retryable or never_reached or UNTRUSTED.search(cause) or cause == "timeout" or tries > self.max_retries:
                     raise AgentRunUnreachable(self.base_url, cause) from None
                 pause(min(backoff(tries), deadline - time.monotonic()))
                 continue
-            wait = retry_after_of(response.headers)
-            if x.retryable and response.status in RETRIABLE and tries <= self.max_retries and wait <= MAX_RETRY_AFTER:
+            # Retry-After is read only where it is used: never on a success's way out.
+            wait = retry_after_of(response.headers) if x.retryable and response.status in RETRIABLE and tries <= self.max_retries else math.inf
+            if wait <= MAX_RETRY_AFTER:
                 response.close()
                 pause(min(backoff(tries, wait), max(0.001, deadline - time.monotonic())))
                 continue
@@ -325,10 +325,9 @@ class AgentRun(Resources):
         end = time.monotonic() + seconds
         headers: Dict[str, str] = {"accept": "application/json, */*", "user-agent": USER_AGENT}
         headers.update({name.lower(): value for name, value in x.headers.items()})
-        headers["authorization"] = f"Bearer {self._key.value}"
         target = f"{self._base_path}{x.path}"
         for hops in itertools.count():
-            response = attempt(self._origin, x.method, target, list(headers.items()), x.body, end, self._context)
+            response = attempt(self._origin, x.method, target, list(headers.items()), self._key, x.body, end, self._context)
             if response.status not in REDIRECT:
                 return response
             response.close()
@@ -354,8 +353,9 @@ class AgentRun(Resources):
             parsed: object = json.loads(response.read().decode("utf-8"))
             found: object = cast(Dict[str, Any], parsed).get("error") if isinstance(parsed, dict) else None
             if isinstance(found, dict):
-                error = scrubber_of([self._key.value, *x.secrets])(cast(ServerError, found))
-        except (OSError, http.client.HTTPException, ValueError):
+                error = scrubber_of([self._key.reveal(), *x.secrets])(cast(ServerError, found))
+        except Exception:  # noqa: BLE001 - a body that cannot be read or parsed is no error object
+
             if (response.timed_out and last) or time.monotonic() >= deadline:
                 raise Late() from None
             error = None

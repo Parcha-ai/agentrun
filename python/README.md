@@ -31,7 +31,7 @@ no query, fragment, user, password, space or `.` or `..` segment, and the key mu
 checked here, before any request. The client reads no file: finding the server started on this machine (its data
 directory and the address it records there) is the CLI's job (`npx @parcha/agentrun`), not this package's. It reads no
 proxy from the environment either: the key goes to the base URL's origin and nowhere else. Other arguments: `timeout`,
-how long one try of a request may take in seconds, its answer read included (default 60), and `max_retries` (default 2).
+how long one try of a request may take in seconds, its answer read included (default 60), and `max_retries` (default 4).
 
 Methods are grouped as the CLI's commands are, in snake_case: `agents create` is `client.agents.create(body)`,
 `runs start AGENT` is `client.runs.start(agent_id, body)`, `mcp-servers save NAME` is
@@ -113,8 +113,9 @@ URL's own path counted, is a secret body too.
 A GET, or a request that carries an `Idempotency-Key`, is tried again after a 429, a 5xx or a dropped connection (a body
 cut midway included), with backoff and never sooner than the server's `Retry-After`; a `Retry-After` over a minute is no
 retry. Any other request is sent once. A fresh client's first request ends at once only when no connection was made
-(refused, unknown name, unreachable host, connect timeout); a connection dropped after it was made is tried again even
-then. A certificate the client refuses and a try that timed out are never tried again. A redirect is followed only for a
+(refused, unknown name, unreachable host); a connection dropped after it was made is tried again even then. A
+certificate the client refuses is never tried again, and neither is a try that ran out of its time, whether it was
+connecting, in its TLS handshake or reading. A redirect is followed only for a
 GET within the base URL's origin, up to 5 hops: the key never goes to another server.
 
 ## Cancellation
