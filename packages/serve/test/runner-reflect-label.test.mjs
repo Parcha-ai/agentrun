@@ -34,8 +34,9 @@ async function journaled(t, upTo = Infinity) {
   const id = () => journal.mintId();
   const [input, inputEntry, answer, turn, turnEntry, turnAnswer, end] = [await id(), await id(), await id(), await id(), await id(), await id(), await id()];
   const commits = [
-    [{ type: "conversation", value: { id: ROOT } }, { type: "submission", value: { id: input, conversationId: ROOT, type: "input", status: "placed", entry: inputEntry } }, { type: "entry", value: { id: inputEntry, conversationId: ROOT, kind: "pi.user", model: user("Follow the script.") } }],
-    [{ type: "entry", value: { id: answer, conversationId: ROOT, kind: "pi.assistant", model: assistant("the job's answer") } }, { type: "submission", value: { id: input, conversationId: ROOT, type: "input", status: "done", entry: inputEntry, answer } }],
+    // The job's input has a request id of its own (the launch's): only the turn's prefix makes an input the turn's.
+    [{ type: "conversation", value: { id: ROOT } }, { type: "submission", value: { id: input, conversationId: ROOT, type: "input", requestId: "launch-run-1", status: "placed", entry: inputEntry } }, { type: "entry", value: { id: inputEntry, conversationId: ROOT, kind: "pi.user", model: user("Follow the script.") } }],
+    [{ type: "entry", value: { id: answer, conversationId: ROOT, kind: "pi.assistant", model: assistant("the job's answer") } }, { type: "submission", value: { id: input, conversationId: ROOT, type: "input", requestId: "launch-run-1", status: "done", entry: inputEntry, answer } }],
     [{ type: "submission", value: { id: turn, conversationId: ROOT, type: "input", requestId: reflectRequestId("run-1"), status: "placed", entry: turnEntry } }, { type: "entry", value: { id: turnEntry, conversationId: ROOT, kind: "pi.user", model: user(ASKED) } }],
     [{ type: "entry", value: { id: turnAnswer, conversationId: ROOT, kind: "pi.assistant", model: assistant("a note") } }, { type: "submission", value: { id: turn, conversationId: ROOT, type: "input", requestId: reflectRequestId("run-1"), status: "done", entry: turnEntry, answer: turnAnswer } }],
     [{ type: "entry", value: { id: end, conversationId: ROOT, kind: "agentrun.end", data: { state: "ended" } } }],
