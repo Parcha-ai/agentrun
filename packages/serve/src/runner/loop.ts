@@ -102,6 +102,8 @@ const heldUntilAborted = (hookContext: Context) =>
 const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 const STOP_SETTLE_MS = 30_000;
+/** The most a cut run's end-of-run step may take (a store read) before its end is written without its rows. */
+const CUT_STEP_MS = 2_000;
 
 /** Loops for pi runs: `spec(claim)` gives each claim's run what it runs. */
 export function createPiLoop(spec: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>): LoopFactory {
@@ -291,6 +293,9 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     // which hands it on again; never refused for good.
     if (!gate || !root) return { later: "the run's loop did not open: the steer waits for its next claim" };
     if (gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
+    // to answer. Left untaken, so the run's end says it came after the answer.
+    if (reflecting) return { later: "the run has answered and is ending: the steer is not placed in its end-of-run turn" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
     // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
@@ -586,12 +591,23 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
    *  held up by it. */
   async function cutRows(claim: Claim, spec: PiRunSpec, cut: "stopped" | "stopped-looking" | "faulted"): Promise<readonly AlsoRow[]> {
     if (!deps.endOfRun || !spec.agentId) return [];
+    const refuse = () => Promise.reject(new Error("a cut run's end-of-run step asks nothing"));
+    let timer: NodeJS.Timeout | undefined;
+    // Bounded: a person's stop ends within its own bound (stopSettleMs), so a step that reads a stalled store keeps
+    // nothing rather than hold the end.
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), CUT_STEP_MS)));
     try {
-      const refuse = () => Promise.reject(new Error("a cut run's end-of-run step asks nothing"));
-      return (await deps.endOfRun({ runId: claim.runId, agentId: spec.agentId, claim, outcome: "failed", cut, signal: deps.signal, ask: refuse }))?.also ?? [];
+      const rows = await Promise.race([deps.endOfRun({ runId: claim.runId, agentId: spec.agentId, claim, outcome: "failed", cut, signal: deps.signal, ask: refuse }), late]);
+      if (rows === "late") {
+        console.warn(`[runner] ${claim.runId}: its end-of-run step gave no answer within ${CUT_STEP_MS / 1000} s; the end is written without it`);
+        return [];
+      }
+      return rows?.also ?? [];
     } catch (error) {
       console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${(error as Error).message}`);
       return [];
+    } finally {
+      clearTimeout(timer);
     }
   }
 
