@@ -224,6 +224,40 @@ test("a person's stop during the job: the stopped end carries the step's rows fo
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "cut:stopped" }], "its rows stored with the stopped end");
 });
 
+test("a cut step that never answers (its store stalled) cannot hold a person's stop: the run still ends stopped, promptly", async (t) => {
+  const { server, start, until } = await setup(t);
+  const endOfRun = async (input) => (input.cut ? new Promise(() => {}) : undefined);
+  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("cut"), { once: true })) };
+  await start(loopWith(piSpec({ script: [{ call: "slow" }, { say: "done" }], tools: { slow }, hooks: quiet }), endOfRun), "runner-a");
+  await until((row) => row.state === "running" && row.runner !== null, "the run did not start");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const at = Date.now();
+  await server.command("run-1", { kind: "stop" });
+  await until((row) => row.state === "stopped" && row.runner === null, "the run did not stop");
+  assert.ok(Date.now() - at < 8_000, `the stop took ${Date.now() - at} ms`);
+});
+
+test("a person's steer during the end-of-run turn is not swallowed by it: left for the end's own words, the turn not told", async (t) => {
+  const { server, start, until } = await setup(t);
+  let steerSent;
+  const endOfRun = async (input) => {
+    if (input.cut) return undefined;
+    const steering = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      steerSent = await server.command("run-1", { kind: "steer", body: { text: "one more thing" } });
+    })();
+    const answer = await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 1_500 });
+    await steering;
+    return { also: [told("ended" in answer ? `answered:${answer.answer}` : "timed-out")] };
+  };
+  const slow = { name: "slow", replaySafe: true, ask: false, run: (_args, signal) => new Promise((resolve) => setTimeout(() => resolve("slow done"), 600, signal)) };
+  await start(loopWith(piSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow }, hooks: quiet }), endOfRun), "runner-a");
+  await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
+  const rows = await server.commands("run-1", 0);
+  const steer = rows.find((row) => row.id === steerSent.id);
+  assert.ok(steer.refused !== null, `the steer is refused at the end in words, not taken by the end-of-run turn: ${JSON.stringify(steer)}`);
+});
+
 test("an end-of-run turn past its deadline is aborted and answers timedOut; the run still ends", async (t) => {
   const { start, until, endEntries } = await setup(t);
   let answer;
