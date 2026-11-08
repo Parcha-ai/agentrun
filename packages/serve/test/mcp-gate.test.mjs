@@ -139,8 +139,10 @@ test("pi: allowed by the agent's exact key, or by the server's mcp:fake/*, the c
   assert.equal(await answerOf(api, wide), "The tool said: 5");
   // Each run asked its model twice: the message (the call), then the call's result (the answer). A third request is a
   // real extra one, whatever the faux model made of it.
-  for (const runId of [exact, wide]) assert.equal(requestsOf(requests, runId).length, 2, `${runId === exact ? "exact" : "wide"}: one request for the call, one for its answer: ${rolesOf(requestsOf(requests, runId))}`);
+  // Both runs' request roles and the server's calls (JSON-RPC id, time), in either failure's message: an extra request is
+  // explained by the calls it made, and an extra call by the requests around it.
   const seen = `exact ${rolesOf(requestsOf(requests, exact))}; wide ${rolesOf(requestsOf(requests, wide))}; the server's calls ${JSON.stringify(calls(fake, "add").map((entry) => ({ id: entry.id, at: entry.at })))}`;
+  for (const runId of [exact, wide]) assert.equal(requestsOf(requests, runId).length, 2, `${runId === exact ? "exact" : "wide"}: one request for the call, one for its answer: ${seen}`);
   assert.equal(calls(fake, "add").length, 2, `one call each: ${seen}`);
 });
 
