@@ -229,11 +229,14 @@ test("Docker's create() takes the daemon as options.daemonPath without asking Do
 	await assert.rejects(docker.create({ daemonPath: DAEMON, user: "0:0" }), /root/);
 });
 
-test("Docker's conformance module reads COMPUTER_DOCKER_DAEMON and COMPUTER_DOCKER_USER and passes them as options", async () => {
+test("Docker's conformance module reads COMPUTER_DOCKER_DAEMON, COMPUTER_DOCKER_DAEMON_CACHE and COMPUTER_DOCKER_USER and passes them as options", async () => {
 	const conformance = await import("../dist/conformance/docker.js");
-	assert.deepEqual(conformance.DOCKER_ENV, { daemon: "COMPUTER_DOCKER_DAEMON", user: "COMPUTER_DOCKER_USER" });
+	assert.deepEqual(conformance.DOCKER_ENV, { daemon: "COMPUTER_DOCKER_DAEMON", daemonCache: "COMPUTER_DOCKER_DAEMON_CACHE", user: "COMPUTER_DOCKER_USER" });
 	assert.deepEqual(conformance.settingsFromEnv({}), {});
 	assert.deepEqual(conformance.settingsFromEnv({ COMPUTER_DOCKER_DAEMON: DAEMON, COMPUTER_DOCKER_USER: "2000:2000" }), { daemonPath: DAEMON, user: "2000:2000" });
+	const cache = join(dir, "cache");
+	assert.deepEqual(conformance.settingsFromEnv({ COMPUTER_DOCKER_DAEMON_CACHE: cache }), { daemonCache: cache });
+	assert.deepEqual(conformance.settingsFromEnv({ XDG_CACHE_HOME: dir }), {}, "XDG_CACHE_HOME is not one of its names");
 	const provider = await conformance.createProvider({ env: { COMPUTER_DOCKER_DAEMON: DAEMON, COMPUTER_DOCKER_USER: "2000:2000" }, docker: join(dir, "no-such-docker") });
 	assert.equal(provider.user, "2000:2000");
 	await assert.rejects(conformance.createProvider({ env: { COMPUTER_DOCKER_DAEMON: DAEMON, COMPUTER_DOCKER_USER: "0:0" } }), /root/);
@@ -294,8 +297,15 @@ const { checkEnv, envReads, GUARDS } = await import("../scripts/check-env.mjs").
 });
 
 test("nothing under src/ outside src/conformance/ reads the environment, but the two documented guards, each where it is documented", async () => {
-	const { problems, guards } = await checkEnv(SRC_DIR);
+	const { problems, guards, files } = await checkEnv(SRC_DIR);
 	assert.deepEqual(problems, [], problems.map((p) => `${p.file}:${p.line}: ${p.what}`).join("\n"));
+	// The check reads every file under src/, those in its directories included: the Docker provider's own files and the
+	// daemon's copy are library code like any other.
+	assert.ok(Array.isArray(files), "the check says which files it read");
+	for (const file of ["docker.ts", "daemon-copy.ts", "docker/egress.ts", "docker/egress-main.ts", "docker/egress-proxy.ts", "docker/egress-table.ts", "modal.ts", "e2b.ts"]) {
+		assert.ok(files.includes(file), `the check reads ${file}`);
+	}
+	assert.deepEqual(files.filter((file) => file.startsWith("conformance/")), [], "and none under src/conformance/");
 	assert.deepEqual(
 		GUARDS.map(({ file, fn, name }) => ({ file, fn, name })),
 		[
