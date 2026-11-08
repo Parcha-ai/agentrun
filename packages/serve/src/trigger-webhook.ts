@@ -43,7 +43,7 @@ export const webhook: TriggerAdapter = {
   settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
   describe: `{kind: "webhook", signature?: ${SCHEME_NAMES.map((name) => `"${name}"`).join(" | ")}, accept?: [{event, actions?, where?}]}`,
   fires: "a signed request to /hooks/{trigger_id} (`webhook`) that its `accept` takes",
-  firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's delivery id under its signature scheme (`webhook-id`, `X-GitHub-Delivery`).",
+  firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and what the request's signature covers: its `webhook-id` (`standard`), or the SHA-256 of its body (`github`).",
   schemas: [
     closedSchema(
       { kind: { const: "webhook" } },
@@ -73,8 +73,8 @@ export const webhook: TriggerAdapter = {
       // The trigger's scheme is checked after the signature, so a request of another scheme costs what any refusal does.
       return refusal ?? (source && schemeName(source) !== asked.name ? "other_scheme" : undefined);
     },
-    // The request is the firing: its delivery id keys it, and its body, whatever it holds, is what the run is given, with
-    // its scheme, event and action named on the payload's tag. A trigger with `accept` takes only the events it names.
+    // The request is the firing: its scheme's firing key keys it, and its body, whatever it holds, is what the run is
+    // given, with its scheme, event, action and unsigned delivery id named on the payload's tag. A trigger with `accept` takes only the events it names.
     parse(headers, body, source) {
       const asked = schemeOf(headers);
       if ("refusal" in asked) return [];
@@ -85,8 +85,9 @@ export const webhook: TriggerAdapter = {
       const rules = source?.accept as Rule[] | undefined;
       const ignored = rules && acceptRefusal(rules, event, doc);
       if (ignored) return { ignored, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}) };
-      const attrs = { scheme: asked.name, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), ...(action !== undefined ? { action: action.slice(0, ATTR_CHARS) } : {}) };
-      return [{ key: asked.scheme.deliveryIdOf(headers), text, attrs }];
+      const delivery = asked.scheme.deliveryIdOf?.(headers);
+      const attrs = { scheme: asked.name, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), ...(action !== undefined ? { action: action.slice(0, ATTR_CHARS) } : {}), ...(delivery !== undefined ? { delivery: delivery.slice(0, ATTR_CHARS) } : {}) };
+      return [{ key: asked.scheme.firingKeyOf(headers, body), text, attrs }];
     },
   },
 };
