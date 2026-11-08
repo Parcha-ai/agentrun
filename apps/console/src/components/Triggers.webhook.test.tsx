@@ -104,6 +104,7 @@ describe("Triggers: schedules and webhooks", () => {
     const shown = t.host.querySelector('[aria-label="The webhook\'s URL and secret"]')!;
     expect(shown.textContent).toContain(SECRET);
     expect(shown.textContent).toContain(`${location.origin}/v2/hooks/trg_new`);
+    expect(shown.textContent).toContain("This server's address as this page sees it");
     expect(shown.textContent).toContain("You won't see this secret again.");
     await t.click(/^Copy secret$/);
     await t.click(/^Copy URL$/);
@@ -140,6 +141,8 @@ describe("Triggers: schedules and webhooks", () => {
     const s = server();
     const t = await open(s.v2, { trigger: "trg_w" });
     expect(t.text()).toContain(`${location.origin}/v2/hooks/trg_w`);
+    // Until the trigger read serves its hook URL, the page builds it from its own address and says so.
+    expect(t.text()).toContain("This server's address as this page sees it");
     expect(t.host.querySelectorAll("[data-firing]")).toHaveLength(1);
     expect(t.host.querySelector("[data-firing]")!.textContent).toContain("On a request");
     await t.click(/^Rotate secret$/);
