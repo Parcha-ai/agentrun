@@ -342,6 +342,17 @@ const WEBHOOK_SET_FIELDS = {
   updated_at: { type: "string", format: "date-time" },
 };
 const WEBHOOK_SET = closed(WEBHOOK_SET_FIELDS);
+/** GET /settings/sources/{source} (source-settings.ts), and what PUT answers: a source's settings that are the
+ *  server's, as its SettingsSpec has them; never a secret's value. */
+const SOURCE_SETTINGS = closed({
+  source: { type: "string", description: "The trigger source." },
+  configured: { type: "boolean", description: "Whether every secret field is set." },
+  managed: { type: ["string", "null"], description: "The flow that writes these settings, when one of its own does (PUT and DELETE are refused 409 `settings_managed`); else null." },
+  values: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "Each public field, as it stands (who a Slack app is: `team_id`, `bot_user_id`, `bot_id`, `app_id`; when it was saved, `updated_at`; why posting is off, `disabled_at` and `disabled_reason`), null when unset." },
+  secrets: { type: "object", additionalProperties: { type: "boolean" }, description: "Each secret field (a Slack app's `signing_secret` and `bot_token`): whether it is set. Never its value." },
+});
+const SOURCE_PARAM = { name: "source", in: "path", required: true, schema: { type: "string" }, description: "A trigger source whose settings are the server's (`slack`)." };
+const SOURCES_MARK = { "x-agentrun-serve": "sources/1" };
 /** GET /settings/webhook (webhooks.ts): the webhook, or none; never its secret. */
 const WEBHOOK_VIEW = { oneOf: [closed({ configured: { const: false } }), WEBHOOK_SET] };
 const WEBHOOK_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "The signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Keep it where the receiver checks `webhook-signature`." };
@@ -1186,6 +1197,28 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         ...errors(400, 401, 404, 409, 429, 500),
       },
       "x-agentrun-serve": "signins/1",
+    },
+  },
+  "/settings/sources/{source}": {
+    get: {
+      operationId: "getSourceSettings", tags: ["local"], summary: "A trigger source's settings that are the server's; never a secret",
+      parameters: [SOURCE_PARAM],
+      responses: { "200": json(SOURCE_SETTINGS, "Its settings: the public fields, and which secret fields are set."), ...errors(401, 404, 429, 500) },
+      ...SOURCES_MARK,
+    },
+    put: {
+      operationId: "putSourceSettings", tags: ["local"], summary: "Set a trigger source's settings that are the server's",
+      description: `One route for every trigger source whose settings are the server's, driven by its settings' fields: each secret field, once each, and the public fields a save may give. The source checks them before anything is kept, and fills the public fields it learns: \`slack\`'s bot token is checked with Slack's auth.test, which names the workspace and the app's bot user (\`team_id\`, \`bot_user_id\`, \`bot_id\`), and its \`app_id\`, when given, is checked against each event's \`api_app_id\`. Then they are kept whole, in the source's sealed settings under the seal key the server was handed (409 \`no_sealing_key\` with none), what an earlier save kept gone first, and never shown again. For \`slack\`: \`{signing_secret, bot_token, app_id?}\`; Slack's Event Subscriptions Request URL is POST /hooks/slack, and a save turns posting on again after Slack refused the bot token. A source whose settings a flow of its own writes is 409 \`settings_managed\`.`,
+      parameters: [SOURCE_PARAM],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: { type: "string", minLength: 1, maxLength: 512 } } } } },
+      responses: { "200": json(SOURCE_SETTINGS, "Set."), ...errors(400, 401, 404, 409, 415, 422, 429, 500), "424": { description: "`upstream_failed`: the source's service did not answer its check (Slack's auth.test named no workspace or bot user, or was not reached).", content: { "application/json": { schema: ref("schemas/Error") } } } },
+      ...SOURCES_MARK,
+    },
+    delete: {
+      operationId: "deleteSourceSettings", tags: ["local"], summary: "Remove a trigger source's settings that are the server's: its requests are refused, and nothing more is posted",
+      parameters: [SOURCE_PARAM],
+      responses: { "204": { description: "Removed." }, ...errors(401, 404, 409, 429, 500) },
+      ...SOURCES_MARK,
     },
   },
   "/settings/webhook": {
@@ -2049,6 +2082,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       extensions.push(`${method.toUpperCase()} ${path}`);
     }
   }
+  // Every server-wide pushed source's own hook (the registry's, or a test's), one of the server's own as the rest.
+  for (const [path, item] of Object.entries(serverHooks(adapters))) {
+    for (const [method, op] of Object.entries(item as Record<string, Json>)) {
+      (doc.paths[path] ??= {})[method] = op;
+      extensions.push(`${method.toUpperCase()} ${path}`);
+    }
+  }
   // examples/1: a working body for the operations in REQUEST_EXAMPLES, on the JSON media type; a contract operation that
   // gains one is changed, and says so.
   for (const [path, item] of Object.entries(doc.paths)) {
@@ -2076,8 +2116,6 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // that server, not the first of the contract's.
   doc.servers = [{ url: "/v2", description: "This server." }];
   if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
-  // Every server-wide pushed source's own hook, the registry's as a test's.
-  Object.assign(doc.paths, serverHooks(adapters));
   return doc;
 }
 

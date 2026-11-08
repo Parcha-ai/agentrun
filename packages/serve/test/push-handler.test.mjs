@@ -51,7 +51,7 @@ const ping = {
       }
     },
   },
-  scopeOf: (source) => source.channel,
+  scopeOf: (source) => [source.channel],
   parse: (value, _now, bad, issues) => {
     issues.push(...Object.keys(value).filter((k) => k !== "kind" && k !== "channel").map((k) => ({ field: `source.${k}`, reason: "not_allowed", message: k })));
     if (typeof value.channel !== "string") return bad("channel", "missing", "channel is a string"), undefined;

@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { ApiError } from "./errors.js";
-import type { Headers, TriggerAdapter } from "./trigger-adapter.js";
+import type { Headers, PushEvent, TriggerAdapter } from "./trigger-adapter.js";
 import { ID } from "./validate.js";
 
 /** The kernel's one decoy key: what a request is checked against when it names no trigger, or one with no key. */
@@ -57,7 +57,7 @@ export type PushDeps = {
   /** Whether `id` is a trigger of the pushed source `kind` that is on. */
   hookable(id: string, kind: string): boolean;
   /** Its firing for the event, recorded (triggers.ts receive). */
-  receive(id: string, eventId: string, payload: string): { created: boolean; firing: unknown };
+  receive(id: string, event: PushEvent): { created: boolean; firing: unknown } | undefined;
   /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
   scoped(kind: string, scope: string): string[];
   /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
@@ -94,7 +94,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
   const handshake = push.handshake?.(req.headers as Headers, body);
   if (handshake) return handshake;
-  const events = push.parse(req.headers as Headers, body);
+  // The parse reads its settings' public fields alone (who a Slack app is), never a secret.
+  const events = push.parse(req.headers as Headers, body, (field) => (adapter.settings?.fields[field]?.public ? deps.setting(adapter.id, own ? "server" : pathTrigger!, field) : undefined));
   if (!events.length) {
     deps.say({ condition: "hook_unparsed", source: adapter.id, route });
     return { status: 200, body: { firings: [] } };
@@ -102,8 +103,8 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // A trigger's own path: each event is its own firing. One (a webhook's request) is answered as its firing; more, as a
   // server-wide source's are, by the firings they made.
   if (pathTrigger) {
-    const fired = events.map((event) => deps.receive(pathTrigger, event.key, event.text));
-    if (fired.length > 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
+    const fired = events.flatMap((event) => deps.receive(pathTrigger, event) ?? []);
+    if (fired.length !== 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
     const { created, firing } = fired[0]!;
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
   }
@@ -113,7 +114,12 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const fired: { created: boolean; firing: unknown }[] = [];
   for (const event of events) {
     const ids = event.scope === undefined ? [] : deps.scoped(adapter.id, event.scope);
-    if (ids.length === 1) fired.push(deps.receive(ids[0]!, event.key, event.text));
+    // Taken by its trigger, or nothing to act on there (trust, or no conversation to steer: triggers.ts receiveEvent).
+    if (ids.length === 1) {
+      const taken = deps.receive(ids[0]!, event);
+      if (taken) fired.push(taken);
+      else deps.say({ condition: "hook_ignored", source: adapter.id, route, trigger: ids[0]! });
+    }
     else if (!ids.length) deps.say({ condition: "hook_no_trigger", source: adapter.id, route, scope: String(event.scope ?? "") });
     else deps.say({ condition: "hook_scope_ambiguous", source: adapter.id, route, scope: String(event.scope), triggers: ids.join(",") });
   }

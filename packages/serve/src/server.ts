@@ -68,13 +68,16 @@ import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
-import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { Slack } from "./slack.js";
+import { removeSourceSettings, saveSourceSettings, serverSettingsOf, sourceSettingsView } from "./source-settings.js";
+import { slackThreadOf as threadIn } from "./trigger-slack.js";
 import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
-import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { registerSources, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
@@ -285,8 +288,11 @@ export type ServeOptions = {
   triggerAdapters?: readonly TriggerAdapter[];
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
-  /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
+  /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS);
+   *  a Slack post's too (slack.ts). */
   webhookRetryMs?: readonly number[];
+  /** A test's seam: each trigger source's service, by source, in place of its own (Slack's Web API: trigger-slack.ts). */
+  sourceApis?: Readonly<Record<string, string>>;
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
    *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
   box?: BoxHost;
@@ -408,6 +414,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
   { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
   { method: "POST", pattern: /^\/settings\/webhook\/test$/, name: "testWebhook" },
+  { method: "GET", pattern: /^\/settings\/sources\/([^/]+)$/, name: "getSourceSettings" },
+  { method: "PUT", pattern: /^\/settings\/sources\/([^/]+)$/, name: "putSourceSettings" },
+  { method: "DELETE", pattern: /^\/settings\/sources\/([^/]+)$/, name: "deleteSourceSettings" },
   { method: "GET", pattern: /^\/settings\/webhook\/deliveries$/, name: "listWebhookDeliveries" },
   { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
   { method: "GET", pattern: /^\/triggers$/, name: "listTriggers" },
@@ -421,6 +430,9 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
+  // A pushed source whose settings are the server's has its own hook, POST /hooks/{its id}, one operation each; it and a
+  // trigger's are served by the same handler (push-handler.ts).
+  ...TRIGGER_ADAPTERS.filter((a) => a.push && a.settings?.scope === "server").map((a) => ({ method: "POST", pattern: new RegExp(`^/hooks/${a.id}$`), name: `receiveHook_${a.id}` })),
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
@@ -950,6 +962,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
+  // A test's own sources are ones a run's message origin may name too (the registry's are already).
+  if (options.triggerAdapters) registerSources(adapters);
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const agents = new Agents(data);
   ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
@@ -962,6 +976,41 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   secretStores.add("webhook", () => webhooks.signingSecrets());
   stops.push(() => webhooks.close());
+  // The server's Slack app (slack.ts): its settings in the Slack source's sealed settings, its lines posted in threads.
+  const slack = new Slack(data, triggerSettings.get("slack"), (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), options.sourceApis?.slack, options.webhookRetryMs);
+  stops.push(async () => slack.close());
+  // A run a Slack trigger started is told its thread too: its thread looked up once the triggers are read (below).
+  let slackThreadOf: (runId: string) => { channel: string; thread_ts: string; post_answer: boolean } | undefined = () => undefined;
+  // An answer-bearing end whose run cannot be read yet (a busy store) is read again after each of these waits, never
+  // told without its answer; past the last it stays untold here, and the next start's catch-up tells it.
+  const SLACK_READ_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 60_000, 300_000];
+  const slackReads = new Set<NodeJS.Timeout>();
+  stops.push(async () => slackReads.forEach((timer) => clearTimeout(timer)));
+  const tellSlack = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string, tries = 0): void => {
+    const thread = slackThreadOf(run.run_id);
+    if (!thread) return;
+    // Read from the run's view only where the line needs it: the answer, for a trigger that posts it (its source's
+    // post_answer, as the trigger is now); the tool an approval waits on, which the notice does not carry. A run that
+    // is gone has no answer to wait for: its end is told without one.
+    const answered = event === "run.ended" && run.status === "completed" && thread.post_answer;
+    const approval = event === "run.needs_input" && run.pending?.kind === "approval";
+    const emit = (view: Awaited<ReturnType<typeof runs.view>> | null) => {
+      const tool = approval ? (view?.pending as { tool?: unknown } | null | undefined)?.tool : undefined;
+      const told = typeof tool === "string" ? ({ ...run, pending: { kind: "approval", tool } } as RunNotice) : run;
+      slack.emit(event, told, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answered ? (view?.result?.final_answer ?? null) : null);
+    };
+    void (answered || approval ? runs.get(run.run_id).then((held) => (held ? runs.view(held, options.publicUrl ?? "") : null)) : Promise.resolve(null))
+      .then(emit, (error: Error) => {
+        // Unread: an approval's line goes without its tool's name; an end that carries the answer waits for it.
+        if (!answered) return emit(null);
+        const wait = SLACK_READ_RETRY_MS[tries];
+        if (wait === undefined) return void process.stderr.write(`agentrun-serve: slack: the answer of run ${run.run_id} is still unread (${error.message}); its end is left for the next start\n`);
+        const timer = setTimeout(() => (slackReads.delete(timer), tellSlack(event, run, marker, tries + 1)), wait);
+        timer.unref();
+        slackReads.add(timer);
+      })
+      .catch((error: Error) => void process.stderr.write(`agentrun-serve: slack: ${error.message}\n`));
+  };
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
   // temp file found now is a crashed one's.
@@ -1017,7 +1066,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return undefined;
     }
   };
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, triggerName: (id) => triggerNameOf(id), signIns, approvers: options.accounts === true });
+  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => {
+    const emitted = webhooks.emit(event, run, marker);
+    tellSlack(event, run, marker);
+    return emitted;
+  }, serverSecrets, triggerName: (id) => triggerNameOf(id), signIns, approvers: options.accounts === true });
+  // A queued waiting line in a Slack thread goes only while its run still waits there.
+  slack.watchWaits((id) => runs.currentWait(id));
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1089,6 +1144,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const notice = { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
         return { state: row.state, endedAt: row.endedAt, notice };
       });
+      // And each end a Slack thread was not told, as the webhook's catch-up does, by the same marker (its end time).
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      for (const id of triggers.conversationRuns("slack")) {
+        const row = byId.get(id);
+        if (!row || row.state === "running" || !row.endedAt || slack.toldEnd(id, row.endedAt)) continue;
+        tellSlack("run.ended", { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: "" }, row.endedAt);
+      }
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
 
@@ -1117,7 +1179,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true, from });
       return { run_id: run.id };
     },
-    async message(target, input, key, from) {
+    async message(target, input, key, from, options) {
       const run = await needRun(target.run_id);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
       // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
@@ -1125,10 +1187,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on
       // its person is told nothing by a trigger.
       if (run.meta.max_cost_usd === undefined) throw new ApiError("not_continuable", NO_CAP);
-      const { status, state } = statusOf(run);
-      if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
+      // A steering message its source lets answer a question (a Slack thread's reply: Trust.answers) answers one, or
+      // goes on from a stop; never an approval or a cap's pause, which stay the console's.
+      const waits = runs.waitingOn(run);
+      const answers = options?.answers === "question" && (waits === "question" || waits === "stopped");
+      if (waits !== null && !answers) return { skipped: WAITS_ON_A_PERSON };
       try {
-        await runs.message(run, String(input.content), key, { answers: false, origin: from });
+        await runs.message(run, String(input.content), key, { answers, origin: from });
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
         throw error;
@@ -1151,6 +1216,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   });
   stops.push(async () => triggers.close());
   triggers.start();
+  // A run's Slack thread: its conversation's, for a run a Slack trigger started.
+  slackThreadOf = (runId) => {
+    const found = triggers.conversationOf(runId);
+    return found?.source.kind === "slack" ? { ...threadIn(found.conversation), post_answer: found.source.post_answer === true } : undefined;
+  };
   // A run read in before the triggers were names its trigger's id: shown again, naming each as it is now.
   triggersRead = true;
   runs.triggerChanged();
@@ -1991,9 +2061,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
-    if (found.name === "receiveHook") {
+    if (found.name === "receiveHook" || found.name.startsWith("receiveHook_")) {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, event) => triggers.receiveEvent(id, event), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
@@ -2450,6 +2520,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "deleteWebhook":
         webhooks.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "getSourceSettings": {
+        const adapter = serverSettingsOf(adapters, id);
+        return send(res, 200, sourceSettingsView(adapter, triggerSettings.get(adapter.id)));
+      }
+      // Never through `idempotent`: its record keeps the body, and this body is the secrets.
+      case "putSourceSettings": {
+        const adapter = serverSettingsOf(adapters, id);
+        return send(res, 200, await saveSourceSettings(adapter, triggerSettings.get(adapter.id), await bodyOf(req), options.sourceApis?.[adapter.id]));
+      }
+      case "deleteSourceSettings": {
+        const adapter = serverSettingsOf(adapters, id);
+        removeSourceSettings(adapter, triggerSettings.get(adapter.id));
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "testWebhook":
         return send(res, 200, await webhooks.test());
       case "listWebhookDeliveries":
@@ -2659,6 +2743,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
+  // A line in Slack links its run only at an address a person there can open: the public one, when the server has one.
+  slack.attach(options.publicUrl);
   mcpServers.attach(options.publicUrl ?? url, url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
@@ -2699,6 +2785,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
     await egress?.close();
     await webhooks.close();
+    // And the Slack posts: one still to try stays in the outbox, for the next server, never tried by this one too.
+    slack.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));

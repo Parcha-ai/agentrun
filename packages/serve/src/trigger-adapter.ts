@@ -25,6 +25,9 @@ export type TriggerAdapter = {
   id: string;
   /** How a person names one: `the <label> "<name>"`, in each run's provenance line. */
   label: string;
+  /** How a run's Timeline row names its source: "<title> <the trigger's name>: <its first line>" (pi-durable-agent's
+   *  registerTriggerSource). */
+  title: string;
   /** `clock`: it fires on its own times, read by the engine's timer. `push`: a request delivered to the server fires it,
    *  keyed by the sender's own id, which a retry repeats. */
   delivery: "clock" | "push";
@@ -56,10 +59,26 @@ export type TriggerAdapter = {
   /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
    *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
   push?: Push;
-  /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
-   *  `scope` to find the triggers it fires. */
-  scopeOf?(source: Source): string;
+  /** For a pushed source whose settings are the server's: the scopes a trigger of it listens on (a Slack trigger's
+   *  channels), matched to each event's `scope` to find the trigger it fires. A scope is one trigger's (scope_taken). */
+  scopeOf?(source: Source): readonly string[];
+  /** For a source whose settings are the server's: its check of what a PUT of them gives, before anything is kept (a
+   *  Slack app's bot token, with Slack's auth.test), answering the public fields it fills; a refusal is thrown in its own
+   *  words (422). `api`: its service's address, in place of its own (a test's). */
+  check?(values: Readonly<Record<string, string>>, api?: string): Promise<Record<string, string>>;
+  /** Who may start a run through it and who may steer one (a message in a conversation its run started), held to by
+   *  the kernel for every event (triggers.ts receiveEvent); `answers: "question"`: a steering message may answer the
+   *  run's question, never an approval or a cap. Absent: whoever passed the check may start one (`sender`), and no one
+   *  steers. */
+  trust?: Trust;
 };
+
+/** Who an event is from, as its source's parse says: `member`, a person of the source's own (a Slack workspace's);
+ *  `bot`, a program there; `sender`, whoever holds the key the request was checked by (a webhook's secret). */
+export type Actor = "member" | "bot" | "sender";
+export type Trust = { start: readonly Actor[]; steer: readonly Actor[]; answers?: "question" };
+/** Whoever passed the check may start a run; no one steers one. */
+export const SENDER_STARTS: Trust = { start: ["sender"], steer: [] };
 
 /** Request headers, as Node gives them. */
 export type Headers = Record<string, string | string[] | undefined>;
@@ -76,13 +95,17 @@ export type Push = {
   /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
   handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
   /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
-   *  said). */
-  parse(headers: Headers, body: Buffer): PushEvent[];
+   *  said). `own`: its settings' public fields for the request's scope (who a Slack app is; never a secret), to tell its
+   *  own messages from others'. */
+  parse(headers: Headers, body: Buffer, own: (field: string) => string | undefined): PushEvent[];
 };
 /** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
  *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
- *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */
-export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string> };
+ *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it, named on the
+ *  payload's tag. `conversation`: the thread it is in (a Slack thread), whose run it steers once one started there;
+ *  `opens`, whether it asks to start a run when none did (a mention of the app); `actor`, who it is from (default
+ *  `sender`). */
+export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string>; conversation?: string; opens?: boolean; actor?: Actor };
 /** A closed object's JSON Schema: its fields, each by its own schema, and the ones it always holds. */
 export type ObjectSchema = { type: "object"; additionalProperties: false; required: string[]; properties: Record<string, Json> };
 

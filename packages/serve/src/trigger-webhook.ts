@@ -6,6 +6,7 @@ import { closedSchema, type TriggerAdapter, unknownSourceFields } from "./trigge
 export const webhook: TriggerAdapter = {
   id: "webhook",
   label: "webhook trigger",
+  title: "Webhook",
   delivery: "push",
   owner: false,
   settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },

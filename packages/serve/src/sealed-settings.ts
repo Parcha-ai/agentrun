@@ -16,8 +16,13 @@ import { isObject } from "./validate.js";
 /** What an adapter keeps sealed, and where: `server`, one set for the server; `trigger`, one set per trigger, by its id.
  *  A field with `mint` is a Standard Webhooks secret this server makes (standard-webhooks.ts), shown once; any other is
  *  given (set). `minBytes`: the fewest bytes its value may hold (standard-webhooks.ts keyBytes), MIN_KEY_BYTES for a key
- *  a request is verified with. */
-export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, { mint?: true; minBytes?: number }> };
+ *  a request is verified with. `public`: a value that is no secret (who a Slack app is: its workspace's and its bot's
+ *  ids), kept beside the secrets, sealed as they are, shown by GET /v2/settings/sources/{source} and never cut from what
+ *  is shown (values); `given`, one of those a PUT of the settings may give (the rest its source's check fills).
+ *  `managed`: settings a flow of their own writes, named here, which PUT and DELETE /v2/settings/sources/{source} refuse
+ *  (source-settings.ts). */
+export type SettingsField = { mint?: true; minBytes?: number; public?: true; given?: true };
+export type SettingsSpec = { scope: "server" | "trigger"; fields: Record<string, SettingsField>; managed?: string };
 /** The scope of a server-scoped adapter's settings. */
 export const SERVER_SCOPE = "server";
 
@@ -90,8 +95,8 @@ export class SealedSettings {
     const spec = this.spec.fields[field];
     if (!spec) throw new Error(`${this.adapterId}'s settings keep no ${field}`);
     // A value the list of the server's secrets would pass over (server-secrets.ts: whitespace, under 8 bytes) would be
-    // left out of every redaction: none is kept.
-    if (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
+    // left out of every redaction: no secret like that is kept.
+    if (!spec.public && (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8)) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
     // A verification key is kept only as the spec writes one, or every request it checks would be refused.
     if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith(SECRET_PREFIX)) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
@@ -102,8 +107,13 @@ export class SealedSettings {
     this.writable();
     this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
     const was = this.opened[scope]?.[field];
-    if (was !== undefined && was !== value) this.retired.add(was);
+    if (was !== undefined && was !== value && !this.spec.fields[field]?.public) this.retired.add(was);
     (this.opened[scope] ??= {})[field] = value;
+  }
+
+  /** Whether a value can be kept here: the server was handed a seal key, and the file reads. */
+  canSeal(): boolean {
+    return this.key !== undefined && !this.unreadable;
   }
 
   /** `scope`'s `field`, opened; undefined when it is not set, or does not open here. */
@@ -116,14 +126,14 @@ export class SealedSettings {
     if (this.unreadable || !(scope in this.sealed)) return;
     const { [scope]: _, ...rest } = this.sealed;
     this.write(rest);
-    for (const value of Object.values(this.opened[scope] ?? {})) this.retired.add(value);
+    for (const [field, value] of Object.entries(this.opened[scope] ?? {})) if (!this.spec.fields[field]?.public) this.retired.add(value);
     delete this.opened[scope];
   }
 
   /** Every value held open, and every one rotated or removed since this store opened, for the server's list of its own
    *  secrets (server-secrets.ts): a run that echoes a secret after its rotation is cut all the same. */
   values(): string[] {
-    return [...Object.values(this.opened).flatMap((fields) => Object.values(fields)), ...this.retired];
+    return [...Object.values(this.opened).flatMap((fields) => Object.entries(fields).flatMap(([field, value]) => (this.spec.fields[field]?.public ? [] : [value]))), ...this.retired];
   }
 
   private writable(): void {

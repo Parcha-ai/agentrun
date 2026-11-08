@@ -47,6 +47,7 @@ export const ERROR_STATUS = {
   wrong_origin: 409,
   sign_in_held: 409,
   scope_taken: 409,
+  settings_managed: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
