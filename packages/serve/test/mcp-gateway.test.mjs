@@ -414,6 +414,10 @@ test("a server that can't be reached reads so, at its address with a short reaso
   await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${closed.address().port}/mcp`;
   await new Promise((resolve) => closed.close(resolve));
+  // As on CI: another test takes the freed port before the dial (forced here, so the reuse always happens).
+  const impostor = createServer((req, res) => res.writeHead(200, { "content-type": "application/json" }).end("{}"));
+  await new Promise((resolve) => impostor.listen(Number(new URL(url).port), "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (impostor.close(resolve), impostor.closeAllConnections())));
   const { gateway } = await setup(t, { url });
   const said = await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal() });
   assert.equal(said.isError, true);
