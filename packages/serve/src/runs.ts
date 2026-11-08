@@ -16,7 +16,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
 import { harnessOfBody } from "./harness.js";
@@ -1666,9 +1666,11 @@ export class Runs {
   private show(run: Run): void {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
     // Their summary and text are redacted whole, then cut (decision-rows.ts): a provider's error can quote a held key.
-    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run));
+    // An ended run's usage row says its cost, never "so far": its rows may have been read while it ran.
+    const ended = TERMINAL.has(statusOf(run).status);
+    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run), { ended });
     // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
-    const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
+    const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : ended ? endedUsage(row) : row));
     // A run paused at its cap says so after the refusal, as the row its status reads.
     const said = pausedAt(run);
     const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served);
@@ -3310,6 +3312,8 @@ export class Runs {
       run.finishing = undefined;
       run.settled = true;
       run.updatedAt = new Date().toISOString();
+      // Its rows as an ended run's (its usage row says its cost) before its status wakes a reader: see below.
+      this.show(run);
       this.refresh(run);
       this.persistLater(run, persist);
       return;
@@ -3324,6 +3328,10 @@ export class Runs {
     run.finishing = undefined;
     run.settled = true;
     run.updatedAt = new Date().toISOString();
+    // Its rows were last shown while it ran (its end's read), so its usage row said "so far". Shown again as an ended run's
+    // before refresh() marks its status: a reader following with a cursor gets the row's change with the final page,
+    // never a final page over the running wording.
+    this.show(run);
     this.refresh(run);
     this.notice(run, "run.ended", run.endedAt);
     // Only once the run has ended as it would without learning: a slow or failing check never holds the job.
