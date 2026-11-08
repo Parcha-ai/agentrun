@@ -33,7 +33,7 @@ export type Request =
   | { op: "exec"; sql: string }
   | { op: "stmt"; statement: Statement; mode: Mode }
   | { op: "write"; statements: readonly Statement[]; full?: boolean }
-  | { op: "begin"; full?: boolean }
+  | { op: "begin"; full?: boolean; read?: boolean }
   | { op: "step"; statement: Statement }
   | { op: "commit" }
   | { op: "rollback" }
@@ -84,11 +84,12 @@ function step(statement: Statement): StatementResult {
   return result;
 }
 
-function begin(full: boolean): void {
+/** A transaction: BEGIN IMMEDIATE for a write; for `read`, a deferred one that takes no writer lock (one snapshot). */
+function begin(full: boolean, read = false): void {
   const conn = opened();
   if (full) conn.exec(FULL);
   try {
-    conn.exec("BEGIN IMMEDIATE");
+    conn.exec(read ? "BEGIN DEFERRED" : "BEGIN IMMEDIATE");
   } catch (error) {
     if (full) conn.exec(NORMAL);
     throw error;
@@ -196,7 +197,7 @@ function handle(request: Request): unknown {
       }
     }
     case "begin":
-      begin(request.full === true);
+      begin(request.full === true, request.read === true);
       return null;
     case "step":
       if (!inTx) throw new Error("a step outside a transaction");

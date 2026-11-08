@@ -109,12 +109,19 @@ export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
   | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } };
 
-/** What the run's next journal commit writes beside its batches, in its one transaction, under its fence: the run row's
- *  patch, rows beside it, and the commands it takes (each marked taken once, in the commit that carries its effect). */
+/** A command a journal commit takes, with the id of the record that is its effect: written only by the commit that stores
+ *  that record, in its transaction, so the command is taken with its effect or not at all. */
+export interface StagedTake {
+  readonly command: number;
+  readonly effect: number;
+}
+
+/** What a journal commit writes beside its batches, in its one transaction, under its fence: the run row's patch and rows
+ *  beside it (the next commit that stores a batch), and the commands it takes (the commit that stores each one's effect). */
 export interface Staged {
   readonly run?: RunPatch;
   readonly also?: readonly AlsoRow[];
-  readonly take?: readonly number[];
+  readonly take?: readonly StagedTake[];
 }
 
 /** A run's journal: pi-durable's Storage for the one run, every commit fenced by the claim, and stage() for what its next

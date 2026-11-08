@@ -172,9 +172,9 @@ export class Connection implements SqliteDatabase {
    *  waits for it, so the callback awaits nothing but its own statements (no model or tool call inside), and a transaction
    *  still open `deadlineMs` after it began is rolled back and rejects with StoreDeadline: a later statement of its callback
    *  is refused, and the calls behind it go on. */
-  transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: { full?: boolean; deadlineMs?: number } = {}): Promise<T> {
+  transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: { full?: boolean; /** A read: one snapshot in a deferred transaction, taking no writer lock (its statements only read). */ read?: boolean; deadlineMs?: number } = {}): Promise<T> {
     return this.#queued(async () => {
-      await this.#send({ op: "begin", full });
+      await this.#send({ op: "begin", full, ...(read ? { read } : {}) });
       let live = true;
       let timer: NodeJS.Timeout | undefined;
       const deadline = new Promise<never>((_, reject) => {

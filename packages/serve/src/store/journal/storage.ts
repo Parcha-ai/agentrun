@@ -1,10 +1,11 @@
 // One run's journal in the one store: pi-durable 1.5's `Storage` over the store's connection, scoped by run_id. A port of
 // pi-durable's own SqliteStorage (MIT, see NOTICE): the same checks, writes and reads, with run_id on every row and in
-// every query (tables.ts), the run's own id and seq namespaces (pi_metadata, one row per run), and every commit fenced
-// by the run's claim: in its one transaction, `UPDATE runs … WHERE id AND epoch` must change the run's row, or the whole
-// transaction rolls back and the commit rejects with Fenced, which fails the Session (pi: any commit error is final).
-// A patch of the run row (state, cost, metrics, ended_at) staged before a commit lands in that same transaction, so a
-// run's end and its last journal commit are one commit; so do the commands it takes (taken_at, exactly once). `close` leaves the store's connection open: the store owns it.
+// every query (its tables are PI_DDL in store/schema.ts), the run's own id and seq namespaces (pi_metadata, one row per
+// run), and every commit fenced by the run's claim: in its one transaction, `UPDATE runs … WHERE id AND epoch` must change
+// the run's row, or the whole transaction rolls back and the commit rejects with Fenced, which fails the Session (pi: any
+// commit error is final). A patch of the run row (state, cost, metrics, ended_at) staged before a commit lands in that
+// same transaction, so a run's end and its last journal commit are one commit; a command it takes lands with its effect
+// (taken_at, exactly once). `close` leaves the store's connection open: the store owns it.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { apply } from "@earendil-works/chord/delta";
 import {
@@ -186,6 +187,8 @@ export class RunStorage implements Journal {
   #nextId = Number.NaN;
   #opening: Promise<void> | undefined;
   #staged: Staged | undefined;
+  /** Commands staged to be taken, each with the record of its effect: taken only by the commit that stores that record. */
+  readonly #takes = new Map<number, number>();
   #closed = false;
   #closing: Promise<void> | undefined;
   #admittedReads = 0;
@@ -213,10 +216,22 @@ export class RunStorage implements Journal {
   /** The run's id namespace, read once: pi_metadata's row, or pi's first id after the root when the run has none yet. A
    *  read only: nothing but a commit writes, so every write of the journal is under the claim's fence. */
   #opened(): Promise<void> {
-    this.#opening ??= this.#read.get<{ next_id: string }>(`SELECT next_id FROM ${T.metadata} WHERE run_id = ?`, this.#runId).then((metadata) => {
-      this.#nextId = Number(metadata?.next_id ?? FIRST_ID);
-    });
+    this.#opening ??= this.#read.get<{ next_id: string }>(`SELECT next_id FROM ${T.metadata} WHERE run_id = ?`, this.#runId).then(
+      (metadata) => {
+        if (Number.isNaN(this.#nextId)) this.#nextId = Number(metadata?.next_id ?? FIRST_ID);
+      },
+      (error: unknown) => {
+        // A failed read is not kept: the next call reads again.
+        this.#opening = undefined;
+        throw error;
+      },
+    );
     return this.#opening;
+  }
+
+  /** Whether the journal is closed (store.journal hands out a new one then). */
+  get closed(): boolean {
+    return this.#closed;
   }
 
   /** One transaction of the store's connection, its work stepping only its own statements (it holds every other call). */
@@ -230,17 +245,21 @@ export class RunStorage implements Journal {
   }
 
   /**
-   * Stage what the next commit writes beside its batches: the run row's patch, other rows (`also`, such as an outbox
-   * row for a run moment) and the commands it takes (`take`: each must be this run's untaken command, else the commit
-   * rejects with CommandTaken), in that commit's one transaction, with its fence, once a batch of it is stored; then cleared.
-   * A commit refused before it stored a batch, or one that failed, keeps them, so the next commit carries them. A later
-   * stage before that commit replaces them.
+   * Stage what a commit writes beside its batches, in its one transaction, under its fence:
+   * - the run row's patch and other rows (`also`, such as an outbox row for a run moment): written by the next commit
+   *   that stores a batch, then cleared; a commit refused before it stored a batch, or one that failed, keeps them. A
+   *   later stage replaces them.
+   * - the commands it takes (`take`: each with the id of the record that is its effect): a take is written only by the
+   *   commit that stores that record, so a command is taken with its effect or not at all; until then it waits, across
+   *   commits and later stages. Each must be this run's untaken command, else that commit rejects with CommandTaken.
    */
   stage(staged: Staged): void {
-    for (const commandId of staged.take ?? []) {
-      if (!Number.isSafeInteger(commandId)) throw new Error(`run ${this.#runId}: a staged take names a command id that is no integer: ${String(commandId)}`);
+    for (const take of staged.take ?? []) {
+      if (!Number.isSafeInteger(take?.command) || !Number.isSafeInteger(Number(take?.effect))) throw new Error(`run ${this.#runId}: a staged take names no command and effect ids: ${JSON.stringify(take)}`);
     }
-    this.#staged = staged;
+    for (const take of staged.take ?? []) this.#takes.set(take.command, Number(take.effect));
+    // A stage that names a run patch or rows replaces the ones staged before; one that only takes leaves them.
+    if (staged.run !== undefined || staged.also !== undefined) this.#staged = { ...(staged.run !== undefined ? { run: staged.run } : {}), ...(staged.also !== undefined ? { also: staged.also } : {}) };
   }
 
   /**
@@ -262,17 +281,22 @@ export class RunStorage implements Journal {
   }
 
   async #commit(batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, _context: Context): Promise<CommitResult> {
-    await this.#opened();
     const seqs: Seq[] = [];
     let refused: { error: unknown } | undefined;
-    let candidateNextId = this.#nextId;
+    let candidateNextId = Number.NaN;
     const staged = this.#staged;
-    // The transaction holds the store's one connection: its work awaits only its own statements, never a model or a tool.
+    // The takes this commit writes: those whose effect a stored batch of it holds.
+    const taking: number[] = [];
+    // Queued at once, with nothing awaited before it (a fresh journal reads its namespace inside the transaction), so a
+    // store close asked after this commit waits for it. The transaction holds the store's one connection: its work awaits
+    // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
       if ((await tx.runCounted("UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", this.#runId, this.#epoch)) === 0) {
         throw new Fenced(this.#runId, this.#epoch);
       }
       const metadata = await this.#readMetadata(tx);
+      if (Number.isNaN(this.#nextId)) this.#nextId = Number(metadata.next_id);
+      candidateNextId = this.#nextId;
       let next = Number(metadata.next_seq);
       // Whether a database call of a batch's checks failed: then the failure is an unknown outcome, not a refusal.
       const calls = { failed: false };
@@ -292,6 +316,9 @@ export class RunStorage implements Journal {
         await this.#applyBatch(tx, writes, documentActions, seq);
         seqs.push(seq);
         candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
+        // A take whose effect this stored batch writes is this commit's.
+        const written = new Set(writes.map(writeId).filter((id): id is number => id !== undefined));
+        for (const [command, effect] of this.#takes) if (written.has(effect) && !taking.includes(command)) taking.push(command);
       }
       if (seqs.length > 0) {
         await tx.run(
@@ -304,17 +331,17 @@ export class RunStorage implements Journal {
         if (staged?.run !== undefined || (staged?.also ?? []).length > 0) {
           await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now);
         }
-        if ((staged?.take ?? []).length > 0) {
-          for (const commandId of staged?.take ?? []) {
-            if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, commandId, this.#runId)) === 0) {
-              throw new CommandTaken(this.#runId, commandId);
-            }
+        for (const commandId of taking) {
+          if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, commandId, this.#runId)) === 0) {
+            throw new CommandTaken(this.#runId, commandId);
           }
         }
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);
     if (seqs.length > 0 && this.#staged === staged) this.#staged = undefined;
+    // Taken with their effects, now durable: no longer waiting.
+    for (const command of taking) this.#takes.delete(command);
     // COMMIT returned: the stored batches are durable (to the store's synchronous level; flush makes them so on disk).
     for (const [index, seq] of seqs.entries()) receive(index, seq);
     return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: refused.error };
@@ -553,7 +580,8 @@ export class RunStorage implements Journal {
   async document(id: DocumentId, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
     this.#assertOpen();
     // The record and revision queries must observe one committed state; a commit between them can replace the base.
-    return this.#transaction((tx) => this.#materializeDocument(tx, id as unknown as number, at));
+    // One snapshot for both queries, in a deferred read transaction: no writer lock, so a read never waits behind a write.
+    return this.#db.transaction((tx) => this.#materializeDocument(tx, id as unknown as number, at), { read: true });
   }
 
   async scanDocuments(query: DocumentQuery, limit: number, cursor: Cursor | undefined, _context: Context): Promise<Page<DocumentRecord, Cursor>> {

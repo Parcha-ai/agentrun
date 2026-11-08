@@ -4,7 +4,7 @@ Copyright 2026 Parcha Labs, Inc.
 The console in dist/console bundles third-party software. dist/console/THIRD-PARTY-NOTICES.txt names each
 package it holds, with its version, its license and its license text.
 
-src/store/journal/storage.ts and src/store/journal/tables.ts are a port of the SQLite storage and schema of
+src/store/journal/storage.ts and the PI_DDL tables in src/store/schema.ts are a port of the SQLite storage and schema of
 @earendil-works/pi-durable 1.5.0 (https://github.com/earendil-works/pi, packages/durable), Copyright Earendil Works,
 licensed under the MIT License:
 

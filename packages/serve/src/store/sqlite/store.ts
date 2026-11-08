@@ -118,6 +118,8 @@ class SqliteStore implements Store {
   readonly runs: Runs;
   readonly #db: Connection;
   readonly #now: () => number;
+  /** Each claim's one journal, until it is closed. */
+  readonly #journals = new Map<string, RunStorage>();
 
   constructor(db: Connection, now: () => number) {
     this.#db = db;
@@ -316,8 +318,15 @@ class SqliteStore implements Store {
     )], { full: true });
   }
 
+  /** The claim's one journal (pi assumes one Storage per owner): asked again for the same claim, the same journal, so two
+   *  callers never mint the same ids; a new one once it is closed. */
   journal(claim: Claim): Journal {
-    return new RunStorage(this.#db, claim, this.#now);
+    const key = `${claim.runId}\u0000${claim.epoch}`;
+    const open = this.#journals.get(key);
+    if (open && !open.closed) return open;
+    const journal = new RunStorage(this.#db, claim, this.#now);
+    this.#journals.set(key, journal);
+    return journal;
   }
 
   async flush(): Promise<void> {
