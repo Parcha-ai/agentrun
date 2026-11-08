@@ -57,7 +57,7 @@ import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
@@ -70,7 +70,9 @@ import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
+import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -275,6 +277,8 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
+  templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
@@ -410,6 +414,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
+  { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
+  { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
@@ -693,6 +699,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
+  const templates = readPackages(options.templates);
   // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
   // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
@@ -706,7 +714,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   try {
     // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
     markRunning(data);
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow }, stops);
+    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     lock.release();
@@ -714,8 +722,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none" }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow } = checked;
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1232,7 +1240,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     try {
       id = decodeURIComponent(/^\/hooks\/([^/]+)$/.exec(path)![1]!);
     } catch {}
-    const secret = ID.test(id) && triggers.hookable(id) ? triggerSecrets!.value(id) : undefined;
+    const secret = ID.test(id) && triggers.hookable(id, "webhook") ? triggerSecrets!.value(id) : undefined;
     const refusal = hookRefusal(secret ?? NO_TRIGGER_SECRET, req.headers, body, Date.now());
     if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
     const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
@@ -1375,6 +1383,73 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
+  }
+
+  /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
+   *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
+   *  tool the box refuses (browser) keeps the runner. */
+  async function createAgentOf(body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    let warnings: InputIssue[] = [];
+    const definition = checkDefinitionBody(body);
+    const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
+    const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+    const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
+    return { entry, warnings };
+  }
+
+  /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
+   *  servers it names (409, nothing made; an MCP server it can do without is skipped, with a warning), then its
+   *  agent made as POST /agents makes one, its MCP tools at the owner's own settings save those granted, set to allow (a
+   *  deny the owner set on this server stays, with a warning), its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
+   *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
+   *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
+   *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
+  async function applyTemplate(pkg: Package, body: Json) {
+    const { parameters, grants, model: override } = applyBodyOf(pkg, body);
+    const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
+    const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
+    const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
+    const needed = unsaved.filter((need) => need.required);
+    if (missing.length || needed.length) {
+      const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
+      const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+    }
+    // An MCP server the package can do without is skipped, and said: its tools are not granted.
+    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
+    const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+    const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
+    const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
+    // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
+    const server = settings.get() as Parameters<typeof permissionFrom>[1];
+    const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
+    const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
+    for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
+    const { entry, warnings } = await createAgentOf(made.agent);
+    const ids: string[] = [];
+    try {
+      for (const [i, trigger] of made.triggers.entries()) {
+        try {
+          ids.push((await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } })).id);
+        } catch (error) {
+          if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
+          throw error;
+        }
+      }
+    } catch (error) {
+      for (const id of ids.reverse()) {
+        try {
+          triggers.remove(id);
+        } catch (undo) {
+          log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
+        }
+      }
+      await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      throw error;
+    }
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...warnings] };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
@@ -1965,13 +2040,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "createAgent": {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
-          let warnings: InputIssue[] = [];
-          // A new agent that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision;
-          // one that names a tool the box refuses (browser) keeps the runner, as before.
-          const definition = checkDefinitionBody(body);
-          const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-          const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
-          const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
+          const { entry, warnings } = await createAgentOf(body);
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -2394,6 +2463,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
         return send(res, answer.status, secret && !replayed ? { ...first, secret } : answer.body, answer.headers);
+      }
+      case "listTemplates":
+        return send(res, 200, { templates: templates.map(packageView) });
+      case "applyTemplate": {
+        const pkg = templates.find((t) => t.name === id);
+        if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        const body = await bodyOf(req);
+        const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
+          const applied = await applyTemplate(pkg, body);
+          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         return send(res, 200, triggers.rotate(id));

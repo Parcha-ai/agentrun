@@ -304,6 +304,7 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 		[["--provider", "docker", "--frobnicate"], /unknown option --frobnicate/],
 		[["--provider", "./fixtures/missing.mjs"], /cannot load the provider module .*missing\.mjs/],
 		[["--provider", "./fixtures/no-factory.mjs"], /does not export createProvider\(\)/],
+		[["--provider", "Docker"], /unknown computer provider "Docker": the registry holds docker/],
 		[["--provider", "./fixtures/fake-provider.mjs", "--only", "exec,network"], /--only: network is neither a group .* nor a case id/],
 	]) {
 		const err = sink();
@@ -604,7 +605,7 @@ test("a docker CLI that never answers `docker version` fails the docker run in b
 		writeFileSync(join(dir, "docker"), "#!/bin/sh\nexec sleep 600\n");
 		chmodSync(join(dir, "docker"), 0o755);
 		const script = `import { main } from ${JSON.stringify(pathToFileURL(CLI).href)};
-process.exitCode = await main(["--provider", "docker"], { dockerTimeoutMs: 500 });`;
+process.exitCode = await main(["--provider", "docker"], { providerOptions: { timeoutMs: 500 } });`;
 		const { code, signal, stderr } = await new Promise((resolve) => {
 			execFile(
 				process.execPath,
@@ -808,6 +809,44 @@ test("files.list passes a daemon whose pages hold one entry each", async () => {
 		const report = await runConformance(fake.provider, { image: IMAGE, cases: byId("files.list") });
 		assert.equal(statuses(report)["files.list"], "pass", `pages of ${filesPage}: ${reasons(report)["files.list"]}`);
 	}
+});
+
+test("the provider cases compare a computer by its id and name, so a create that also returns notes still passes", async () => {
+	const notes = ["network: none; accepted with no answer (no bytes came back): 1.1.1.1:443"];
+	const report = await runConformance(fakeComputers({ notes }).provider, { image: IMAGE, cases: byId("provider.attach", "provider.list", "provider.janitor") });
+	assert.deepEqual(statuses(report), { "provider.attach": "pass", "provider.list": "pass", "provider.janitor": "pass" }, JSON.stringify(reasons(report)));
+});
+
+test("the notes create returns are in the report, each naming its computer, and the text report prints every one", async () => {
+	const note = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443";
+	const { provider, made } = fakeComputers({ notes: [note] });
+	const report = await runConformance(provider, {
+		image: IMAGE,
+		cases: [pass("health.ping"), pass("provider.fresh", { computer: "none", run: async (t) => void (await t.create()) })],
+	});
+	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
+	assert.equal(made.length, 2, "the run's computer and the case's");
+	const names = made.map(({ name }) => name);
+	assert.deepEqual(report.computerNotes, names.map((computer) => ({ computer, note })), "one entry per note, naming the computer that recorded it");
+	assert.deepEqual(JSON.parse(JSON.stringify(report)).computerNotes, report.computerNotes, "the same in --json's report object");
+	const lines = formatReport(report).trimEnd().split("\n");
+	for (const computer of names) assert.ok(lines.includes(`note ${computer}: ${note}`), `${computer}'s note in:\n${lines.join("\n")}`);
+	assert.match(lines.at(-1), /^core PASS 2\/2/, "the verdict stays last");
+	const quiet = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
+	assert.equal(Object.hasOwn(quiet, "computerNotes"), false, "no notes, no field");
+	assert.doesNotMatch(formatReport(quiet), /^note /m);
+});
+
+test("the CLI's --json carries the notes create returned", async () => {
+	const out = sink();
+	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	const report = JSON.parse(out.text());
+	assert.equal(report.computerNotes?.length, 1, out.text());
+	assert.match(report.computerNotes[0].computer, /./);
+	assert.equal(report.computerNotes[0].note, "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443");
+	const text = sink();
+	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
+	assert.match(text.text(), /^note \S+: network: none; accepted with no answer \(no bytes came back\): 1\.1\.1\.1:443$/m);
 });
 
 test("drift.version passes only on a refusal that is the version drift, never on a create or connect refused for another reason", async () => {

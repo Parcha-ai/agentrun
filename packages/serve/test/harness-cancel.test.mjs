@@ -5,6 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { modelPortFor, RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { fauxAdapter } from "@parcha/agentrun-kernel/testing";
@@ -25,7 +26,7 @@ test(`a cancelled run on ${harness} sends no model request: its turn ends on the
   const adapter = fauxAdapter({ script: () => [{ say: "Hi.", usd: 0.001 }] });
   let cancelled = false;
   const app = adapterRun(async () => adapter, harness, { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx, undefined, [], undefined, undefined, () => cancelled);
-  const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
   const events = [];
   app.door.attach((e) => events.push(e.type));
   await app.onOpen(runOf(durable));
@@ -44,7 +45,7 @@ test(`a cancel that lands after its check passed and before the request's record
   // The cap is asked right after the cancel check passed: the cancel lands there, before the runner writes the record.
   const cap = { beforeRequest: () => void (cancelled = true) };
   const app = adapterRun(async () => adapter, harness, { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx, undefined, [], undefined, cap, () => cancelled);
-  const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
   const events = [];
   app.door.attach((e) => events.push(e.type));
   await app.onOpen(runOf(durable));
@@ -77,7 +78,7 @@ test(`the run's app on ${harness} reads the cancel serve writes: built on a canc
   withEnv(t, { AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS) });
   const { default: app } = await import("../dist/app.js");
   const options = await app({ ref: { id: run.run_id }, root, work: join(root, "work"), store: join(root, "store") });
-  const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
   const events = [];
   options.door.attach((e) => events.push(e.type));
   await options.onOpen(runOf(durable));
@@ -100,7 +101,7 @@ test(`the run's app on ${harness} reads the cancel serve writes: built on a canc
 test("a request withdrawn as its record was written is no request when the run opens again: nothing is written for it, and the run has spent $0", async () => {
   const storage = new MemoryStorage();
   // The first process: the cancel lands while the request's record is written, and the runner withdraws the request.
-  const first = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const first = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   const writer = await durableSessions(first, ctx).open("run:1");
   let stopped;
   const append = async (records) => {
@@ -111,7 +112,7 @@ test("a request withdrawn as its record was written is no request when the run o
   await assert.rejects(booking.models.beforeRequest({ model: "m" }), /cancelled/);
   assert.deepEqual((await writer.read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data), [{ turn: 1, usd: 0, unsent: true }]);
   // The next process opens the run: the withdrawn request is not booked as one.
-  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   const app = adapterRun(async () => fauxAdapter({ script: () => [] }), "codex", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
   app.door.attach(() => {});
   await app.onOpen(runOf(harness));
@@ -131,13 +132,13 @@ test("a request withdrawn as its record was written is no request when the run o
 
 test("a request that left and was booked at $0 (a free model) is still the run's request when it opens again: counted once, at $0", async () => {
   const storage = new MemoryStorage();
-  const first = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const first = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   const writer = await durableSessions(first, ctx).open("run:1");
   const booking = await modelPortFor(writer, { key: "run:1" });
   const ticket = await booking.models.beforeRequest({ model: "m" });
   await booking.models.afterRequest({ input: 10, output: 5, cacheRead: 0, usd: 0 }, ticket);
   assert.deepEqual((await writer.read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data), [{ turn: 1, usd: 0, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } }]);
-  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   const app = adapterRun(async () => fauxAdapter({ script: () => [] }), "codex", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
   app.door.attach(() => {});
   await app.onOpen(runOf(harness));

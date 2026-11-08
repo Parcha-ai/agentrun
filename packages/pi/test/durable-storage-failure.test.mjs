@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
@@ -72,7 +73,7 @@ const isStorageFailure = (error) => {
 async function open(storage, flow) {
   const registry = createRegistry();
   registry.install(flow.extension);
-  return Harness.open(storage, { registry, models: {} }, ctx);
+  return Harness.open(storage, { registry, models: createModels() }, ctx);
 }
 
 /** One run in a process whose storage fails as `plan` says, then the same run in a later process on a healthy storage. */

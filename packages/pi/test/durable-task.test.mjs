@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { runWorkflow } from '@parcha/agentrun-dsl';
@@ -60,7 +61,7 @@ const hostOf = (runEffect) => {
 async function open(file, flow) {
   const registry = createRegistry();
   registry.install(flow.extension);
-  return Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  return Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
 }
 const fileOf = () => join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
 /** The journal in an operator's hands, outside any task. */
@@ -319,7 +320,7 @@ test('a stop given with the start is recorded in the commit that creates the tas
   let flow = createWorkflowExtension(host());
   let harness = await open(file, flow);
   const entries = [];
-  harness.subscribeCommits((publication) => { for (const change of publication.changes) if (change.type === 'document' && change.record.kind === 'agentrun.task' && change.value) entries.push([change.value.task !== null, change.value.stop]); });
+  harness.observeCommits({ end() {}, advance: (publication) => { for (const change of publication.changes) if (change.type === 'document' && change.record.kind === 'agentrun.task' && change.value) entries.push([change.value.task !== null, change.value.stop]); } });
   // The process dies once the start has committed, before pi marks the task.
   harness.abortTask = async () => { throw new Error('killed before the mark'); };
   await assert.rejects(flow.start(harness, request(), ctx, { stop: { action: 'cancel', source: 'owner' } }), /killed before the mark/);
@@ -513,7 +514,8 @@ async function refusesEveryMove(flow, harness) {
   const before = await flow.read(harness, 'run-1', ctx);
   for (const [what, moved, names] of MOVES) {
     const commits = [];
-    const unsubscribe = harness.subscribeCommits((publication) => { commits.push(publication.changes.map((change) => change.type)); });
+    const observation = harness.observeCommits({ end() {}, advance: (publication) => { commits.push(publication.changes.map((change) => change.type)); } });
+    const unsubscribe = () => observation.detach();
     try {
       for (const stop of [undefined, { action: 'pause', source: 'operator' }, { action: 'cancel', source: 'owner' }]) {
         await assert.rejects(flow.start(harness, moved, ctx, stop ? { stop } : {}), (error) => {

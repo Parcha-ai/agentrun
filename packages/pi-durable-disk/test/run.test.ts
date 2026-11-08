@@ -484,7 +484,7 @@ describe("openDurableRun", () => {
             assert.deepEqual(Object.keys(storage).sort(), ["document", "scanConversations", "scanDocuments", "scanTasks"]);
             assert.ok(Object.isFrozen(storage), "nothing can be added to it");
             const writable = storage as unknown as Storage;
-            for (const write of [() => writable.commit([], ctx), () => writable.mintId()]) {
+            for (const write of [() => writable.commit([], () => undefined, ctx), () => writable.mintId()]) {
               try {
                 await write();
                 tried.push("ran");

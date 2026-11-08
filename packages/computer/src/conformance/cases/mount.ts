@@ -34,7 +34,12 @@ const runFolder = (kind: MountKind): Case =>
 			const spec = t.spec({ labels, mount: asked });
 			const refusals = t.provider.check(spec);
 			tokenless(t, asked, refusals, "check's refusal of a spec that mounts the run's folder");
-			t.deepEqual(refusals, [], "check of a spec that mounts the run's folder");
+			// A provider that declares the kind but whose host cannot give it (a Docker host that remaps user ids, for a bind)
+			// fails here in its own words: it declared what this host does not do.
+			t.assert(
+				refusals.length === 0,
+				`check refuses a spec that mounts the run's folder of kind ${kind}, which the provider declares: ${refusals.map(({ field, message }) => `${field}: ${message}`).join("; ")}`,
+			);
 			const ref = await t.create(spec);
 			const connected = await t.connect(ref);
 
@@ -75,7 +80,7 @@ const runFolder = (kind: MountKind): Case =>
 
 /** A mount of each kind the provider does not declare, with a token this case alone knows. */
 function undeclaredMount(kind: MountKind, token: string): MountSpec {
-	return kind === "bind" ? { kind, path: "/" } : { kind, disk: "conformance-disk", folder: "runs/conformance", token };
+	return kind === "bind" ? { kind, path: "/" } : { kind, disk: "conformance-disk", region: "conformance-region", folder: "runs/conformance", token };
 }
 
 export const mountCases: Case[] = [

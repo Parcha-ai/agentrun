@@ -54,6 +54,7 @@ export function formatReport(report: ConformanceReport): string {
 		lines.push(`core ${"not run".padEnd(9)} ${first}`, ...rest.map((more) => `${INDENT}${more}`));
 	}
 	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
+	for (const { computer, note } of report.computerNotes ?? []) lines.push(`note ${computer}: ${note}`);
 	const core = results.filter((r) => levelOf(r) === "core");
 	const notDeclared = results.filter((r) => levelOf(r) === "optional").length;
 	const full = results.filter((r) => r.level === "full");

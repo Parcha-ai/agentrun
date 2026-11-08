@@ -5,6 +5,7 @@
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
 import { TRIGGER_SOURCES } from "@parcha/pi-durable-agent/timeline";
+import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
@@ -18,8 +19,9 @@ import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { HOOK_TOLERANCE_S } from "./trigger-secrets.js";
-import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
-import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
+import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
 import { permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
@@ -530,13 +532,8 @@ const RUN_TRIGGER: Json = {
 };
 const DATE_TIME = { type: "string", format: "date-time" };
 const TRIGGER_SOURCE = {
-  oneOf: [
-    closedWith({ kind: { const: "schedule" }, cron: { type: "string", description: "Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap." } }, { timezone: { type: "string", default: "UTC", description: "The IANA zone the cron line is read in." } }),
-    closed({ kind: { const: "schedule" }, at: { ...DATE_TIME, description: "Once, at this time (to the second, in the future); the trigger turns itself off after." } }),
-    closedWith({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
-    closed({ kind: { const: "webhook" } }),
-  ],
-  description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), or a signed request to /hooks/{trigger_id} (\`webhook\`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+  oneOf: TRIGGER_ADAPTERS.flatMap((a) => a.schemas),
+  description: `When it fires: ${TRIGGER_ADAPTERS.map((a) => a.fires).join(", or ")}. Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
 };
 /** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
  *  start always set, to UTC and to when it was written when the write left them out. */
@@ -563,7 +560,8 @@ const TRIGGER_TARGET = {
 const TRIGGER_FIRING = closedWith(
   {
     key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
-    by: { enum: ["schedule", "manual", "webhook"], description: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`." },
+    // The clock's sources, then a run now, then the pushed ones: the order the document has always served.
+    by: { enum: [...TRIGGER_ADAPTERS.filter((a) => a.delivery === "clock").map((a) => a.id), "manual", ...TRIGGER_ADAPTERS.filter((a) => a.delivery === "push").map((a) => a.id)], description: TRIGGER_ADAPTERS.flatMap((a) => (a.firedBy ? [a.firedBy] : [])).join(" ") },
     nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
     status: { enum: [...FIRING_STATUSES], description: `\`due\`: recorded, its run not started yet (a full server keeps it due, with \`retry_at\`). \`started\`: its run is \`run_id\`. \`sent\`: a message_run firing's message reached \`run_id\`. \`skipped\`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; \`reason\` says which. \`failed\`: the run was refused, with \`error\`; a trigger.failed webhook message says so. \`missed\`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), \`count\` of them from \`nominal_at\` on.` },
     at: { ...DATE_TIME, description: "When it was recorded." },
@@ -597,6 +595,53 @@ const TRIGGER_WRITE = {
 };
 const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { type: "string" } };
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
+/** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
+const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
+const NULLABLE_STRING = { type: ["string", "null"] };
+const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." } });
+const TEMPLATE = closed({
+  name: { type: "string", description: "Its folder's name, the one apply takes." },
+  display_name: { type: ["string", "null"], description: "The agent's name, its `${parameters.<name>}` filled at apply; null: the package's name." },
+  version: { type: "string", description: "SemVer." },
+  description: { type: "string" },
+  license: NULLABLE_STRING,
+  repository: NULLABLE_STRING,
+  harness: { type: ["array", "null"], items: { type: "string" }, description: "The harnesses it runs on, in the order it prefers them: apply takes the first this server runs. Null: any, the server's default." },
+  model: { type: ["object", "null"], additionalProperties: false, required: ["tier"], properties: { tier: { enum: Object.keys(MODEL_TIERS) }, prefer: { type: "string" } }, description: "The model it wants: `prefer` when this server runs it, else this server's model for the tier (fast: AGENT_MODEL_FAST, balanced: AGENT_MODEL, strong: AGENT_MODEL_STRONG, each else the default). Null: the server's default." },
+  effort: { type: ["string", "null"], description: "Its thinking level, the definition's `thinking`." },
+  tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
+  mcp: {
+    type: "array",
+    items: closed({
+      server: { type: "string" },
+      required: { type: "boolean" },
+      tools: { type: "array", items: closed({ name: { type: "string" }, tool: { type: "string", description: "Its gate name, `mcp:<server>/<tool>`: what apply's `grants` and the tool settings name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }) },
+    }),
+    description: "The MCP servers it uses, by the name this server saves them under, and the tools of each it grants: apply grants them when the server is saved here, each at the owner's own setting (a third-party tool asks by default), and sets to allow only those the apply's `grants` name; one not saved is skipped with a warning, or, `required`, refuses the apply (409, nothing made).",
+  },
+  parameters: { type: "object", additionalProperties: TEMPLATE_PARAMETER, description: "What apply takes in `parameters`, by name, put where the package writes `${parameters.<name>}`." },
+  secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
+  budget: { type: ["object", "null"], additionalProperties: false, required: ["per_run_usd"], properties: { per_run_usd: { type: "number" } }, description: "Each run's spend cap, the agent's max_cost_usd. Required of a package with triggers." },
+  learning: { type: "boolean" },
+  triggers: { type: "array", items: { type: "object" }, description: "The triggers apply makes on its agent: POST /triggers bodies with no agent_id, placeholders unfilled." },
+  skills: { type: "array", items: { type: "string" } },
+  evals: { type: "array", items: { type: "string" }, description: `Its eval cases (evals/<case>/: prompt.md and graders of ${GRADER_TYPES.join(", ")}); none runs here.` },
+});
+const TEMPLATE_APPLY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    parameters: { type: "object", description: "The package's parameters (GET /templates), by name, each of its type." },
+    grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by gate name (`mcp:<server>/<tool>`, GET /templates `mcp[].tools[].tool`), the agent is allowed to call unasked. Any other is 422. One the owner denies on this server stays denied, with a warning. Absent, none: every tool keeps the owner's setting." },
+    overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." } } },
+  },
+};
+const TEMPLATE_APPLIED = closed({
+  template: { type: "string" },
+  version: { type: "string" },
+  agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
+  trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
+  warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it." },
+});
 const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {
   oneOf: [
@@ -1241,6 +1286,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [TRIGGER_ID],
       responses: { "200": json(closed({ firings: { type: "array", items: TRIGGER_FIRING } }), "Each firing."), ...errors(401, 404, 409, 429, 500) },
       ...TRIGGER_MARK,
+    },
+  },
+  "/templates": {
+    get: {
+      operationId: "listTemplates", tags: ["local"], summary: "The template packages this server ships: each makes an agent, its skills and its triggers",
+      responses: { "200": json(closed({ templates: { type: "array", items: TEMPLATE } }), "Each package, by name."), ...errors(401, 429, 500) },
+      ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/{template}/apply": {
+    post: {
+      operationId: "applyTemplate", tags: ["local"], summary: "Apply a template package: make its agent, with its skills, then its triggers",
+      description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it granted and set to allow. Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's name (GET /templates)." }, ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_APPLY } } },
+      responses: { "201": json(TEMPLATE_APPLIED, "Applied: the agent and its triggers made."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      ...TEMPLATE_MARK,
     },
   },
   "/settings/webhook/deliveries/{webhook_id}/redeliver": {

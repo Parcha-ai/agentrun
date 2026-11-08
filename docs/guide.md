@@ -115,7 +115,7 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 <a id="pi"></a>
 ## Let Pi build and run a workflow
 
-Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.0.4 to below 1.4; CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0), run these commands in your project:
+Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.5.0 exactly; CI tests 1.5.0), run these commands in your project:
 
 ```sh
 pi install npm:@parcha/agentrun-pi@latest -l

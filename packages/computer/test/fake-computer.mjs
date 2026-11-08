@@ -147,6 +147,7 @@ function fakeDaemon(hello, computer) {
  * - `status`: /proc/self/status fields over the unprivileged ones, in every computer (a value of undefined drops the
  *   line); `statusForUser`: the same, in a computer whose spec asked for a user.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
+ * - `notes`: create returns these notes beside the ref, as a provider records what a read-back found (silent accepts).
  * - `listPage`: how many processes one process.list page holds. `filesPage`: how many entries one files.list page holds.
  * - `declaresStopDeletes`: capabilities().stopDeletes, left out unless given. `stopIgnored`: a stop does nothing, and the
  *   computer runs on.
@@ -162,7 +163,9 @@ function fakeDaemon(hello, computer) {
  *   folder on this machine standing for the disk. attach() and list() read the mount back, without the token.
  * - `brokenMount`: "unbound" (the mount is read back, but nothing is bound at /workspace), "no-read-back" (attach and
  *   list report no mount), "token-in-read-back" (attach reports the token), "token-in-label" (the computer carries the
- *   token as a label), "check-ignores" (check() takes any mount kind, declared or not).
+ *   token as a label), "check-ignores" (check() takes any mount kind, declared or not), "host-refuses" (check()
+ *   refuses even a kind the provider declares, as a Docker host that remaps user ids refuses a bind), "no-region"
+ *   (an Archil mount reads back without its region).
  * - `listIgnoresLabels`: list() gives every computer, whatever labels it was asked for.
  * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
  */
@@ -191,6 +194,7 @@ export function fakeComputers({
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
+	notes,
 	declaresStopDeletes,
 	stopIgnored = false,
 	networkSwitches = false,
@@ -209,7 +213,8 @@ export function fakeComputers({
 	const readBack = (asked) => {
 		if (asked === undefined || brokenMount === "no-read-back") return {};
 		if (asked.kind === "bind") return { mount: { kind: "bind", path: asked.path } };
-		return { mount: { kind: "archil", disk: asked.disk, folder: asked.folder, ...(brokenMount === "token-in-read-back" ? { token: asked.token } : {}) } };
+		const region = brokenMount === "no-region" ? {} : { region: asked.region };
+		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, ...(brokenMount === "token-in-read-back" ? { token: asked.token } : {}) } };
 	};
 	const folderOf = (asked) => {
 		if (asked === undefined || brokenMount === "unbound") return undefined;
@@ -228,6 +233,8 @@ export function fakeComputers({
 			const refusals = [];
 			if (spec.mount !== undefined && !(mount ?? []).includes(spec.mount.kind) && brokenMount !== "check-ignores") {
 				refusals.push({ field: "mount", message: `this provider takes no mount of kind ${spec.mount.kind}` });
+			} else if (spec.mount !== undefined && brokenMount === "host-refuses") {
+				refusals.push({ field: "mount", message: "this host cannot bind the run folder" });
 			}
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
 			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
@@ -270,7 +277,7 @@ export function fakeComputers({
 			};
 			computers.set(name, record);
 			made.push({ name, labels: record.labels });
-			return ok(record.ref);
+			return ok(notes ? { ...record.ref, notes } : record.ref);
 		},
 		async attach(ref) {
 			const found = [...computers.values()].filter((c) =>
@@ -368,7 +375,7 @@ export function fakeRunFolders() {
 		if (kind !== "archil") return undefined;
 		const folder = `runs/${randomBytes(4).toString("hex")}`;
 		mkdirSync(join(diskDir(), folder), { recursive: true });
-		return at(join(diskDir(), folder), { kind: "archil", disk: "fake-disk", folder, token: `archil-token-${randomBytes(8).toString("hex")}` });
+		return at(join(diskDir(), folder), { kind: "archil", disk: "fake-disk", region: "fake-region-1", folder, token: `archil-token-${randomBytes(8).toString("hex")}` });
 	};
 	const disks = {
 		get "fake-disk"() {

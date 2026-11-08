@@ -11,6 +11,7 @@ import {
 	type ExecutionEnv,
 	ExecutionError,
 	err,
+	type FileChange,
 	FileError,
 	type FileErrorCode,
 	type FileInfo,
@@ -25,7 +26,6 @@ import {
 	StreamDecoder,
 	type TextLineReader,
 	toError,
-	type WatchChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 import { type Box, BoxError } from "../box/box.ts";
@@ -910,7 +910,7 @@ class BoxEnv implements ExecutionEnv {
 	/** Polling snapshots of the targets: a box reports no file events. */
 	async watch(
 		targets: readonly WatchTarget[],
-		onChange: (change: WatchChange) => void,
+		onChange: (change: FileChange) => void,
 		context: Context,
 	): Promise<Result<FileWatcher, FileError>> {
 		const first = targets[0]?.path ?? "";
@@ -936,7 +936,7 @@ class BoxEnv implements ExecutionEnv {
 			});
 		const started = await snapshot(context);
 		if (!started.ok) return started;
-		// The watcher outlives the call that opened it, so only its own `close` stops its snapshots.
+		// The watcher outlives the call that opened it, so only its own `stop` ends its snapshots.
 		const polling = withCancel(withoutAbortSignal(context));
 		let last = started.value;
 		let stopped = false;
@@ -947,7 +947,7 @@ class BoxEnv implements ExecutionEnv {
 			if (stopped) return;
 			if (!now.ok) {
 				stopped = true;
-				onChange({ error: now.error });
+				onChange({ kind: "failed", error: now.error });
 				return;
 			}
 			const paths: string[] = [];
@@ -955,7 +955,7 @@ class BoxEnv implements ExecutionEnv {
 			for (const path of last.keys()) if (!now.value.has(path)) paths.push(path);
 			last = now.value;
 			schedule();
-			if (paths.length > 0) onChange({ paths });
+			if (paths.length > 0) onChange({ kind: "paths", paths });
 		};
 		// The next snapshot is taken a whole interval after the last one ended, so a slow box is never asked twice at once.
 		const schedule = () => {
@@ -965,7 +965,7 @@ class BoxEnv implements ExecutionEnv {
 		};
 		const watcher: FileWatcher = {
 			mode: "polling",
-			close: async () => {
+			stop: async () => {
 				stopped = true;
 				clearTimeout(timer);
 				polling.cancel();
@@ -1243,7 +1243,7 @@ class BoxEnv implements ExecutionEnv {
 	}
 
 	async cleanup(context: Context): Promise<void> {
-		for (const watcher of [...this.#watchers]) await watcher.close(context);
+		for (const watcher of [...this.#watchers]) await watcher.stop(context);
 		const ids = [...new Set([...this.#running, ...this.#unconfirmed])];
 		if (this.#lost !== undefined || ids.length === 0) return;
 		const command = ["sh", "-c", CLEANUP_SCRIPT, "sh", ...ids];
