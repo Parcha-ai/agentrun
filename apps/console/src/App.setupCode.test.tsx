@@ -14,15 +14,15 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 const NOTE = "Find the setup code in the server's log (on Render, the Logs tab), or open the link the log prints.";
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-async function open(setupCode: boolean) {
+async function open(setupCode: boolean, link = "/", refusal = "that is not the setup code in the server's log") {
   const sent: unknown[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
     if (path === "/v2/auth/session") return json(200, { password_set: false, signed_in: false, setup_code: setupCode });
-    if (path === "/v2/setup") { sent.push(JSON.parse(String(init?.body ?? "{}"))); return json(403, { error: { code: "forbidden", message: "that is not the setup code in the server's log, or it has expired", retryable: false } }); }
+    if (path === "/v2/setup") { sent.push(JSON.parse(String(init?.body ?? "{}"))); return json(403, { error: { code: "forbidden", message: refusal, retryable: false } }); }
     return json(404, { error: { code: "not_found", message: path, retryable: false } });
   });
-  history.replaceState(null, "", "/");
+  history.replaceState(null, "", link);
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(App)));
@@ -54,5 +54,39 @@ describe("App, a first visit at a public address opened with no setup link", () 
     const p = await open(false);
     expect(p.host.querySelector('input[aria-label="New password"]')).toBeTruthy();
     expect(p.field()).toBeUndefined();
+  });
+
+  it("never sends setup without a code while the server takes one: the button waits for the code", async () => {
+    const p = await open(true);
+    await type(p.host.querySelector('input[aria-label="New password"]') as HTMLInputElement, "not-a-secret-password");
+    await type(p.host.querySelector('input[aria-label="Password again"]') as HTMLInputElement, "not-a-secret-password");
+    const button = p.host.querySelector('button[type="submit"]') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await act(async () => { (p.host.querySelector("form") as HTMLFormElement).requestSubmit(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(p.sent).toHaveLength(0);
+  });
+
+  it("takes the code from a setup link opened in the same tab (only the address's fragment changes), and sends it exactly", async () => {
+    const p = await open(true);
+    await act(async () => { location.hash = "#code=AbC-123_xyz&tab=runs"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect((p.field()!.querySelector("input") as HTMLInputElement).value).toBe("AbC-123_xyz");
+    expect(location.hash).not.toContain("AbC-123_xyz");
+    await type(p.host.querySelector('input[aria-label="New password"]') as HTMLInputElement, "not-a-secret-password");
+    await type(p.host.querySelector('input[aria-label="Password again"]') as HTMLInputElement, "not-a-secret-password");
+    await act(async () => { (p.host.querySelector("form") as HTMLFormElement).requestSubmit(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect((p.sent[0] as { code?: string }).code).toBe("AbC-123_xyz");
+  });
+
+  it("says a new code is in the log when the server voided or expired the one tried", async () => {
+    const p = await open(true, "/", "that setup code expired, or five wrong tries voided it: a new one is in the server's log");
+    await type(p.field()!.querySelector("input")!, "old-code");
+    await type(p.host.querySelector('input[aria-label="New password"]') as HTMLInputElement, "not-a-secret-password");
+    await type(p.host.querySelector('input[aria-label="Password again"]') as HTMLInputElement, "not-a-secret-password");
+    await act(async () => { (p.host.querySelector("form") as HTMLFormElement).requestSubmit(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(p.host.querySelector('[role="alert"]')?.textContent).toBe("That setup code expired or was voided after too many wrong tries: a new one is in the server's log (on Render, the Logs tab).");
   });
 });

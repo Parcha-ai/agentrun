@@ -69,15 +69,54 @@ test("the password is 12 characters or more, counted as characters, and at most 
   assert.equal((await setup(server, { password: "🔑".repeat(12) })).status, 201, "twelve characters, though more bytes");
 });
 
-test("at a public address setup takes the printed code (or the token): none or a wrong one is a 403, the fifth wrong one voids it", async (t) => {
+/** The setup links the server prints while `body` runs (Owner prints them to stdout): their codes, in order. */
+async function printedCodes(body) {
+  const codes = [];
+  const write = process.stdout.write;
+  process.stdout.write = function (chunk, ...rest) {
+    for (const m of String(chunk).matchAll(/^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22})$/gm)) codes.push(m[1]);
+    return write.call(this, chunk, ...rest);
+  };
+  try { await body(); } finally { process.stdout.write = write; }
+  return codes;
+}
+
+test("at a public address setup takes the printed code (or the token): a wrong one is a 403, and the fifth voids it and prints a new one, which the refusal says", async (t) => {
   const server = await serve(t, { accounts: true });
   const code = new URL(server.setupUrl).hash.slice("#code=".length);
   assert.match(code, /^[A-Za-z0-9_-]{22}$/);
-  assert.equal((await setup(server, { password: PASSWORD })).status, 403);
-  for (let i = 0; i < 4; i++) assert.equal((await setup(server, { password: PASSWORD, code: "wrong" })).status, 403);
-  assert.equal((await setup(server, { password: PASSWORD, code })).status, 403, "the fifth wrong code voided it");
+  let fifth;
+  const printed = await printedCodes(async () => {
+    for (let i = 0; i < 4; i++) assert.equal((await setup(server, { password: PASSWORD, code: "wrong" })).status, 403);
+    fifth = await setup(server, { password: PASSWORD, code: "wrong" });
+  });
+  assert.equal(fifth.status, 403);
+  assert.match(fifth.json.error.message, /a new one is in the server's log/, "the voiding try says a new code was printed");
+  assert.equal(printed.length, 1, "a new code is printed when the fifth wrong one voids the old");
+  assert.notEqual(printed[0], code);
+  const old = await setup(server, { password: PASSWORD, code });
+  assert.equal(old.status, 403, "the voided code is refused");
+  assert.equal((await setup(server, { password: PASSWORD, code: printed[0] })).status, 201, "the new printed code sets the password");
+});
+
+test("at a public address a setup with no code is refused and never counts against the printed code: after five, the code from the log still sets the password", async (t) => {
+  const server = await serve(t, { accounts: true });
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  const printed = await printedCodes(async () => {
+    for (const body of [{ password: PASSWORD }, { password: PASSWORD, code: "" }, { password: PASSWORD }, { password: PASSWORD }, { password: PASSWORD }, { password: PASSWORD }]) {
+      const r = await setup(server, body);
+      assert.equal(r.status, 403);
+      assert.match(r.json.error.message, /setup code/, r.text);
+    }
+  });
+  assert.deepEqual(printed, [], "no new code: the printed one still stands");
+  assert.equal((await setup(server, { password: PASSWORD, code })).status, 201, "the code from the log, after six tries with none");
+});
+
+test("the token stands in for the setup code at a public address", async (t) => {
+  const server = await serve(t, { accounts: true });
   const byToken = await setup(server, { password: PASSWORD }, { ...json, authorization: `Bearer ${server.token}` });
-  assert.equal(byToken.status, 201, "the token stands in for the code");
+  assert.equal(byToken.status, 201);
 });
 
 test("the session read says whether setup takes a code, never the code: true at a public address, false on open setup, absent once a password is set", async (t) => {
