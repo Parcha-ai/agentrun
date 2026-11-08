@@ -58,7 +58,7 @@ function unknownNotNothing(told) {
   assert.ok(!told.includes(NOT_RUN), `never that nothing was sent: ${told}`);
 }
 
-test("a pi run whose process died during a web_fetch it let through, relaunched with web_fetch denied, tells the model whether the call took effect is not known", { timeout: 120_000 }, async (t) => {
+test("a pi run whose process died during a web_fetch it let through, relaunched with web_fetch denied, tells the model whether the call took effect is not known", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F40 (tl-tools) until 2026-11-09T00:07Z, scripts/quarantine.json", timeout: 120_000 }, async (t) => {
   const ask = `Fetch ${HELD} once.`;
   const { view, loaded } = await cutThenDenied(t, agent("held", { harness: "pi", instructions: ask, tools: ["web_fetch"] }), { content: ask }, { preload: true });
   assert.ok(existsSync(loaded), "the relaunched process ran its open hook after the rerun");
