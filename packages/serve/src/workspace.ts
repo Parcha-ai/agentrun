@@ -6,11 +6,10 @@
 // file with a second hard link is refused, since it could be one of this server's own files linked in.
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
-import { access, type FileHandle, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
-import { RUN_META, syncDir, writeDurable } from "./files.js";
-import { remotePlace, storedPlace } from "./place.js";
+import { syncDir, writeDurable } from "./files.js";
 
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
  *  it has another hard link, it is larger than the reader takes, or it is unreadable to this server (a tool in the box
@@ -286,64 +285,4 @@ export function assertHardlinkProtection(read = () => readFileSync("/proc/sys/fs
     throw new Error(`agentrun-serve: fs.protected_hardlinks cannot be read (${(error as Error).message}); a run's workspace could hold a link to this server's files`);
   }
   if (value !== "1") throw new Error(`agentrun-serve: fs.protected_hardlinks is ${value}, not 1; a run's workspace could hold a link to this server's files`);
-}
-
-const NO_LINK_DIR = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-const NEW_FILE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
-
-/** Whether the run whose work/ is `work` runs in a box that binds it, by the place its start kept (serve.json beside
- *  work/). A remote box's commands never reach this machine's work/: what comes back from it is pulled, and a pull writes
- *  no link. */
-function boxedRun(work: string): boolean {
-  try {
-    const place = storedPlace((JSON.parse(readFileSync(join(dirname(work), RUN_META), "utf8")) as { place?: unknown }).place);
-    return place.mode === "sandbox" && !remotePlace(place);
-  } catch {
-    return false;
-  }
-}
-
-type Mirror = (path: string, data: string | Uint8Array) => Promise<void>;
-const mirrors = new Map<string, Mirror>();
-/** In a run's process whose box is remote: each file writeInWork files below `work` is copied into the box as well, at the
- *  same path below its work/ (run-box.ts), so the run's tools there read what its host tools filed. */
-export function mirrorWrites(work: string, mirror: Mirror): void {
-  mirrors.set(resolve(work), mirror);
-}
-
-/** Writes `data` as a new file `name` in `dirs` below a run's `work`, never through a link: a box's command can plant one
- *  there, and this process writes with the server's rights. Each directory is made when missing and opened without
- *  following a link, the next reached through the one held before it (/proc/self/fd), and the file is created, never
- *  replaced: a link in the way refuses the write (ELOOP, ENOTDIR or EEXIST). Where no handle is held (writesHeld: macOS
- *  and any host without /proc/self/fd) each step is reached by its path, which a link swapped in between two steps could
- *  turn: there a run whose place is a box gets no write (ENOTSUP), and a runner run, whose tools make no link, still
- *  writes by path. */
-export async function writeInWork(work: string, dirs: readonly string[], name: string, data: string | Uint8Array): Promise<void> {
-  const byHandle = writesHeld();
-  if (!byHandle && boxedRun(work)) throw Object.assign(new Error("this host reaches a run's directories by path, which a box's command could turn through a link"), { code: "ENOTSUP" });
-  let dir = await open(work, NO_LINK_DIR);
-  let path = work;
-  const below = (part: string) => (byHandle ? `/proc/self/fd/${dir.fd}/${part}` : join(path, part));
-  try {
-    for (const part of dirs) {
-      await mkdir(below(part)).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "EEXIST") throw error;
-      });
-      const next = await open(below(part), NO_LINK_DIR);
-      await dir.close();
-      [dir, path] = [next, join(path, part)];
-    }
-    const file = await open(below(name), NEW_FILE, 0o644);
-    try {
-      await file.writeFile(data);
-    } finally {
-      await file.close();
-    }
-  } finally {
-    await dir.close();
-  }
-  // The box's copy is a convenience to its tools; the file filed here is the record, and stands whatever the copy does.
-  await mirrors.get(resolve(work))?.([...dirs, name].join("/"), data).catch((error: Error) => {
-    process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${[...dirs, name].join("/")} was filed in work/ but not copied into the run's box: ${error?.message ?? String(error)}` })}\n`);
-  });
 }

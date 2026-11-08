@@ -48,7 +48,6 @@ import { promptOf, readsFiles, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
-import { mirrorWrites } from "./workspace.js";
 import { localWorkspace } from "./workspace/index.js";
 import { deniedText, runGate } from "./tool-gate.js";
 
@@ -157,8 +156,6 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // an earlier process's, destroyed before this one makes its own (run-box.ts fenceRunBoxes).
   const epoch = Number(process.env[RUN_EPOCH_ENV] ?? "0");
   const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place, epoch: Number.isSafeInteger(epoch) ? epoch : 0 }) : undefined;
-  // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
-  if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
   // Every tool call the run's model makes passes the run's tool gate (tool-gate.ts): pi's tools wrapped by name where the
   // registry composes each agent's, another harness's host tools in their call. An approved call runs on this coding
