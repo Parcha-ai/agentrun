@@ -677,3 +677,33 @@ test("an ask whose waiting row cannot be written fails, and says so: nothing is 
   assert.deepEqual(held.notes, ["Do thing 51"], "its waiting row written");
   assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-51-1" }])?.id, second.interactionId, "the owner sees it");
 });
+
+test("the hand-back row of a give that answers the session's open ask is at the hand-back's time; one the console's Done answers, at the answer's", async (t) => {
+  const clock = fakeClock(Date.UTC(2026, 10, 3, 9, 0, 0));
+  const notes = [];
+  const root = await scratch(t);
+  const person = personHands({
+    root, gates: () => ({ give: () => false }), timers: clock.timers, now: clock.now, pollMs: 60_000,
+    personTime: async () => ({ drop() {} }),
+    note: async (kind, data) => void notes.push({ kind, ...data }),
+  });
+  t.after(() => person.close());
+  const asked = await person.handoff.request(ask(62, "ar-run-62-1"));
+  const take = await person.take("ar-run-62-1");
+  await clock.tick(1_000);
+  take.started();
+  await clock.tick(9_000);
+  take.end("given");
+  assert.equal(await person.handoff.outcome(asked.interactionId), "done");
+  const phases = notes.filter((note) => note.kind === "agentrun.phase").map((note) => [note.summary, note.at - clock.now()]);
+  assert.deepEqual(phases, [["You took over the browser", -9_000], ["You handed the browser back", 0]]);
+
+  // The console's Done, answered at its own time: this process reads it a minute later and writes the row at the answer's.
+  notes.length = 0;
+  const other = await person.handoff.request(ask(63, "ar-run-63-1"));
+  const doneAt = clock.now() + 5_000;
+  assert.deepEqual(answerAsk(root, "done", doneAt), { outcome: "done", first: true });
+  await clock.tick(60_000);
+  assert.equal(await person.handoff.outcome(other.interactionId), "done");
+  assert.deepEqual(notes.filter((note) => note.kind === "agentrun.phase").map((note) => [note.summary, note.at]), [["You handed the browser back", doneAt]]);
+});

@@ -122,7 +122,8 @@ export const TOOL_STARTED = "agentrun.tool_started";
  *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
 export const REQUEST_CONTINUED = "agentrun.request_continued";
 /** A host's own step, in its words (`summary`), such as a box waiting for its image: one `phase` row with that summary,
- *  cut at CAPS.summary. No request, no cost; one without a summary shows nothing. */
+ *  cut at CAPS.summary, at `at` (ms) when the host gave the time it happened, else at the time of the log before it. No
+ *  request, no cost; one without a summary shows nothing. */
 export const HOST_PHASE = "agentrun.phase";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
@@ -784,6 +785,10 @@ function createProjector(options: TimelineOptions) {
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
     } else if (entry.kind === HOST_PHASE) {
+      // A step the host stamped (`at`, ms) shows at that time: written as it happened, it can sit after a message whose time
+      // is earlier (a model request's start), and the time of the log before it would not be its own.
+      const at = obj(entry.data)?.at;
+      if (typeof at === "number" && Math.abs(at) <= 8.64e15) stamp = at;
       const summary = str(obj(entry.data)?.summary);
       if (summary) add(make("phase", conv, base, { summary: firstLine(summary) }));
     } else if (entry.kind === RUN_RESUMED) {
