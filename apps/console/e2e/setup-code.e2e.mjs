@@ -101,14 +101,14 @@ try {
     await fill(page);
     check("Set password waits for a code", await page.locator('button[type="submit"]').isDisabled());
     // Setups with no code, as a page that hid the field sent them: refused, and the printed code stands.
-    const empty = await page.evaluate(async () => {
+    const empty = await page.evaluate(async (password) => {
       const said = [];
       for (let i = 0; i < 6; i++) {
-        const r = await fetch("/v2/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "not-a-secret-e2e-setup" }) });
+        const r = await fetch("/v2/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
         said.push(r.status);
       }
       return said;
-    });
+    }, PASSWORD);
     check("six setups with no code are refused", empty.every((s) => s === 403), empty.join(","));
     check("and print no new code", a.codes().length === 1, `${a.codes().length} printed`);
     await fill(page, "wrong-code-0000000000x");
