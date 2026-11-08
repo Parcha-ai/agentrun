@@ -1,5 +1,5 @@
-// A run's files as the API shows them (GET /v2/runs/{id}/files and /files/{path}), read through the run's Workspace
-// only: the list is the Workspace's listing walked down, the bytes its ranged reads. A link is never listed or followed
+// A run's files, and an agent home's, as the API shows them (GET /v2/runs/{id}/files[/path] and
+// /v2/agents/{id}/home/files[/path]), read through their Workspace only: the list is the Workspace's listing walked down, the bytes its ranged reads. A link is never listed or followed
 // (the Workspace follows none), a dot-name is left out, and a file this server cannot read is flagged in the list and
 // answered 403 when asked for.
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -16,7 +16,8 @@ export const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 
 
 export type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
 
-const viewOf = (path: string, entry: Entry): FileView => ({
+/** File `path` as the API lists it, from its Workspace listing entry. */
+export const viewOf = (path: string, entry: Entry): FileView => ({
   path, size_bytes: entry.size, modified_at: new Date(entry.mtimeMs).toISOString(), content_type: typeOf(path) ?? null, ...(entry.unreadable ? { unreadable: true as const } : {}),
 });
 
@@ -25,9 +26,11 @@ const viewOf = (path: string, entry: Entry): FileView => ({
 const skipped = (error: unknown): boolean => isWorkspaceError(error) && (error.code === "NOT_FOUND" || error.code === "ESCAPE" || error.code === "REFUSED");
 
 /** The files of `workspace`, walked from its root: each file's own size and time, a dot-name and all below it left
- *  out. It stops past `cap` files. `deep` when a folder more than WALK_DEPTH deep was there and not entered. */
-export async function listFiles(workspace: Workspace, cap: number): Promise<{ files: FileView[]; deep: boolean }> {
+ *  out. It stops past `cap` files. `deep` when a folder more than WALK_DEPTH deep was there and not entered. A name at
+ *  the root that `owned` says is the host's (an agent home's learning/) is named in `owned`, and nothing below it read. */
+export async function listFiles(workspace: Workspace, cap: number, { owned: isOwned }: { owned?: (name: string) => boolean } = {}): Promise<{ files: FileView[]; deep: boolean; owned: string[] }> {
   const files: FileView[] = [];
+  const owned: string[] = [];
   let deep = false;
   const into = async (dir: string, level: number): Promise<boolean> => {
     let entries: Entry[];
@@ -39,6 +42,10 @@ export async function listFiles(workspace: Workspace, cap: number): Promise<{ fi
     }
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
+      if (dir === "" && isOwned?.(entry.name)) {
+        owned.push(entry.name);
+        continue;
+      }
       const path = dir === "" ? entry.name : `${dir}/${entry.name}`;
       if (entry.kind === "file") {
         files.push(viewOf(path, entry));
@@ -49,20 +56,27 @@ export async function listFiles(workspace: Workspace, cap: number): Promise<{ fi
     return true;
   };
   await into("", 0);
-  return { files, deep };
+  return { files, deep, owned };
 }
 
-/** The listing entry of file `rel`, or undefined when there is none: not there, a link (never listed), a folder. */
-async function fileEntry(workspace: Workspace, rel: string): Promise<Entry | undefined> {
+/** The listing entry at `rel`, a file's or a folder's, or undefined when there is none: not there, or a link (never
+ *  listed). */
+export async function entryAt(workspace: Workspace, rel: string): Promise<Entry | undefined> {
   const cut = rel.lastIndexOf("/");
   const name = rel.slice(cut + 1);
   try {
-    return (await workspace.list(cut < 0 ? "" : rel.slice(0, cut))).find((entry) => entry.name === name && entry.kind === "file");
+    return (await workspace.list(cut < 0 ? "" : rel.slice(0, cut))).find((entry) => entry.name === name);
   } catch (error) {
     if (skipped(error)) return undefined;
     throw error;
   }
 }
+
+/** The listing entry of file `rel`, or undefined when there is none: not there, a link (never listed), a folder. */
+const fileEntry = async (workspace: Workspace, rel: string): Promise<Entry | undefined> => {
+  const entry = await entryAt(workspace, rel);
+  return entry?.kind === "file" ? entry : undefined;
+};
 
 /** File `rel` of `workspace`, raw, in reads of SEND_CHUNK: its length from the listing, so HEAD reads no byte. `who`
  *  names who makes a file private, in the words of a 403. */
