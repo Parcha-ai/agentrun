@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
@@ -10,7 +10,7 @@ import { McpServersPage } from "@/components/McpServersPage";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { WebhookPage } from "@/components/WebhookPage";
-import { ScheduleNames } from "@/components/ScheduleChip";
+import { ScheduleNames, useScheduleKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
@@ -179,26 +179,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The schedules' names, for the chip on a run a schedule started: read where the server has schedules, again on each
   // page change (a schedule made or renamed shows by its name on its runs).
   const scheduling = caps?.features?.triggers?.routes === true;
-  const [scheduleNames, setScheduleNames] = useState<ReadonlyMap<string, string>>(new Map());
-  // The ids a read made after a chip asked about them did not find: deleted. Each id is asked about once.
-  const [schedulesGone, setSchedulesGone] = useState<ReadonlySet<string>>(new Set());
-  const scheduleAsked = useRef(new Set<string>());
-  useEffect(() => {
-    if (!scheduling) return;
-    let live = true;
-    v2.listTriggers().then((r) => { if (live) setScheduleNames(new Map(r.triggers.map((t) => [t.id, t.name]))); }, () => {});
-    return () => { live = false; };
-  }, [v2, scheduling, where.section, where.schedule]);
-  const askSchedule = useCallback((id: string) => {
-    if (!scheduling || scheduleAsked.current.has(id)) return;
-    scheduleAsked.current.add(id);
-    // A read made now: a schedule it finds gets its name; one it doesn't was deleted (the list is the whole set, not paged).
-    v2.listTriggers().then((r) => {
-      setScheduleNames(new Map(r.triggers.map((t) => [t.id, t.name])));
-      if (!r.triggers.some((t) => t.id === id)) setSchedulesGone((g) => new Set(g).add(id));
-    }, () => { scheduleAsked.current.delete(id); });
-  }, [v2, scheduling]);
-  const scheduleKnown = useMemo(() => ({ names: scheduleNames, gone: schedulesGone, ask: askSchedule }), [scheduleNames, schedulesGone, askSchedule]);
+  const scheduleKnown = useScheduleKnown(v2, scheduling, [where.section, where.schedule]);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<Problem | null>(null);
