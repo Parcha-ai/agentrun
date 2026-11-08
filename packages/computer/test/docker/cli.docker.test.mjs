@@ -27,6 +27,6 @@ describe("the conformance CLI on Docker", { skip: LIVE ? false : "set AGENTRUN_C
 		assert.match(stdout, /^full lifetime /m);
 		// Docker declares no screen, input, touch or apps, and no vendor's agent (isolation.vendor-agent): those cases are
 		// skipped, out of Core's count, and counted as optional.
-		assert.match(stdout, /^core PASS (\d+)\/\1 · 10 optional cases skipped, not declared · full \d+\/\d+/m);
+		assert.match(stdout, /^core PASS (\d+)\/\1 · 11 optional cases skipped, not declared · full \d+\/\d+/m);
 	});
 });

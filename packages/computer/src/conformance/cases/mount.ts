@@ -255,6 +255,44 @@ const archilIsolatedDurable = mount(
 	{ needs: ["mount:archil", "exec", "files"], timeoutMs: 600_000 },
 );
 
+/** What the tool runs: the line ($1) appended to the file ($2), as the computer's user, with no shell quoting of either. */
+const APPEND = 'printf "%s\\n" "$1" >> "$2"';
+
+/**
+ * Mode 2's promise: the loop writes a file through the disk's file API, a tool edits it, and the loop reads the edit
+ * back. The file is written before the computer mounts the folder (the disk refuses outside writes while it is held);
+ * the tool, the computer's user, appends to it, and must be able to; the loop's read while the folder is held is
+ * recorded, and once the computer is released the file must read back as the loop's text with the tool's line.
+ */
+const archilLoopToolEdit = mount(
+	"archil-loop-tool-edit",
+	async (t) => {
+		const folder = await t.runFolder("archil");
+		const nonce = randomBytes(6).toString("hex");
+		const name = `loop-${nonce}.txt`;
+		const path = `${WORKSPACE}/${name}`;
+		const loopText = `written by the loop through the file API ${nonce}\n`;
+		await folder.write(name, Buffer.from(loopText));
+		const { ref } = await mounted(t, folder, EPOCH, "mount-archil-loop-tool-edit");
+		const connected = await t.connect(ref);
+		const stat = await connected.client.call("files.stat", { path });
+		t.observe(`the file the loop wrote, seen at ${WORKSPACE} before the tool's edit: ${stat.ok ? `uid ${stat.value.uid}, gid ${stat.value.gid}, mode ${(stat.value.mode & 0o7777).toString(8)}` : `not stated (${stat.error.code}: ${stat.error.message})`}`);
+		const line = `edited by a tool ${nonce}`;
+		const ran = await t.exec(["sh", "-c", APPEND, "sh", line, path], {}, connected.client);
+		t.assert(ran.exitCode === 0, `a tool (the computer's user) could not edit ${path}, which the file API made: exit ${ran.exitCode}: ${ran.err.trim().slice(0, 300)}`);
+		const want = `${loopText}${line}\n`;
+		const held = await folder.read(name).then(
+			(bytes) => (text(bytes) === want ? "the tool's edit, as written" : bytes === undefined ? "not found" : "other bytes"),
+			(error: unknown) => `refused: ${(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 300)}`,
+		);
+		t.observe(`the loop's read while the computer holds the folder: ${held}`);
+		await connected.close();
+		t.ok(await t.provider.release(ref, "delete"), `release of ${ref.name}`);
+		t.equal(text(await folder.read(name)), want, `${name}: the loop's text with the tool's line, read through the file API once the computer is released`);
+	},
+	{ needs: ["mount:archil", "exec", "files"], timeoutMs: 600_000 },
+);
+
 /** A mount of each kind the provider does not declare, with a token this case alone knows. */
 function undeclaredMount(kind: MountKind, token: string): MountSpec {
 	return kind === "bind" ? { kind, path: "/" } : { kind, disk: "conformance-disk", region: "conformance-region", folder: "agents/conformance/runs/r/work", token };
@@ -267,6 +305,7 @@ export const mountCases: Case[] = [
 	archilTakeover,
 	archilToken,
 	archilIsolatedDurable,
+	archilLoopToolEdit,
 	mount("undeclared-kind", async (t) => {
 		const declared = t.provider.capabilities().mount ?? [];
 		const undeclared = MOUNT_KINDS.filter((kind) => !declared.includes(kind));
