@@ -7,7 +7,7 @@ import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
 import type { ComputerRef, ComputerSpec, NetworkSpec } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
-import { CASE_LABEL, delay } from "./util.js";
+import { CASE_LABEL } from "./util.js";
 
 /** Labels for one case's computers: the run's, and the case's own. */
 const own = (t: CaseContext, name: string) => ({ ...t.runLabels, [CASE_LABEL]: name });
@@ -35,6 +35,37 @@ async function refusedCreate(t: CaseContext, spec: ComputerSpec, what: string) {
 		checked.some(({ message }) => error.message.includes(message)),
 		`${what}: create's refusal names what check() refused (${checked.map(({ field, message }) => `${field}: ${message}`).join("; ")}), not: ${error.message}`,
 	);
+}
+
+/** The deadline case's lifetime, and how much of it must be left once create returns: to connect and start a process. */
+const DEADLINE_LIFETIME_MS = 45_000;
+const DEADLINE_LEFT_MS = 15_000;
+const seconds = (ms: number) => Math.round(ms / 100) / 10;
+
+/**
+ * A computer for the deadline case, the lifetime it was made with, and when create returned, on the run's clock. A
+ * lifetime counts from create's start, so a host slow to start a computer eats into it. When create took so long that
+ * less than DEADLINE_LEFT_MS is left, or failed once the lifetime had passed, the case asks once more, for 45 s past
+ * twice what create took (at most maxLifetimeMs). When that is still too slow the case skips in words: it never saw the
+ * deadline, so Core does not pass. A create that fails with lifetime left fails the case in create's words.
+ */
+async function deadlineComputer(t: CaseContext, labels: Record<string, string>): Promise<{ ref: ComputerRef; lifetimeMs: number; created: number }> {
+	let lifetimeMs = DEADLINE_LIFETIME_MS;
+	let first: string | undefined;
+	for (;;) {
+		const from = t.clock.now();
+		const made = await t.attempt(t.spec({ lifetimeMs, labels }));
+		const created = t.clock.now();
+		const took = created - from;
+		const left = from + lifetimeMs - created;
+		if (made.ok && left >= DEADLINE_LEFT_MS) return { ref: made.value, lifetimeMs, created };
+		if (!made.ok && took < lifetimeMs) t.ok(made, "create");
+		const words = `create took ${seconds(took)} s of a lifetime of ${seconds(lifetimeMs)} s`;
+		const outcome = made.ok ? `it left ${seconds(Math.max(0, left))} s, and the case needs ${seconds(DEADLINE_LEFT_MS)} s` : made.error.message;
+		if (first !== undefined) t.skip(`${words} (the first took ${first}): this host starts a computer too slowly for the case to watch its deadline; ${outcome}`);
+		first = `${seconds(took)} s of ${seconds(lifetimeMs)} s`;
+		lifetimeMs = Math.min(t.provider.capabilities().maxLifetimeMs, DEADLINE_LIFETIME_MS + 2 * took);
+	}
 }
 
 const provider = (name: string, run: Case["run"], extra: Partial<Case> = {}): Case => ({
@@ -247,15 +278,12 @@ export const providerCases: Case[] = [
 		"deadline",
 		async (t) => {
 			const labels = own(t, "deadline");
-			// Long enough for create's checks on a loaded host; the case asserts the end, not its timing.
-			const lifetimeMs = 45_000;
-			const ref = await t.create({ lifetimeMs, labels });
-			const created = Date.now();
+			const { ref, lifetimeMs, created } = await deadlineComputer(t, labels);
 			const connected = await t.connect(ref);
 			t.ok(await connected.client.call("process.start", { argv: ["sh", "-c", "trap '' TERM; sleep 600"] }), "a process that ignores TERM");
 			await connected.close();
-			await delay(Math.max(0, created + lifetimeMs + 1000 - Date.now()));
-			if (t.provider.capabilities().lifetime === "janitor") t.ok(await sweep(t.provider, { labels }), "the janitor's sweep after the deadline");
+			await t.clock.sleep(Math.max(0, created + lifetimeMs + 1000 - t.clock.now()));
+			if (t.provider.capabilities().lifetime === "janitor") t.ok(await sweep(t.provider, { labels, now: new Date(t.clock.now()) }), "the janitor's sweep after the deadline");
 			await t.until(
 				async () => t.ok(await t.provider.list(labels), "list").every((info) => info.state !== "running"),
 				"the computer past its deadline, with a process that ignores TERM, stopped or gone",
@@ -263,7 +291,8 @@ export const providerCases: Case[] = [
 			);
 			t.refused(await t.provider.connect(ref), "connect to a computer past its deadline", ["gone", "not_found"]);
 		},
-		{ needs: ["processes"], timeoutMs: 300_000 },
+		// Two creates on a slow host, the second's longer lifetime, and two minutes for the end to show.
+		{ needs: ["processes"], timeoutMs: 600_000 },
 	),
 	provider(
 		"janitor",
