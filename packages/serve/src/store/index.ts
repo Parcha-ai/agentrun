@@ -1,5 +1,5 @@
 // The one store (design 2.1), for the cutover: nothing on main imports it until then.
-export { CommandTaken, FINAL_STATES, Fenced, RunFinal, SchemaVersionUnknown, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "./store.js";
+export { CommandTaken, FINAL_STATES, Fenced, RunFinal, SchemaVersionUnknown, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreOwned, StoreWorkerLost } from "./store.js";
 export type {
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, Firing, Journal, Mcp, McpPinRow, McpServerRow, NewRevision, RevisionRow, RunPatch, RunRow, Runs,
   RunState, Staged, StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerRow, Triggers, TriggerScope,

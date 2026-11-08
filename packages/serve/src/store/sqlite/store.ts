@@ -2,12 +2,13 @@
 // The only code with SQL in it, besides the schema and the run patch. The file is on local disk, never on Archil: one
 // connection per process, and SQLite's one writer lock serializes the server's and every runner's commits. A unit of work
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  SchemaVersionUnknown, StoreConstraint,
+  SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, type Mcp, type McpPinRow, type McpServerRow,
@@ -84,6 +85,42 @@ async function versionOf(db: Connection): Promise<number | null> {
   return (await db.get<{ schema_version: number }>("SELECT schema_version FROM store_meta WHERE singleton = 1"))?.schema_version ?? null;
 }
 
+/** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
+ *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
+ *  disk/agents/<agent>/runs/<run>/run.sqlite) and its settings files. Read only: nothing is opened for writing or made. */
+function earlierVersionIn(dataDir: string): string[] {
+  if (!existsSync(dataDir)) return [];
+  const found: string[] = [];
+  const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+  const dirsIn = (path: string) => (statSync(path, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(path, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : []);
+  const store = join(dataDir, STORE_FILE);
+  if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
+  for (const name of ["mcp-servers.json", "triggers.json"]) if (isFile(join(dataDir, name))) found.push(name);
+  for (const agent of dirsIn(dataDir)) if (isFile(join(dataDir, agent, "agent.sqlite"))) found.push(join(agent, "agent.sqlite"));
+  for (const agent of dirsIn(join(dataDir, "agents"))) if (isFile(join(dataDir, "agents", agent, "agent.sqlite"))) found.push(join("agents", agent, "agent.sqlite"));
+  for (const run of dirsIn(join(dataDir, "runs"))) if (isFile(join(dataDir, "runs", run, "run.sqlite"))) found.push(join("runs", run, "run.sqlite"));
+  for (const agent of dirsIn(join(dataDir, "disk", "agents"))) {
+    for (const run of dirsIn(join(dataDir, "disk", "agents", agent, "runs"))) {
+      const file = join("disk", "agents", agent, "runs", run, "run.sqlite");
+      if (isFile(join(dataDir, file))) found.push(file);
+    }
+  }
+  return found.sort();
+}
+
+/** Whether `file` is this version's store, or one with nothing in it yet: an earlier one has tables and no store_meta. */
+function isThisVersionsStore(file: string): boolean {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
+    if (tables.length === 0) return true;
+    if (!tables.some((table) => table.name === "store_meta")) return false;
+    return db.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get() !== undefined;
+  } finally {
+    db.close();
+  }
+}
+
 /** Opens the store in `dataDir` (its file is STORE_FILE there), or at `file` (the store's own tests). As the server (the
  *  default): makes the data directory, takes the owner lock (StoreOwned when another server holds it) and, on a store with
  *  no schema yet, sets schema SCHEMA_VERSION up in one durable commit. As a runner: makes and sets up nothing. Either
@@ -93,8 +130,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
   const role = options.role ?? "server";
   let file: string;
   if (options.dataDir !== undefined) {
-    // The server makes its data directory; a runner opens only one that is there.
-    if (role === "server") mkdirSync(options.dataDir, { recursive: true });
+    // The server makes its data directory; a runner opens only one that is there. No migration: a directory an earlier
+    // version wrote is refused before anything in it is opened or made.
+    if (role === "server") {
+      const earlier = earlierVersionIn(options.dataDir);
+      if (earlier.length > 0) throw new StoreFromEarlierVersion(options.dataDir, earlier);
+      mkdirSync(options.dataDir, { recursive: true });
+    }
     else if (!existsSync(options.dataDir)) throw new SchemaVersionUnknown(join(options.dataDir, STORE_FILE), null, SCHEMA_VERSION);
     file = join(options.dataDir, STORE_FILE);
   } else {

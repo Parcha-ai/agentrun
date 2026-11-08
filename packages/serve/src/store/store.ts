@@ -379,6 +379,20 @@ export class StoreOwned extends Error {
   }
 }
 
+/** A data directory an earlier version wrote (its store, agent homes, run databases or settings files): this version
+ *  neither reads nor moves it. `found`: what was found, relative to the directory. */
+export class StoreFromEarlierVersion extends Error {
+  readonly found: readonly string[];
+  constructor(dataDir: string, found: readonly string[]) {
+    super(
+      `${dataDir} holds an earlier version's data (${found.join(", ")}), which this version does not read or move: ` +
+        "start with a new, empty directory, and add your MCP servers, keys and sign-ins there again.",
+    );
+    this.name = "StoreFromEarlierVersion";
+    this.found = found;
+  }
+}
+
 /** A store whose schema version this build does not know (or one the server has not set up yet). */
 export class SchemaVersionUnknown extends Error {
   readonly found: number | null;
