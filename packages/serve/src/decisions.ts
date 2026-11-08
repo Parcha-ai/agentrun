@@ -162,6 +162,23 @@ export function providersNamed(nodes: readonly Record<string, unknown>[]): strin
   return [...ids];
 }
 
+/** Each decision a workflow asks that pins its model (`model`), with its node's label and its provider (Jev for one
+ *  that names none): what a capped start prices before the run (runnable.ts). */
+export function decisionModelsNamed(nodes: readonly Record<string, unknown>[]): { label: string; provider: string; model: string }[] {
+  const out: { label: string; provider: string; model: string }[] = [];
+  const add = (at: unknown, label: unknown) => {
+    const { provider, model } = (at ?? {}) as { provider?: unknown; model?: unknown };
+    if (typeof model === "string" && model.trim()) out.push({ label: String(label ?? ""), provider: typeof provider === "string" ? provider : DEFAULT_DECISION_PROVIDER, model });
+  };
+  for (const node of nodes) {
+    if (["judge", "pick", "sift"].includes(node.node as string) || (node.node === "route" && node.valuePath === undefined)) add(node, node.label);
+    for (const predicate of [node.node === "loop" ? node.until : undefined, node.node === "escalate" ? node.when : undefined]) {
+      if ((predicate as { predicate?: unknown } | undefined)?.predicate === "ask") add(predicate, node.label);
+    }
+  }
+  return out;
+}
+
 let keysHanded: Record<string, string> | undefined;
 /** The keys the server handed the run's process, by name: read at the first call and the descriptor closed, and the
  *  same object at every later one (the decision providers' and the web tools'), so the descriptor is read and closed once

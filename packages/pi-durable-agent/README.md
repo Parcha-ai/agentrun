@@ -35,13 +35,12 @@ where each tool runs. The definition names tools; the host binds them. It does n
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
 ([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
-to 1.3.0, the newest its peer range takes. pi 1.4 is not supported yet; a later release widens the range. It does not
-need a browser, a key or a network.
+to 1.5.0, the one version its peers take. It does not need a browser, a key or a network.
 
 To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` in a built checkout writes
 `parcha-pi-durable-agent-<version>.tgz`: install that file's path in place of `@parcha/pi-durable-agent@latest`.
@@ -51,12 +50,11 @@ To try a version that is not on npm yet, `npm pack -w @parcha/pi-durable-agent` 
 Two runs of one agent on this machine. The first signs in, using a stand-in for the provider, and the second finds that
 sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret.
 
-In an empty directory, install the package and the pi packages it runs with (pinned to 1.3.0: pi 1.4 is not supported yet;
-a later release widens the range), save this as `quickstart.mjs`, and run
+In an empty directory, install the package and the pi packages it runs with (pinned to 1.5.0), save this as `quickstart.mjs`, and run
 `node --no-warnings=ExperimentalWarning quickstart.mjs` (Node's SQLite is marked experimental and says so):
 
 ```sh
-npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 ```js
@@ -107,15 +105,6 @@ run-2: carried back acme.example
 Run 1 signs in once. It starts with no save lease, because the agent has no sign-in to lease yet; a new sign-in goes to
 the first run that carries it back. Run 2 starts with the lease, finds the sign-in ready and never makes one.
 
-## A runnable example
-
-[`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
-a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
-through the live view, and its next run starts signed in. A run needs a browser and a model endpoint. With neither,
-the quickstart above is the keyless path.
-[Its README](https://github.com/Parcha-ai/agentrun/tree/main/examples/web#run-it) says which browsers it takes and how
-to run it from a checkout.
-
 ## A saved sign-in
 
 A sign-in is kept as the provider's reference to a signed-in browser: a Browserbase context id, or, for a local Chrome,
@@ -150,8 +139,7 @@ acme/                        the agent home
   runs/<run id>/             a pi-durable-disk run directory
     store/run.sqlite         that run's pi-durable store; the host opens its Harness on it
     work/                    that run's files, with the agent's skills under .agents/skills/
-    run.json, owner.lock,    written by pi-durable-disk when it runs the run (and commands/ on a local
-    tmp/                     directory); carryBack reads only the store
+    tmp/, commands/          written by pi-durable-disk when it runs the run; carryBack reads only the store
 ```
 
 `runPaths(home, runId)` gives a run's `dir`, `storePath` and `workspace`. To run it under pi-durable-disk, start it with
@@ -737,13 +725,15 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `registerLabel(tool, label, fold?, { name? })` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line; `name` is what the tool is called where calls are counted (a run's analytics), in plain words |
 | `nameOf(tool)` | That name: the registered one, else the name the tool was called by. The registry is the one source of a tool's display name |
 | `callFailed(tool, result)` | Whether a finished call failed: an error, or a result its tool's outcome reads as failed (a refused fetch). A result row's `tool_status` and `runMetricsOf`'s tool `errors` both read it |
-| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` and `fetch_page` have theirs: a page with `ok: false` reads `refused: …` or `failed: …` |
+| `registerOutcome(tool, outcome)` | How a host's tool tells its outcome from a result it returned, not an error: `outcome(result)` gives `{ failed, text }`, and the result row reads `<label>: <text>`, with `tool_status` `failed` when `failed`, in place of `<label>: ok`. `web_fetch` has its own: a page with `ok: false` reads `refused: …` or `failed: …` |
 | `registerTurnEnding(tool)` | A host's tool that ends its turn (pi's `terminate`, as an ask-the-person tool does). A message after a round whose tools all end the turn is the person's next message, never a `(steer)` |
 | `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
 | `runMetricsOf(records)` | What a run that ended used, from the entries of all its conversations, in log order: its tokens (`input`, `cacheRead`, `cacheWrite`, `output`), its `requests` as the usage row counts them and `unmetered`, those of unknown tokens (an aborted response's partial usage, and a usage with no input at all, are never summed), its requests by `provider/model` (`models`) and the busiest `model`, and each tool's `calls` and `errors` (`tools`), their names kept to what the store takes (`METRIC_NAMES`). A `RunMetrics`, for the store's `carryBack` and `importRun` ([Agents in a folder](#agents-in-a-folder-the-agent-store)) |
 | `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
+| `costLabel(ended)` | The words before a usage row's cost: "Cost" for a run that has ended, "Cost so far" for one still going. The usage row says them as `timelineOf`'s `ended` option is set |
+| `endedUsage(row)` | A usage row made while the run ran, as an ended run's: its "Cost so far:" read as "Cost:". Any other row as it is. For a host that serves rows it read before the run ended |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `RUN_RESUMED` | The entry kind a host writes on the root as a run's process opens to go on with a run its last process left unfinished (`data`: `after`, `crash` or `server_stop`; `generation`; `at`): a `phase` row of its own at `at`, "Resumed after a crash" or "Resumed after the server stopped", and no request. A reader from before it ignores it, as it does any kind it does not know |
 | `TURN_END` | The entry kind a host writes on the root as a turn on another harness (claude-agent, codex) ends (`data`: `key`, `status`, ...). No row. A message after it is the person's next message, never a `(steer)`, even when the turn's last entry was a tool's result: a stop that came after the result and before the next model request |
@@ -853,28 +843,19 @@ replaced (`seed.prior`). It acts only while that start is still the run's (its r
 touches only leases exactly as it set them, so an undo retried after the run id was prepared again, or after the run went
 on, changes nothing and returns `{ undone: false }`.
 
-Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
+Binding the seed to pi-durable-disk looks like this (a host's code, not part of this package). A home on a local
+directory needs no `access`: the package reads its own files.
 
 ```js
-import { openDurableRun, readReleased, withClaim } from "@parcha/pi-durable-disk";
-import { carryBack, prepareRun, seedRun } from "@parcha/pi-durable-agent";
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
+import { carryBack, prepareRun, runPaths, seedRun } from "@parcha/pi-durable-agent";
 
-const access = {
-  claim: (fn) => withClaim({ control, disk, region, path: "agent" }, ({ root }) => fn(root)),
-  runStore: async (run) => {
-    const { bytes } = await readReleased({ control, path: run.path }, "store/run.sqlite", { sqlite: true });
-    const file = join(tmp, `${run.runId}.sqlite`);
-    await writeFile(file, bytes);
-    return file;
-  },
-};
-
-const seed = await prepareRun(home, { host: "worker-1", sha, access });
-const run = await openDurableRun({ disk, region, id: seed.runId }, { harness, seed: (dir) => seedRun(dir, seed) });
-// (a run that will never start: await undoPrepare(home, seed, { access }) gives its leases back)
+const seed = await prepareRun(home, { host: "worker-1", sha });
+const run = await openDurableRun({ disk: "local", region: "local", id: seed.runId }, { ...localRun(runPaths(home, seed.runId).dir), harness, seed: (dir) => seedRun(dir, seed) });
+// (a run that will never start: await undoPrepare(home, seed) gives its leases back)
 // ... the run works, then:
 await run.release();
-await carryBack(home, { runId: seed.runId }, { outcome: "completed", access });
+await carryBack(home, { runId: seed.runId }, { outcome: "completed" });
 ```
 
 `seed` runs inside the first claim of a new run, before its Harness opens the store; a throw fails the open with
@@ -893,8 +874,8 @@ carried back later.
 ## Requirements
 
 - Node 22.19 or later.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.1.0 <1.4.0`, as peer dependencies. The package is
-  developed against 1.1.0, and CI runs its suite on 1.2.0 and 1.3.0 too.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `1.5.0` exactly, as peer dependencies. CI runs its suite
+  on 1.5.0.
 
 ## License
 

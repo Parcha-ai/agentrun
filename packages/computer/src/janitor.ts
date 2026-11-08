@@ -17,18 +17,25 @@ export interface Swept {
 	kept: number;
 }
 
+/** Clock skew a deadline may carry past now + maxLifetimeMs before it counts as unreadable. */
+const SKEW_MS = 60_000;
+
 /**
  * Deletes every computer the provider lists whose deadline has passed, or whose deadline is missing or unreadable
- * (fail closed); leaves the rest. Only for a provider that declares lifetime "janitor"; a caller runs it on a schedule.
- * A computer that cannot be deleted does not stop the sweep: the result is then an error naming it and what was deleted.
+ * (fail closed); leaves the rest. A deadline more than the provider's maxLifetimeMs past now (with a minute for clock
+ * skew) counts as unreadable: no computer the provider made can carry one. Only for a provider that declares lifetime
+ * "janitor"; a caller runs it on a schedule. A computer that cannot be deleted does not stop the sweep: the result is
+ * then an error naming it and what was deleted.
  */
 export async function sweep(provider: ComputerProvider, { labels = {}, now, signal }: SweepOptions = {}): Promise<Result<Swept>> {
-	const { lifetime } = provider.capabilities();
+	const { lifetime, maxLifetimeMs } = provider.capabilities();
 	if (lifetime !== "janitor") {
 		return fail("refused", `the ${provider.id} provider declares lifetime "${lifetime}": its vendor ends its computers itself, so the janitor does not sweep them`);
 	}
 	if (now !== undefined && !(now instanceof Date && !Number.isNaN(now.getTime()))) return fail("invalid", "now must be a Date");
 	const at = (now ?? new Date()).getTime();
+	// A provider that declares no cap has no over-cap line: the janitor never deletes on a rule it cannot read.
+	const cap = Number.isSafeInteger(maxLifetimeMs) && maxLifetimeMs > 0 ? maxLifetimeMs + SKEW_MS : Number.POSITIVE_INFINITY;
 	if (signal?.aborted) return fail("aborted", "the sweep was aborted before it began");
 	const listed = await provider.list(labels, { signal });
 	if (!listed.ok) return listed;
@@ -38,7 +45,7 @@ export async function sweep(provider: ComputerProvider, { labels = {}, now, sign
 	let kept = 0;
 	for (const { ref, deadline } of listed.value) {
 		const time = deadline instanceof Date ? deadline.getTime() : Number.NaN;
-		if (!Number.isNaN(time) && time > at) {
+		if (!Number.isNaN(time) && time > at && time <= at + cap) {
 			kept++;
 			continue;
 		}

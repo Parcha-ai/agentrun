@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
@@ -15,7 +16,7 @@ import { committedRoutes, documentStore, durableDoc, readJournal } from '@parcha
 const root = mkdtempSync(join(tmpdir(), 'agentrun-document-store-'));
 after(() => rmSync(root, { recursive: true, force: true }));
 
-const open = async (file, storage) => Harness.open(await openNodeSqliteStorage(file, storage), { registry: createRegistry(), models: {} }, ctx);
+const open = async (file, storage) => Harness.open(await openNodeSqliteStorage(file, storage), { registry: createRegistry(), models: createModels() }, ctx);
 
 // Each journal opens as successive processes of one run would: the suite's opens share one Harness, and the file
 // tests below reopen the file itself.

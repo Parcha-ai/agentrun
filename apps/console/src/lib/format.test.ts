@@ -13,7 +13,7 @@ describe("cost", () => {
   });
 
   it("reads the recorded run whose cost is not known as Unknown", () => {
-    const c = (unpriced as { body: { cost: { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null } } }).body.cost;
+    const c = (unpriced as { body: { cost: Cost } }).body.cost;
     expect(c.usd).toBeNull();
     expect(cost(c)).toBe("Unknown");
   });
@@ -21,19 +21,19 @@ describe("cost", () => {
   it("marks a local estimate as one, and shows a real zero only when the server priced it zero", () => {
     expect(cost({ usd: 0.004043, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0040 est.");
     expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-    expect(cost({ usd: 0, basis: "billed", charge_state: null, cap_usd: null })).toBe("$0.0000");
+    expect(cost({ usd: 0, basis: "charge", charge_state: null, cap_usd: null })).toBe("$0.0000");
   });
 
   it("never rounds a cost the server priced above zero down to $0", () => {
     // A short run on a cheap model: $0.000043 is not $0.0000.
     expect(cost({ usd: 0.000043, basis: "estimate", charge_state: null, cap_usd: null })).toBe("<$0.0001 est.");
-    expect(cost({ usd: 0.00004999, basis: "billed", charge_state: null, cap_usd: null })).toBe("<$0.0001");
+    expect(cost({ usd: 0.00004999, basis: "charge", charge_state: null, cap_usd: null })).toBe("<$0.0001");
     expect(cost({ usd: 0.0001, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0001 est.");
   });
 
   it("says est. for a local estimate and not for a cost the server reports otherwise", () => {
     expect(cost({ usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null })).toContain("est.");
-    expect(cost({ usd: 0.25, basis: "billed", charge_state: null, cap_usd: null })).not.toContain("est.");
+    expect(cost({ usd: 0.25, basis: "charge", charge_state: null, cap_usd: null })).not.toContain("est.");
   });
 });
 
@@ -107,6 +107,13 @@ describe("a cost known so far (so_far_usd, unpriced)", () => {
     // Up to four places under a dollar, as the usage row says it, with no zeros past the cents.
     expect([0.07, 0.012, 0.5, 0.00004, 0].map((usd) => cost({ ...unknown, so_far_usd: usd, unpriced: 1 }))).toEqual(
       ["so far $0.07 · 1 not priced", "so far $0.012 · 1 not priced", "so far $0.50 · 1 not priced", "so far <$0.0001 · 1 not priced", "so far $0.00 · 1 not priced"]);
+  });
+  it("an ended run's cost says what is known, never \"so far\"; a run still going keeps it", () => {
+    const partial = { ...unknown, basis: "estimate", so_far_usd: 0.0084, unpriced: 1 } as Cost;
+    expect(cost(partial, { ended: true })).toBe("$0.0084 est. known · 1 not priced");
+    expect(cost({ ...unknown, so_far_usd: 0.0123, unpriced: 2 }, { ended: true })).toBe("$0.0123 known · 2 not priced");
+    expect(cost(partial, { ended: false })).toBe("so far $0.0084 est. · 1 not priced");
+    expect(cost(partial)).toBe("so far $0.0084 est. · 1 not priced");
   });
   it("says est. when the charges priced so far are a local estimate, as a priced run does", () => {
     expect(cost({ ...unknown, basis: "estimate", so_far_usd: 0.0123, unpriced: 1 })).toBe("so far $0.0123 est. · 1 not priced");

@@ -20,12 +20,15 @@ const seeded = (options = {}) =>
 		...options,
 	});
 
+/** What attach found, as a ref: its id and name alone. */
+const refOf = (attached) => (attached.ok ? { ok: true, value: { id: attached.value.id, name: attached.value.name } } : attached);
+
 test("attach() by name or by container id finds the computer and checks it: an inspect and a hello each, and docker info once", async () => {
 	const { provider, calls } = seeded();
 	const want = { id: idOf(A), name: A };
-	assert.deepEqual(await provider.attach({ id: A }), { ok: true, value: want });
-	assert.deepEqual(await provider.attach({ id: idOf(A) }), { ok: true, value: want });
-	assert.deepEqual(await provider.attach({ id: idOf(A).slice(0, 12) }), { ok: true, value: want });
+	assert.deepEqual(refOf(await provider.attach({ id: A })), { ok: true, value: want });
+	assert.deepEqual(refOf(await provider.attach({ id: idOf(A) })), { ok: true, value: want });
+	assert.deepEqual(refOf(await provider.attach({ id: idOf(A).slice(0, 12) })), { ok: true, value: want });
 	const hello = ["exec", "-i", A, "/opt/agentrun/computerd", "stdio"];
 	assert.equal(calls()[1][0], "info");
 	assert.deepEqual(calls().toSpliced(1, 1), [
@@ -36,6 +39,33 @@ test("attach() by name or by container id finds the computer and checks it: an i
 		["inspect", "--type", "container", "--format", "{{json .}}", idOf(A).slice(0, 12)],
 		hello,
 	]);
+});
+
+test("attach() reports the spec it read back from the computer: its user as uid:gid, network, image, sizes, workdir and deadline", async () => {
+	const R = "computer-0000000000ee";
+	const deadline = new Date(Date.now() + 300_000).toISOString();
+	const { provider } = seeded({
+		containers: [
+			container({ name: A, labels: { team: "a" } }),
+			container({ name: B, labels: { team: "b" }, network: "bridge", running: false }),
+			container({ name: R, labels: { team: "root" }, user: "0:0", image: "alpine:3.20", deadline, memory: 512 * 1024 * 1024, quota: 50_000, pids: 64, workdir: "/opt/x" }),
+		],
+	});
+	const root = await provider.attach({ id: R });
+	assert.equal(root.ok, true, JSON.stringify(root));
+	assert.deepEqual(root.value, {
+		id: idOf(R),
+		name: R,
+		spec: { image: "alpine:3.20", user: "0:0", network: "none", cpus: 0.5, memoryMb: 512, pids: 64, workdir: "/opt/x", deadline: new Date(deadline), kind: "linux" },
+	});
+	const byLabels = await provider.attach({ labels: { team: "root" } });
+	assert.equal(byLabels.ok && byLabels.value.spec.user, "0:0", "attach by labels reports the same spec");
+	const a = await provider.attach({ id: A });
+	assert.equal(a.ok, true, JSON.stringify(a));
+	assert.deepEqual([a.value.spec.user, a.value.spec.network, a.value.spec.image, a.value.spec.cpus, a.value.spec.memoryMb, a.value.spec.pids], ["1000:1000", "none", "debian:bookworm-slim", 2, 4096, 1024]);
+	const b = await provider.attach({ id: B });
+	assert.equal(b.ok && b.value.spec.network, "open", "a stopped computer on the bridge reports open");
+	assert.equal(b.value.spec.kind, undefined, "a stopped computer cannot be asked its kind: attach reports none");
 });
 
 const D = "computer-0000000000dd";
@@ -106,7 +136,7 @@ test("attach() refuses a computer whose daemon is not this provider's, and does 
 
 test("attach() checks a stopped computer by inspect alone: there is no daemon to say hello", async () => {
 	const { provider, calls } = seeded();
-	assert.deepEqual(await provider.attach({ id: B }), { ok: true, value: { id: idOf(B), name: B } });
+	assert.deepEqual(refOf(await provider.attach({ id: B })), { ok: true, value: { id: idOf(B), name: B } });
 	assert.ok(!calls().some((args) => args[0] === "exec"));
 });
 
@@ -141,7 +171,7 @@ test("attach() refuses an id that is neither a computer's name nor a container i
 
 test("attach() by labels finds exactly one computer, else says how many match", async () => {
 	const { provider, calls } = seeded();
-	assert.deepEqual(await provider.attach({ labels: { team: "a" } }), { ok: true, value: { id: idOf(A), name: A } });
+	assert.deepEqual(refOf(await provider.attach({ labels: { team: "a" } })), { ok: true, value: { id: idOf(A), name: A } });
 	assert.deepEqual(valuesOf(calls()[0], "--filter"), ["label=agentrun.computer=1", "label=team=a"]);
 	const two = await provider.attach({ labels: { run: "1" } });
 	assert.equal(two.ok, false);
@@ -268,7 +298,7 @@ test("network() refuses a name this provider does not make, and is not_found for
 
 test("sweep() on Docker deletes the stopped computer past its deadline, since list() lists stopped computers too", async () => {
 	const { provider, calls, names } = seeded();
-	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date("2026-06-01T00:00:00.000Z") });
+	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date() });
 	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1 } });
 	assert.ok(calls().some((args) => args[0] === "rm" && args.at(-1) === B));
 	assert.deepEqual(names().sort(), [A, "computer-0000000000cc", "postgres"].sort(), "only the expired computer is gone");
@@ -297,7 +327,7 @@ test("list() inspects at most 50 computers a call, and only the fields it report
 	const inspects = calls().filter((args) => args[0] === "inspect");
 	assert.ok(inspects.every((args) => args.length - 5 <= 50), `batch sizes ${inspects.map((args) => args.length - 5)}`);
 	assert.equal(inspects.reduce((sum, args) => sum + args.length - 5, 0), 500);
-	const swept = await sweep(provider, { labels: { fleet: "1" }, now: new Date("2026-06-01T00:00:00.000Z") });
+	const swept = await sweep(provider, { labels: { fleet: "1" }, now: new Date() });
 	assert.equal(swept.ok, true, swept.ok ? "" : swept.error.message.slice(0, 300));
 	const expired = fleet.slice(0, 5).map((made) => made.Name.slice(1));
 	assert.deepEqual(swept.value.deleted.sort(), expired);

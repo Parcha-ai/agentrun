@@ -41,10 +41,10 @@ The reference below takes each part in turn: [a box](#a-box), [tools in a box](#
 A `Box` is one running machine: a directory on this machine, a container, a sandbox, a VM. A `BoxProvider` creates
 boxes, finds them again by id and lists them by label.
 
-Install the package with its pi peers, pinned. pi 1.4 is not supported yet; a later release widens the range.
+Install the package with its pi peers, pinned. The pi family is supported at 1.5.0 exactly.
 
 ```sh
-npm install @parcha/pi-transport@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-transport@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 The example below needs Docker; `localBoxes({ root: "./boxes" })` from `@parcha/pi-transport/box/local` runs it with

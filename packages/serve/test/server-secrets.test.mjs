@@ -42,10 +42,12 @@ test("a run that quotes a webhook trigger's signing secret, or the outbound webh
 });
 
 /** The spellings of a `whsec_` secret a redaction derives from no other: its key, the base64 after `whsec_`, as written,
- *  as base64url (- and _ for + and /, no padding), and its bytes as hex. */
+ *  printed unpadded (`openssl base64 | tr -d =`), as base64url (- and _ for + and /, no padding), and its bytes as hex;
+ *  and, when it holds a /, as a JSON encoder that escapes / writes it. */
 const keyForms = (secret) => {
-  const key = Buffer.from(secret.slice("whsec_".length), "base64");
-  return { bare: secret.slice("whsec_".length), base64url: key.toString("base64url"), hex: key.toString("hex") };
+  const bare = secret.slice("whsec_".length);
+  const key = Buffer.from(bare, "base64");
+  return { bare, unpadded: bare.replace(/=+$/, ""), base64url: key.toString("base64url"), hex: key.toString("hex"), ...(bare.includes("/") ? { escaped: bare.replaceAll("/", "\\/") } : {}) };
 };
 
 /** A run of a new agent `id` whose message holds each of `forms`: everything the server shows of it, as one text. Every
@@ -60,15 +62,19 @@ async function pasted(api, id, forms) {
   return JSON.stringify({ rows, pages, view, listed });
 }
 
-test("a run whose message holds a webhook trigger's key or the outbound webhook's, as base64, base64url or hex, shows none of them: not its Timeline, live or final, its view, or its title on the runs list", { timeout: 300_000 }, async (t) => {
+test("a run whose message holds a webhook trigger's key or the outbound webhook's, as base64 (padded or not), base64url, hex or with its / escaped, shows none of them: not its Timeline, live or final, its view, or its title on the runs list", { timeout: 300_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("target"))).status, 201);
   const trigger = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Hi." }, max_cost_usd: 0.5 } });
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
+  // A key whose base64 holds a /, as about half do: its unpadded and its escaped spellings differ from every other.
+  let hooked = trigger.body.secret;
+  for (let i = 0; i < 40 && !hooked.includes("/"); i++) hooked = (await api("POST", `/triggers/${trigger.body.id}/secret`)).body.secret;
+  assert.ok(hooked.includes("/"), "a secret with a / within 40 rotations");
   const outbound = await api("PUT", "/settings/webhook", { url: "https://hooks.example/in" });
   assert.equal(outbound.status, 201, JSON.stringify(outbound.body));
-  for (const [what, secret] of [["trigger", trigger.body.secret], ["outbound", outbound.body.secret]]) {
+  for (const [what, secret] of [["trigger", hooked], ["outbound", outbound.body.secret]]) {
     const forms = keyForms(secret);
     const shown = await pasted(api, `pastes-${what}`, forms);
     for (const [form, value] of Object.entries(forms)) assert.ok(!holdsRun(shown, value), `the ${what} secret's key as ${form} shows nowhere: ${shown.slice(0, 600)}`);

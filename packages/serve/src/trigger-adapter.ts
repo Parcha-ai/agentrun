@@ -41,7 +41,7 @@ export type TriggerAdapter = {
   /** What a firing of it is, for the OpenAPI document's firing `by`. */
   firedBy?: string;
   /** Its shapes as JSON Schema, each a closed object with `kind` its id: the OpenAPI document's source oneOf. */
-  schemas: Json[];
+  schemas: ObjectSchema[];
   /** A source given at a create or a PATCH (`value.kind` is its id), checked: each issue added through `bad`, with its
    *  field under `source`. Undefined when it does not read. */
   parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
@@ -83,9 +83,11 @@ export type Push = {
  *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
  *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */
 export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string> };
+/** A closed object's JSON Schema: its fields, each by its own schema, and the ones it always holds. */
+export type ObjectSchema = { type: "object"; additionalProperties: false; required: string[]; properties: Record<string, Json> };
 
 /** A closed object schema: every field in `required` is, and `optional`'s may be. */
-export const closedSchema = (required: Json, optional: Json = {}): Json => ({ type: "object", additionalProperties: false, required: Object.keys(required), properties: { ...required, ...optional } });
+export const closedSchema = (required: Record<string, Json>, optional: Record<string, Json> = {}): ObjectSchema => ({ type: "object", additionalProperties: false, required: Object.keys(required), properties: { ...required, ...optional } });
 
 /** `value`'s fields past `allowed`, as issues under `source`. */
 export const unknownSourceFields = (value: Json, allowed: readonly string[]): InputIssue[] => unknownFields(value, allowed).map((i) => ({ ...i, field: `source.${i.field}` }));

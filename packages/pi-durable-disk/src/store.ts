@@ -186,6 +186,11 @@ class FencedExecutor implements SqliteExecutor {
     return this.fence.guard(() => this.#inner.run(sql, ...params));
   }
 
+  /** `run`, resolving with the rows it changed (pi 1.5's group commit counts them): the same fence as `run`. */
+  runCounted(sql: string, ...params: SqliteValue[]): Promise<number> {
+    return this.fence.guard(() => this.#inner.runCounted(sql, ...params));
+  }
+
   get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {
     return this.fence.guard(() => this.#inner.get<T>(sql, ...params));
   }

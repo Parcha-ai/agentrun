@@ -30,11 +30,12 @@ test('no tracked file imports Type, Static or TSchema from pi-ai, pi-agent-core,
   assert.deepEqual(found, [], 'take TypeBox from typebox');
 });
 
-test('each package whose source uses TypeBox declares typebox itself, at the version pi-ai resolves', () => {
+test('each package whose source uses TypeBox declares typebox itself, at the one typebox the workspace locks', () => {
   const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
-  const piAi = lock.packages['node_modules/@earendil-works/pi-ai'];
-  const wanted = piAi.dependencies.typebox;
-  assert.match(wanted, /^\d+\.\d+\.\d+$/, 'pi-ai pins its typebox exactly');
+  // pi-ai 1.5 no longer depends on typebox (nor re-exports it): the workspace's one typebox is what a package declares.
+  assert.equal(lock.packages['node_modules/@earendil-works/pi-ai'].dependencies?.typebox, undefined, 'pi-ai 1.5 takes no typebox');
+  const wanted = lock.packages['node_modules/typebox'].version;
+  assert.match(wanted, /^\d+\.\d+\.\d+$/, 'one typebox, at an exact version');
   const wrong = [];
   for (const name of readdirSync(join(root, 'packages'))) {
     const src = join(root, 'packages', name, 'src');
@@ -48,18 +49,13 @@ test('each package whose source uses TypeBox declares typebox itself, at the ver
   assert.deepEqual(wrong, [], `typebox ${wanted} in dependencies, or a host-provided peer with a ${wanted} dev pin`);
 });
 
-test('the TypeBox-built tool schemas of pi, pi-transport, pi-agent-learn and harness serialize to the same JSON as before the move', async () => {
+test('the TypeBox-built tool schemas of pi and pi-transport serialize to the same JSON as before the move', async () => {
   const before = JSON.parse(readFileSync(new URL('./fixtures/typebox-tool-schemas.json', import.meta.url), 'utf8'));
   const pi = await import('../packages/pi/dist/workflow-tool.js');
   const transport = await import('../packages/pi-transport/dist/config.js');
-  const learn = await import('../packages/pi-agent-learn/dist/trial.js');
-  const { codeModeExtension } = await import('../packages/harness/dist/code-mode.js');
-  const declared = () => ({ signature: 'f()', description: 'd' });
   const now = {
     pi: pi.workflowToolParameters(),
     'pi-transport': transport.TransportConfigSchema,
-    'pi-agent-learn': learn.TrialSchema,
-    harness: codeModeExtension({ see: declared, judge: declared, transcribe: declared }).tools[0].parameters,
   };
   assert.deepEqual(JSON.parse(JSON.stringify(now)), before);
 });

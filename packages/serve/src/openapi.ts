@@ -20,11 +20,12 @@ import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
-import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
-import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
+import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
-import { LEGACY_NAMES, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
 type Json = Record<string, unknown>;
 
@@ -217,6 +218,9 @@ const MCP_TOOL = {
     annotations: { type: "object", description: "The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked." },
     grantable: { const: false, description: "Present, and false, on a known meta tool: one that runs other actions by name (Composio's COMPOSIO_MULTI_EXECUTE_TOOL, Klavis Strata's execute_action, Zapier's execute actions, Arcade's UseTool, Docker's mcp-exec, Cloudflare's portal_execute and code mode). A grant of it could not name the real action, so none is granted: a save that grants it is 422 with `reason`, and a run that pinned one is refused at its launch. Absent on every other tool.", "x-agentrun-serve": "mcpservers/1" },
     reason: { type: "string", description: "Beside `grantable: false`: why the tool can't be granted.", "x-agentrun-serve": "mcpservers/1" },
+    permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the permission this server applies to the tool for an agent that sets none, under its tool settings (`mcp:<server>/<tool>`, else `mcp:<server>/*`, else `default_permission`). The same as an agent's read gives as its `default_permission` once it grants the tool. Absent on a preview.", "x-agentrun-serve": "mcpservers/1" },
+    default_permission: { enum: [...PERMISSIONS], description: "On a saved server's read: the owner's default for the tool (ask, as for any catalog tool), the one that applies when the server's tool settings set none.", "x-agentrun-serve": "mcpservers/1" },
+    permissions: { type: "array", items: { enum: [...PERMISSIONS] }, description: "On a saved server's read: the permissions the tool may be set to.", "x-agentrun-serve": "mcpservers/1" },
   },
 };
 const MCP_LISTING = {
@@ -229,7 +233,7 @@ const MCP_PREVIEW = { type: "object", additionalProperties: false, required: ["p
 /** The owner's declared prices of a server's tools. */
 const MCP_PRICES = {
   type: "object", additionalProperties: { type: "number", minimum: 0 },
-  description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw.",
+  description: "Each tool's price in USD a call, as the owner declared it, for tools the server lists (a refresh drops the price of a tool it no longer lists). A priced call is held at its price under a run's cap (refused unsent when the cap cannot take it) and booked as the run's tool cost, as any paid call; a tool with none runs, shown \"not metered\" on the run's timeline and in GET /usage, outside the run's cost and its cap. A run keeps the prices its first launch saw. On a PUT: no `prices` keeps the saved ones, for the tools the server still lists at the same URL (a new URL keeps none); `{}` clears them; any other value replaces them.",
 };
 const MCP_SERVER_VIEW = {
   type: "object", additionalProperties: false, required: ["name", "url", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
@@ -249,6 +253,7 @@ const MCP_SERVER_VIEW = {
     },
     ...MCP_LISTING,
     prices: MCP_PRICES,
+    not_metered: { type: "array", items: { type: "string" }, description: "The tools it lists that no price meters, in its order: a call of one runs outside the run's cost and its cap (\"not metered\" on the run's timeline). Absent when every tool has a price ($0 included)." },
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
   },
@@ -271,10 +276,10 @@ const MCP_CONNECTS = "Connects with the official MCP SDK client: `server/discove
 /** A tool's permission (tool-gate.ts). */
 const PERMISSION = {
   enum: [...PERMISSIONS],
-  description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.",
+  description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, web_fetch, web_search, learned_workflow) and for catalog tools; any other is allow or deny.",
 };
-/** The table's tools a setting may name: its legacy names (fetch_page) are set by the capability they fold into. */
-const SETTINGS_TOOLS = TABLE_TOOLS.filter((name) => !Object.hasOwn(LEGACY_NAMES, name));
+/** The table's tools a setting may name. */
+const SETTINGS_TOOLS = TABLE_TOOLS;
 /** A catalog tool's settings key, or an MCP server's wildcard, which sets each of its tools. */
 const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" };
 /** The tool settings map (tool-plane.ts): the server's (/settings/tools) and an agent's own (definition.tool_settings),
@@ -315,7 +320,7 @@ const TOOL_SETTINGS_ANSWER = {
  *  resolves to on the agent's harness and model. */
 const AGENT_TOOLS = {
   type: "array",
-  description: "Each tool the agent's current revision grants, in capabilities.tools' order, with its permission (permission, where it came from as permission_from, default_permission, permissions). A tool with a provider choice (web_search, web_fetch, and fetch_page, web_fetch's legacy name; browser) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it.",
+  description: "Each tool the agent's current revision grants, in capabilities.tools' order, with its permission (permission, where it came from as permission_from, default_permission, permissions). A tool with a provider choice (web_search, web_fetch, browser) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it.",
   items: {
     type: "object", additionalProperties: false, required: ["name", "permission", "permission_from", "default_permission", "permissions"],
     properties: {
@@ -533,10 +538,13 @@ const sourceSchemaOf = (adapters: readonly TriggerAdapter[]) => ({
   description: `When it fires: ${adapters.map((a) => a.fires).join(", or ")}. Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
 });
 const TRIGGER_SOURCE = sourceSchemaOf(TRIGGER_ADAPTERS);
+/** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
+ *  start always set, to UTC and to when it was written when the write left them out. */
+const TRIGGER_SOURCE_SENT = { ...TRIGGER_SOURCE, oneOf: TRIGGER_SOURCE.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) };
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
-    agent_id: { type: "string", description: "The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here." },
+    agent_id: { type: "string", description: "The agent whose run each firing starts, an agentic agent or a workflow: capped either way." },
     input: { type: "object", description: "The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the trigger and the time it fired for, in its zone." },
   },
   { effort: { $ref: "#/components/schemas/Effort" }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails." } },
@@ -571,7 +579,7 @@ const TRIGGER = closed({
   id: { type: "string" },
   name: { type: "string", maxLength: 200 },
   enabled: { type: "boolean" },
-  source: TRIGGER_SOURCE,
+  source: TRIGGER_SOURCE_SENT,
   target: TRIGGER_TARGET,
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, description: `How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one \`missed\` firing. 0: a missed time never fires. Default ${CATCHUP_WINDOW_S}.` },
   failures_in_a_row: { type: "integer", minimum: 0, description: `Failed firings since the last that started a run; at ${FAILURES_TO_PAUSE} the trigger turns itself off (\`disabled\`). Turned on again, it counts from 0.` },
@@ -591,6 +599,53 @@ const TRIGGER_WRITE = {
 };
 const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { type: "string" } };
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
+/** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
+const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
+const NULLABLE_STRING = { type: ["string", "null"] };
+const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." } });
+const TEMPLATE = closed({
+  name: { type: "string", description: "Its folder's name, the one apply takes." },
+  display_name: { type: ["string", "null"], description: "The agent's name, its `${parameters.<name>}` filled at apply; null: the package's name." },
+  version: { type: "string", description: "SemVer." },
+  description: { type: "string" },
+  license: NULLABLE_STRING,
+  repository: NULLABLE_STRING,
+  harness: { type: ["array", "null"], items: { type: "string" }, description: "The harnesses it runs on, in the order it prefers them: apply takes the first this server runs. Null: any, the server's default." },
+  model: { type: ["object", "null"], additionalProperties: false, required: ["tier"], properties: { tier: { enum: Object.keys(MODEL_TIERS) }, prefer: { type: "string" } }, description: "The model it wants: `prefer` when this server runs it, else this server's model for the tier (fast: AGENT_MODEL_FAST, balanced: AGENT_MODEL, strong: AGENT_MODEL_STRONG, each else the default). Null: the server's default." },
+  effort: { type: ["string", "null"], description: "Its thinking level, the definition's `thinking`." },
+  tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
+  mcp: {
+    type: "array",
+    items: closed({
+      server: { type: "string" },
+      required: { type: "boolean" },
+      tools: { type: "array", items: closed({ name: { type: "string" }, tool: { type: "string", description: "Its gate name, `mcp:<server>/<tool>`: what apply's `grants` and the tool settings name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }) },
+    }),
+    description: "The MCP servers it uses, by the name this server saves them under, and the tools of each it grants: apply grants them when the server is saved here, each at the owner's own setting (a third-party tool asks by default), and sets to allow only those the apply's `grants` name; one not saved is skipped with a warning, or, `required`, refuses the apply (409, nothing made).",
+  },
+  parameters: { type: "object", additionalProperties: TEMPLATE_PARAMETER, description: "What apply takes in `parameters`, by name, put where the package writes `${parameters.<name>}`." },
+  secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
+  budget: { type: ["object", "null"], additionalProperties: false, required: ["per_run_usd"], properties: { per_run_usd: { type: "number" } }, description: "Each run's spend cap, the agent's max_cost_usd. Required of a package with triggers." },
+  learning: { type: "boolean" },
+  triggers: { type: "array", items: { type: "object" }, description: "The triggers apply makes on its agent: POST /triggers bodies with no agent_id, placeholders unfilled." },
+  skills: { type: "array", items: { type: "string" } },
+  evals: { type: "array", items: { type: "string" }, description: `Its eval cases (evals/<case>/: prompt.md and graders of ${GRADER_TYPES.join(", ")}); none runs here.` },
+});
+const TEMPLATE_APPLY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    parameters: { type: "object", description: "The package's parameters (GET /templates), by name, each of its type." },
+    grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by gate name (`mcp:<server>/<tool>`, GET /templates `mcp[].tools[].tool`), the agent is allowed to call unasked. Any other is 422. One the owner denies on this server stays denied, with a warning. Absent, none: every tool keeps the owner's setting." },
+    overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." } } },
+  },
+};
+const TEMPLATE_APPLIED = closed({
+  template: { type: "string" },
+  version: { type: "string" },
+  agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
+  trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
+  warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it." },
+});
 const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {
   oneOf: [
@@ -920,7 +975,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}": {
     patch: {
       operationId: "raiseRunCap", tags: ["runs"], summary: "Raise a run's spend cap",
-      description: "Raises `max_cost_usd` of an agentic run that named one; only a raise: the new cap is above the run's current cap, its last raise included (422 otherwise, and for a run with no cap or a workflow run); the same raise sent again (a retry) changes nothing and answers as the first did. The run's serve.json keeps it before anything else, so its next process and a server started again run under it. A run paused at its cap (`pending.kind` budget) goes on: the answer comes at once (`resumed` true, its `message_id`), and once its process has been let go the server sends it one follow-up turn under that id, \"The cap was raised to $X; continue the task.\", which runs under the new cap; it is sent once, by a server started again if this one stopped before it went. A second raise before it goes answers the same `message_id`; one that cannot be sent is tried again, then the run ends failed, saying why. Caps within 1e-9 are the same cap. A run working keeps the cap its process was opened with until its next process (`note` says so). 409 not_continuable for an ended run.",
+      description: "Raises `max_cost_usd` of a run that named one, agentic or workflow; only a raise: the new cap is above the run's current cap, its last raise included (422 otherwise, and for a run with no cap); the same raise sent again (a retry) changes nothing and answers as the first did. The run's serve.json keeps it before anything else, so its next process and a server started again run under it. A run paused at its cap (`pending.kind` budget) goes on: the answer comes at once (`resumed` true, its `message_id`), and once its process has been let go the server sends it one follow-up turn under that id, \"The cap was raised to $X; continue the task.\", which runs under the new cap; it is sent once, by a server started again if this one stopped before it went. A second raise before it goes answers the same `message_id`; one that cannot be sent is tried again, then the run ends failed, saying why. Caps within 1e-9 are the same cap. A run working keeps the cap its process was opened with until its next process (`note` says so). A workflow run takes no follow-up: paused at its cap, the step that waits there is judged again under the new cap in its process, or, once the pause let its process go (10 minutes on), the run is opened again under it and resumes from its journal, sending no completed node again (`resumed` true, no `message_id`); a working one's process holds the new cap from its next check. 409 not_continuable for an ended run.",
       parameters: [ref("parameters/RunId")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["max_cost_usd"], properties: { max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "The new cap, above the run's current cap." } } } } } },
       responses: {
@@ -999,7 +1054,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
+      description: `Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and \`auth.type\` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
       parameters: [MCP_NAME],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES } } } } },
       responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
@@ -1237,6 +1292,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ...TRIGGER_MARK,
     },
   },
+  "/templates": {
+    get: {
+      operationId: "listTemplates", tags: ["local"], summary: "The template packages this server ships: each makes an agent, its skills and its triggers",
+      responses: { "200": json(closed({ templates: { type: "array", items: TEMPLATE } }), "Each package, by name."), ...errors(401, 429, 500) },
+      ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/{template}/apply": {
+    post: {
+      operationId: "applyTemplate", tags: ["local"], summary: "Apply a template package: make its agent, with its skills, then its triggers",
+      description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it granted and set to allow. Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's name (GET /templates)." }, ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_APPLY } } },
+      responses: { "201": json(TEMPLATE_APPLIED, "Applied: the agent and its triggers made."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      ...TEMPLATE_MARK,
+    },
+  },
   "/settings/webhook/deliveries/{webhook_id}/redeliver": {
     post: {
       operationId: "redeliverWebhook", tags: ["local"], summary: "Send a message of the log again, once now, under the same webhook-id and body",
@@ -1295,6 +1367,8 @@ const LEARNING_SHORT = {
  *  `serve/1`. */
 /** consoleurl/1: the console's page of a run or an agent, where a person opens it. */
 const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
+/** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
+export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
 const RUN_FIELDS: Record<string, Json> = {
   console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
@@ -1336,8 +1410,9 @@ const PENDING: Json = {
         overshoot_bound_usd: { type: "number", minimum: 0, description: "The most a cache miss could make the refused request cost beyond `needs_usd` under the run's `cap_mode` expected (its input uncached less its input expected, rounded up to a millionth); 0 under strict, and for a request priced with nothing cached. Absent with `spent_usd`.", "x-agentrun-serve": "capmode/1" },
         said: { type: "string", description: "The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters." },
         at: { type: "string", format: "date-time", description: "When the request was refused." },
+        node: { type: ["string", "null"], description: "A workflow run's: the label of the node whose step waits at the cap (a model node's request, a call node's call, a decision); null when it is not known. Absent on an agentic run.", "x-agentrun-serve": "workflowcap/1" },
       },
-      description: "A run paused at its spend cap (status input_required, state waiting): what is left of the cap cannot buy its next request's least, which was not sent. A message is 409 budget_reached until the cap is raised. Only a refusal for room pauses a run, a paid tool call's as a model request's (its hold is needs_usd); one no cap fixes (an unknown spend, a model with no price or no output ceiling, an input not measured) still ends it failed, spend_cap_reached.",
+      description: "A run paused at its spend cap (status input_required, state waiting): what is left of the cap cannot buy its next request's least, which was not sent. A message is 409 budget_reached until the cap is raised. Only a refusal for room pauses a run, a paid tool call's as a model request's (its hold is needs_usd); one no cap fixes (an unknown spend, a model with no price or no output ceiling, an input not measured) still ends it failed, spend_cap_reached. A workflow run pauses the same way, each paid step held before it is sent (a model node's request, a call node's paid tool call or `llm` call, a decision at its provider's price): the step waits where it stands, unsent, and the run goes on from it once raised.",
       "x-agentrun-serve": "cappause/1",
     },
     { type: "null" },
@@ -1432,7 +1507,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   TimelineRow: {
     paused: {
       const: true,
-      description: "On an `error` row that is the spend cap's refusal for room: the request was not sent and the run paused at its cap for a raise (`pending.kind` budget), so a client shows it as a pause, never as a failure. Kept once the cap is raised. Absent on every other row.",
+      description: "On the row of the spend cap's refusal for room that an agentic run paused at: the server's `phase` row (`origin` server, its id ending `:note`, so no message), \"Paused at the run's cap\", never an `error` row. The request was not sent and the run paused at its cap for a raise (`pending.kind` budget), whose sentence is `pending.said`'s, shown once. Kept once the cap is raised, as the run's history. A refusal that fails the run (one no cap fixes, a workflow's) stays an `error` row, without it. Absent on every other row.",
       "x-agentrun-serve": "cappause/1",
     },
     origin: {
@@ -1471,7 +1546,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_settings: { ...TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
-    cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition only: on a workflow's it is 422 not_allowed.` },
+    cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition's or a workflow's alike.` },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
@@ -1760,6 +1835,12 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       fields.push([name, ...down, field].join("."));
     }
   }
+  // This server's own run fields it always sends, on a run and in a list (runs.ts view and summary): required with the
+  // contract's, so a client may read them as there.
+  for (const name of ["Run", "RunSummary"]) {
+    const schema = schemas[name] as Json & { required: string[] };
+    schema.required = [...schema.required, ...RUN_FIELDS_SENT];
+  }
   // The contract's definition fields this server refuses (validate.ts), each marked with the reason its 422 gives.
   const definition = schemas.DefinitionInput as Json & { properties: Record<string, Json> };
   const refused: string[] = [];
@@ -1769,7 +1850,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     refused.push(`DefinitionInput.${field}`);
   }
   // A contract field this server takes with a meaning of its own, said on it.
-  definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition only: on a workflow's, above 0 is 422 not_allowed, as a workflow run is not capped here." };
+  definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition's or a workflow's alike." };
   // A row's usage: the contract's shape, on more rows here than the usage row (pi-durable-agent's timeline, BROWSER_CHARGE).
   const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
   timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
@@ -1801,6 +1882,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
   changed.push("GET /runs/{run_id}/timeline");
+  // GET /agents/{agent_id} always sends the agent's `tools` (server.ts getAgent; [] before it has a revision), which the
+  // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.
+  const getAgent = (doc.paths["/agents/{agent_id}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };
+  const agentAnswer = getAgent.responses["200"]!.content["application/json"]!;
+  agentAnswer.schema = { allOf: [agentAnswer.schema as Json, { type: "object", required: ["tools"], properties: { tools: AGENT_TOOLS } }] };
+  getAgent["x-agentrun-serve-changed"] = { responses: "agenttools/1" };
+  changed.push("GET /agents/{agent_id}");
   // upload/2: POST /files also takes a file's bytes in one call (`path` in the query, the bytes the body), answered as
   // a reservation is with the file ready; and `upload.url` is a path from the server's root, `/v2/files/{file_id}`.
   const createFile = (doc.paths["/files"] as Json).post as Json & { requestBody: Json & { content: Record<string, Json> }; parameters: Json[]; responses: Record<string, Json> };

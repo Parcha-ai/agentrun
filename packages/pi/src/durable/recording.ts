@@ -223,8 +223,9 @@ function publicationLines(publication: CommitPublication, state: RecorderState):
   let written: number | undefined;
   for (const change of publication.changes) {
     if (change.type === "document") {
-      // A retirement adopts no value and the store keeps no revision for it.
-      if (change.value === null || change.version === undefined) continue;
+      // A retirement (pi 1.5 tags it `kind: "retire"`) adopts no value and the store keeps no revision for it. A change
+      // carries the adopted revision and its definition version.
+      if (change.kind !== "change") continue;
       const { record } = change;
       placed.push(documentLine(Number(record.id), record.kind, record.key, structuredClone(change.value), change.version, change.conversationId === undefined ? undefined : Number(change.conversationId), commit));
       const generation = (change.value as { generation?: unknown }).generation;
@@ -256,7 +257,7 @@ function publicationLines(publication: CommitPublication, state: RecorderState):
  * `snapshotLines` restores the documents' state; a lost commit's entries stay missing, a gap the viewer shows. The
  * returned stop ends the subscription, waits for every queued write, and then throws the first write that failed.
  */
-export function recordCommits(session: Pick<Session, "subscribeCommits">, options: { gen?: number; from?: RecordingLine[]; write: (lines: RecordingLine[]) => void | Promise<void>; clock?: () => number }): () => Promise<void> {
+export function recordCommits(session: Pick<Session, "observeCommits" | "closed">, options: { gen?: number; from?: RecordingLine[]; write: (lines: RecordingLine[]) => void | Promise<void>; clock?: () => number }): () => Promise<void> {
   const clock = options.clock ?? Date.now;
   const fromDriver = (options.from ?? []).reduce<number | undefined>((max, line) => {
     const generation = line.kind === "agentrun.driver" ? line.data?.value?.generation : undefined;
@@ -269,18 +270,34 @@ export function recordCommits(session: Pick<Session, "subscribeCommits">, option
   }
   let chain: Promise<void> = Promise.resolve();
   let failure: { error: unknown } | undefined;
-  const unsubscribe = session.subscribeCommits((publication) => {
-    try {
-      const t = clock();
-      const mapped = publicationLines(publication, state);
-      if (mapped.length === 0) return;
-      const lines = mapped.map((line) => ({ ...line, t }));
-      chain = chain.then(() => options.write(lines)).catch((error) => { failure ??= { error }; });
-    } catch (error) { failure ??= { error }; }
+  /** Settled once the Session's own end is read, after the observer's end. */
+  let ended: Promise<void> = Promise.resolve();
+  // pi 1.5's observeCommits: a throw out of `advance` would detach the observer for good, so it never throws (it never
+  // could on 1.1 either). pi ends the observer only when its Session closes, and `failed` with "session closed" on a
+  // normal close too (session.js closeEnds); the Session's own end (`closed`, settled by the same close, tagged by kind)
+  // says which: `failed` (the store failed, or could not close) is the stop's failure, `closed` is none.
+  const observation = session.observeCommits({
+    advance: (publication) => {
+      try {
+        const t = clock();
+        const mapped = publicationLines(publication, state);
+        if (mapped.length === 0) return;
+        const lines = mapped.map((line) => ({ ...line, t }));
+        chain = chain.then(() => options.write(lines)).catch((error) => { failure ??= { error }; });
+      } catch (error) { failure ??= { error }; }
+    },
+    end: (end) => {
+      if (end.kind === "listener_error") return void (failure ??= { error: end.error });
+      ended = session.closed.then(
+        (closed) => void (closed.kind === "failed" && (failure ??= { error: closed.error })),
+        (error: unknown) => void (failure ??= { error }),
+      );
+    },
   });
   return async () => {
-    unsubscribe();
+    observation.detach();
     await chain;
+    await ended;
     if (failure) throw failure.error;
   };
 }

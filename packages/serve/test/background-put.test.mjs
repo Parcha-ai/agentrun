@@ -37,13 +37,13 @@ test("with no random bytes to name a temporary file, a display copy is skipped a
   let timer;
   const hung = new Promise((_, reject) => void (timer = setTimeout(() => reject(new Error("the start hung past 12 s on a planted FIFO")), 12_000)));
   const started = await Promise.race([start.execute({ command: "sleep 30" }, { env }, ctx), hung]).finally(() => clearTimeout(timer));
-  assert.match(started.content[0].text, /^Started background process 1 /);
+  assert.match(started.output[0].text, /^Started background process 1 /);
   assert.ok(Date.now() - began < 12_000);
   // No copy was written: what stands at the names the copy would use is what was planted, and no command or started.
   const names = readdirSync(join(work, "background", "1"));
   assert.ok(!names.includes("command") && !names.includes("started"), JSON.stringify(names));
   assert.ok(names.filter((name) => name.startsWith(".put.")).every((name) => lstatSync(join(work, "background", "1", name)).isFIFO()), JSON.stringify(names));
   // What the tools trust is untouched: the list shows the process's own command, and a signal reaches it.
-  assert.match((await list.execute({}, { env }, ctx)).content[0].text, /\n1: is running; .*"sleep 30"$/);
-  assert.match((await signal.execute({ id: "1", signal: "KILL" }, { env }, ctx)).content[0].text, /ended by signal KILL/);
+  assert.match((await list.execute({}, { env }, ctx)).output[0].text, /\n1: is running; .*"sleep 30"$/);
+  assert.match((await signal.execute({ id: "1", signal: "KILL" }, { env }, ctx)).output[0].text, /ended by signal KILL/);
 });

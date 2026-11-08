@@ -70,40 +70,11 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 ### `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`
 
 - **When:** any change to `packages/dsl`, `packages/jev` or `packages/pi`.
-- **pi versions:** each version in its own disposable checkout, because `--scratch` rewrites the manifests
-  and the lockfile: `git worktree add ../leg-<version> <head>`, then in it `npm ci --ignore-scripts` and
-  `node scripts/pi-leg.mjs --pi <version> --scratch --npm "npx --yes npm@11.21.0"`, at the lowest version the
-  peers accept (CI's floor jobs run 1.0.4) and at the newest minor they accept (the `pi-1-2` job runs 1.2.0).
-  `--plan` only prints the leg. Pass: build, type-check and suite green, one copy of each pi package at the
-  leg's version. Remove the checkout by its exact path afterwards.
+- **pi version:** the packages pin one pi family exactly (`scripts/pi-ranges.test.mjs`), and the suites run on it; there
+  is no other version to run.
 - **Recovery or durable behaviour** (the driver, the journal, reconcile, effects, `./durable`): the PR
   body carries a kill-storm proof on the head: seeds, kills, every outside call applied once, every
   record equal to the uncut run's, no stop. Cost: $0 (scripted providers).
-- **Recording format:** a change to what `./durable` exports for `agentrun.recording/1` validates
-  with `apps/viewer`'s `validate` on a fresh recording.
-
-### `@parcha/pi-durable-disk`
-
-- **When:** the diff touches `packages/pi-durable-disk/src/**`, `bin/**`, `package.json` or
-  `test/live/**`. A diff of only examples, the README or `changes/` skips it.
-- **Pending:** `test/live/ci.ts` lands with pull request #472; until it is on `main`, this check is not run and the
-  batch line says so.
-- **Command,** from the repository root at the head, under your scratch-disk credential wrapper, which
-  exports `ARCHIL_API_KEY`, `PDA_LIVE_DISK` and `PDA_LIVE_REGION` (default `aws-us-east-1`):
-
-  ```bash
-  npm run build && node packages/pi-durable-disk/test/live/ci.ts all
-  ```
-
-  `all` runs a preflight (it refuses without the key, a `dsk-` disk id or a region), the host suites
-  (claim, env, run, store, supervise, lifecycle), then the Docker suites, so the two never share the
-  disk, then a sweep that always runs and must leave 0 run directories and 0 token users, then a summary.
-- **Pass:** exit code 0 and a last stdout line that starts with `ok: live disk check passed`. Anything
-  else blocks: a non-zero exit, a last line `not ok: <step>: <reason>`, or no last line (killed or timed
-  out). Put the summary it prints above that line in the pull request body.
-- **Needs:** Docker, FUSE and the Archil client on the machine (the suites need root through
-  `archil-scoped`), and a SCRATCH key and disk only. The suites delete runs and token users on the disk
-  they are given: never run them with a production key.
 
 ### `@parcha/pi-browser`
 
@@ -117,7 +88,6 @@ required, the command, the pass rule and the cost. Its lead owns that section.
   ```bash
   npm ci --ignore-scripts && npm run build
   npm run test:chrome -w @parcha/pi-browser
-  node scripts/check-reference-chrome.mjs
   npm test -w @parcha/pi-browser
   ```
 
@@ -179,51 +149,6 @@ end, and fails if a box is left. All three run from the repository root at the h
   (the package never depends on it). No credential enters a box, a log or the pull request.
 - **Cost:** Docker $0. Daytona under $0.05 a run (about 60 short one-vCPU boxes, seconds each). Modal sandbox and VM
   under $0.10 a run; the T4 kind adds about $0.05 when asked for. Estimates from list prices.
-
-### `@parcha/pi-vision`
-
-Two live checks. Both run from the repository root at the head, after `npm ci --ignore-scripts && npm run build`.
-
-**1. Programs on this machine** (ffmpeg, ffprobe, poppler, LibreOffice: the versions a host really has, not CI's).
-
-- **When:** the diff touches `packages/pi-vision/src/core/{read,readers,video,pdf,office,derive,image}.ts`,
-  `packages/pi-vision/src/providers/**`, `packages/pi-vision/src/node.ts`, `packages/pi-vision/test/binaries/**` or
-  `packages/pi-vision/package.json`.
-- **Command:**
-
-  ```bash
-  npm run test:binaries -w @parcha/pi-vision
-  ```
-
-- **Pass:** exit code 0 and `# fail 0` in its summary. A skip is allowed only for a program the machine does not
-  have, and the body names it (for example "LibreOffice absent: 1 skipped"). A missing ffmpeg, ffprobe or poppler is a
-  fail, not a skip.
-- **Needs:** ffmpeg and ffprobe, poppler-utils, optionally LibreOffice (`soffice`) on PATH. No key. Cost: $0.
-
-**2. Real eyes** (a few paid looks through pi-ai, the path no fake covers).
-
-- **When:** the diff touches `packages/pi-vision/src/eyes/**`, `src/core/guard.ts`, `src/core/evidence.ts`,
-  `src/core/limits.ts`, `src/core/see.ts`, `src/core/plan.ts`, `src/durable.ts`, or the `@earendil-works/*` peer or
-  dev ranges in `packages/pi-vision/package.json`.
-- **Command:**
-
-  ```bash
-  node packages/pi-vision/test/live/eyes.mjs
-  ```
-
-  It reads `PI_VISION_LIVE_EYES` (`<provider>/<model id>`, the public id pi-ai's catalog uses) and that provider's
-  key from the variable pi-ai itself reads; `PI_VISION_LIVE_BASE_URL` points it at a gateway when the machine has one
-  (a machine fact: it goes in `local.md`). It refuses to run without them. It makes four checks, each printed as a
-  numbered line: `scanned letter` (a synthetic scan built by `./testing`, whose identifier the eyes must read exactly);
-  `page 2` (a two-page PDF through `read` with `page`); `vision.see` (the same letter asked by path through the
-  code-mode global: exact identifier, one look filed, a price above 0); and `receipts` (every paid look has `cost_usd`
-  as a number and tokens above 0, and a forced no-eyes miss has `cost_usd: 0`).
-- **Pass:** exit code 0 and a last stdout line that starts with `ok: pi-vision live eyes passed`. Anything else
-  blocks: a non-zero exit, a last line `not ok: <step>: <reason>`, or no last line. Put the summary it prints (model,
-  read rate, tokens, dollars) in the pull request body.
-- **Needs:** one key for an eyes route that takes images. Use a model that reads identifiers reliably; the package's
-  eyes bench measured some routes dropping digits, and this check would then fail as designed.
-- **Cost:** about $0.01 a run.
 
 ## Step 5: CI and threads
 

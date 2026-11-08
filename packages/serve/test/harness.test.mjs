@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { blockersOf } from "../dist/runnable.js";
 import { agent, flowAgent, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
@@ -94,7 +95,7 @@ test("ask_person on a harness other than pi saves with a warning on the tool, an
 });
 
 test("a workflow on a harness other than pi saves with a warning and its runs are refused naming the harness: it never runs on pi instead", async (t) => {
-  const { api } = await serve(t, { fauxHarness: new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname });
+  const { api } = await serve(t, { harnessTable: fauxTable(new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname) });
   const made = await api("POST", "/agents", flowAgent("flow-codex", undefined, { harness: "codex" }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), [["definition.workflow", "not_set_up_here"]]);
@@ -105,7 +106,7 @@ test("a workflow on a harness other than pi saves with a warning and its runs ar
 
 test("a harness is checked on the revision's own model, never refused for the server's default: claude-agent runs an Anthropic model on a server whose default is OpenAI", { timeout: 60_000 }, async (t) => {
   // Both providers configured (no real keys), the server's default model OpenAI's.
-  withEnv(t, { AGENT_MODEL: "openai/gpt-4o-mini", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_SERVE_FAUX_HARNESS"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-4o-mini", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_HARNESS_TABLE"]);
   // A copy: serve checks a harness once per environment object, and process.env outlives this test.
   const env = { ...process.env };
   const revision = (model) => ({ kind: "agentic", instructions: "Answer.", harness: "claude-agent", ...(model ? { model } : {}) });

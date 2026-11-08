@@ -10,6 +10,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const SLOW_EXIT = new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname;
 const SLOW_EXIT_HARNESS = new URL("./fixtures/faux-harness-slow-exit.mjs", import.meta.url).pathname;
@@ -49,7 +50,7 @@ async function watch(api, runId, done, { after = 0, deadlineMs, what }) {
 async function cancelledAfterAnswer(t, { cap, late } = {}) {
   const gate = join(await scratch(t), "gate");
   withEnv(t, { EXIT_GATE: gate });
-  const { api } = await serve(t, { faux: SLOW_EXIT, fauxHarness: SLOW_EXIT_HARNESS });
+  const { api } = await serve(t, { faux: SLOW_EXIT, harnessTable: fauxTable(SLOW_EXIT_HARNESS) });
   const signal = join(await scratch(t), "holds");
   const instructions = `Answer, then hold the turn${late === undefined ? "" : ` after a request at $${late}`} (signal ${signal}).`;
   assert.equal((await api("POST", "/agents", agent("answers", { harness: "codex", instructions }))).status, 201);

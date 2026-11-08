@@ -21,7 +21,7 @@ const KINDS = new Set([
 const page = (url, title) => `url: ${url}\ntitle: ${title}\nevidence: evidence/x.json\n---\nbody`;
 /** Userinfo is built at run time, so no credential-shaped URL sits in the source. */
 const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
-const SESSION = /Opened a live browser session/;
+const SESSION = /A live browser session started/;
 /** The rendered lines, without the cost row and the session-opened row, which most tests are not about. */
 const lines = (rows, options) =>
   renderText(groupTimeline(rows.filter((row) => row.kind !== "usage" && !SESSION.test(row.summary ?? ""))), options).split("\n").filter(Boolean);
@@ -189,8 +189,8 @@ test("a fetch whose page says it was refused, or failed, reads as that and as fa
   const rows = timelineOf([
     assistant([call("a", "web_fetch", { url: "http://x.example:8080/health" })], 0),
     result("a", "web_fetch", page({ url: "http://x.example:8080/health", refused: "refused: port 8080 is not 80 or 443", via: "direct" }), 0),
-    assistant([call("b", "fetch_page", { url: "https://down.example/x" })], 1),
-    result("b", "fetch_page", page({ url: "https://down.example/x", error: "timed out after 15000 ms" }), 1),
+    assistant([call("b", "web_fetch", { url: "https://down.example/x" })], 1),
+    result("b", "web_fetch", page({ url: "https://down.example/x", error: "timed out after 15000 ms" }), 1),
     assistant([call("c", "web_fetch", { url: "https://example.com" })], 2),
     result("c", "web_fetch", JSON.stringify({ ok: true, url: "https://example.com/", status: 200, title: "Example Domain", text: "x", links: [], via: "direct" }), 2),
   ]);

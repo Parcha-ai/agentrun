@@ -14,7 +14,7 @@ export function script(spec) {
   // holds on a fetch until the file its instructions name exists (faux-web-hold.mjs), then answers.
   const gate = /Probe the relaunch, held until (\S+)\./.exec(text)?.[1];
   if (gate) {
-    const held = { call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(gate)}` }, usd: 0.001 };
+    const held = { call: "web_fetch", args: { url: `http://public.example/hold?until=${encodeURIComponent(gate)}` }, usd: 0.001 };
     return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, ...(killed ? [held, { say: "After the cut.", usd: 0.001 }] : [{ cut: true }]), { end: true, usd: 0.001 }];
   }
   return [{ say: "Answer.", usd: 0.001 }, { end: true, usd: 0.001 }];

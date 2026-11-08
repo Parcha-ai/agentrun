@@ -32,13 +32,17 @@ const hmacOf = (secret: string, id: string, timestamp: string, body: string | Bu
 
 /** Each spelling of `value` a cut needs beyond the ones redaction derives of any text (learn/secrets.ts redactSecrets:
  *  as written, its hex, its base64): for a `whsec_` secret, itself, its key as written after the prefix, that key as
- *  base64url (- and _ for + and /, no padding), and the key's bytes as hex, in either case; any other value, itself. The
- *  one derivation the server's list of its own secrets (server-secrets.ts) and so an import's cut use. */
+ *  base64url (- and _ for + and /, no padding), and the key's bytes as hex, in either case; each padded one printed
+ *  without its trailing = too (openssl base64 | tr -d =, Python's rstrip(b"=")); and each that holds a / as a JSON
+ *  encoder that escapes / writes it. Any other value, itself. The one derivation the server's list of its own secrets
+ *  (server-secrets.ts) and so an import's cut use. */
 export const secretForms = (value: string): string[] => {
   if (!value.startsWith(SECRET_PREFIX)) return [value];
   const key = keyOf(value);
   const hex = key.toString("hex");
-  return [value, value.slice(SECRET_PREFIX.length), key.toString("base64url"), hex, hex.toUpperCase()];
+  const spelled = [value, value.slice(SECRET_PREFIX.length), key.toString("base64url"), hex, hex.toUpperCase()];
+  const forms = [...spelled, ...spelled.map((form) => form.replace(/=+$/, ""))];
+  return [...new Set([...forms, ...forms.filter((form) => form.includes("/")).map((form) => form.replaceAll("/", "\\/"))])];
 };
 
 /** The signature header of `body`, sent as message `id` at `timestamp` (Unix seconds), under `secret` (`whsec_...`). */

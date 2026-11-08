@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "findings.schema.json",
+  "title": "Code review findings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "head_sha",
+    "summary",
+    "findings",
+    "resolve"
+  ],
+  "properties": {
+    "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "line",
+          "severity",
+          "claim",
+          "fingerprint"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "severity": {
+            "enum": [
+              "important",
+              "nit",
+              "pre-existing"
+            ]
+          },
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "fingerprint": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 300,
+            "pattern": "^\\S+$"
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "first line when the finding spans more than one; <= line"
+          },
+          "existing_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "one line copied exactly from the range, for re-anchoring"
+          },
+          "category": {
+            "enum": [
+              "bug",
+              "security",
+              "performance",
+              "maintainability",
+              "test",
+              "style",
+              "documentation",
+              "other"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "logged for calibration; not a filter yet"
+          }
+        }
+      }
+    },
+    "resolve": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^\\S+$"
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,4 @@
-// The run lifecycle without Archil (with a fake clock): a claim over a local directory, a real store,
-// a real pi Harness on a scripted model, real commands.
+// The run lifecycle: a claim over a local directory, a real store, a real pi Harness on a scripted model, real commands.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -13,34 +12,17 @@ import * as piDurable from "@earendil-works/pi-durable";
 import { archilEnv } from "../src/env.ts";
 import { exitCodeFor, FencedError, HeldError } from "../src/errors.ts";
 import {
-  LeaseLapsedError,
   openDurableRun,
-  OWNER_LOCK,
   RunError,
   STORE_FILE,
-  StoreBehindSealError,
   storeHead,
-  takeOwnerLock,
   type BeforeResume,
   type DurableRun,
   type OpenDurableRunOptions,
   type RunEnv,
   type StoreReads,
 } from "../src/run.ts";
-import {
-  CLAIM_UNMOUNTED,
-  isLeaseFresh,
-  parseRunRecord,
-  persistRecord,
-  readRunRecord,
-  RUN_JSON,
-  RUN_JSON_TEMP,
-  RunRecordError,
-  writeRunRecord,
-  type ClaimDir,
-  type PersistRecord,
-  type RunRecord,
-} from "../src/status.ts";
+import { CLAIM_UNMOUNTED, parseRunRecord, readLocalRunStatus, RunRecordError, type ClaimDir, type RunRecord } from "../src/status.ts";
 import { openArchilStore, StoreFencedError } from "../src/store.ts";
 import { entryCommitter, FaultyDatabase, sessionFailed, SQLITE_IOERR_FSYNC, sqliteError } from "./_support.ts";
 import { alive, ctx, fakeClaim, killQuietly, localClaimDir, localRef, removeWhileWritten, scratchRoot, scriptedHarness, scriptedReply, startCommand, startCommandIn, waitGone, type FakeClaim } from "./_run-support.ts";
@@ -105,7 +87,6 @@ function setup(
     faux: scripted.faux,
     open: () =>
       openDurableRun(ref, {
-        mountToken: "unused",
         acquire: async () => {
           claim.log.push("acquire");
           return claim;
@@ -123,7 +104,8 @@ function setup(
   };
 }
 
-const runJson = (root: string): RunRecord => parseRunRecord(readFileSync(join(root, RUN_JSON), "utf8"));
+/** The record a released run left in its store. */
+const recordOf = async (root: string): Promise<RunRecord> => (await readLocalRunStatus(root))!;
 
 /** This process's descriptors open on exactly `path`. */
 function fdsOn(path: string): string[] {
@@ -222,49 +204,45 @@ async function snapshotAt(storage: StoreReads, at: Seq) {
 }
 
 describe("openDurableRun", () => {
-  it("opens in order (claim, lock, layout, run.json, store, seal, Harness) and writes run.json", async () => {
+  it("opens in order (claim, the store's lock tried, layout, store, Harness, record) and keeps the record in the store, no lease file", async () => {
     const dir = scratchRoot("order");
     try {
       const t = setup(dir.root);
       const run = await t.open();
-      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store", "seal", "harness", "live", "resume"]);
-      for (const path of [OWNER_LOCK, "store", "work", "tmp", join("store", STORE_FILE), RUN_JSON]) assert.ok(existsSync(join(dir.root, path)), path);
-      assert.equal(existsSync(join(dir.root, RUN_JSON_TEMP)), false, "the temp file was renamed over run.json");
-      const record = runJson(dir.root);
-      assert.deepEqual(
-        { ...record, holder: null, heartbeatAt: null, updatedAt: "" },
-        { run: "r1", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: null, updatedAt: "", detail: null },
-      );
+      assert.deepEqual(t.steps, ["acquire", "claim-dir", "layout", "store", "harness", "record", "resume"]);
+      for (const path of ["store", "work", "tmp", join("store", STORE_FILE)]) assert.ok(existsSync(join(dir.root, path)), path);
+      assert.deepEqual(readdirSync(dir.root).filter((name) => /^(run\.json|owner\.lock)/.test(name)), [], "no lease file");
+      const record = run.record;
+      assert.deepEqual({ ...record, holder: null, updatedAt: "" }, { run: "r1", status: "running", generation: 1, wakeAt: null, holder: null, updatedAt: "", detail: null });
       assert.equal(record.holder?.pid, process.pid);
       assert.equal(record.holder?.driver, "local");
-      assert.ok(Date.parse(record.heartbeatAt!) >= Date.parse(record.updatedAt), "the write after Harness.open is a heartbeat too");
-      assert.deepEqual(run.record, record);
       assert.equal(run.generation, 1);
       assert.equal(run.claim.root, dir.root);
       await run.release();
       assert.deepEqual(t.claim.log, ["acquire", "cleanup", "barrier", "release"]);
+      assert.deepEqual({ ...(await recordOf(dir.root)), updatedAt: "" }, { ...record, status: "paused", updatedAt: "" }, "the release left it paused in the store");
     } finally {
       dir.remove();
     }
   });
 
-  it("afterClaim runs once the claim is held (lock, layout) and before this generation's run.json, the store and the Harness, which open with what it returns", async () => {
+  it("afterClaim runs once the claim is held (layout) and before the store and the Harness, which open with what it returns", async () => {
     const dir = scratchRoot("after-claim");
     try {
       const own = scriptedHarness();
-      let seen: { root: string; work: boolean; runJson: boolean } | undefined;
+      let seen: { root: string; work: boolean; store: boolean } | undefined;
       const t = setup(dir.root, {
         options: {
           harness: undefined,
           afterClaim: async (claim) => {
-            seen = { root: claim.root, work: existsSync(claim.work), runJson: existsSync(join(claim.root, RUN_JSON)) };
+            seen = { root: claim.root, work: existsSync(claim.work), store: existsSync(join(claim.store, STORE_FILE)) };
             return { harness: { models: own.models, registry: own.registry } };
           },
         },
       });
       const run = await t.open();
-      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "after-claim", "run.json", "heartbeat", "store", "seal", "harness", "live", "resume"]);
-      assert.deepEqual(seen, { root: dir.root, work: true, runJson: false }, "on the claimed directory, laid out, before this incarnation's run.json");
+      assert.deepEqual(t.steps, ["acquire", "claim-dir", "layout", "after-claim", "store", "harness", "record", "resume"]);
+      assert.deepEqual(seen, { root: dir.root, work: true, store: false }, "on the claimed directory, laid out, before the store opens");
       const root = await run.harness.root(ctx, { agent: own.agent });
       assert.equal((await (await root.submit({ type: "input", content: "hello" }, ctx)).wait(ctx)).status, "done", "the Harness has the options afterClaim returned");
       await run.release();
@@ -273,7 +251,7 @@ describe("openDurableRun", () => {
     }
   });
 
-  it("an afterClaim that fails publishes nothing: no run.json on a new run, the previous one untouched on a resume, the claim let go, and the next open runs it again", async () => {
+  it("an afterClaim that fails leaves the store as it was: none on a new run, the previous record on a resume, the claim let go, and the next open runs it again", async () => {
     const dir = scratchRoot("after-claim-refused");
     try {
       let calls = 0;
@@ -281,20 +259,20 @@ describe("openDurableRun", () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         const t = setup(dir.root, { options: refusing });
         await assert.rejects(t.open(), /did not load/);
-        assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout"], "no run.json, no heartbeat");
-        assert.equal(existsSync(join(dir.root, RUN_JSON)), false, "a new run still has no run.json");
+        assert.deepEqual(t.steps, ["acquire", "claim-dir", "layout"], "no store opened");
+        assert.equal(existsSync(join(dir.root, "store", STORE_FILE)), false, "a new run still has no store");
         assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is let go, not fenced");
       }
       assert.equal(calls, 2, "the next open ran afterClaim again");
       await (await setup(dir.root).open()).release();
-      const left = readFileSync(join(dir.root, RUN_JSON), "utf8");
+      const left = await recordOf(dir.root);
       const resumed = setup(dir.root, { options: refusing });
       await assert.rejects(resumed.open(), /did not load/);
-      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), left, "a resume leaves the previous incarnation's run.json as it was");
+      assert.deepEqual(await recordOf(dir.root), left, "a resume leaves the previous incarnation's record as it was");
       assert.deepEqual(resumed.claim.log, ["acquire", "release"]);
       const none = setup(dir.root, { options: { harness: undefined, afterClaim: async () => ({}) } });
       await assert.rejects(none.open(), (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT" && /afterClaim returned none/.test((e as Error).message));
-      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), left, "no Harness options from afterClaim: refused the same way");
+      assert.deepEqual(await recordOf(dir.root), left, "no Harness options from afterClaim: refused the same way");
       assert.deepEqual(none.claim.log, ["acquire", "release"]);
       const neither = setup(dir.root, { options: { harness: undefined } });
       await assert.rejects(neither.open(), (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT");
@@ -338,7 +316,7 @@ describe("openDurableRun", () => {
       const run1 = await first.open();
       const { conversationId } = await startCommandIn(run1, first.agent);
       await run1.release();
-      const sealed = runJson(dir.root).sealedSeq!;
+      const sealed = await headOf(dir.root);
       const seen: string[] = [];
       let hookDone: number | undefined;
       let firstCall: number | undefined;
@@ -365,7 +343,7 @@ describe("openDurableRun", () => {
       for (let i = 0; i < 200 && firstCall === undefined; i++) await new Promise((resolve) => setTimeout(resolve, 25));
       await new Promise((resolve) => setTimeout(resolve, 300)); // the turn's commits after the call
       assert.deepEqual(seen, ["scheduling paused", "done in generation 2"], "the hook ran to the end, before the scheduler started");
-      assert.deepEqual(second.steps.slice(-3), ["live", "before-resume", "resume"]);
+      assert.deepEqual(second.steps.slice(-3), ["record", "before-resume", "resume"]);
       assert.ok(firstCall !== undefined, "the resumed turn took its first step");
       assert.ok(hookDone! <= firstCall!, `the hook finished (${hookDone}) before the resumed turn's first model call (${firstCall})`);
       // commit order, from the store: everything the resumed turn committed in this incarnation comes after the hook's entry
@@ -400,7 +378,7 @@ describe("openDurableRun", () => {
     }
   });
 
-  it("after a park, beforeResume's previous is the parked record: sleeping, its wakeAt and detail, the seal its release wrote", async () => {
+  it("after a park, beforeResume's previous is the parked record: sleeping, its wakeAt and detail", async () => {
     const dir = scratchRoot("before-resume-parked");
     try {
       const first = setup(dir.root);
@@ -408,13 +386,12 @@ describe("openDurableRun", () => {
       const wakeAt = new Date(Date.now() + 90_000).toISOString();
       await parked.setStatus("sleeping", { why: "retry backoff" }, { wakeAt });
       await parked.release();
-      const left = runJson(dir.root);
+      const left = await recordOf(dir.root);
       let got: Pick<BeforeResume, "previous" | "record"> | undefined;
       const second = setup(dir.root, { options: { beforeResume: ({ previous, record }) => void (got = { previous, record }) } });
       const run = await second.open();
-      assert.deepEqual(got!.previous, left, "exactly run.json as the parked incarnation left it");
+      assert.deepEqual(got!.previous, left, "exactly the record the parked incarnation left");
       assert.deepEqual([got!.previous!.status, got!.previous!.wakeAt, got!.previous!.detail, got!.previous!.generation], ["sleeping", wakeAt, { why: "retry backoff" }, 1]);
-      assert.equal(typeof got!.previous!.sealedSeq, "number", "the seal its release wrote");
       // The open had already written this incarnation's record over it: running, generation 2, the detail gone.
       assert.deepEqual([got!.record.status, got!.record.generation, got!.record.detail, got!.record.wakeAt], ["running", 2, null, null]);
       await run.release();
@@ -423,7 +400,7 @@ describe("openDurableRun", () => {
     }
   });
 
-  it("after a crash, beforeResume's previous is the dead incarnation's record: running, the killed process as holder, no seal", async () => {
+  it("after a crash, beforeResume's previous is the dead incarnation's record: running, the killed process as holder", async () => {
     const dir = scratchRoot("before-resume-crashed");
     const child = spawn(process.execPath, [new URL("./fixtures/open-and-hold.ts", import.meta.url).pathname, dir.root, "r1"], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, NODE_NO_WARNINGS: "1" } });
     try {
@@ -437,7 +414,7 @@ describe("openDurableRun", () => {
       let previous: RunRecord | null | undefined;
       const t = setup(dir.root, { options: { beforeResume: (run) => void (previous = run.previous) } });
       const run = await t.open();
-      assert.deepEqual([previous!.status, previous!.generation, previous!.sealedSeq, previous!.holder?.pid, previous!.detail], ["running", 1, null, deadPid, null]);
+      assert.deepEqual([previous!.status, previous!.generation, previous!.holder?.pid, previous!.detail], ["running", 1, deadPid, null]);
       assert.equal(run.generation, 2);
       await run.release();
     } finally {
@@ -507,7 +484,7 @@ describe("openDurableRun", () => {
             assert.deepEqual(Object.keys(storage).sort(), ["document", "scanConversations", "scanDocuments", "scanTasks"]);
             assert.ok(Object.isFrozen(storage), "nothing can be added to it");
             const writable = storage as unknown as Storage;
-            for (const write of [() => writable.commit([], ctx), () => writable.mintId()]) {
+            for (const write of [() => writable.commit([], () => undefined, ctx), () => writable.mintId()]) {
               try {
                 await write();
                 tried.push("ran");
@@ -558,61 +535,33 @@ describe("openDurableRun", () => {
     }
   });
 
-  it("bumps the generation on every claim and seals the store's last committed sequence at release", async () => {
-    const dir = scratchRoot("seal");
+  it("bumps the generation on every open, and a release leaves a running run paused in its store", async () => {
+    const dir = scratchRoot("generation");
     try {
       const first = setup(dir.root);
       const run1 = await first.open();
       const root = await run1.harness.root(ctx, { agent: first.agent });
       await root.configure({ instructions: "one" }, ctx);
       await run1.release();
-      const sealed1 = runJson(dir.root);
-      assert.equal(sealed1.status, "paused", "a running run seals as paused");
-      assert.equal(sealed1.generation, 1);
-      assert.ok(typeof sealed1.sealedSeq === "number" && sealed1.sealedSeq > 0);
-      assert.equal(await headOf(dir.root), sealed1.sealedSeq, "the seal is the store's head");
-
+      const left1 = await recordOf(dir.root);
+      assert.equal(left1.status, "paused", "a running run is left paused");
+      assert.equal(left1.generation, 1);
       const second = setup(dir.root);
       const run2 = await second.open();
       assert.equal(run2.generation, 2);
-      assert.equal(runJson(dir.root).sealedSeq, null, "a live run has no seal");
       await run2.release();
-      const sealed2 = runJson(dir.root);
-      assert.equal(sealed2.generation, 2);
-      assert.equal(sealed2.sealedSeq, await headOf(dir.root));
+      assert.equal((await recordOf(dir.root)).generation, 2);
     } finally {
       dir.remove();
     }
   });
 
-  it("writes run.json and starts the heartbeat before the store opens, keeping the seal until Harness.open", async () => {
-    const dir = scratchRoot("early");
-    try {
-      await (await setup(dir.root).open()).release();
-      const sealed = runJson(dir.root).sealedSeq;
-      assert.ok(sealed !== null);
-      let atStoreOpen: RunRecord | undefined;
-      const decorateStore = (database: SqliteDatabase) => {
-        atStoreOpen = runJson(dir.root);
-        return database;
-      };
-      const t = setup(dir.root, { options: { decorateStore } });
-      const run = await t.open();
-      assert.deepEqual([atStoreOpen?.status, atStoreOpen?.generation, atStoreOpen?.holder?.pid], ["running", 2, process.pid]);
-      assert.equal(atStoreOpen?.sealedSeq, sealed, "the first write keeps the seal the check reads");
-      assert.equal(runJson(dir.root).sealedSeq, null, "a live store has no seal");
-      await run.release();
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("writes the host driver's handle as the holder, with this process's pid and since", async () => {
+  it("writes the host's handle as the holder, with this process's pid and since", async () => {
     const dir = scratchRoot("holder");
     try {
       const handle = { driver: "local", host: "host-b", unit: "pda-r1.service", mountpoint: "/mnt/archil/runs/r1", pid: 1, since: "x" };
       const run = await setup(dir.root, { options: { holder: handle } }).open();
-      const holder = runJson(dir.root).holder!;
+      const holder = run.record.holder!;
       assert.deepEqual({ ...holder, bootId: null, since: "" }, { ...handle, bootId: null, pid: process.pid, since: "" });
       assert.ok(Date.parse(holder.since) > 0);
       assert.equal(holder.bootId, readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), "bootId defaults to this machine's");
@@ -625,117 +574,24 @@ describe("openDurableRun", () => {
     }
   });
 
-  it("refuses a store behind its seal before Harness.open, marks the run failed, and leaves the store as it found it", async () => {
-    const dir = scratchRoot("behind");
-    try {
-      const a = setup(dir.root);
-      const run1 = await a.open();
-      await run1.harness.root(ctx, { agent: a.agent });
-      await run1.release();
-      const sealed1 = runJson(dir.root).sealedSeq!;
-      const older = storeFiles(dir.root);
-
-      const b = setup(dir.root);
-      const run2 = await b.open();
-      await (await run2.harness.root(ctx, {})).configure({ instructions: "the commit that will be lost" }, ctx);
-      await run2.release();
-      const sealed2 = runJson(dir.root).sealedSeq!;
-      assert.equal(sealed2, sealed1 + 1, "the second incarnation made exactly one commit");
-
-      restoreStore(dir.root, older);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const c = setup(dir.root);
-        const refused = await c.open().then(() => null, (error: unknown) => error);
-        assert.ok(refused instanceof StoreBehindSealError, String(refused));
-        assert.equal(refused.code, "STORE_BEHIND_SEAL");
-        assert.equal(exitCodeFor(refused), 65);
-        assert.deepEqual([refused.sealedSeq, refused.head], [sealed2, sealed1]);
-        assert.deepEqual(c.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store"], "refused at the seal step, before Harness.open");
-        assert.deepEqual(c.claim.log, ["acquire", "release"], "the claim is released, not fenced");
-        assert.equal(c.fenced.length, 0);
-        const failed = runJson(dir.root);
-        assert.equal(failed.status, "failed");
-        assert.equal(failed.sealedSeq, sealed2, "the seal is kept as evidence");
-        assert.deepEqual(failed.detail, { code: "STORE_BEHIND_SEAL", sealedSeq: sealed2, head: sealed1 });
-        assert.equal(await headOf(dir.root), sealed1, "the refusal wrote nothing to the store");
-      }
-      takeOwnerLock(dir.root).release();
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("an env factory that throws abandons the lease: the claim is released, the owner lock is free and the heartbeat stops", async () => {
+  it("an env factory that throws abandons the open: the claim is released and the store is free", async () => {
     const dir = scratchRoot("env-throws");
     try {
-      const lease = { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 };
-      const t = setup(dir.root, { options: { lease, env: () => { throw new Error("setpriv is missing"); } } });
+      await (await setup(dir.root).open()).release();
+      const t = setup(dir.root, { options: { env: () => { throw new Error("setpriv is missing"); } } });
       const refused = await t.open().then(() => null, (error: unknown) => error);
       assert.ok(refused instanceof Error && refused.message === "setpriv is missing", String(refused));
       assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is released, not fenced");
       assert.equal(t.fenced.length, 0);
-      takeOwnerLock(dir.root).release();
-      const last = runJson(dir.root).heartbeatAt;
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      assert.equal(runJson(dir.root).heartbeatAt, last, "no heartbeat after the failed open");
+      assert.equal((await recordOf(dir.root)).generation, 1, "the store is free, and its record is the last open's");
     } finally {
       dir.remove();
     }
   });
 
-  it("refuses a store whose head it cannot read (pi's schema moved): marked failed with the seal kept, released, exit 70", async () => {
-    const dir = scratchRoot("head-unreadable");
-    try {
-      await (await setup(dir.root).open()).release();
-      const sealed = runJson(dir.root).sealedSeq;
-      // The store opens (pi's own reads work) but the one pi-internal read this package makes finds no column.
-      const decorateStore = (database: SqliteDatabase) => new SchemaMoved(database);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const t = setup(dir.root, { options: { decorateStore } });
-        const refused = await t.open().then(() => null, (error: unknown) => error);
-        assert.ok(refused instanceof RunError && refused.code === "STORE_HEAD_UNREADABLE", String(refused));
-        assert.equal(exitCodeFor(refused), 70);
-        assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store"], "refused before Harness.open");
-        assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is released, not fenced");
-        const failed = runJson(dir.root);
-        assert.equal(failed.status, "failed");
-        assert.equal(failed.sealedSeq, sealed, "the seal is kept");
-        assert.deepEqual(failed.detail, { code: "STORE_HEAD_UNREADABLE", sealedSeq: sealed, reason: refused.message });
-      }
-      assert.equal(await headOf(dir.root), sealed, "the store was not touched");
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("refuses a run.json that names another run (65) and releases the claim", async () => {
-    const dir = scratchRoot("other");
-    try {
-      const other = setup(dir.root, { id: "other" });
-      await (await other.open()).release();
-      const t = setup(dir.root, { id: "r1" });
-      const refused = await t.open().then(() => null, (error: unknown) => error);
-      assert.ok(refused instanceof RunRecordError, String(refused));
-      assert.equal(exitCodeFor(refused), 65);
-      assert.deepEqual(t.claim.log, ["acquire", "release"]);
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("refuses a lease whose self-fence does not exceed the heartbeat period, before taking the claim", async () => {
-    const dir = scratchRoot("lease-args");
-    try {
-      const t = setup(dir.root, { options: { lease: { heartbeatMs: 80_000 } } });
-      await assert.rejects(t.open(), (error: unknown) => error instanceof RunError && error.code === "INVALID_ARGUMENT");
-      assert.deepEqual(t.claim.log, []);
-    } finally {
-      dir.remove();
-    }
-  });
 });
 
-describe("the seal reads pi's store head", () => {
+describe("storeHead reads pi's store head", () => {
   it("equals the Seq the last commit returned, on the installed pi-durable", async () => {
     const dir = scratchRoot("head");
     try {
@@ -774,209 +630,8 @@ describe("the seal reads pi's store head", () => {
   });
 });
 
-describe("the owner lock", () => {
-  it("refuses a second instance on the same host with 76 and never touches the first one's mount", async () => {
-    const dir = scratchRoot("lock");
-    try {
-      const first = await setup(dir.root).open();
-      const second = setup(dir.root, { claim: { reused: true } });
-      const refused = await second.open().then(() => null, (error: unknown) => error);
-      assert.ok(refused instanceof HeldError, String(refused));
-      assert.equal(refused.holder, "owner-lock");
-      assert.equal(exitCodeFor(refused), 76);
-      assert.deepEqual(second.claim.log, ["acquire"], "no barrier, no release: the mount is the first instance's");
-      assert.deepEqual(second.steps, ["acquire"]);
-      assert.equal(fdsOn(dir.root).length, 1, "the refused instance closed its claim directory; the first holds its own");
-      await first.setStatus("running");
-      await first.release();
-      assert.equal(fdsOn(dir.root).length, 0);
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("is refused while another process holds it, even after its handle was collected, and taken once that process is killed", async () => {
-    const dir = scratchRoot("lock-proc");
-    const child = spawn(process.execPath, ["--expose-gc", "test/fixtures/hold-owner-lock.ts", dir.root], { stdio: ["ignore", "pipe", "inherit"] });
-    try {
-      const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
-      assert.equal((await lines.next()).value, "held");
-      assert.throws(() => takeOwnerLock(dir.root), (error: unknown) => error instanceof HeldError && error.holder === "owner-lock");
-      const t = setup(dir.root);
-      await assert.rejects(t.open(), (error: unknown) => error instanceof HeldError && exitCodeFor(error) === 76);
-      const exited = new Promise((resolve) => child.once("exit", resolve));
-      child.kill("SIGKILL");
-      await exited;
-      takeOwnerLock(dir.root).release();
-    } finally {
-      child.kill("SIGKILL");
-      dir.remove();
-    }
-  });
-});
-
-describe("run.json", () => {
-  const record: RunRecord = {
-    run: "r1",
-    status: "sleeping",
-    generation: 3,
-    sealedSeq: 41,
-    wakeAt: "2026-10-06T01:05:00.000Z",
-    holder: { driver: "local", host: "h", bootId: "b", pid: 4242, since: "2026-10-06T01:02:03.000Z" },
-    heartbeatAt: "2026-10-06T01:04:43.000Z",
-    updatedAt: "2026-10-06T01:02:03.000Z",
-    detail: { why: "poll" },
-  };
-
-  it("round-trips through the atomic writer and the reader; no temp file stays", async () => {
-    const dir = scratchRoot("json");
-    try {
-      assert.equal(await readRunRecord(dir.root), undefined, "a run without run.json reads as undefined");
-      await writeRunRecord(dir.root, record);
-      assert.deepEqual(await readRunRecord(dir.root), record);
-      assert.deepEqual(readdirSync(dir.root), [RUN_JSON]);
-      await writeRunRecord(dir.root, { ...record, status: "done" });
-      assert.equal((await readRunRecord(dir.root))?.status, "done");
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("rejects malformed records (RUN_JSON_INVALID, exit 65) and ignores unknown fields", () => {
-    const text = (change: Record<string, unknown>) => JSON.stringify({ ...record, ...change });
-    assert.deepEqual(parseRunRecord(text({ futureField: 1 })), record);
-    const handle = { ...record.holder!, unit: "pda-r1.service", mountpoint: "/mnt/archil/runs/r1" };
-    assert.deepEqual(parseRunRecord(text({ holder: handle })).holder, handle, "the driver's handle fields survive a read");
-    for (const bad of [
-      "not json",
-      "[]",
-      text({ run: "" }),
-      text({ status: "zombie" }),
-      text({ generation: -1 }),
-      text({ generation: 1.5 }),
-      text({ sealedSeq: "41" }),
-      text({ wakeAt: "tomorrow" }),
-      text({ heartbeatAt: 5 }),
-      text({ updatedAt: null }),
-      text({ holder: undefined }),
-      text({ holder: { ...record.holder, pid: 0 } }),
-      text({ holder: { ...record.holder, since: "never" } }),
-    ]) {
-      assert.throws(() => parseRunRecord(bad), (error: unknown) => error instanceof RunRecordError && error.code === "RUN_JSON_INVALID" && exitCodeFor(error) === 65, bad);
-    }
-  });
-
-  it("any error from the writer is a fence, whatever its errno", async () => {
-    const errno = (code: string) => Object.assign(new Error(code), { code });
-    for (const cause of [errno("EIO"), errno("EROFS"), errno("ENOENT"), errno("EACCES"), errno("ENOSPC"), errno("ENOTCONN"), "a string"]) {
-      const failing: PersistRecord = () => Promise.reject(cause);
-      await assert.rejects(writeRunRecord("/nowhere", record, failing), (error: unknown) => error instanceof FencedError && exitCodeFor(error) === 75 && error.cause === cause);
-    }
-  });
-
-  it("isLeaseFresh compares the heartbeat with the reader's clock", () => {
-    const beat = Date.parse(record.heartbeatAt!);
-    assert.equal(isLeaseFresh(record, beat + 89_999), true);
-    assert.equal(isLeaseFresh(record, beat + 90_000), false);
-    assert.equal(isLeaseFresh(record, beat + 1_000, 500), false);
-    assert.equal(isLeaseFresh({ ...record, heartbeatAt: null }, beat), false);
-  });
-});
-
 describe("fences during the run", () => {
-  it("a failed heartbeat write fences the run: commands die before onFenced, nothing more is written, nothing is sealed", async () => {
-    const dir = scratchRoot("beat-fence");
-    let fail = false;
-    let before: string | undefined;
-    let pid = 0;
-    try {
-      // `before` is run.json as the failing write finds it: writes are serialized, so none is in flight at that moment.
-      const persist: PersistRecord = (root, text, signal) => {
-        if (!fail) return persistRecord(root, text, signal);
-        before ??= readFileSync(join(root, RUN_JSON), "utf8");
-        return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
-      };
-      const t = setup(dir.root, { options: { persist, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
-      const run = await t.open();
-      const root = await run.harness.root(ctx, { agent: t.agent });
-      pid = await startCommand(run, t.agent);
-      fail = true;
-      await until(() => t.fenced.length === 1);
-      assert.ok(t.fenced[0] instanceof FencedError);
-      assert.equal(exitCodeFor(t.fenced[0]), 75);
-      assert.match(t.fenced[0].message, /run\.json/);
-      // The fence itself, or the Session a refused commit of the run's own work already failed with it.
-      const refused = (error: unknown) => error === t.fenced[0] || sessionFailed(error);
-      await assert.rejects(run.harness.commit((tx) => tx.appendEntry(root.id, { kind: "after.fence" }), ctx), refused, "the store takes no commit after the fence");
-      assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"], "commands are killed before onFenced");
-      assert.ok(await waitGone(pid), "the command died");
-      assert.equal(run.fenced, true);
-      assert.equal(run.claim.fenced, true);
-      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), before, "run.json is what it was when the failing write began");
-      fail = false;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), before, "no write after the fence");
-      await assert.rejects(run.release(), (error: unknown) => error === t.fenced[0]);
-      await assert.rejects(run.setStatus("done"), (error: unknown) => error === t.fenced[0]);
-      await assert.rejects(run.claim.barrier(), (error: unknown) => error === t.fenced[0]);
-      assert.equal(runJson(dir.root).sealedSeq, null);
-      assert.ok(!t.claim.log.includes("release"), "a fenced claim is never released by the run");
-      assert.equal(t.fenced.length, 1, "onFenced runs once");
-    } finally {
-      killQuietly(pid);
-      dir.remove();
-    }
-  });
-
-  it("a run.json write in flight when another source fences never renames after the fence", async () => {
-    const dir = scratchRoot("inflight-fence");
-    try {
-      let holding = false;
-      let held: (() => void) | undefined;
-      let resumed: Promise<void> | undefined; // the held write, once it runs: the test waits for its own end, not a guess
-      const persist: PersistRecord = async (root, text, signal) => {
-        if (!holding) return persistRecord(root, text, signal);
-        await new Promise<void>((resolve) => (held = resolve));
-        return (resumed = persistRecord(root, text, signal));
-      };
-      const lease = { heartbeatMs: 10, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 };
-      const t = setup(dir.root, { options: { persist, lease }, claim: { barrier: () => Promise.reject(new FencedError("archil sync: the mount is failed")) } });
-      const run = await t.open();
-      holding = true;
-      await until(() => held !== undefined);
-      const before = readFileSync(join(dir.root, RUN_JSON), "utf8");
-      await assert.rejects(run.claim.barrier(), FencedError);
-      assert.equal(run.fenced, true, "the fence took effect before the held write resumed");
-      held!();
-      await until(() => t.fenced.length === 1 && resumed !== undefined);
-      // its temp file is written and fsynced before the abort check, so on a slow disk a fixed wait can end first
-      await assert.rejects(resumed!, (error: unknown) => error === t.fenced[0], "the fence aborted the held write");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), before, "the heartbeat that began before the fence did not publish");
-      assert.equal(runJson(dir.root).heartbeatAt, JSON.parse(before).heartbeatAt);
-      assert.equal(existsSync(join(dir.root, RUN_JSON_TEMP)), false, "its temp file was removed");
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("a failing first run.json write fails the open with a fence", async () => {
-    const dir = scratchRoot("first-write");
-    try {
-      const persist: PersistRecord = () => Promise.reject(Object.assign(new Error("EROFS"), { code: "EROFS" }));
-      const t = setup(dir.root, { options: { persist } });
-      const refused = await t.open().then(() => null, (error: unknown) => error);
-      assert.ok(refused instanceof FencedError, String(refused));
-      assert.equal(t.fenced.length, 1);
-      assert.equal(t.fenced[0], refused);
-      assert.ok(!t.claim.log.includes("release"));
-      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout"]);
-    } finally {
-      dir.remove();
-    }
-  });
-
-  it("a commit that fails with SQLITE_IOERR_FSYNC fences the run once: commands die, then onFenced; nothing is sealed", async () => {
+  it("a commit that fails with SQLITE_IOERR_FSYNC fences the run once: commands die, then onFenced; nothing more is recorded", async () => {
     const dir = scratchRoot("store-fence");
     let pid = 0;
     try {
@@ -993,8 +648,7 @@ describe("fences during the run", () => {
       assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"]);
       assert.ok(await waitGone(pid), "the command died");
       await assert.rejects(run.release(), StoreFencedError);
-      assert.equal(runJson(dir.root).status, "running");
-      assert.equal(runJson(dir.root).sealedSeq, null);
+      assert.equal(run.record.status, "running", "nothing more was recorded");
       assert.ok(!t.claim.log.includes("release"));
       await faulty.database!.inner.close();
     } finally {
@@ -1016,7 +670,7 @@ describe("fences during the run", () => {
         await assert.rejects(root.configure({ instructions: "never durable" }, ctx), StoreFencedError);
         await until(() => t.fenced.length === 1);
         await assert.rejects(run.setStatus("failed", { reason: "fenced" }), (error) => error === t.fenced[0]);
-        assert.equal(runJson(dir.root).status, "running");
+        assert.equal(run.record.status, "running");
         await faulty.database!.inner.close();
       } finally {
         dir.remove();
@@ -1024,226 +678,40 @@ describe("fences during the run", () => {
     });
   }
 
-  it("self-fences once the last successful heartbeat started more than expiry minus margin ago, measured from its start", async () => {
-    const dir = scratchRoot("lapse-clock");
-    let now = 0;
-    let holding = false;
-    let written = 0;
-    const pending: Array<() => Promise<void>> = [];
-    let pid = 0;
+  it("a fenced run whose Harness then closes answers with the fence's error, never RELEASE_ORDER: a fence's close is not the app's misuse", async () => {
+    const dir = scratchRoot("fence-then-close");
     try {
-      const persist: PersistRecord = (root, text, signal) => {
-        if (!holding) return persistRecord(root, text, signal).finally(() => written++);
-        return new Promise<void>((resolve, reject) => pending.push(() => persistRecord(root, text, signal).then(resolve, reject)));
-      };
-      // The fake clock drives the timer; the watchdog thread keeps real time, and its 8 s limit is never reached here.
-      const lease = { heartbeatMs: 10, expiryMs: 10_000, marginMs: 2_000, checkMs: 5 };
-      const t = setup(dir.root, { options: { persist, lease, clock: () => now } });
+      const faulty: { database?: FaultyDatabase } = {};
+      const decorateStore = (database: SqliteDatabase) => (faulty.database = new FaultyDatabase(database));
+      const t = setup(dir.root, { options: { decorateStore } });
       const run = await t.open();
-      pid = await startCommand(run, t.agent);
-      // Writes are serialized: the second to finish after the clock moved started after it moved, and so does every later one.
-      now = 5_000;
-      const seen = written;
-      await until(() => written >= seen + 2);
-      holding = true;
-      await until(() => pending.length === 1);
-      now = 7_000;
-      await pending.shift()!();
-      await until(() => pending.length === 1);
-      now = 12_900;
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      assert.equal(t.fenced.length, 0, "7900 ms since the last successful heartbeat started: not yet");
-      now = 13_100;
+      const root = await run.harness.root(ctx, { agent: t.agent });
+      faulty.database!.failNextCommit(sqliteError(SQLITE_IOERR_FSYNC, "disk I/O error"));
+      await assert.rejects(root.configure({ instructions: "never durable" }, ctx), StoreFencedError);
       await until(() => t.fenced.length === 1);
-      const lapsed = t.fenced[0];
-      assert.ok(lapsed instanceof LeaseLapsedError, String(lapsed));
-      assert.equal(lapsed.code, "LEASE_LAPSED");
-      assert.equal(exitCodeFor(lapsed), 75);
-      assert.equal(lapsed.sinceMs, 8_100, "measured from when the write started (5000), not when it finished (7000)");
-      assert.equal(lapsed.by, "timer");
-      assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"]);
-      assert.ok(await waitGone(pid), "the command died");
-      assert.equal(pending.length, 1, "the self-fence fired while a heartbeat write still hung");
-      // The hung heartbeat finishes now: it must not make the lapsed lease look fresh.
-      const atFence = readFileSync(join(dir.root, RUN_JSON), "utf8");
-      await pending.shift()!();
-      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), atFence, "the late heartbeat did not rename over run.json");
-      assert.equal(existsSync(join(dir.root, RUN_JSON_TEMP)), false, "its temp file was removed");
+      await run.harness.close(ctx).catch(() => undefined);
+      await assert.rejects(run.setStatus("failed", { reason: "fenced" }), (error) => error === t.fenced[0]);
+      await assert.rejects(run.release(), (error) => error === t.fenced[0]);
+      assert.equal(run.record.status, "running");
+      await faulty.database!.inner.close();
     } finally {
-      killQuietly(pid);
-      dir.remove();
-    }
-  });
-
-  it("a lapsed lease kills the run's commands and the instance exits 75 while its store still commits", { timeout: 30_000 }, async () => {
-    const dir = scratchRoot("lapse-proc");
-    const child = spawn(process.execPath, ["test/fixtures/lease-lapse.ts", dir.root], { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    let pid = 0;
-    try {
-      const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
-      // The fixture forces the order: heartbeats blocked, a commit, then the lease's limit passed (its clock moved).
-      let commits = 0;
-      let lapsedAt = 0;
-      for await (const line of createInterface({ input: child.stdout! })) {
-        const event = JSON.parse(line) as { pid?: number; commits?: number; lapsed?: boolean };
-        if (event.pid) {
-          pid = event.pid;
-          assert.ok(alive(pid));
-        }
-        if (event.commits) commits = event.commits;
-        if (event.lapsed) lapsedAt = performance.now();
-      }
-      assert.equal(await exit, 75, stderr);
-      const ms = performance.now() - lapsedAt;
-      assert.match(stderr, /LEASE_LAPSED/);
-      assert.ok(commits > 0, "the store kept committing while the heartbeat was blocked");
-      assert.ok(lapsedAt > 0, "the lease lapsed after that commit");
-      assert.ok(ms < 2_500, `exited ${Math.round(ms)} ms after the lease's limit passed (the self-fence checks every 10 ms)`);
-      assert.ok(await waitGone(pid), "the command died with the instance");
-    } finally {
-      child.kill("SIGKILL");
-      killQuietly(pid);
-      dir.remove();
-    }
-  });
-
-  it("a claim root whose mount went away fences at the next heartbeat: commands die, nothing is written under the bare path", async () => {
-    const dir = scratchRoot("vanish");
-    let held = "";
-    let pid = 0;
-    try {
-      const t = setup(dir.root, { options: { lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
-      const run = await t.open();
-      pid = await startCommand(run, t.agent);
-      // The claim directory is one descriptor; a heartbeat (every 20 ms here) opens the root a second time while it syncs it.
-      await until(() => fdsOn(dir.root).length === 1).catch(() => assert.fail(`the run holds its root open once, not ${fdsOn(dir.root).length} times`));
-      held = vanish(dir.root);
-      await until(() => t.fenced.length === 1);
-      const fence = t.fenced[0]!;
-      assert.equal(fence.code, CLAIM_UNMOUNTED, fence.message);
-      assert.equal(exitCodeFor(fence), 75);
-      assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"], "commands are killed before onFenced");
-      assert.ok(await waitGone(pid), "the command died");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      assert.deepEqual(readdirSync(dir.root), [], "nothing was written under the root's path");
-      assert.equal(runJson(held).status, "running", "run.json stays where the claim's directory is");
-      await until(() => fdsOn(held).length === 0);
-    } finally {
-      killQuietly(pid);
-      dir.remove();
-      if (held) rmSync(held, { recursive: true, force: true });
-    }
-  });
-
-  it("a write through the claim directory that fails (its directory is gone) fences, even when the path check passed", async () => {
-    const dir = scratchRoot("dirfd-fails");
-    let held = "";
-    let pid = 0;
-    try {
-      // The check passes, as one that ran just before the mount died does: the write itself must fail, not land elsewhere.
-      const claimDir = (root: string) => claimDirWith(root, async () => undefined);
-      const t = setup(dir.root, { options: { claimDir, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
-      const run = await t.open();
-      pid = await startCommand(run, t.agent);
-      held = vanish(dir.root);
-      await removeWhileWritten(held); // the run's heartbeat may land run.json mid-removal
-      await until(() => t.fenced.length === 1);
-      const fence = t.fenced[0]!;
-      assert.equal(fence.code, "FENCED");
-      assert.match(fence.message, /run\.json/);
-      assert.equal((fence.cause as { code?: string }).code, "ENOENT");
-      assert.ok(await waitGone(pid), "the command died");
-      assert.deepEqual(readdirSync(dir.root), [], "nothing was written under the root's path");
-    } finally {
-      killQuietly(pid);
-      dir.remove();
-    }
-  });
-
-  it("an owner lock that is not the claim directory's fences the open, is let go, and leaves only itself on the path", async () => {
-    const dir = scratchRoot("lock-vanish");
-    let held = "";
-    try {
-      // The mount goes away right after the check before the lock: SQLite then opens owner.lock by path, on the local disk.
-      const claimDir = (root: string) =>
-        claimDirWith(root, async (real) => {
-          await real.assertMounted();
-          if (!held) held = vanish(root);
-        });
-      const t = setup(dir.root, { options: { claimDir } });
-      const refused = await t.open().then(() => null, (error: unknown) => error);
-      assert.ok(refused instanceof FencedError && refused.code === CLAIM_UNMOUNTED, String(refused));
-      assert.deepEqual(t.fenced, [refused]);
-      assert.deepEqual(t.steps, ["acquire"]);
-      assert.deepEqual(readdirSync(dir.root), [OWNER_LOCK], "the one file made by path: the lock, with its journal in memory");
-      takeOwnerLock(dir.root).release();
-      assert.deepEqual(readdirSync(held), [], "nothing in the claim's directory");
-    } finally {
-      dir.remove();
-      if (held) rmSync(held, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("the watchdog thread", () => {
-  it("kills the run's commands at the deadline while a store commit blocks the main thread, then the instance exits 75", { timeout: 30_000 }, async () => {
-    const dir = scratchRoot("blocked");
-    // The self-fence is 4 s after the last heartbeat started. A heartbeat is a run.json write with two fsyncs and can wait
-    // behind another such write, so a start costs up to four fsyncs between successful heartbeats: a slow CI disk took an
-    // 800 ms fence past its limit while the instance started (exit 75 before its first line). 4 s holds fsyncs of up to
-    // about 1 s. The block outlasts the fence by 3.5 s, so the watchdog still has to act while the thread is stuck.
-    const [expiryMs, marginMs] = [4_200, 200];
-    const fenceMs = expiryMs - marginMs;
-    const blockMs = 7_500;
-    const child = spawn(process.execPath, ["test/fixtures/blocked-commit.ts", dir.root, String(blockMs), String(expiryMs), String(marginMs)], { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    let pid = 0;
-    try {
-      const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
-      const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
-      // A line that never comes (the instance ended first) fails with how it ended, not as a JSON parse error.
-      const next = async <T>(what: string): Promise<T> => {
-        const line = await lines.next();
-        if (line.done) assert.fail(`the instance ended before ${what}: exit ${await exit}; ${stderr.trim().split("\n").slice(-2).join(" | ")}`);
-        return JSON.parse(line.value) as T;
-      };
-      const started = await next<{ pid: number; heartbeatAt: string }>("its first line");
-      pid = started.pid;
-      const blocking = await next<{ blocking: number }>("the blocking commit");
-      while (alive(pid) && Date.now() < blocking.blocking + blockMs + 5_000) await new Promise((resolve) => setTimeout(resolve, 5));
-      const deadAt = Date.now();
-      assert.equal(alive(pid), false, "the command died");
-      assert.ok(deadAt < blocking.blocking + blockMs, `the command died ${deadAt - blocking.blocking} ms into a ${blockMs} ms block, while the main thread was still stuck`);
-      const sinceBeat = deadAt - Date.parse(started.heartbeatAt);
-      assert.ok(sinceBeat >= fenceMs && sinceBeat < blockMs, `the command died ${sinceBeat} ms after the last heartbeat started (self-fence at ${fenceMs} ms, block of ${blockMs} ms)`);
-      assert.equal(child.exitCode, null, "the instance was still blocked when its command died");
-      assert.equal(await exit, 75, stderr);
-      assert.match(stderr, /fenced \(LEASE_LAPSED\).*seen by the watchdog/);
-    } finally {
-      child.kill("SIGKILL");
-      killQuietly(pid);
       dir.remove();
     }
   });
 });
 
 describe("release", () => {
-  it("kills the commands, closes, barriers, seals, unlocks, then unmounts", async () => {
+  it("records the release in the store, closes, kills the commands, barriers, then lets go of the claim directory", async () => {
     const dir = scratchRoot("release");
     let pid = 0;
     try {
-      const atUnmount: { commandAlive?: boolean; record?: RunRecord; lockFree?: boolean; rootOpen?: number } = {};
+      const atUnmount: { commandAlive?: boolean; record?: RunRecord; rootOpen?: number } = {};
       const t = setup(dir.root, {
         claim: {
           release: async () => {
             atUnmount.rootOpen = fdsOn(dir.root).length;
             atUnmount.commandAlive = !(await waitGone(pid, 2_000));
-            atUnmount.record = runJson(dir.root);
-            takeOwnerLock(dir.root).release();
-            atUnmount.lockFree = true;
+            atUnmount.record = (await readLocalRunStatus(dir.root))!;
           },
         },
       });
@@ -1252,12 +720,10 @@ describe("release", () => {
       pid = await startCommand(run, t.agent);
       t.steps.length = 0;
       await run.release();
-      assert.deepEqual(t.steps, ["close", "cleanup", "barrier", "seal", "unlock", "unmount"]);
+      assert.deepEqual(t.steps, ["record", "close", "cleanup", "barrier", "unmount"]);
       assert.deepEqual(t.claim.log, ["acquire", "cleanup", "barrier", "release"]);
       assert.equal(atUnmount.commandAlive, false, "the command was dead before the unmount");
-      assert.equal(atUnmount.record?.status, "paused");
-      assert.equal(atUnmount.record?.sealedSeq, await headOf(dir.root));
-      assert.equal(atUnmount.lockFree, true, "the owner lock was released before the unmount");
+      assert.equal(atUnmount.record?.status, "paused", "the store was free before the unmount, and its record says paused");
       assert.equal(atUnmount.rootOpen, 0, "the claim directory was closed before the unmount: an open directory keeps a mount busy");
       await run.release();
       assert.equal(t.claim.log.filter((e) => e === "release").length, 1, "release is idempotent");
@@ -1293,7 +759,7 @@ describe("release", () => {
   });
 
   for (const [what, errcode] of [["an I/O error the store fences on", SQLITE_IOERR_CLOSE], ["any other error", SQLITE_ERROR]] as const) {
-    it(`a rejecting close is a fence (${what}): nothing is sealed and the claim is not released`, async () => {
+    it(`a rejecting close is a fence (${what}): the claim is not released`, async () => {
       const dir = scratchRoot("close-fence");
       try {
         let raw: CloseFails | undefined;
@@ -1303,8 +769,6 @@ describe("release", () => {
         await run.harness.root(ctx, { agent: t.agent });
         await assert.rejects(run.release(), FencedError);
         assert.equal(t.fenced.length, 1);
-        assert.equal(runJson(dir.root).status, "running");
-        assert.equal(runJson(dir.root).sealedSeq, null);
         assert.ok(!t.claim.log.includes("barrier") && !t.claim.log.includes("release"), t.claim.log.join(","));
         await raw!.inner.close();
       } finally {
@@ -1313,40 +777,36 @@ describe("release", () => {
     });
   }
 
-  it("a failed barrier is a fence: nothing is sealed and the claim is not released", async () => {
+  it("a failed barrier is a fence: the claim is not released", async () => {
     const dir = scratchRoot("barrier-fence");
     try {
       const t = setup(dir.root, { claim: { barrier: () => Promise.reject(new FencedError("archil sync: the mount is failed or read-only")) } });
       const run = await t.open();
       await assert.rejects(run.release(), FencedError);
       assert.equal(t.fenced.length, 1);
-      assert.equal(runJson(dir.root).sealedSeq, null);
       assert.ok(!t.claim.log.includes("release"));
     } finally {
       dir.remove();
     }
   });
 
-  it("setStatus writes transitions, and done and failed run the barrier first", async () => {
+  it("setStatus writes transitions in the store, and done and failed run the barrier first", async () => {
     const dir = scratchRoot("status");
     try {
       const log: string[] = [];
-      const persist: PersistRecord = (root, text, signal) => {
-        log.push(`write:${(JSON.parse(text) as RunRecord).status}`);
-        return persistRecord(root, text, signal);
-      };
-      const t = setup(dir.root, { options: { persist }, claim: { log } });
+      const t = setup(dir.root, { claim: { log } });
       const run = await t.open();
       const wakeAt = new Date(Date.now() + 60_000).toISOString();
       await run.setStatus("sleeping", { why: "poll" }, { wakeAt });
-      assert.deepEqual([runJson(dir.root).status, runJson(dir.root).wakeAt, runJson(dir.root).detail], ["sleeping", wakeAt, { why: "poll" }]);
+      assert.deepEqual([run.record.status, run.record.wakeAt, run.record.detail], ["sleeping", wakeAt, { why: "poll" }]);
       log.length = 0;
       await run.setStatus("done", { ok: true });
-      assert.deepEqual(log, ["barrier", "write:done"], "the barrier ran before the terminal status was written");
-      assert.equal(runJson(dir.root).wakeAt, null);
+      assert.deepEqual(log, ["barrier"], "the barrier ran before the terminal status");
+      assert.equal(run.record.wakeAt, null);
       await run.release();
-      assert.equal(runJson(dir.root).status, "done", "release keeps a terminal status");
-      assert.ok(runJson(dir.root).sealedSeq !== null);
+      const left = await recordOf(dir.root);
+      assert.equal(left.status, "done", "release keeps a terminal status");
+      assert.deepEqual(left.detail, { ok: true });
     } finally {
       dir.remove();
     }
