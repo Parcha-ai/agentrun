@@ -1,7 +1,6 @@
 // DockerProvider against a fake docker program under the test's temp dir (test/fake-docker.mjs): it records each
 // call's argv and answers as the docker CLI does. No Docker and no daemon binary are needed.
 import assert from "node:assert/strict";
-import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -104,7 +103,7 @@ test("create() on a refused spec makes no docker call", async () => {
 });
 
 test("create() runs a hardened container with the daemon as its first process and a deadline label", async () => {
-	const { provider, calls, daemonPath } = fakeDocker();
+	const { provider, calls, bound } = fakeDocker();
 	const before = Date.now();
 	const result = await provider.create({ ...SPEC, labels: { team: "a" } });
 	assert.equal(result.ok, true, JSON.stringify(result));
@@ -127,7 +126,7 @@ test("create() runs a hardened container with the daemon as its first process an
 	assert.deepEqual(valuesOf(run, "--ipc"), ["private"], "never another daemon default, such as shareable");
 	assert.deepEqual(valuesOf(run, "--cgroupns"), ["private"], "never the host's, a cgroup v1 host's default");
 	assert.deepEqual(valuesOf(run, "--network"), ["none"]);
-	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${daemonPath},dst=/opt/agentrun/computerd,readonly`]);
+	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${bound},dst=/opt/agentrun/computerd,readonly`], "the provider's private copy of the daemon");
 	assert.deepEqual(valuesOf(run, "--entrypoint"), ["/opt/agentrun/computerd"]);
 	assert.deepEqual(run.slice(-4), ["debian:bookworm-slim", "init", "--deadline", deadline], "PID 1 ends the computer at the deadline the label holds");
 	const [uid, gid] = DEFAULT_USER.split(":");
@@ -280,16 +279,6 @@ test("create() with no daemon binary is not_found, with no docker call", async (
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "not_found");
 	assert.match(result.error.message, /build:daemon/);
-	assert.deepEqual(calls(), []);
-});
-
-test("create() with a daemon only its owner may run is refused, with no docker call", async () => {
-	const { provider, calls, daemonPath } = fakeDocker();
-	chmodSync(daemonPath, 0o700);
-	const result = await provider.create(SPEC);
-	assert.equal(result.ok, false);
-	assert.equal(result.error.code, "invalid");
-	assert.match(result.error.message, /mode 700.*chmod 755/);
 	assert.deepEqual(calls(), []);
 });
 
