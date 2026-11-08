@@ -10,7 +10,7 @@ export {
   agentDirName, agentFolder, agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, homeKey, learningKey, portPath,
   relativePath, relativeSegments, runFolder, runKey, scratchFolder,
 } from "./paths.js";
-export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
+export type { Place } from "./place.js";
 export { localWorkspace, workspaceAt } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
@@ -20,5 +20,10 @@ export {
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
-export { type RunComputer, runTools, type RunTools } from "./run-tools.js";
+export { type RunBrowser, type RunComputer, type RunHold, runTools, type RunTools } from "./run-tools.js";
+export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
+export {
+  type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,
+  type ProviderEntry, resolveComputer, type ResolvedComputer, type StartedComputer,
+} from "./resolve-computer.js";
 export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";

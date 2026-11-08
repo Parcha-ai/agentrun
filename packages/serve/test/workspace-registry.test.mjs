@@ -54,7 +54,7 @@ test("bash's bound is the registry's: no timeout runs at 120 s; one past the han
 test("a computer: the registry's computer list, with the five background tools on the attached Workspace's processes", async () => {
   const root = scratch();
   const computer = realProcesses(fakeComputer(root), root);
-  const run = await runTools(localWorkspace(root), { computer, check: { readBackOf } }, { mode: 1, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "sandbox", computer, check: { readBackOf } }, { mode: 1, context: ctx });
   assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
   assert.ok(run.hands.processes, "the hands carry the computer's processes");
   computer.overrides["process.list"] = () => ({ processes: [], truncated: false, next: 0 });
