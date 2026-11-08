@@ -141,7 +141,8 @@ function fakeDaemon(hello, computer) {
 			buffered = buffered.slice(at + 1);
 			if (typeof request.id !== "number") continue;
 			const reply = (body) => fromDaemon.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`);
-			if (request.method === "hello") reply({ result: hello });
+			// A desktop's hello says its display, as computerd's does.
+			if (request.method === "hello") reply({ result: hello.kind === "desktop" && computer.display !== undefined ? { ...hello, display: computer.display } : hello });
 			else if (request.method === "ping") reply({ result: {} });
 			else if (request.method === "exec.run" && (request.params.maxOutput ?? 0) > MAX_OUTPUT_BYTES) {
 				// As computerd refuses it: more output than one reply line holds.
@@ -153,9 +154,8 @@ function fakeDaemon(hello, computer) {
 				const ran = cat ?? sudo ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
 				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
 			} else if (request.method === "files.read" && request.params.path === "/proc/self/environ") {
-				// The daemon's own environment, NUL-separated: DISPLAY when the computer has a display.
-				const environ = `PATH=/usr/bin:/bin\0HOME=/home/fake\0${computer.display === undefined ? "" : `DISPLAY=${computer.display}\0`}`;
-				reply({ result: { data: b64(environ), eof: true, size: environ.length } });
+				// Root's once init has dropped to its programs' uid (non-dumpable), as on a real computer: unreadable.
+				reply({ error: { code: -32000, message: "open /proc/self/environ: permission denied", data: { kind: "denied" } } });
 			} else if (["files.mkdir", "files.write", "files.list", "files.read"].includes(request.method)) {
 				const result = files(computer, request.method, request.params);
 				reply(result.error ? { error: result.error } : { result });
