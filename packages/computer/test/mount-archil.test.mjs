@@ -126,6 +126,27 @@ test("archilMount: a takeover releases the lower epochs before any mount; releas
 	}
 });
 
+test("archilMount: a higher epoch that appears between the takeover and the force fences it: the listing is read again right before any revoke, and nothing is forced", async () => {
+	// Review (#1994, P2-1): two creates of one run interleave, epoch 3 lagging. Its takeover saw no higher epoch, then an
+	// epoch 4 computer was made and mounted; epoch 3's revoke must not take the folder from it.
+	const SELF = { id: "c-3", name: "c-3" };
+	const fenced = fail("refused", "fenced: run r1 has c-4 at epoch 4, above this claim's epoch 3; a later claim holds the run, so nothing was released");
+	for (const [what, root, first] of [
+		["released lower epochs, then force", fakeRoot(), ok({ released: [{ id: "c-2", name: "c-2" }], kept: [SELF], unproven: [] })],
+		["a held folder, then force", fakeRoot({ mount: { exitCode: 1, output: "mount failed: dsk:/agents/a1/runs/r1/work has an outstanding delegation" } }), ok({ released: [], kept: [SELF], unproven: [] })],
+	]) {
+		let calls = 0;
+		const releaseOlder = async () => (++calls === 1 ? first : fenced);
+		const result = await archilMount({ root, mount: MOUNT, self: SELF, releaseOlder, timeoutMs: 1000 });
+		assert.equal(result.ok, false, what);
+		assert.equal(result.error.code, "refused", what);
+		assert.match(result.error.message, /epoch 4/, what);
+		assert.ok(!root.verbs().includes("revoke"), `${what}: nothing forced (${root.verbs()})`);
+		assert.ok(!root.verbs().includes("serve"), `${what}: no serve`);
+		assert.equal(calls, 2, `${what}: the listing is read again before the force`);
+	}
+});
+
 test("archilMount: another computer of the run at the claim's own epoch is never forced off: a held folder then refuses in words, and a takeover of lower epochs mounts without force", async () => {
 	const SELF = { id: "c-new", name: "c-new" };
 	const twin = { id: "c-twin", name: "c-twin" };
