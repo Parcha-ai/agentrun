@@ -35,6 +35,7 @@ test("the mount group: one case per mount kind, the Archil contract's four, and 
 			["mount.archil-takeover", "full", ["mount:archil", "exec", "files"]],
 			["mount.archil-token", "full", ["mount:archil", "exec"]],
 			["mount.archil-isolated-durable", "full", ["mount:archil", "exec", "files"]],
+			["mount.archil-loop-tool-edit", "full", ["mount:archil", "exec", "files"]],
 			["mount.undeclared-kind", "full", []],
 		],
 	);
@@ -110,6 +111,20 @@ test("mount.run-folder-bind passes a fake that binds the run's folder at /worksp
 	assert.deepEqual(report.cleanup.left, []);
 	const text = formatReport(report);
 	assert.match(text, /^full mount +run-folder-bind run-folder-archil +✓ 2 - 1$/m, text);
+});
+
+test("mount.archil-loop-tool-edit: a file the loop wrote through the file API before the mount, a tool edits, and the edit reads back through the file API; a tool that cannot write fails it in words", async () => {
+	// The lead's ruling on the Daytona live run: object-API files read uid 0, 644, so the tools could not edit them.
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.archil-loop-tool-edit"] });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+	assert.ok(result.observed.some((line) => line.startsWith("the file the loop wrote, seen at /workspace before the tool's edit: ")), JSON.stringify(result.observed));
+	assert.ok(result.observed.some((line) => line.startsWith("the loop's read while the computer holds the folder: ")), JSON.stringify(result.observed));
+
+	const refused = await run({ mount: ["archil"], toolCannotWrite: true }, { ids: ["mount.archil-loop-tool-edit"] });
+	assert.equal(refused.results[0].status, "fail");
+	assert.match(refused.results[0].reason, /a tool .* could not edit .* the file API made/);
+	assert.match(refused.results[0].reason, /Permission denied/);
 });
 
 test("mount.archil-token asks exec.run for no more output than a reply line holds, and passes a fake daemon that refuses more, as computerd does", async () => {
@@ -205,7 +220,7 @@ test("the CLI passes a provider module's mountFor to the run: --only mount runs 
 	const report = JSON.parse(text);
 	assert.deepEqual(
 		statuses(report),
-		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.archil-isolated-durable": "skip", "mount.undeclared-kind": "pass" },
+		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.archil-isolated-durable": "skip", "mount.archil-loop-tool-edit": "skip", "mount.undeclared-kind": "pass" },
 		JSON.stringify(reasons(report)),
 	);
 	assert.equal(code, 3, "a run of the mount group alone leaves Core out: partial");

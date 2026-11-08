@@ -4,7 +4,7 @@
 // A computer made with a mount has the run's folder at /workspace: files.read, files.write and `cat` (with a cwd) there
 // reach the folder on this machine, the way a bind or an Archil mount reaches it.
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -23,6 +23,18 @@ const WORKSPACE = "/workspace";
 function bound(computer, path) {
 	if (computer.bound === undefined || !(path === WORKSPACE || path.startsWith(`${WORKSPACE}/`))) return undefined;
 	return join(computer.bound, path.slice(WORKSPACE.length));
+}
+
+/**
+ * What mount.archil-loop-tool-edit's tool runs, `sh -c 'printf "%s\n" "$1" >> "$2"' sh <line> <path>`: the line appended
+ * to a file under the mount, or refused as a tool that may not write it is (toolCannotWrite); undefined for any other argv.
+ */
+function appendOf(argv, computer) {
+	if (argv[0] !== "sh" || argv[1] !== "-c" || argv[2] !== 'printf "%s\\n" "$1" >> "$2"' || argv.length !== 6) return undefined;
+	const host = bound(computer, argv[5]);
+	if (host === undefined || computer.toolCannotWrite) return { exitCode: 2, stdout: "", stderr: `sh: 1: cannot create ${argv[5]}: Permission denied\n` };
+	appendFileSync(host, `${argv[4]}\n`);
+	return { exitCode: 0, stdout: "", stderr: "" };
 }
 
 /** What `cat <path>` with cwd prints in a computer with a mount, or undefined when argv is not that. */
@@ -135,7 +147,7 @@ function fakeDaemon(hello, computer) {
 				const cat = catOf(request.params.argv, request.params.cwd, computer);
 				// A computer has no sudo for its user (the Archil image ships none).
 				const sudo = request.params.argv.join(" ").includes("sudo -n") ? { exitCode: 127, stdout: "", stderr: "sh: sudo: not found\n" } : undefined;
-				const ran = cat ?? sudo ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
+				const ran = cat ?? sudo ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
 				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
 			} else if (["files.mkdir", "files.write", "files.list", "files.read"].includes(request.method)) {
 				const result = files(computer, request.method, request.params);
@@ -227,6 +239,7 @@ export function fakeComputers({
 	vendorAgentPorts,
 	probeInterfaces = ["lo"],
 	agentAnswers = [],
+	toolCannotWrite = false,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -296,6 +309,7 @@ export function fakeComputers({
 					tree: new Map(),
 					filesPage,
 					bound: folderOf(spec.mount),
+					toolCannotWrite,
 					probe: { interfaces: probeInterfaces, answers: agentAnswers },
 				},
 			};
