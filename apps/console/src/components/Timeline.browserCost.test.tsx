@@ -38,6 +38,22 @@ describe("a browser call's charge, on its own row", () => {
     expect(li.textContent).not.toContain("so far");
   });
 
+  it("the agent page's latest run says an ended run's call row as known too, as the run page does", async () => {
+    const { LatestRun } = await import("./LatestRun");
+    const { runFixture } = await import("@/fixtures");
+    const f = runFixture("run.completed.idle.1");
+    const run = { ...f.run, kind: "agentic", status: "completed", state: "idle" };
+    const rows = [call({ usd: null, requests: 0, so_far_usd: 0.001, unpriced: 1 })];
+    const page: TimelinePage = { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: run.run_id, status: "completed", state: "idle", rows, drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
+    const v2 = { getTimeline: async () => page, getRun: async () => ({ run }) };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(LatestRun, { v2: v2 as never, run: run as never, onRun: () => {} })); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 60)); });
+    expect(host.textContent).toContain("$0.001 known, 1 not priced");
+    expect(host.textContent).not.toContain("so far $0.001");
+  });
+
   it("the run page says an ended run's call row as known (runEnded of its status), a working one's as so far", async () => {
     const { RunDetail } = await import("./RunDetail");
     const { messageFeatures, runFixture } = await import("@/fixtures");
