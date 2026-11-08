@@ -7,7 +7,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, runDir, scratch, serve, triggerStore, withEnv } from "./support.mjs";
 
 const sealKey = () => randomBytes(32).toString("base64");
 /** Whether `text` holds any 8 characters of `secret` in a row. */
@@ -130,7 +130,9 @@ test("an ended run the next server holds no Run for, listed from its row and ser
 test("a webhook trigger's secret that does not open under the server's seal key is said at the start, naming its trigger, and the trigger stays refused", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
-  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  // The triggers' store, the next server's too: the trigger it made is read again there.
+  const store = await triggerStore();
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", store });
   let api = client(first.baseUrl, first.token);
   assert.equal((await api("POST", "/agents", agent("hooked"))).status, 201);
   const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "hooked", input: { content: "Hi." }, max_cost_usd: 0.5 } });
@@ -139,7 +141,7 @@ test("a webhook trigger's secret that does not open under the server's seal key 
   // Another seal key: the secret is still in the file, sealed, but does not open here.
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const lines = [];
-  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line) });
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line), store: await triggerStore(store) });
   t.after(() => next.close());
   const said = lines.filter((line) => line.includes(made.body.id) && /does not open|not_open|unopened|unreadable/.test(line));
   assert.equal(said.length, 1, `said once, naming the trigger: ${JSON.stringify(lines)}`);

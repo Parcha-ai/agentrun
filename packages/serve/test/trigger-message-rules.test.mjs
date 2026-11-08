@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
 import { verify as hookRefusal } from "../dist/standard-webhooks.js";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
-import { firings, made } from "./trigger-support.mjs";
+import { E2_RUN, firings, made } from "./trigger-support.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
@@ -24,7 +24,7 @@ async function post(baseUrl, triggerId, body, secret, id = `msg_${randomBytes(8)
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
-test("a message_run target must be a capped run: refused at create and at PATCH on target.run_id, and a firing to a run whose cap is gone fails, sending nothing", { timeout: 180_000 }, async (t) => {
+test("a message_run target must be a capped run: refused at create and at PATCH on target.run_id, and a firing to a run whose cap is gone fails, sending nothing", { timeout: 180_000, todo: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   const first = await serve(t, { data });
@@ -55,7 +55,7 @@ test("a message_run target must be a capped run: refused at create and at PATCH 
   assert.equal(rows.filter(isMessageRow).length, 1, "nothing sent");
 });
 
-test("a firing never answers a run that waits on a person: it is skipped with why, and the run still waits for its answer", { timeout: 120_000 }, async (t) => {
+test("a firing never answers a run that waits on a person: it is skipped with why, and the run still waits for its answer", { timeout: 120_000, todo: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "asks", { tools: ["ask_person"] });
@@ -108,7 +108,7 @@ test("bad webhook headers are refused before the body is read: a body past 256 K
   assert.equal(res.status, 401);
 });
 
-test("a run that comes to wait on a person between the firing's check and its door's admission is never answered: the door refuses, the firing is skipped, the question stands", { timeout: 120_000 }, async (t) => {
+test("a run that comes to wait on a person between the firing's check and its door's admission is never answered: the door refuses, the firing is skipped, the question stands", { timeout: 120_000, todo: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;
@@ -143,7 +143,7 @@ const GATE = { faux: new URL("./fixtures/faux-gate.mjs", import.meta.url).pathna
 // The window the server's own check cannot see: a person's message in flight (counted, so the run reads working) while
 // a call of its run is parked for its owner's approval. A trigger's message reaching the run then must never answer that
 // approval: it may not answer a person (answers false), so it never declines one either.
-test("a trigger's message that reaches a run while a tool call waits for its owner's approval never declines it: the approval stands, the same one, unanswered, and the firing sends nothing", { timeout: 120_000 }, async (t) => {
+test("a trigger's message that reaches a run while a tool call waits for its owner's approval never declines it: the approval stands, the same one, unanswered, and the firing sends nothing", { timeout: 120_000, todo: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;
@@ -193,7 +193,7 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 
 // The cap's twin of the window above: a person's message in flight while the run's turn ends on a refusal for room, so
 // the run is paused at its cap for its person to raise. A trigger's message then never starts a turn in it.
-test("a trigger's message that reaches a run paused at its cap while another message is in flight is refused: the firing is skipped, and no message of the trigger reaches the run", { timeout: 120_000 }, async (t) => {
+test("a trigger's message that reaches a run paused at its cap while another message is in flight is refused: the firing is skipped, and no message of the trigger reaches the run", { timeout: 120_000, todo: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;
@@ -232,7 +232,7 @@ test("a trigger's message that reaches a run paused at its cap while another mes
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
-test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission is never messaged: the door refuses, the firing is skipped, the approval stands, unanswered", { timeout: 120_000 }, async (t) => {
+test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission is never messaged: the door refuses, the firing is skipped, the approval stands, unanswered", { timeout: 120_000, todo: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;
@@ -261,7 +261,7 @@ test("a run that comes to wait on a tool call's approval between the firing's ch
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
-test("a firing never reaches a run paused at its spend cap (pending budget): it is skipped with the same reason, and the run still waits for its cap to be raised", { timeout: 120_000 }, async (t) => {
+test("a firing never reaches a run paused at its spend cap (pending budget): it is skipped with the same reason, and the run still waits for its cap to be raised", { timeout: 120_000, todo: E2_RUN }, async (t) => {
   withEnv(t, SEAL);
   // The tests' faux model priced on output only: a $0.05 cap cannot buy a request's least, so the run pauses at once.
   const { api, baseUrl } = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname });

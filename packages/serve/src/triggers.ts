@@ -288,7 +288,8 @@ export class Triggers {
     } catch (error) {
       throw await this.scopeTaken(error, source, id) ?? nameTaken(error, name);
     }
-    void this.arm();
+    // Armed before the answer: a create that answered is in effect, its first time on the timer (arm reads the store).
+    await this.arm();
     // What it minted, shown this once, by field: a webhook's `secret`.
     return { ...(await this.view(asTrigger(row))), ...(minted as { secret?: string }) };
   }
@@ -378,7 +379,11 @@ export class Triggers {
     const again: TriggerPatch = enabled && !trigger.enabled ? { failuresInARow: 0, disabled: null } : {};
     const scopeSource = source ?? trigger.source;
     if (enabled) await this.scopeFree(scopeSource, trigger.id);
+    // A trigger belongs to its target's agent: aimed at another agent (or another agent's run), it moves to that agent,
+    // whose one name per trigger and list of triggers it joins.
+    const agentId = target ? await this.agentOf(target) : trigger.agentId;
     const patch: TriggerPatch = {
+      ...(agentId !== trigger.agentId ? { agentId } : {}),
       ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}),
       ...(settings.catchup_window_s !== undefined ? { catchupWindowS: settings.catchup_window_s } : {}),
       ...(settings.max_active_runs !== undefined ? { maxActiveRuns: settings.max_active_runs } : {}), ...again, enabled, nextAt: next,
@@ -387,7 +392,7 @@ export class Triggers {
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
-    void this.arm();
+    await this.arm();
     return this.view(asTrigger(row));
   }
 
@@ -395,7 +400,7 @@ export class Triggers {
     const trigger = await this.need(id);
     await this.store.triggers.remove(id);
     if (this.adapter(trigger.source)?.settings?.scope === "trigger") this.deps.settings(trigger.source.kind)?.remove(id);
-    void this.arm();
+    await this.arm();
   }
 
   /** Run now: one firing per Idempotency-Key, driven before the answer. `created` false: the key's firing, as it stands. */

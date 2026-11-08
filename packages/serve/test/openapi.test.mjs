@@ -654,7 +654,8 @@ test("what this server always sends is required in the document: a run's revisio
   const answer = doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema;
   const write = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;
   for (const [source, filled] of [[{ cron: "30 1 * * *" }, "timezone"], [{ every_s: 600 }, "start_at"]]) {
-    const body = schedule("nightly", source);
+    // One name per trigger of an agent (the store's UNIQUE (agent_id, name)): each its own.
+    const body = schedule("nightly", source, { name: `nightly ${filled}` });
     assert.deepEqual(schemaProblems(doc, write, body), [], `a write may leave ${filled} out`);
     const created = await api("POST", "/triggers", body);
     assert.equal(created.status, 201, JSON.stringify(created.body));

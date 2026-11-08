@@ -59,6 +59,7 @@ const firingOf = (r: FiringRecord): FiringRow => ({
 });
 /** The trigger's patch as columns: name -> [column, value]. */
 const TRIGGER_PATCH: { [K in keyof TriggerPatch]-?: (value: NonNullable<TriggerPatch[K]> | null) => [string, SqliteValue] } = {
+  agentId: (v) => ["agent_id", v],
   name: (v) => ["name", v],
   enabled: (v) => ["enabled", v ? 1 : 0],
   source: (v) => ["source", json(v)],
@@ -356,6 +357,8 @@ class SqliteStore implements Store {
       create: async (t, scopes = []) => {
         const at = now();
         const row = await db.transaction(async (tx) => {
+          // A trigger belongs to an agent the store holds: refused in words, never a bare foreign-key failure.
+          if (!(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", t.agentId))) throw new StoreConstraint(`no agent ${t.agentId}: a trigger belongs to an agent the store holds`);
           const made = await tx.get<TriggerRecord>(
             `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
             t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at,
@@ -368,6 +371,8 @@ class SqliteStore implements Store {
       update: async (id, patch, scopes) => {
         const { set, params } = triggerSet(patch, now());
         const row = await db.transaction(async (tx) => {
+          // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
+          if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
           const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id);
           // Scope rows only while it is on: turned off, it holds none; given scopes, they are its rows now.
           if (changed && (changed.enabled === 0 || scopes !== undefined)) await writeScopes(tx, id, changed.enabled === 1 ? (scopes ?? []) : []);

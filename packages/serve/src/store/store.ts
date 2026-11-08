@@ -340,7 +340,8 @@ export interface NewTrigger {
   readonly maxActiveRuns?: number | null;
 }
 /** A trigger's fields changed; the ones absent stay. */
-export type TriggerPatch = Partial<Pick<TriggerRow, "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
+/** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
+export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
 export interface FiringChange {
   readonly status?: FiringStatus;

@@ -19,7 +19,7 @@ import { summaryLines } from "../dist/import-summary.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, client, FAUX, runDir, scratch } from "./support.mjs";
+import { agent, client, FAUX, runDir, scratch, triggerStore } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CANARY = "CANARY-VALUE-7f3e9d2c1b0a6e5d";
@@ -536,7 +536,7 @@ test("a webhook trigger's key or the outbound webhook's, pasted into sessions as
   const before = process.env.AGENTRUN_SEAL_KEY;
   t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
   process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", store: await triggerStore() });
   let open = true;
   t.after(() => open && server.close());
   const api = client(server.baseUrl, server.token);

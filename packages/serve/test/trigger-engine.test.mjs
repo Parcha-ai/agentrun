@@ -610,6 +610,42 @@ test("a trigger's run cap counts every run it started that still works, however 
   assert.deepEqual([third.status, runs.started.length], ["due", 252], JSON.stringify(third));
 });
 
+test("a create or a PATCH answers once its timer is armed: the clock moved right after the answer fires the trigger", async (t) => {
+  const { clock, triggers } = await engine(t, {});
+  const made = await triggers.create(body({ at: "2026-06-01T00:05:00Z" }));
+  // No wait for the timer: the answer is the schedule in effect.
+  clock.to("2026-06-01T00:05:00Z");
+  await until(async () => (await triggers.firings(made.id)).firings.length === 1, "the create's time fired");
+  // A one-time schedule turned itself off once it fired: on again, at its new time.
+  await triggers.update(made.id, { source: { kind: "schedule", at: "2026-06-01T00:09:00Z" }, enabled: true });
+  clock.to("2026-06-01T00:09:00Z");
+  await until(async () => (await triggers.firings(made.id)).firings.length === 2, "the PATCH's time fired");
+});
+
+test("run now with the same Idempotency-Key twice answers the first firing and its run, and starts one run", async (t) => {
+  const { triggers, runs } = await hookEngine(t);
+  const made = await triggers.create({ ...body({ cron: "0 9 * * 1" }), enabled: false });
+  const first = await triggers.fire(made.id, "press-1");
+  assert.deepEqual([first.created, first.firing.key, first.firing.status, first.firing.run_id], [true, firingKey("manual", made.id, "press-1"), "started", "run-1"]);
+  const again = await triggers.fire(made.id, "press-1");
+  assert.deepEqual([again.created, again.firing], [false, first.firing], "the same firing, its same run");
+  assert.equal(runs.started.length, 1, "one run");
+});
+
+test("a PATCH that aims a trigger at another agent moves it there: its row's agent follows, and that agent's one name per trigger holds", async (t) => {
+  const { store, triggers } = await engine(t, {});
+  const toB = { ...body({ every_s: 600 }).target, agent_id: "b" };
+  const mine = await triggers.create(body({ every_s: 600 }));
+  await triggers.create({ ...body({ every_s: 600 }), target: toB });
+  await assert.rejects(triggers.update(mine.id, { target: toB }), (error) => error.code === "name_taken" && error.message === "This agent already has a trigger named nightly.");
+  assert.equal((await store.triggers.get(mine.id)).agentId, "a", "refused: still the first agent's");
+  const moved = await triggers.update(mine.id, { name: "morning", target: toB });
+  assert.equal(moved.target.agent_id, "b");
+  assert.equal((await store.triggers.get(mine.id)).agentId, "b", "its row moved with its target");
+  assert.deepEqual((await store.triggers.list("b")).map((x) => x.name), ["morning", "nightly"]);
+  assert.deepEqual(await store.triggers.list("a"), [], "the first agent holds it no more");
+});
+
 test("a webhook with accept starts a run per firing: its last run still working skips nothing, where one with no accept skips", async (t) => {
   const { triggers, runs } = await hookEngine(t, { statusOf: async () => "working" });
   const each = await triggers.create({ ...hookBody, name: "each", source: { kind: "webhook", accept: [{ event: "push" }] } });
