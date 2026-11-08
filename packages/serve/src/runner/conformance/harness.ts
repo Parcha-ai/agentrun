@@ -5,10 +5,13 @@
 // The crash: at one of the kernel's two points a hook kills the runner (runner.kill(): no renew, no release) and never
 // resolves, so that loop is frozen as a dead process's would be; a second runner reclaims the run once its claim runs out
 // and resumes it from the journal, and any late write of the frozen loop is fenced.
-// Next step (not yet): a variant of cases 1 and 2 that kills a real runner child process and has a second process
-// reclaim, since freezing a loop in-process can hide a write a real crash would cut.
+// Cases 1 and 2 run twice: with the loop frozen in-process, and with the first runner a process of its own (child.ts)
+// that SIGKILLs itself at the point, since a frozen loop can hide a write a real crash would cut.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -22,6 +25,8 @@ import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks
 export type TestFunction = (name: string, options: { skip?: string | boolean; timeout?: number }, fn: (t: { after(fn: () => unknown): void }) => Promise<void>) => unknown;
 
 const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+/** The suite's runner timing, for its runner process too (child.ts). */
+export const CONFORMANCE_TIMING = TIMING;
 const RUN = "run-1";
 const CASE_TIMEOUT_MS = 30_000;
 
@@ -38,8 +43,25 @@ async function until<T>(check: () => Promise<T | false | undefined | null> | T |
 const never = () => new Promise<never>(() => {});
 
 /** The suite's tools, with how many times each ran (outside the journal, as a real side effect would be counted). */
-function suiteTools() {
-  const ran: Record<ToolName, number> = { effect: 0, read: 0, slow: 0, asked: 0 };
+export function suiteTools(countFile?: string) {
+  // Counted in memory, or in a file when a runner in another process runs them too (a line per run).
+  const memory: Record<ToolName, number> = { effect: 0, read: 0, slow: 0, asked: 0 };
+  const count = (name: ToolName) =>
+    countFile ? (existsSync(countFile) ? readFileSync(countFile, "utf8").split("\n").filter((line) => line === name).length : 0) : memory[name];
+  const ran = {
+    get effect() { return count("effect"); },
+    get read() { return count("read"); },
+    get slow() { return count("slow"); },
+    get asked() { return count("asked"); },
+    set effect(_: number) { bump("effect"); },
+    set read(_: number) { bump("read"); },
+    set slow(_: number) { bump("slow"); },
+    set asked(_: number) { bump("asked"); },
+  } as Record<ToolName, number>;
+  function bump(name: ToolName) {
+    if (countFile) appendFileSync(countFile, `${name}\n`);
+    else memory[name] += 1;
+  }
   let letGo: () => void = () => {};
   const slowGate = new Promise<void>((resolve) => (letGo = resolve));
   let slowStarted: () => void = () => {};
@@ -122,7 +144,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
       throw new Error(`${error.message}; the run is ${row.state} (runner ${row.runner}, epoch ${row.epoch}); the runners said ${JSON.stringify(events)}`);
     });
   const commandRow = async (id: number) => (await server.commands(RUN, id - 1)).find((row) => row.id === id)!;
-  return { server, start, run, read, ended, commandRow };
+  return { dir, server, start, run, read, ended, commandRow };
 }
 
 interface Case {
@@ -145,6 +167,35 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   return { ...(await w.read()), ran };
 }
 
+/** The runner process the process cases start (child.ts), and its environment: never a test runner's own. */
+const CHILD = fileURLToPath(new URL("./child.js", import.meta.url));
+const childEnv = () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  return env;
+};
+
+/** As crashThenResume, with the first runner a process of its own that SIGKILLs itself at `point`: nothing it had not
+ *  committed survives, as in a real crash. The tools count their runs in a file both processes append to. */
+async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn: () => unknown): void }, tool: ToolName, point: keyof KernelHooks) {
+  const w = await world(subject, t);
+  const countFile = join(w.dir, "tool-runs");
+  const { tools, ran } = suiteTools(countFile);
+  const config = { dataDir: w.dir, module: subject.process!.module, export: subject.process!.export, tool, point, countFile };
+  const child = spawn(process.execPath, [CHILD, JSON.stringify(config)], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+  t.after(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  });
+  const exit = (await Promise.race([once(child, "exit"), sleep(15_000).then(() => ["timeout", null])])) as [number | string | null, string | null];
+  assert.equal(exit[1], "SIGKILL", `the runner process dies at ${point} (it ended ${JSON.stringify(exit)}): ${stderr}`);
+  await w.start("runner-b", { script: [{ call: tool }, { say: "done" }], tools, hooks: quiet });
+  const row = await w.ended("ended");
+  assert.equal(row.epoch, 2, "the second runner resumed it under its own claim");
+  return { ...(await w.read()), ran };
+}
+
 const CASES: readonly Case[] = [
   {
     id: "crash-before-intent",
@@ -160,6 +211,24 @@ const CASES: readonly Case[] = [
     title: "crash after intent, before result: interrupted",
     async body(subject, t) {
       const { calls, ran } = await crashThenResume(subject, t, "effect", "beforeResult");
+      assert.equal(ran.effect, 1, "the effect ran once, never again after the crash");
+      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["effect", "interrupted"]]);
+    },
+  },
+  {
+    id: "crash-before-intent-process",
+    title: "a runner process killed before a tool's intent: another resumes, runs it once",
+    async body(subject, t) {
+      const { calls, ran } = await processCrashThenResume(subject, t, "effect", "beforeIntent");
+      assert.equal(ran.effect, 1, "the effect ran once");
+      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["effect", "done"]]);
+    },
+  },
+  {
+    id: "crash-after-intent-process",
+    title: "a runner process killed after intent, before result: interrupted",
+    async body(subject, t) {
+      const { calls, ran } = await processCrashThenResume(subject, t, "effect", "beforeResult");
       assert.equal(ran.effect, 1, "the effect ran once, never again after the crash");
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["effect", "interrupted"]]);
     },
@@ -241,7 +310,8 @@ const CASES: readonly Case[] = [
  *  reason, never passed. */
 export function registerHarnessConformance(subject: ConformanceSubject, { test }: { test: TestFunction }): void {
   for (const entry of CASES) {
-    const skip = subject.unsupported?.[entry.id];
+    const processCase = entry.id.endsWith("-process");
+    const skip = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
     test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip: `${subject.name} cannot model this yet: ${skip}` } : {}) }, (t) =>
       entry.body(subject, t),
     );

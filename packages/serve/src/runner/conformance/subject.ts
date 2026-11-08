@@ -44,13 +44,24 @@ export interface ConformanceSetup {
   readonly hooks: KernelHooks;
 }
 
-export type ConformanceCase = "crash-before-intent" | "crash-after-intent" | "replay-safe-rerun" | "steer-mid-turn" | "stop-ends-turn" | "park-on-ask";
+export type ConformanceCase =
+  | "crash-before-intent"
+  | "crash-after-intent"
+  | "crash-before-intent-process"
+  | "crash-after-intent-process"
+  | "replay-safe-rerun"
+  | "steer-mid-turn"
+  | "stop-ends-turn"
+  | "park-on-ask";
 
 export interface ConformanceSubject {
   /** The harness's name, as the suite's tests are titled. */
   readonly name: string;
   /** Loops for runs whose model plays `setup.script`, calling `setup.tools` through the kernel with `setup.hooks`. */
   createLoop(setup: ConformanceSetup): LoopFactory;
+  /** Where a runner process finds this subject (an importable module and its export), for the cases whose crash is a real
+   *  process's death. Without it those cases are skipped, saying so. */
+  readonly process?: { readonly module: string; readonly export: string };
   /** Cases this harness cannot model yet, each with why: reported as skipped with that reason, never as passed. */
   readonly unsupported?: Partial<Record<ConformanceCase, string>>;
 }
