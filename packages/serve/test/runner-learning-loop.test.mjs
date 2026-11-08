@@ -42,7 +42,7 @@ function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, r
   const factory = createLearningLoop({
     sourceOf: async () => ({ runId: "run-1", agentId: "agent-1", instructions: "Be brief." }),
     proposal: (runId) => store.learning.proposal(runId),
-    workspace: (agentId) => ({ agentId }),
+    folder: (agentId) => ({ workspace: { agentId }, end: async () => {} }),
     readMain,
     ask: async (request, signal) => {
       calls.ask.push({ request, aborted: signal.aborted });

@@ -67,8 +67,9 @@ export interface LearningLoopDeps {
   sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly agentId: string; readonly instructions?: string } | undefined>;
   /** Its kept proposal (store.learning.proposal). */
   proposal(runId: string): Promise<LearningProposal | undefined>;
-  /** The agent's learning folder (tl-places' learningWorkspace). */
-  workspace(agentId: string): unknown;
+  /** The agent's learning folder (learn/folder.ts learningWorkspace): its Workspace, and its end, called once the run is
+   *  done with it, whichever way it goes out. */
+  folder(agentId: string): { readonly workspace: unknown; end(): Promise<void> };
   /** Main as the grader reads it, from the folder's snapshot; problems when the proposal can't be graded on it. */
   readMain(ws: unknown, proposal: KeptProposal): Promise<GradeMain | { readonly problems: readonly Problem[] }>;
   /** One grader call, through the kernel's model proxy and the cap, booked to the agent's learning meter. */
@@ -151,79 +152,91 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           return { state: "ended" };
         }
         const proposal = row.proposal;
-        const ws = learning.workspace(source.agentId);
-        const entries = await journalEntries(journal, context);
-        rooted = entries.length > 0;
-        const unavailable = entries.filter((entry) => entry.kind === KINDS.learningUnavailable).length;
 
-        // The grade: once. A verdict already in the journal is the one the merge goes on.
-        let graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
-        if (!graded) {
-          const main = await learning.readMain(ws, proposal);
-          if ("problems" in main) {
-            await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: said.stale(main.problems as never), problems: main.problems } satisfies DroppedData, "ended");
+        /** The grade and the merge, on the agent's learning folder `ws`. */
+        const onFolder = async (ws: unknown): Promise<LoopEnd> => {
+          const entries = await journalEntries(journal, context);
+          rooted = entries.length > 0;
+          const unavailable = entries.filter((entry) => entry.kind === KINDS.learningUnavailable).length;
+
+          // The grade: once. A verdict already in the journal is the one the merge goes on.
+          let graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
+          if (!graded) {
+            const main = await learning.readMain(ws, proposal);
+            if ("problems" in main) {
+              await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: said.stale(main.problems as never), problems: main.problems } satisfies DroppedData, "ended");
+              return { state: "ended" };
+            }
+            const items = gradedItems(proposal.notes as NoteText[], (proposal.files ?? []) as NoteText[]);
+            const prompt = gradePrompt({
+              run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: proposal.notes,
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+            });
+            let usd: number | null = 0;
+            const ask = async () => {
+              const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
+              const answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]));
+              usd = usd === null || answer.usd === null ? null : usd + answer.usd;
+              return answer.text;
+            };
+            let verdict: Verdict;
+            try {
+              verdict = parseVerdict(await ask(), items);
+              // An answer the host cannot read is asked once more, as the server's grade did.
+              if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
+            } catch (error) {
+              const end = await halted();
+              if (end) return end;
+              await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview) } satisfies DroppedData, "ended");
+              void error;
+              return { state: "ended" };
+            }
+            graded = { source: source.runId, verdict, usd, graded: main.graded };
+            await append(KINDS.learningGraded, graded);
+            // The verdict is durable before the merge, its side effect.
+            await deps.flush();
+          }
+          const halt = await halted();
+          if (halt) return halt;
+
+          if (!graded.verdict.merge) {
+            await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(graded.verdict) } satisfies DroppedData, "ended");
             return { state: "ended" };
           }
-          const items = gradedItems(proposal.notes as NoteText[], (proposal.files ?? []) as NoteText[]);
-          const prompt = gradePrompt({
-            run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: proposal.notes,
-            ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+          const merging = keptOf(proposal, graded.verdict);
+          const held = graded.verdict.items.filter((item) => item.pending).map((item) => item.file);
+          const result = await learning.commit(ws, {
+            kind: "merge", runId: source.runId, reason: graded.verdict.reason || "The grader kept every new note.",
+            files: filesOf(merging), ...(held.length ? { held } : {}), graded: graded.graded,
           });
-          let usd: number | null = 0;
-          const ask = async () => {
-            const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
-            const answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]));
-            usd = usd === null || answer.usd === null ? null : usd + answer.usd;
-            return answer.text;
-          };
-          let verdict: Verdict;
-          try {
-            verdict = parseVerdict(await ask(), items);
-            // An answer the host cannot read is asked once more, as the server's grade did.
-            if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
-          } catch (error) {
-            const end = await halted();
-            if (end) return end;
-            await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview) } satisfies DroppedData, "ended");
-            void error;
+          if (result.ok) {
+            const detail = said.merged(merging.notes.map(({ file }) => ({ name: file.replace(/\.md$/, ""), supersedes: [] })));
+            await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");
             return { state: "ended" };
           }
-          graded = { source: source.runId, verdict, usd, graded: main.graded };
-          await append(KINDS.learningGraded, graded);
-          // The verdict is durable before the merge, its side effect.
-          await deps.flush();
-        }
-        const halt = await halted();
-        if (halt) return halt;
+          if (result.reason === "conflict") {
+            await append(KINDS.learningDropped, { source: source.runId, reason: "stale", detail: said.stale(result.problems as never), problems: result.problems } satisfies DroppedData, "ended");
+            return { state: "ended" };
+          }
+          if (result.reason === "refused") {
+            await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: said.stale(result.problems as never), problems: result.problems } satisfies DroppedData, "failed");
+            return { state: "failed", error: { code: "learning_refused", message: result.problems.map((problem) => problem.detail).join("; ") } };
+          }
+          // The folder could not be reached: parked, and tried again after a backoff, never in a hot loop.
+          const error = "error" in result ? result.error : "the learning folder could not be reached";
+          await append(KINDS.learningUnavailable, { source: source.runId, error } satisfies UnavailableData, "parked");
+          const wait = UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]!;
+          return { state: "parked", wakeAt: now() + wait };
+        };
 
-        if (!graded.verdict.merge) {
-          await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(graded.verdict) } satisfies DroppedData, "ended");
-          return { state: "ended" };
+        // The folder is ended once the run is done with it, whichever way it goes out. Its end only sweeps what an exec
+        // left behind (on Archil, the spill), after the run's own end is committed: a failed sweep changes no end.
+        const folder = learning.folder(source.agentId);
+        try {
+          return await onFolder(folder.workspace);
+        } finally {
+          await folder.end().catch(() => {});
         }
-        const merging = keptOf(proposal, graded.verdict);
-        const held = graded.verdict.items.filter((item) => item.pending).map((item) => item.file);
-        const result = await learning.commit(ws, {
-          kind: "merge", runId: source.runId, reason: graded.verdict.reason || "The grader kept every new note.",
-          files: filesOf(merging), ...(held.length ? { held } : {}), graded: graded.graded,
-        });
-        if (result.ok) {
-          const detail = said.merged(merging.notes.map(({ file }) => ({ name: file.replace(/\.md$/, ""), supersedes: [] })));
-          await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");
-          return { state: "ended" };
-        }
-        if (result.reason === "conflict") {
-          await append(KINDS.learningDropped, { source: source.runId, reason: "stale", detail: said.stale(result.problems as never), problems: result.problems } satisfies DroppedData, "ended");
-          return { state: "ended" };
-        }
-        if (result.reason === "refused") {
-          await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: said.stale(result.problems as never), problems: result.problems } satisfies DroppedData, "failed");
-          return { state: "failed", error: { code: "learning_refused", message: result.problems.map((problem) => problem.detail).join("; ") } };
-        }
-        // The folder could not be reached: parked, and tried again after a backoff, never in a hot loop.
-        const error = "error" in result ? result.error : "the learning folder could not be reached";
-        await append(KINDS.learningUnavailable, { source: source.runId, error } satisfies UnavailableData, "parked");
-        const wait = UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]!;
-        return { state: "parked", wakeAt: now() + wait };
       },
     };
   };
