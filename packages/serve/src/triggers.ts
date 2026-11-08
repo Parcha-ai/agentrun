@@ -154,9 +154,10 @@ export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): {
 export type TriggerDeps = {
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
-  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`; its first message is the
-   *  trigger's (`from`, never the person's); ApiError when refused. */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin): Promise<{ run_id: string }>;
+  /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
+   *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
+   *  refused. */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string): Promise<{ run_id: string }>;
   /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
    *  once per key), as the trigger's (`from`); ApiError when refused. `answers: "question"`: a steering message from one
    *  its source trusts to (Trust.answers), which may answer the run's question, as no other trigger's message does. */
@@ -189,6 +190,9 @@ const REAL_CLOCK: TriggerClock = {
   },
 };
 const iso = (ms: number) => new Date(ms).toISOString();
+/** Why a firing is skipped while a run waits on its person: the same words wherever it is (the overlap's check, a
+ *  message to a run). */
+export const waitingForAPerson = (runId: string) => `The last run, ${runId}, is waiting for a person.`;
 export const firingKey = (by: string, triggerId: string, what: string) => `fir_${createHash("sha256").update(`${by}\n${triggerId}\n${what}`).digest("hex").slice(0, 32)}`;
 /** The adapter of `kind`, among `adapters`. */
 const adapterIn = (adapters: readonly TriggerAdapter[], kind: string): TriggerAdapter | undefined => adapters.find((a) => a.id === kind);
@@ -699,7 +703,7 @@ export class Triggers {
       if (now.trigger.target.kind === "message_run") return await this.send(triggerId, key);
       let started: { run_id: string };
       try {
-        started = await this.deps.start(now.trigger.target, this.inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, this.originOf(now.trigger));
+        started = await this.deps.start(now.trigger.target, this.inputOf(now.trigger, now.firing), { id: triggerId, firing_key: key }, this.originOf(now.trigger), this.titleOf(now.trigger, now.firing));
       } catch (error) {
         // Stopping, the start may have been cut by the close: the firing stays due for the next start, whose origin key
         // finds a run this one made.
@@ -765,7 +769,7 @@ export class Triggers {
     if (!last) return undefined;
     const status = await this.deps.statusOf(last);
     if (status === null || ENDED.has(status)) return undefined;
-    return status === "input_required" ? `The last run, ${last}, is waiting for a person.` : `The last run, ${last}, is still ${status}.`;
+    return status === "input_required" ? waitingForAPerson(last) : `The last run, ${last}, is still ${status}.`;
   }
 
   /** Why a firing of a trigger with max_active_runs waits, when that many of the runs it started still work: each of its
@@ -788,7 +792,7 @@ export class Triggers {
         if (!now.active_runs.length) delete now.active_runs;
       });
     }
-    return runs.length - ended.size >= max ? `The trigger has ${max} runs active (max_active_runs): this firing starts when one ends.` : undefined;
+    return runs.length - ended.size >= max ? `The trigger has ${max} ${max === 1 ? "run" : "runs"} active (max_active_runs): this firing starts when one ends.` : undefined;
   }
 
   private retry(triggerId: string, key: string, error: Error): void {
@@ -1027,6 +1031,14 @@ export class Triggers {
   private given(name: string, source: Source | undefined, target: Target, now: number): Target {
     const trigger = { name, source: source ?? { kind: this.adapters[0]!.id }, target } as Trigger;
     return { ...target, input: this.inputOf(trigger, { key: "", by: "manual", nominal_at: second(now), status: "due", at: iso(now) }) };
+  }
+
+  /** A run's title, from the trigger that starts it: "<its source's title> <its name>", and the event its payload's tag
+   *  names, when one does ("Webhook reviews: pull_request opened"); never its input, which may be a sender's markup. */
+  private titleOf(trigger: Trigger, firing: Firing): string {
+    const event = firing.attrs?.event;
+    const action = firing.attrs?.action;
+    return `${this.adapter(trigger.source).title} ${trigger.name}${event ? `: ${event}${action ? ` ${action}` : ""}` : ""}`;
   }
 
   /** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never
