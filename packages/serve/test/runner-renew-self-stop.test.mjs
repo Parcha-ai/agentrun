@@ -39,9 +39,10 @@ test("renews that fail: the loop is stopped before claimed_until, and nothing it
   await sleep(TIMING.leaseMs);
   // Once the claim has run out the run may be claimed again (by this runner too: its claims go through, only its renews
   // fail), at epoch 2 with a loop of its own; epoch 1's loop is the one that must write nothing.
-  assert.deepEqual(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt >= stop.at), [], "no commit of epoch 1 started after the stop lands");
+  // In the order things happened, not by the clock: a commit tried in the stop's own ms, before it, is not late.
+  assert.deepEqual(record.commits.filter((commit) => commit.epoch === 1 && commit.startedOrder > stop.order), [], "no commit of epoch 1 started after the stop lands");
   // Commits tried from the stop on (one begun before it may be refused after it, by the store).
-  const late = loop.commitErrors.filter((error) => error.startedAt >= stop.at);
+  const late = loop.commitErrors.filter((error) => error.startedOrder > stop.order);
   assert.ok(late.length > 0, "the loop did try to commit after the stop");
   assert.ok(late.every((error) => error.name === "ClaimLost"), `refused by the runner's fence, not the store's: ${JSON.stringify(late.slice(0, 3))}`);
   assert.deepEqual(runner.held().filter((claim) => claim.epoch === 1), [], "the runner no longer holds epoch 1's claim");
@@ -67,7 +68,7 @@ test("a renew refused as Fenced (the store's clock jumped and another runner too
   assert.ok(stop.at - movedAt <= TIMING.renewEveryMs * 2, `stopped ${stop.at - movedAt} ms after the fence moved`);
   await sleep(TIMING.renewEveryMs * 2);
   // Before the stop the store's fence refused them (Fenced); from the stop on, the runner's does.
-  const late = loop.commitErrors.filter((error) => error.startedAt > stop.at);
+  const late = loop.commitErrors.filter((error) => error.startedOrder > stop.order);
   assert.ok(late.length > 0 && late.every((error) => error.name === "ClaimLost"), JSON.stringify(late.slice(0, 3)));
   assert.equal(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt >= movedAt).length, 0, "epoch 1 wrote nothing after the move");
 });

@@ -13,6 +13,11 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** One order for what happened in this process (a commit tried, a stop told), finer than a millisecond: two things in
+ *  the same ms are still one before the other. */
+let happened = 0;
+export const nextOrder = () => ++happened;
+
 /** Polls `check` until it returns a truthy value, or fails after `ms` naming `what`. */
 export async function until(check, what, ms = 5_000) {
   const deadline = Date.now() + ms;
@@ -130,9 +135,10 @@ export function observed(store, record) {
           if (property === "commit") {
             return async (...args) => {
               const startedAt = Date.now();
+              const startedOrder = nextOrder();
               const result = await value.apply(target, args);
               if (result.stored > 0) {
-                record.commits.push({ runId: claim.runId, epoch: claim.epoch, runner: claim.runner, startedAt, at: Date.now() });
+                record.commits.push({ runId: claim.runId, epoch: claim.epoch, runner: claim.runner, startedAt, startedOrder, at: Date.now() });
                 const state = staged?.run?.state;
                 if (state && state !== "running") record.ops.push(`${state} ${claim.runId}`);
                 staged = undefined;
@@ -223,10 +229,11 @@ export function fauxLoops({ turns = 3, turnMs = 10, park = false, stubborn = fal
             const take = loop.pending.splice(0).map((command) => command.id);
             // When the commit was tried (a commit begun before a stop may be refused after it), and when it was refused.
             const startedAt = Date.now();
+            const startedOrder = nextOrder();
             try {
               await write(journal, claim.runId, take.length ? { take } : undefined);
             } catch (error) {
-              loop.commitErrors.push({ startedAt, at: Date.now(), name: error.name });
+              loop.commitErrors.push({ startedAt, startedOrder, at: Date.now(), name: error.name });
               if (!stubborn) throw error;
             }
           }
@@ -243,7 +250,7 @@ export function fauxLoops({ turns = 3, turnMs = 10, park = false, stubborn = fal
         return { taken: true };
       },
       async stop(reason) {
-        loop.stopCalls.push({ ...reason, at: Date.now() });
+        loop.stopCalls.push({ ...reason, at: Date.now(), order: nextOrder() });
         stopReason = reason;
         wake();
         if (!stubborn) await ended;
