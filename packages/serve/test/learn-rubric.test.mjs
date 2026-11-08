@@ -48,6 +48,13 @@ function fencesOf(prompt) {
 /** The body a fence shows for `text`: the text, without the one newline before the end line. */
 const shown = (text) => text.replace(/\n$/, "");
 
+test("an item that repeats an active note's rule, even as one line inside another lesson, is a duplicate, the line named; a pointer to another note is no repeat", () => {
+  const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
+  const duplicate = flat.slice(flat.indexOf("- Duplicate: "), flat.indexOf("- Contradicts: "));
+  assert.ok(duplicate.includes("- Duplicate: does an active note already say the same, or does the item repeat an active note's rule, even as one line inside another lesson (say which line)? Naming another note (\"see the report-format note\") is no repeat."), duplicate);
+  assert.equal(GRADE_RUBRIC.split("\n- ").length - 1, 7, "no new question");
+});
+
 test("a skill that holds a rule for every reply belongs in a note and is dropped saying so; the steps of one kind of job (a weekly summary, whenever asked) stay a skill", () => {
   const flat = GRADE_RUBRIC.replace(/\s+/g, " ");
   const workflowCase = flat.slice(flat.indexOf("- Workflow case: "), flat.indexOf("Drop an item"));
