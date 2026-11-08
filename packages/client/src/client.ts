@@ -36,6 +36,11 @@ const causeOf = (error: unknown): string => {
   return typeof code === "string" && /^[A-Za-z0-9_]+$/.test(code) ? code : typeof e?.name === "string" && /^\w+$/.test(e.name) ? e.name : "unknown";
 };
 
+/** The causes of a connection that was never made: no server took it. Any other failure took a connection and dropped it. */
+const NOT_CONNECTED = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL", "UND_ERR_CONNECT_TIMEOUT"]);
+/** The causes of a TLS handshake the client refused (a certificate it does not trust, a name it does not match). */
+const UNTRUSTED = /CERT|TLS|SSL|UNABLE_TO_/;
+
 /** Retry-After in milliseconds (seconds or an HTTP date), 0 when there is none. */
 const retryAfterOf = (response: Response): number => {
   const value = response.headers.get("retry-after");
@@ -136,7 +141,7 @@ export class AgentRun {
     const secrets = secretOp && typeof sent === "string" ? secretsOf(sent, secretOp.publicFields) : [];
     const response = await this.#send({
       method: op.method, path: url.slice(this.baseUrl.length), route, headers, body: sent, signal: options?.signal, timeoutMs: options?.timeoutMs,
-      retryable: op.method === "GET" || headers["Idempotency-Key"] !== undefined, secret: secretOp !== undefined,
+      retryable: op.method === "GET" || headers["Idempotency-Key"] !== undefined, secret: secretOp !== undefined, secrets,
       streamed: op.answer === "bytes" && options?.stream === true,
     });
     const answer = await readAnswer(op, route, response, options?.stream === true, secretOp ? scrubberOf(secrets) : undefined);
@@ -162,8 +167,11 @@ export class AgentRun {
         if (error instanceof AgentRunError) throw error;
         if (Date.now() >= deadline) throw LATE;
         const cause = causeOf(error);
-        // A server never reached is unreachable at once; a dropped connection is tried again, a timeout is not.
-        if (!x.retryable || !this.#reached || cause === "timeout" || tries > this.maxRetries) throw new AgentRunUnreachable(this.baseUrl, cause);
+        // A server never reached is unreachable at once; a dropped connection is tried again, even on the first request,
+        // and so is a refused one once the server has answered before (it may be restarting); a timeout is not.
+        // A certificate the client refuses stays refused, so it is never tried again.
+        const neverReached = !this.#reached && NOT_CONNECTED.has(cause);
+        if (!x.retryable || neverReached || UNTRUSTED.test(cause) || cause === "timeout" || tries > this.maxRetries) throw new AgentRunUnreachable(this.baseUrl, cause);
         await pause(Math.min(backoff(tries), deadline - Date.now()), x.signal);
         continue;
       }
@@ -214,13 +222,16 @@ function secretAt(method: string, url: string): Operation | undefined {
 }
 
 /** A refused answer as its outcome. The server's error object is kept with every copy of the key cut from it; after a
- *  secret body, only its code. Its text is never read into a message. */
+ *  secret body, with the body's values cut too, only its code, and a code that held one is no code. Its text is never
+ *  read into a message. A caller's abort while the body is still coming is thrown as the caller's own reason: cancelled
+ *  work is never reported as a refusal or a bad key. */
 async function refusal(x: Exchange, response: Response, apiKey: string): Promise<AgentRunError> {
   let error: ServerError | undefined;
   try {
     const parsed = JSON.parse(new TextDecoder().decode(await response.arrayBuffer())) as { error?: unknown };
-    if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) error = scrubberOf([apiKey])(parsed.error as ServerError);
+    if (parsed?.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)) error = scrubberOf([apiKey, ...(x.secrets ?? [])])(parsed.error as ServerError);
   } catch {
+    if (x.signal?.aborted) throw x.signal.reason;
     error = undefined;
   }
   const code = typeof error?.code === "string" && /^[a-z0-9_]+$/.test(error.code) ? error.code : undefined;

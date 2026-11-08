@@ -39,15 +39,16 @@ import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
-import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
+import { BARRIER, type DurableRun, MESSAGE_ORIGIN_KIND, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { dataOfRun, readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
+import { builtinHarness } from "./harness-table.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
-import { LEGACY_NAMES, readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
+import { readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -100,15 +101,13 @@ const HOST_TOOLS_SERVER = "hands";
 /** The settings key a call named `name` on `harness` is held to: the one mapping from every name a call reaches the gate
  *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
  *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
- *  wire name) and on OpenCode `<server>_<tool>`, is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
+ *  wire name) and a harness's own (its facts' toolAlias: OpenCode's `<server>_<tool>`), is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
  *  catalog name; the browser's registrations are `browser`. OpenCode's `<server>_<tool>` maps only for a server of
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway for a
  *  registration it marks (GATED_BY_GATEWAY), else where its tool is wrapped. */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
-  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key,
-  // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
-  if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
+  // A tool that runs a command in the box (bash_background and the rest) is held to bash's key: before the table's own names.
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
   if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
@@ -118,7 +117,8 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   const monid = /^monid_([a-z]+)$/.exec(name);
   if (monid) return `monid.${monid[1]}`;
   if (BROWSER_REGISTRATIONS.includes(name)) return "browser";
-  const alias = harness === "opencode" ? /^([a-z][a-z0-9-]*)_(.+)$/.exec(name) : null;
+  // A harness whose client names a session's MCP tool another way too (its facts' toolAlias: OpenCode's `<server>_<tool>`).
+  const alias = builtinHarness(harness)?.facts?.toolAlias?.exec(name) ?? null;
   return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 
@@ -352,11 +352,16 @@ export class RunGate {
   /** The replay-safe pi calls the gate let through (GATE_PASSED_ENTRY), by call id: a rerun of one is a replay. */
   private readonly passed = new Set<string>();
   private durable?: DurableRun;
+  /** The run's store, for the barrier before a call that is not replay-safe: from `prime` (before the resume) or `load`. */
+  private syncTarget?: SyncTarget;
   private context?: Context;
   private coding?: readonly ToolRegistration[];
   /** The run's own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
   private extra: readonly ToolRegistration[] = [];
   private resume?: Resume;
+  /** Told just before an allowed call runs (harness-app's): the run is un-parked, so the call's own model requests (a
+   *  learned workflow's node) go out; the harness is idle then, as the park ended its turn. */
+  private unpark?: () => void;
   private drive?: Promise<Drive>;
   private timer?: NodeJS.Timeout;
   private settling = false;
@@ -481,6 +486,9 @@ export class RunGate {
           await commit((tx: Tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: GATE_PASSED_ENTRY, data: { callId: api.callId } }));
           gate.passed.add(api.callId);
         }
+        // pi-durable committed the call's intent before it reached execute: durable before the call is sent, so a lost
+        // box never sends it twice (a resumed call with its intent is reported interrupted, not run again).
+        if (tool.replay !== "safe" || billed) await syncNow(gate.syncTarget, BARRIER.piToolIntent);
         return tool.execute(args, api, context);
       },
     } as ToolRegistration;
@@ -492,6 +500,7 @@ export class RunGate {
    *  approved call of one runs. */
   async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[], extra: readonly ToolRegistration[] = []): Promise<void> {
     this.durable = durable;
+    this.syncTarget = durable.store;
     this.context = context;
     this.coding = coding;
     this.extra = extra;
@@ -502,7 +511,8 @@ export class RunGate {
   /** Reads what the run's store holds of the gate (the calls that wait, the answers acted on, the calls it let through)
    *  before the run resumes: its app's beforeResume hook, ahead of harness.resume(), which dispatches the calls a crash
    *  cut. Read here, not in onOpen, which a recovered call races. A workflow's run calls only this; load reads nothing more. */
-  async prime(harness: Pick<Harness, "conversation">, context: Context): Promise<void> {
+  async prime(harness: Pick<Harness, "conversation">, context: Context, syncTarget?: SyncTarget): Promise<void> {
+    if (syncTarget) this.syncTarget = syncTarget;
     const root = await harness.conversation(ROOT_CONVERSATION_ID, context);
     for (let cursor: Cursor | undefined; root; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, context);
@@ -525,8 +535,9 @@ export class RunGate {
   }
 
   /** Acts on the answers from now on, resuming the session through `resume`; by default pi's root conversation. */
-  start(resume?: Resume): void {
+  start(resume?: Resume, unpark?: () => void): void {
     this.resume = resume ?? this.submit;
+    this.unpark = unpark;
     this.watch();
   }
 
@@ -596,6 +607,7 @@ export class RunGate {
         }
         // An allow runs the call, unless its tool was set to deny since it asked.
         // A request parked on a replay may follow an attempt that was sent: its refusal makes no "nothing was charged" claim.
+        if (decision === "allow") this.unpark?.();
         const result = decision === "deny" ? { text: refusedText(held.tool, answer.note, held.replayed ? "unknown" : "no"), isError: true } : this.policy(held.tool) === "deny" ? await this.ranOrDenied(held) : await this.run(held);
         // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_CALL, a file that marks it once): an approved
         // call that ran and whose outcome is in the journal, then the process goes before its resume, once the test says go
@@ -647,7 +659,7 @@ export class RunGate {
 
   /** The run's own `approvals:` session, the journal every approved call runs through: opened once. */
   private journal(): Promise<Drive> {
-    this.drive ??= durableSessions(this.durable!.harness, this.context!)
+    this.drive ??= durableSessions(this.durable!.harness, this.context!, this.durable!.store)
       .open(`approvals:${this.where.runId}`)
       .then((writer) => openDrive({ writer, signal: this.stop.signal }))
       .catch((error: unknown) => {

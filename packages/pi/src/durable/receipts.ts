@@ -20,6 +20,7 @@ import type { DocumentStoreHost } from "./store.js";
  *  answered and not paid for again. The kind, version and key are a stored format. */
 export const ReceiptIndex = defineDocFamily<{ tool: string; argsHash: string; result: JsonValue | null; session: string | null }, null>({
   kind: "agentrun.receipts", version: 1, scope: "session", family: true, initial: () => ({ tool: "", argsHash: "", result: null, session: null }),
+  checkpointWhen: () => false,
 });
 
 /** Put a journal's paid receipts into the run's receipts before a continuation's first request. A receipt already held

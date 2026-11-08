@@ -1,4 +1,4 @@
-// A network for fetch_page's tests, with no socket: names resolve from a table, and a fetch answers from a table and
+// A network for web_fetch's tests, with no socket: names resolve from a table, and a fetch answers from a table and
 // records what it was asked to dial. Every hostile name here resolves to a private address.
 const PAGE = `<html><head><title>Public page</title></head><body><h1>Hello</h1><p>The answer is forty-two.</p>
 <a href="/about">About</a> <a href="https://other.example/x#part">Other</a> <a href="mailto:someone@other.example">Mail</a></body></html>`;

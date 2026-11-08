@@ -18,7 +18,7 @@
 // packages/envd/internal/services/process (signal.go's signal names, list.go, and handler.go's pty read loop, which
 // ends on EIO). Changed for the open platform: ids are "p1", "p2", ...; the table is bounded and keeps ended
 // processes for reads; output goes to a ring per stream read by offset, not to subscribers; a signal goes to the
-// program's group through its guard; errors are the protocol's kinds.
+// program's group through its guard, INT on a terminal to its foreground group; errors are the protocol's kinds.
 
 package process
 
@@ -54,7 +54,9 @@ var signals = map[string]syscall.Signal{"TERM": syscall.SIGTERM, "INT": syscall.
 
 // Table is every process the daemon holds, shared by all its connections. It holds at most MaxEntries, running or
 // ended; a start into a full table drops the process that ended first once the new one runs, and is refused as limit
-// when all of them run.
+// when all of them run. Its rings, live and ended, hold at most RetainedBytes together: past that, the rings of the
+// processes that ended first are let go, while their entries stay, and when no ended ring is left the live rings are
+// limited to their share of the budget.
 type Table struct {
 	opts Options
 	// startSlot holds one token while a start runs; a start waits for it in a select, so its cancellation ends the wait.
@@ -63,6 +65,8 @@ type Table struct {
 	// procs is in start order, which is seq order.
 	procs   []*proc
 	lastSeq int64
+	// held is what every ring's buffer holds, in bytes.
+	held int64
 }
 
 func NewTable(opts Options) *Table {
@@ -72,11 +76,15 @@ func NewTable(opts Options) *Table {
 	if opts.MaxEntries <= 0 {
 		opts.MaxEntries = MaxEntries
 	}
+	if opts.RetainedBytes <= 0 {
+		opts.RetainedBytes = RetainedBytes
+	}
 	return &Table{opts: opts, startSlot: make(chan struct{}, 1)}
 }
 
 type proc struct {
-	id string
+	table *Table
+	id    string
 	// seq is the number in id: 1 for the table's first start, and up by one for each start since.
 	seq     int64
 	pid     int
@@ -140,7 +148,7 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 	if err := t.checkRoom(); err != nil {
 		return StartResult{}, err
 	}
-	p := &proc{argv: params.Argv, pty: params.Pty != nil, writing: make(chan struct{}, 1), streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
+	p := &proc{table: t, argv: params.Argv, pty: params.Pty != nil, writing: make(chan struct{}, 1), streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
 	var stdin, stdout, stderr *os.File
 	var theirs []*os.File
 	if params.Pty != nil {
@@ -232,7 +240,72 @@ func (t *Table) dropOldestEnded() *proc {
 	oldest := t.oldestEnded()
 	p := t.procs[oldest]
 	t.procs = append(t.procs[:oldest], t.procs[oldest+1:]...)
+	t.held -= p.releaseRings()
 	return p
+}
+
+// hold counts grew more bytes in a ring, then keeps the table within its budget. Hold no proc's mu.
+func (t *Table) hold(grew int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.held += int64(grew)
+	t.trim()
+}
+
+// trim keeps the table within RetainedBytes. First it lets go of the rings of the processes that ended first. When
+// every ended ring is gone and the table is still over, the live rings are what holds it: each stops growing and keeps
+// at most an equal share of the budget, never less than the floor, dropping its oldest bytes, which a read reports as
+// dropped. Hold t.mu.
+func (t *Table) trim() {
+	if t.held <= t.opts.RetainedBytes {
+		return
+	}
+	var ended, live []*proc
+	rings := 0
+	for _, p := range t.procs {
+		if p.hasEnded() {
+			ended = append(ended, p)
+		} else {
+			live = append(live, p)
+			rings += len(p.streams)
+		}
+	}
+	sort.SliceStable(ended, func(i, j int) bool { return ended[i].endedAt.Before(ended[j].endedAt) })
+	for _, p := range ended {
+		if t.held <= t.opts.RetainedBytes {
+			return
+		}
+		t.held -= p.releaseRings()
+	}
+	if t.held <= t.opts.RetainedBytes || rings == 0 {
+		return
+	}
+	share := int(max(t.opts.RetainedBytes/int64(rings), int64(min(RingFloorBytes, t.opts.RingBytes))))
+	for _, p := range live {
+		t.held -= p.limitRings(share)
+	}
+}
+
+// limitRings keeps each ring of p within n bytes from now on (ring.limit), and returns how many bytes they let go.
+func (p *proc) limitRings(n int) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var freed int64
+	for _, s := range p.streams {
+		freed += int64(s.limit(n))
+	}
+	return freed
+}
+
+// releaseRings lets go of every ring of p, so none of them grows again, and returns how many bytes they held.
+func (p *proc) releaseRings() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var freed int64
+	for _, s := range p.streams {
+		freed += int64(s.release())
+	}
+	return freed
 }
 
 // collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO.
@@ -241,10 +314,16 @@ func (p *proc) collect(s *stream) {
 	for {
 		n, err := s.reader.Read(buf)
 		if n > 0 {
+			// Under t.mu, so the table counts and trims the bytes before anything else reads what it holds.
+			t := p.table
+			t.mu.Lock()
 			p.mu.Lock()
-			s.write(buf[:n])
+			grew := s.write(buf[:n])
 			p.notify()
 			p.mu.Unlock()
+			t.held += int64(grew)
+			t.trim()
+			t.mu.Unlock()
 		}
 		if err != nil {
 			break
@@ -278,6 +357,7 @@ func (p *proc) watch() {
 	close(p.ended)
 	p.notify()
 	p.mu.Unlock()
+	p.table.hold(0)
 }
 
 // release closes what the daemon holds of a process that is dropped from the table, or never started.
@@ -423,21 +503,46 @@ func (t *Table) Write(ctx context.Context, params WriteParams) (Empty, error) {
 	return Empty{}, nil
 }
 
-// Signal sends a signal to the program's process group, through its guard. A signal to a process that has ended does
-// nothing.
-func (t *Table) Signal(params SignalParams) (Empty, error) {
+// Signal sends a signal through the program's guard. Where it goes: INT to a process started with a pty is ^C, so it
+// goes to the terminal's foreground process group (the job a shell runs in the foreground, or the program itself when
+// it runs none), which must be in the program's own session: the program leads that session, so the group is under
+// its guard, and a group in another session is refused. The guard checks the group again right before it signals it:
+// one with no process left in the program's session by then (it ended, and its id may have gone to a group in another
+// session) is not signalled, and the note says INT was not sent. A terminal with no foreground group left has INT go
+// to the program's own group, with a note that says so. Every other signal, and INT without a pty, goes to the program's
+// group. A signal to a process that has ended does nothing.
+func (t *Table) Signal(params SignalParams) (SignalResult, error) {
 	sig, ok := signals[params.Signal]
 	if !ok {
-		return Empty{}, rpc.Errorf(rpc.KindInvalid, "signal is TERM, INT, KILL or HUP, not %q", params.Signal)
+		return SignalResult{}, rpc.Errorf(rpc.KindInvalid, "signal is TERM, INT, KILL or HUP, not %q", params.Signal)
 	}
 	p, err := t.get(params.ID)
 	if err != nil {
-		return Empty{}, err
+		return SignalResult{}, err
 	}
 	if p.hasEnded() {
-		return Empty{}, nil
+		return SignalResult{}, nil
 	}
-	return Empty{}, p.g.Signal(sig)
+	if !p.pty || sig != syscall.SIGINT {
+		return SignalResult{}, p.g.Signal(sig)
+	}
+	p.mu.Lock()
+	group, session, err := 0, 0, errNoForeground
+	if p.terminal != nil {
+		group, session, err = foreground(p.terminal)
+	}
+	p.mu.Unlock()
+	switch {
+	case err != nil:
+		return SignalResult{Note: err.Error() + "; INT went to the program's own group"}, p.g.Signal(sig)
+	case session != p.pid:
+		return SignalResult{}, rpc.Errorf(rpc.KindDenied, "process %s's terminal belongs to another session: its foreground group %d is in session %d, not the program's, %d; INT was not sent", p.id, group, session, p.pid)
+	}
+	sent, why, err := p.g.SignalGroup(sig, group)
+	if err != nil || sent {
+		return SignalResult{}, err
+	}
+	return SignalResult{Note: why + "; INT was not sent"}, nil
 }
 
 func (t *Table) Resize(params ResizeParams) (Empty, error) {

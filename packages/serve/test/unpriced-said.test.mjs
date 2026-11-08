@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const KEY = "not-a-secret-gateway";
 /** An id no catalog lists in any form, and the one the catalog lists flipped (gpt-5.4-mini: $0.75 in, $4.50 out). */
@@ -135,5 +135,23 @@ test("an agent with a default cap on a gateway model with no price saves with a 
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
   const started = await api("POST", "/agents/capped-no-price/runs", { input: { content: "Say hi." } });
   assert.equal(started.status, 409, JSON.stringify(started.body));
+  assert.equal(gw.requests.length, 0, "nothing reached the gateway");
+});
+
+// A workflow's start under a cap holds the same promise as an agentic run's: a model one of its nodes runs on that has no
+// price here refuses the start, 409 with the issue's field, the model, the node and the fix, before anything is sent.
+test("a capped workflow start whose node names an unpriced gateway model is refused 409, with fields naming the node's model and the AGENT_MODEL_PRICE fix; nothing sent", { timeout: 60_000 }, async (t) => {
+  const gw = await gateway(t);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: PRICED, AGENT_MODEL_FAST: NO_PRICE }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  // Two model nodes: `answer` on the default tier, priced; `draft` on the fast tier, the gateway model with no price.
+  const flow = answerFlow();
+  flow.root.steps.unshift({ node: "extract", label: "draft", instructions: "Draft an answer.", out: "Answer", as: "draft", tier: "fast" });
+  assert.equal((await api("POST", "/agents", flowAgent("tiered", flow))).status, 201);
+  const capped = await api("POST", "/agents/tiered/runs", { input: { question: "Six times seven?" }, max_cost_usd: 0.25 });
+  assert.deepEqual([capped.status, capped.body.error?.code], [409, "agent_not_runnable"]);
+  const issues = (capped.body.error.fields ?? []).filter((issue) => issue.message.includes(NO_PRICE));
+  assert.deepEqual(issues.map((issue) => [issue.field, issue.reason, issue.message]), [["definition.workflow", "not_set_up_here", `The model ${NO_PRICE} has no price here, so a run's spend cap cannot be kept on it. This workflow's node draft runs on it.`]]);
+  assert.match(issues[0].fix, /^Set AGENT_MODEL_PRICE /);
   assert.equal(gw.requests.length, 0, "nothing reached the gateway");
 });

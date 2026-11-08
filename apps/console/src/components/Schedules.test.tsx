@@ -12,7 +12,8 @@ import type { Firing, Trigger } from "@/lib/v2";
 const NIGHTLY: Trigger = {
   id: "trg_1", name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" },
   target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
-  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z", overlap: "skip",
+  catchup_window_s: 300, failures_in_a_row: 0, disabled: null, last_run_id: null,
+  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T09:30:00Z",
   last_firing: { key: "fir_a", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "skipped", at: "2026-11-04T09:30:01Z", run_id: null, reason: "The last run is still working.", error: null },
 };
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_x", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "started", at: "2026-11-04T09:30:01Z", run_id: null, reason: null, error: null, ...over });
@@ -226,9 +227,9 @@ describe("a new schedule", () => {
     expect(t.issue("target.max_cost_usd")).toBe("A cost cap is needed: every run a schedule starts is capped.");
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
   });
-  it("shows each issue of the server's 422 under the field it names: a workflow agent under the agent", async () => {
-    const message = "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow.";
-    const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "not_allowed", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });
+  it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
+    const message = "the agent flow has no current revision";
+    const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "invalid", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });
     const t = await open(v2, { schedule: null });
     await t.set("cron", "30 1 * *");
     await t.set("agent", "flow");

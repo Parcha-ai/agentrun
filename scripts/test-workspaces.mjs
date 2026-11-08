@@ -3,7 +3,7 @@
 // - This script owns the total: at most AGENTRUN_TEST_TOTAL=<n> test files run at once across every workspace (default:
 //   the cores). AGENTRUN_TEST_JOBS=<n> workspaces run at once; default a quarter of the total, 1 to 6, never more than the
 //   total. Each gets total / jobs: a `node --test` script as --test-concurrency (or keeps its own when lower), any other
-//   script as TEST_CONCURRENCY (pi-browser's and pi-vision's runners) and VITEST_MAX_WORKERS (vitest).
+//   script as TEST_CONCURRENCY (pi-browser's runner) and VITEST_MAX_WORKERS (vitest).
 // - With one job they run in npm's order, their output live, as `npm run test --workspaces` ran them. With more, the
 //   slowest start first (the last passing run's times, kept in node_modules/.cache; a workspace with none starts first),
 //   and each one's output is held and printed whole, under a header, when it ends.
@@ -34,9 +34,9 @@ if (unknown.length || (baseAt >= 0 && !baseRef)) fail(`usage: node scripts/test-
 // Seconds measured on a clean run, for the order of a first run only; a run's own times replace them.
 const SEED = {
   '@parcha/agentrun-serve': 260, '@parcha/agentrun-dsl': 172, '@parcha/pi-transport': 121, '@parcha/pi-browser': 83,
-  '@parcha/agentrun-harness-codex': 76, '@parcha/pi-agent-learn': 75, '@parcha/pi-vision': 59, '@parcha/agentrun-pi': 52,
-  '@parcha/agentrun-harness-claude': 33, '@parcha/pi-durable-disk': 31, '@parcha/agentrun-learn': 26,
-  '@parcha/pi-git-remote': 25, '@parcha/pi-durable-agent': 10.5, '@parcha/agentrun-jev': 6, '@parcha/agentrun-kernel': 3,
+  '@parcha/agentrun-harness-codex': 76, '@parcha/agentrun-pi': 52,
+  '@parcha/agentrun-harness-claude': 33, '@parcha/pi-durable-disk': 31,
+  '@parcha/pi-durable-agent': 10.5, '@parcha/agentrun-jev': 6, '@parcha/agentrun-kernel': 3,
   '@parcha/agentrun-decisions': 3,
 };
 const TIMES = join(root, 'node_modules', '.cache', 'agentrun-test-times.json');

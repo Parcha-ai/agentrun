@@ -17,6 +17,7 @@ import { judgeProposal } from "../dist/grade.js";
 import { answerWith } from "./fixtures/faux-learn.mjs";
 import { TABLE } from "./fixtures/faux-follow.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const setOf = (file) => JSON.parse(readFileSync(new URL(`./fixtures/${file}`, import.meta.url), "utf8")).cases;
 const { cases, heldOut } = { cases: setOf("learn-eval.json"), heldOut: setOf("learn-eval-heldout.json") };
@@ -95,7 +96,7 @@ const LOOKUP = "---\nname: Finding shop refund policy pages\ndescription: Use wh
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`run 2 uses its note without read, on ${harness}: an agent with no read tool, seeded with the user's "answer as a table" note and a second one, answers as a table on a model that follows its instructions`, { timeout: 120_000 }, async (t) => {
-    const { api, baseUrl, token } = await serve(t, { faux: FOLLOW, fauxHarness: FOLLOW });
+    const { api, baseUrl, token } = await serve(t, { faux: FOLLOW, harnessTable: fauxTable(FOLLOW) });
     const id = `table-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: SHOP, tools: [] }))).status, 201);
     for (const [file, text] of [["shop-return-table-format.md", FORMAT], ["shop-policy-page-lookup.md", LOOKUP]]) {

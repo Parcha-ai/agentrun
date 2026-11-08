@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { inspect } from "node:util";
 import { AgentRun, AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunTimeout, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage } from "../dist/index.js";
 import { JSON_HEADERS, listener } from "./helpers.mjs";
+import { scrubberOf, secretsOf } from "../dist/scrub.js";
 
 const KEY = `test-key-${randomBytes(12).toString("hex")}`;
 const json = (status, value, headers = {}) => [status, { ...JSON_HEADERS, ...headers }, JSON.stringify(value)];
@@ -264,17 +265,18 @@ test("a body cut after a 2xx is tried again for a GET and a download, and a POST
   assert.ok(!printed(started).includes(KEY));
 });
 
-test("oauthStart with scopes gets the sign-in URL byte for byte, and only the client secret is cut", async (t) => {
-  const secret = `cs-${randomBytes(8).toString("hex")}`;
-  const server = await listener(t, (req) => {
-    const body = JSON.parse(req.body.toString("utf8"));
-    const authorization_url = `https://auth.example.com/authorize?client_id=${body.client_id}&scope=${body.scopes.map(encodeURIComponent).join("%20")}&state=xyz`;
-    return json(200, { authorization_url, echo: body.client_secret });
-  });
-  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
-  const answer = await client.mcpServers.oauthStart("docs", { url: "https://mcp.example.com/mcp", scopes: ["read", "write"], client_id: "abc", client_secret: secret });
-  assert.equal(answer.authorization_url, "https://auth.example.com/authorize?client_id=abc&scope=read%20write&state=xyz");
-  assert.equal(answer.echo, "[hidden]");
+test("an MCP sign-in has no method: it starts in the owner's browser, whose callback needs the cookie its start sets", () => {
+  const client = new AgentRun({ baseUrl: "https://agentrun.example.com/v2", apiKey: KEY });
+  assert.equal(client.mcpServers.oauthStart, undefined);
+  assert.equal(typeof client.mcpServers.oauthClient, "function", "its public client document stays");
+});
+
+test("a secret body's list items are public by `[]`, as the CLI reads them: each item kept, every other string cut", () => {
+  const body = JSON.stringify({ url: "https://mcp.example.com/mcp", scopes: ["read", "write"], client_id: "abc", client_secret: "cs-1" });
+  assert.deepEqual(secretsOf(body, ["url", "scopes.[]", "client_id"]), ["cs-1"]);
+  assert.deepEqual(secretsOf(body, ["url", "client_id"]), ["read", "write", "cs-1"], "without the list path, each item is a secret");
+  const answer = scrubberOf(secretsOf(body, ["url", "scopes.[]", "client_id"]))({ page: "https://auth.example.com/authorize?scope=read%20write", echo: "cs-1" });
+  assert.deepEqual(answer, { page: "https://auth.example.com/authorize?scope=read%20write", echo: "[hidden]" });
 });
 
 test("runs.follow does not restart a healthy stream while its reader is busy with a page", async (t) => {
@@ -311,4 +313,59 @@ test("runs.follow waits out a gateway's Retry-After before it reconnects", async
   for await (const p of client.runs.follow("r1")) pages.push(p);
   assert.deepEqual(pages, [done]);
   assert.ok(at[1] - at[0] >= 1000, `it waited the gateway's second: ${at[1] - at[0]} ms`);
+});
+
+test("a caller's abort while a refusal's body is still coming is the caller's abort, never a refusal or a bad key", async (t) => {
+  let headed;
+  const server = await listener(t, (req, res) => {
+    const status = req.url === "/v2/agents" ? 400 : 401;
+    const body = Buffer.from(JSON.stringify({ error: { code: status === 400 ? "bad_request" : "unauthorized", message: "no" } }));
+    res.writeHead(status, { ...JSON_HEADERS, "content-length": String(body.length) });
+    res.write(body.subarray(0, 8));
+    headed();
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
+  for (const call of [(signal) => client.agents.list(undefined, { signal }), (signal) => client.agents.get("a", { signal })]) {
+    const controller = new AbortController();
+    const reason = new Error("the caller let go");
+    const head = new Promise((resolve) => (headed = resolve));
+    const pending = thrown(call(controller.signal));
+    await head;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort(reason);
+    const error = await pending;
+    assert.equal(error, reason, `the abort's own reason, not ${error?.name}: ${error?.message}`);
+  }
+});
+
+test("a fresh client's first GET is tried again when the server takes the connection and drops it before answering", async (t) => {
+  let tries = 0;
+  const server = await listener(t, (req, res) => (++tries === 1 ? void res.socket.destroy() : json(200, { agents: [], next_cursor: null })));
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  assert.deepEqual(await client.agents.list(), { agents: [], next_cursor: null });
+  assert.equal(tries, 2, "the dropped first request was tried once more");
+});
+
+test("a certificate the client refuses is unreachable after one try, and a refused connection on a fresh client too", async () => {
+  for (const code of ["DEPTH_ZERO_SELF_SIGNED_CERT", "ERR_TLS_CERT_ALTNAME_INVALID", "ECONNREFUSED"]) {
+    let calls = 0;
+    const fetch = async () => { calls++; throw new TypeError("fetch failed", { cause: Object.assign(new Error("no"), { code }) }); };
+    const error = await thrown(new AgentRun({ baseUrl: "https://agentrun.example/v2", apiKey: KEY, fetch }).agents.list());
+    assert.ok(error instanceof AgentRunUnreachable, code);
+    assert.deepEqual([error.cause, calls], [code, 1], code);
+  }
+});
+
+test("a refusal whose code echoes a secret body's value keeps no code, in the error or its message", async (t) => {
+  const secret = `secret_${randomBytes(8).toString("hex")}`;
+  const server = await listener(t, (req) => (req.url.endsWith("/auth") ? json(401, { error: { code: secret, message: "no" } }) : json(422, { error: { code: secret, message: "no" } })));
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
+  const refused = await thrown(client.mcpServers.save("docs", { url: "https://mcp.example.com/mcp", auth: { type: "bearer", token: secret } }));
+  assert.ok(refused instanceof AgentRunRefused);
+  assert.deepEqual([refused.status, refused.code, refused.error], [422, undefined, undefined]);
+  assert.ok(!printed(refused).includes(secret), printed(refused));
+  const auth = await thrown(client.mcpServers.save("auth", { url: "https://mcp.example.com/mcp", auth: { type: "bearer", token: secret } }));
+  assert.ok(auth instanceof AgentRunAuthError);
+  assert.equal(auth.code, undefined);
+  assert.ok(!printed(auth).includes(secret), printed(auth));
 });

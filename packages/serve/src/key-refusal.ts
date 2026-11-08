@@ -3,8 +3,10 @@
 // holds on every harness. Only the shapes the harnesses give count (REFUSED); a 401 anywhere else in an error (a
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
+import { harnessOf } from "./harness-table.js";
 import { redactSecrets, valueMatcher } from "./learn/secrets.js";
-import { hostModel, MODEL_KEYS, openRouterOnly } from "./model.js";
+import { hostModel, MODEL_KEYS } from "./model.js";
+import { openRouterOnly, WIRES } from "./provider.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
  *  AgentRun starts), or serve's gateway's (set where AgentRun starts only). */
@@ -16,14 +18,15 @@ const row = (id: string): RunKey | undefined => {
 };
 
 /** The key `harness`'s run of model `ref` (the revision's; none, this host's default for the harness) sends, by the route
- *  each harness takes (adapters.ts, model.ts); undefined where it is not a model key this server names. */
+ *  its wire takes (provider.ts; pi's, model.ts); undefined where it is not a model key this server names. */
 export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNESS, ref?: string): RunKey | undefined {
   const named = ref ?? hostModel(env, "default", harness);
   const provider = named?.includes("/") ? named.slice(0, named.indexOf("/")) : undefined;
   const gateway: RunKey = { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
-  if (harness === "claude-agent") return row(provider === "openrouter" || openRouterOnly("claude-agent", env) ? "openrouter" : "anthropic");
-  if (env.AGENT_MODEL_BASE_URL) return gateway;
-  if (harness === "codex" || harness === "opencode") return row(provider === "openrouter" || openRouterOnly(harness, env) ? "openrouter" : "openai");
+  const wire = harnessOf(env, harness)?.facts?.wire;
+  // Serve's gateway takes every request of the wire it serves, pi's too; a wire it does not serve never goes there.
+  if (env.AGENT_MODEL_BASE_URL && (!wire || WIRES[wire].gateway)) return gateway;
+  if (wire) return row(provider === "openrouter" || openRouterOnly(wire, env) ? "openrouter" : WIRES[wire].vendor);
   return provider === undefined ? undefined : row(provider);
 }
 
@@ -192,4 +195,13 @@ export function withoutLoopback(text: string): string {
     if (out.endsWith(",")) out = out.slice(0, -1);
   }
   return out.replace(LOOPBACK, "a local address").replace(LOOPBACK_BARE, "a local address");
+}
+
+/** `value` with each string in it, however deep, through `cut`: what a run error's details hold is served and kept as its
+ *  message is (runs.ts). */
+export function cutStrings(value: unknown, cut: (text: string) => string): unknown {
+  if (typeof value === "string") return cut(value);
+  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut));
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cutStrings(item, cut)]));
+  return value;
 }

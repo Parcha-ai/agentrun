@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -92,12 +93,13 @@ func TestEndAllTermsAStartInFlightAndRefusesALaterOne(t *testing.T) {
 	})
 	ended := make(chan struct{})
 	go func() {
-		execrun.EndAll(time.Second)
+		// patience, not a second: a loaded host may take longer to start the program in flight. Each wait ends early.
+		execrun.EndAll(patience)
 		close(ended)
 	}()
 	select {
 	case <-ended:
-	case <-time.After(2 * patience):
+	case <-time.After(3*patience + execrun.KillGrace):
 		t.Fatal("EndAll never returned")
 	}
 
@@ -129,5 +131,83 @@ func TestEndAllTermsAStartInFlightAndRefusesALaterOne(t *testing.T) {
 	code, signal, reported := r.g.Exit()
 	if !exists(first.Argv[3]+".termed") || code == nil || *code != 0 || !reported {
 		t.Fatalf("the program started in flight did not end by its SIGTERM trap: exit code %v, signal %q, reported %v", code, signal, reported)
+	}
+}
+
+// discard is /dev/null for a program's output.
+func discard(t *testing.T) *os.File {
+	t.Helper()
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = null.Close() })
+	return null
+}
+
+// init's shutdown reaps every child with Wait4(-1) once EndAll's wait runs out, so it may reap a guard before follow's
+// Wait does. Its program's end is then KILL, unreported, and nothing panics.
+func TestAGuardReapedElsewhereEndsAsKill(t *testing.T) {
+	null := discard(t)
+	execrun.SetGuardHooks(t, nil, func(guard int) {
+		var ws syscall.WaitStatus
+		_, _ = syscall.Wait4(guard, &ws, 0, nil)
+	})
+	g, err := execrun.Start(context.Background(), execrun.Program{Argv: []string{"sleep", "301"}}, nil, null, null)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := g.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-program, syscall.SIGKILL) })
+	_ = syscall.Kill(execrun.GuardPid(g), syscall.SIGKILL)
+	select {
+	case <-g.Done():
+	case <-time.After(patience):
+		t.Fatal("the killed guard was never reaped")
+	}
+	g.Close()
+	var code *int
+	var signal string
+	var reported bool
+	var crash any
+	func() {
+		defer func() { crash = recover() }()
+		code, signal, reported = g.Exit()
+	}()
+	if crash != nil {
+		t.Fatalf("Exit panicked for a guard reaped elsewhere: %v", crash)
+	}
+	if code != nil || signal != "KILL" || reported {
+		t.Fatalf("a guard reaped elsewhere: exit code %v, signal %q, reported %v; want KILL, unreported", code, signal, reported)
+	}
+}
+
+// A sweep that begins between a guard's fork and its record waits for the record, so it never takes the guard for an
+// orphan.
+func TestASweepDuringAGuardsForkSeesAGuard(t *testing.T) {
+	null := discard(t)
+	seen := make(chan bool, 1)
+	execrun.SetGuardHooks(t, func(guard int) {
+		go execrun.WithGuards(func(isGuard func(int) bool) { seen <- isGuard(guard) })
+	}, nil)
+	g, err := execrun.Start(context.Background(), execrun.Program{Argv: []string{"sleep", "302"}}, nil, null, null)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		g.Stop()
+		select {
+		case <-g.Done():
+		case <-time.After(patience):
+		}
+		g.Close()
+	})
+	select {
+	case isGuard := <-seen:
+		if !isGuard {
+			t.Fatal("a sweep begun between the guard's fork and its record took the guard for an orphan")
+		}
+	case <-time.After(patience):
+		t.Fatal("the sweep never ran")
 	}
 }

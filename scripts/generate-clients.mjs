@@ -2,13 +2,14 @@
 // The CLI's command table, from the OpenAPI document the server serves: one entry per operation it offers, and the
 // agentrun-cli skill from the same table (scripts/clients/skill.mjs): its SKILL.md and references/commands.md. The
 // TypeScript client's operations (scripts/clients/typescript.mjs) come from the same projection, under the same hash.
-//   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs, the skill and
-//                                               packages/client/src/operations.generated.ts
+// From the same document, the console's API types (scripts/clients/types.mjs): apps/console/src/lib/api.generated.ts.
+//   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs, the skill,
+//                                               packages/client/src/operations.generated.ts and the console's types
 //   node scripts/generate-clients.mjs --check   fail when a committed file is not the document's, or the skill names a
 //                                               command or flag the CLI does not have
 // It reads the built server (packages/serve/dist), so it runs after the build. --out, --skill (the skill's folder),
-// --client (the TypeScript client's file), --resources and --document (a document as JSON, in place of the built
-// server's) name other files.
+// --client (the TypeScript client's file), --types (the console's types), --resources and --document (a document as
+// JSON, in place of the built server's) name other files.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -19,6 +20,7 @@ import { SECRETS } from '../packages/agentrun/lib/login.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
+import { typesOf, typesText } from './clients/types.mjs';
 import { isMain } from './is-main.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -26,6 +28,7 @@ const OUTPUT = 'packages/agentrun/lib/commands.generated.mjs';
 const RESOURCES = 'scripts/clients/resources.json';
 const SKILL = 'packages/agentrun/skills/agentrun-cli';
 const CLIENT = 'packages/client/src/operations.generated.ts';
+const TYPES = 'apps/console/src/lib/api.generated.ts';
 // Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
 // may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill'];
@@ -78,7 +81,7 @@ const firstLine = (text) => (text ?? '').split('\n')[0].trim();
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json$/;
 const COMPONENT = '#/components/schemas/';
 // The JSON Schema types the client's types are made of, and the keywords that shape a value beyond them.
-const TYPES = ['string', 'number', 'integer', 'boolean', 'null', 'array', 'object'];
+const SCHEMA_TYPES = ['string', 'number', 'integer', 'boolean', 'null', 'array', 'object'];
 const UNTYPED = ['prefixItems', 'patternProperties', 'dependentSchemas', 'dependentRequired', 'unevaluatedProperties', 'unevaluatedItems', 'contains', '$dynamicRef'];
 
 /** A schema as a type reads it: its structure only (type, enum, const, properties, required, items, additional
@@ -94,7 +97,7 @@ function typeOf(doc, schema) {
   // without it would be wrong. A keyword that only narrows (if/then/else, not, pattern, bounds) leaves the type wider.
   const shaping = UNTYPED.find((keyword) => s[keyword] !== undefined);
   if (shaping) throw new Error(`generate-clients: the client's types cannot express ${shaping}${name ? ` (in ${name})` : ''}; teach typeOf and scripts/clients/typescript.mjs to`);
-  const types = (Array.isArray(s.type) ? s.type : s.type === undefined ? [] : [s.type]).filter((type) => !TYPES.includes(type));
+  const types = (Array.isArray(s.type) ? s.type : s.type === undefined ? [] : [s.type]).filter((type) => !SCHEMA_TYPES.includes(type));
   if (types.length) throw new Error(`generate-clients: the client's types know no type ${types.join(', ')}${name ? ` (in ${name})` : ''}`);
   const out = name ? { name } : {};
   for (const key of ['type', 'enum', 'const', 'required']) if (s[key] !== undefined) out[key] = s[key];
@@ -251,6 +254,12 @@ export function commandsOf(ops, map) {
 
 const hashOf = (ops) => createHash('sha256').update(canonical(ops)).digest('hex');
 
+/** The console's types, their header holding the hash of what they are made of (typesOf). */
+export function consoleTypesText(doc) {
+  const types = typesOf(doc);
+  return typesText(types, hashOf(types));
+}
+
 /** The skill's files, by their path under its folder, and what its text names that the CLI does not have. Its header
  *  holds the table's hash: both are made of the same projection. */
 export function skillFiles(ops, map) {
@@ -259,6 +268,11 @@ export function skillFiles(ops, map) {
   return { files: { 'SKILL.md': skill, 'references/commands.md': referenceText(commands, hashOf(ops)) }, problems: recipeProblems(commands, skill) };
 }
 
+/** The routes whose body is a secret, offered or omitted: what the CLI's raw call guards. */
+const secretRoutesOf = (ops, map) => ops.filter((op) => !op.unsupported && map.secretBody.includes(op.operationId))
+  .map((op) => ({ operationId: op.operationId, method: op.method, path: op.path, publicFields: map.publicFields[op.operationId] ?? [] }))
+  .sort((a, b) => a.operationId.localeCompare(b.operationId));
+
 export function tableText(ops, map) {
   const hash = hashOf(ops);
   return [
@@ -266,11 +280,15 @@ export function tableText(ops, map) {
     `// SHA-256 of what the table is made of (operationsOf in scripts/generate-clients.mjs): ${hash}`,
     `export const COMMANDS = ${JSON.stringify(commandsOf(ops, map), null, 2)};`,
     '',
+    '// Every route whose body carries a secret, a command\'s or one with no command (omitted): a raw `api` call to one never',
+    '// takes its body from the command line, and what it prints has the body\'s values cut, its public fields kept.',
+    `export const SECRET_ROUTES = ${JSON.stringify(secretRoutesOf(ops, map), null, 2)};`,
+    '',
   ].join('\n');
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' } } });
+  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' }, types: { type: 'string' } } });
   const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
@@ -286,7 +304,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text]), [values.client ?? CLIENT, clientText(ops, map, commandOf, hashOf(ops))]];
+  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text]), [values.client ?? CLIENT, clientText(ops, map, commandOf, hashOf(ops))], [values.types ?? TYPES, consoleTypesText(doc)]];
   if (values.check) {
     const stale = [];
     for (const [file, text] of outputs) if (await readFile(resolve(root, file), 'utf8').catch(() => '') !== text) stale.push(file);
@@ -295,7 +313,7 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    console.log('The CLI command table, its skill and the TypeScript client\'s operations match the server\'s OpenAPI document');
+    console.log('The CLI command table, its skill, the TypeScript client\'s operations and the console\'s API types match the server\'s OpenAPI document');
   } else {
     for (const [file, text] of outputs) {
       await mkdir(dirname(resolve(root, file)), { recursive: true });

@@ -1,5 +1,5 @@
 // A Docker box's network on a Mac (box-egress-vm.ts): where Docker runs in a VM that docker info names (Docker Desktop,
-// OrbStack, colima), the server runs the kernel's egress proxy in one container inside that VM, its socket in a tmpfs
+// OrbStack, colima), the server runs its egress proxy in one container inside that VM, its socket in a tmpfs
 // named volume the box mounts read-only, and the box stays `--network none`. Anything else stays offline, with why. With
 // a fake `docker` first on PATH (fixtures/fake-docker.mjs, answering docker info as each runtime does; no daemon is
 // reached): it runs the proxy container's own `node` command on this machine, with the tests' fake network loaded

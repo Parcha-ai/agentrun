@@ -9,12 +9,12 @@ import type { Run, TimelineRow } from "@/lib/v2";
 // approval. Its timeline holds the call, its result (the gate's "waits for a person's approval") and the approval's row,
 // which follows the result and shares its tool_use_id.
 const PENDING = { kind: "approval" as const, id: "ap_0123456789abcdef", tool: "web_fetch", call_id: "call_1", args_preview: "{\"url\":\"http://public.example/\"}", requested_at: "2026-11-04T10:00:02.000Z" };
-const run: Run = {
+const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "run_1", agent_id: "fetcher", agent_version: 1, revision: "r1", kind: "agentic", status: "input_required", state: "waiting", title: "Read the page",
-  created_at: "2026-11-04T10:00:00.000Z", ended_at: null, result: null, error: null, cost: null, archived_at: null, pending: PENDING,
+  created_at: "2026-11-04T10:00:00.000Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING,
 };
 const at = (s: number) => `2026-11-04T10:00:0${s}.000Z`;
-const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
+const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
 // An earlier question, answered: a stopped or approval-waiting run can still hold it.
 const rows: TimelineRow[] = [
   row(0, { kind: "user_message", summary: "You: Read the page" }),
@@ -57,5 +57,21 @@ describe("RunDetail, a run waiting on a tool call's approval", () => {
     expect(html).not.toContain("aria-label=\"Approval required\"");
     expect(text(html)).toContain("Your approval");
     expect(text(html)).toContain("Asked your approval: web_fetch");
+  });
+
+  it("an answered call reads in the served order: the call held, your approval, then what came of it (AgentRun's resume row)", () => {
+    // As serve now sends an answered call: its own rows say only that it was held, its approval row follows, and the
+    // outcome is the resume row below it. The console folds the result into the call's step and keeps the served order.
+    const served: TimelineRow[] = [
+      ...rows.slice(0, 4),
+      row(4, { kind: "tool_result", summary: "Held for your approval", tool_name: "web_fetch", tool_use_id: "call_1" }),
+      row(5, { id: "row_4:approval", kind: "tool_approval_requested", summary: `Asked your approval: web_fetch ${PENDING.args_preview}`, text: PENDING.args_preview, tool_name: "web_fetch", tool_use_id: "call_1" }),
+      row(6, { kind: "phase", origin: "server", summary: "AgentRun: web_fetch was refused: you declined it: use the cached copy", text: "web_fetch was refused: you declined it." }),
+    ];
+    const shown = text(renderToStaticMarkup(createElement(RunDetail, { run: { ...run, status: "working", state: "working", pending: null }, agentName: "fetcher", messages: messageFeatures, harnessSteers: true, rows: served, files: [], actions: {}, onMessage: () => {}, onApprove: async () => null, tab: "timeline" })));
+    const where = (words: string) => shown.indexOf(words);
+    expect(where("Held for your approval")).toBeGreaterThan(-1);
+    expect(where("Asked your approval: web_fetch")).toBeGreaterThan(where("Held for your approval"));
+    expect(where("web_fetch was refused: you declined it: use the cached copy")).toBeGreaterThan(where("Asked your approval: web_fetch"));
   });
 });
