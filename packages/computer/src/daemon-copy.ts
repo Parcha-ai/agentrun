@@ -16,6 +16,37 @@ export function defaultDaemonCache(env: Record<string, string | undefined> = pro
 	return join(xdg !== undefined && isAbsolute(xdg) ? xdg : join(homedir(), ".cache"), "agentrun-computer");
 }
 
+/** The file operations daemonCopy uses: node:fs's own, or, in a test, a wrapper of them that fails one call. */
+export interface CopyFs {
+	closeSync: typeof closeSync;
+	fchmodSync: typeof fchmodSync;
+	fstatSync: (fd: number) => Stats;
+	fsyncSync: typeof fsyncSync;
+	lstatSync: (path: string) => Stats;
+	mkdirSync: (path: string, options: { recursive?: boolean; mode: number }) => unknown;
+	openSync: (path: string, flags: number, mode?: number) => number;
+	readFileSync: (fd: number) => Buffer;
+	realpathSync: (path: string) => string;
+	renameSync: typeof renameSync;
+	unlinkSync: typeof unlinkSync;
+	writeFileSync: (fd: number, data: Buffer) => void;
+}
+
+const NODE_FS: CopyFs = {
+	closeSync,
+	fchmodSync,
+	fstatSync: (fd) => fstatSync(fd),
+	fsyncSync,
+	lstatSync: (path) => lstatSync(path),
+	mkdirSync: (path, options) => mkdirSync(path, options),
+	openSync: (path, flags, mode) => openSync(path, flags, mode),
+	readFileSync: (fd) => readFileSync(fd),
+	realpathSync: (path) => realpathSync(path),
+	renameSync,
+	unlinkSync,
+	writeFileSync: (fd, data) => writeFileSync(fd, data),
+};
+
 const octal = (mode: number) => mode.toString(8).padStart(4, "0");
 const codeOf = (error: unknown) => (error as NodeJS.ErrnoException).code;
 const wordsOf = (error: unknown) => (error as Error).message;
@@ -27,20 +58,20 @@ const ELSEWHERE = "or give the provider another daemonCache";
  * yet and hashed again before it is returned; or a refusal in words. A copy is written to a temporary file in the
  * directory and renamed into place, so processes copying the same daemon at once each leave a whole file, and only the
  * same bytes ever take that name. A directory that is gone partway (a cache cleaner) is made again and checked again,
- * once. Never throws: every failure is a Result in words naming its path.
+ * once. Never throws: every failure is a Result in words naming its path. `fs` is node:fs's own but in tests.
  */
-export function daemonCopy(source: string, directory: string): Result<string> {
+export function daemonCopy(source: string, directory: string, fs: CopyFs = NODE_FS): Result<string> {
 	const uid = process.getuid?.();
 	if (uid === undefined) return fail("unsupported", "this platform has no user ids, so the provider cannot keep the daemon's copy where only this user may change it");
 	let bytes: Buffer;
 	try {
 		// O_NONBLOCK: a FIFO at the path fails the isFile check below instead of holding the open.
-		const fd = openSync(source, constants.O_RDONLY | constants.O_NONBLOCK);
+		const fd = fs.openSync(source, constants.O_RDONLY | constants.O_NONBLOCK);
 		try {
-			if (!fstatSync(fd).isFile()) return fail("not_found", `no daemon binary at ${source}: run npm run build:daemon -w @parcha/agentrun-computer`);
-			bytes = readFileSync(fd);
+			if (!fs.fstatSync(fd).isFile()) return fail("not_found", `no daemon binary at ${source}: run npm run build:daemon -w @parcha/agentrun-computer`);
+			bytes = fs.readFileSync(fd);
 		} finally {
-			closeSync(fd);
+			fs.closeSync(fd);
 		}
 	} catch (error) {
 		const code = codeOf(error);
@@ -52,9 +83,9 @@ export function daemonCopy(source: string, directory: string): Result<string> {
 	}
 	const sha = sha256(bytes);
 	// A directory a cleaner removes while it is checked or written in is made again, once.
-	const first = copyInto(resolve(directory), sha, bytes, uid, source);
+	const first = copyInto(fs, resolve(directory), sha, bytes, uid, source);
 	if (!("vanished" in first)) return first;
-	const second = copyInto(resolve(directory), sha, bytes, uid, source);
+	const second = copyInto(fs, resolve(directory), sha, bytes, uid, source);
 	if (!("vanished" in second)) return second;
 	return fail(
 		"invalid",
@@ -68,27 +99,27 @@ interface Vanished {
 }
 
 /** daemonCopy's work in its directory: the copy's path, a refusal, or the directory gone under it. */
-function copyInto(directory: string, sha: string, bytes: Buffer, uid: number, source: string): Result<string> | Vanished {
-	const dir = privateDirectory(directory, uid);
+function copyInto(fs: CopyFs, directory: string, sha: string, bytes: Buffer, uid: number, source: string): Result<string> | Vanished {
+	const dir = privateDirectory(fs, directory, uid);
 	if ("vanished" in dir || !dir.ok) return dir;
 	const path = join(dir.value, `computerd-${sha}`);
-	const found = copyState(path, sha, uid);
+	const found = copyState(fs, path, sha, uid);
 	if (found !== "replace" && found !== "absent") return found;
 	const temp = join(dir.value, `.computerd-${sha}.${randomBytes(8).toString("hex")}.tmp`);
 	try {
-		const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o700);
+		const fd = fs.openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o700);
 		try {
-			writeFileSync(fd, bytes);
+			fs.writeFileSync(fd, bytes);
 			// fchmod is not narrowed by the umask: the copy is 0755 whatever it is.
-			fchmodSync(fd, 0o755);
-			fsyncSync(fd);
+			fs.fchmodSync(fd, 0o755);
+			fs.fsyncSync(fd);
 		} finally {
-			closeSync(fd);
+			fs.closeSync(fd);
 		}
-		renameSync(temp, path);
+		fs.renameSync(temp, path);
 	} catch (error) {
 		try {
-			unlinkSync(temp);
+			fs.unlinkSync(temp);
 		} catch {
 			// Never made, or already renamed.
 		}
@@ -96,7 +127,7 @@ function copyInto(directory: string, sha: string, bytes: Buffer, uid: number, so
 		if (codeOf(error) === "ENOENT") return { vanished: dir.value };
 		return fail("invalid", `cannot copy the daemon at ${source} to ${path}: ${wordsOf(error)}`);
 	}
-	const made = copyState(path, sha, uid);
+	const made = copyState(fs, path, sha, uid);
 	if (made === "absent") return { vanished: dir.value };
 	if (made === "replace") return fail("invalid", `the daemon's copy at ${path} did not hold the daemon's bytes, mode 0755 and this user's ownership once written`);
 	return made;
@@ -110,11 +141,11 @@ const LINK_WORDS = "the provider binds only a file it wrote itself and never fol
  * link or another user's file is refused before anything opens it; a 0755 copy of this user's is then opened without
  * following a link and hashed. Every failure to read it is a Result naming it.
  */
-function copyState(path: string, sha: string, uid: number): Result<string> | "absent" | "replace" {
+function copyState(fs: CopyFs, path: string, sha: string, uid: number): Result<string> | "absent" | "replace" {
 	const cannot = (error: unknown) => fail("invalid", `cannot read the daemon's copy at ${path}: ${wordsOf(error)}`);
 	let entry: Stats;
 	try {
-		entry = lstatSync(path);
+		entry = fs.lstatSync(path);
 	} catch (error) {
 		return codeOf(error) === "ENOENT" ? "absent" : cannot(error);
 	}
@@ -126,7 +157,7 @@ function copyState(path: string, sha: string, uid: number): Result<string> | "ab
 	if ((entry.mode & 0o7777) !== 0o755) return "replace";
 	let fd: number;
 	try {
-		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		fd = fs.openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	} catch (error) {
 		const code = codeOf(error);
 		if (code === "ENOENT") return "absent";
@@ -135,15 +166,15 @@ function copyState(path: string, sha: string, uid: number): Result<string> | "ab
 		return cannot(error);
 	}
 	try {
-		const stat = fstatSync(fd);
+		const stat = fs.fstatSync(fd);
 		// The file opened is checked itself: another process of this user's may have renamed its identical copy over the
 		// one lstat read, which is as good. One that is not a 0755 file of this user's is written over, then checked again.
 		if (!stat.isFile() || stat.uid !== uid || (stat.mode & 0o7777) !== 0o755) return "replace";
-		return sha256(readFileSync(fd)) === sha ? ok(path) : "replace";
+		return sha256(fs.readFileSync(fd)) === sha ? ok(path) : "replace";
 	} catch (error) {
 		return cannot(error);
 	} finally {
-		closeSync(fd);
+		fs.closeSync(fd);
 	}
 }
 
@@ -154,19 +185,19 @@ function copyState(path: string, sha: string, uid: number): Result<string> | "ab
  * entries. Nothing is ever chmodded or chowned: a directory that fails is refused in words, one that cannot be checked
  * is a Result naming it, and one that is gone when it is checked (a cleaner removed it) is Vanished.
  */
-function privateDirectory(directory: string, uid: number): Result<string> | Vanished {
+function privateDirectory(fs: CopyFs, directory: string, uid: number): Result<string> | Vanished {
 	const parent = dirname(directory);
 	let real: string;
 	try {
-		mkdirSync(parent, { recursive: true, mode: 0o700 });
-		real = realpathSync(parent);
+		fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+		real = fs.realpathSync(parent);
 	} catch (error) {
 		return fail("invalid", `cannot make ${parent}, the directory the daemon copy directory goes in: ${wordsOf(error)}; make it, ${ELSEWHERE}`);
 	}
 	for (let at = real; ; at = dirname(at)) {
 		let stat: Stats;
 		try {
-			stat = lstatSync(at);
+			stat = fs.lstatSync(at);
 		} catch (error) {
 			if (codeOf(error) === "ENOENT") return { vanished: at };
 			return fail("invalid", `cannot check ${at}, above the daemon copy directory ${directory}: ${wordsOf(error)}; ${ELSEWHERE}`);
@@ -181,7 +212,7 @@ function privateDirectory(directory: string, uid: number): Result<string> | Vani
 	}
 	const path = join(real, basename(directory));
 	try {
-		mkdirSync(path, { mode: 0o700 });
+		fs.mkdirSync(path, { mode: 0o700 });
 	} catch (error) {
 		const code = codeOf(error);
 		if (code === "ENOENT") return { vanished: real };
@@ -189,7 +220,7 @@ function privateDirectory(directory: string, uid: number): Result<string> | Vani
 	}
 	let stat: Stats;
 	try {
-		stat = lstatSync(path);
+		stat = fs.lstatSync(path);
 	} catch (error) {
 		if (codeOf(error) === "ENOENT") return { vanished: path };
 		return fail("invalid", `cannot check the daemon copy directory ${path}: ${wordsOf(error)}; ${ELSEWHERE}`);

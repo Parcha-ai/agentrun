@@ -5,11 +5,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import * as fs from "node:fs";
 import { chmodSync, chownSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import test, { after } from "node:test";
+import { daemonCopy } from "../dist/daemon-copy.js";
 import { DockerProvider } from "../dist/index.js";
 import { COPY_NAME, DAEMON_BYTES, fakeDocker, valuesOf } from "./fake-docker.mjs";
 
@@ -205,63 +207,62 @@ test("a file another user owns at the copy's name is refused in words, not repla
 });
 
 /**
- * daemonCopy in a child process whose node:fs is the real one but for one failure, as a cleaner or a failing disk
- * would cause it: "vanish-once" removes the copy directory right after it is made, the first time it is checked;
+ * daemonCopy given file operations that are node:fs's own but for one failure, as a cleaner or a failing disk would
+ * cause it: "vanish-once" removes the copy directory right after it is made, the first time it is checked;
  * "vanish-always" every time; "ancestor" fails the check of the directory above it with EACCES; "read" fails every read
- * of an open file after the daemon's own with EIO. Its answer is the Result, or { threw } when daemonCopy threw.
+ * of an open file after the daemon's own with EIO. Its answer is the Result, or { threw } when daemonCopy threw. The
+ * operations are passed in, not mocked into node:fs, which Node's module mocks do differently from one version to another.
  */
-async function copyWithFailure(plan) {
+function copyWithFailure(plan) {
 	const dir = fresh();
 	const source = join(dir, "computerd");
 	writeFileSync(source, DAEMON_BYTES, { mode: 0o700 });
 	const cache = join(dir, "cache");
-	const script = `
-import { mock } from "node:test";
-import * as fs from "node:fs";
-const { COPY_MODULE, COPY_SOURCE, COPY_CACHE, COPY_PARENT, COPY_PLAN } = process.env;
-let cleaned = 0;
-let reads = 0;
-const lstatSync = (path, ...rest) => {
-	if (path === COPY_CACHE && (COPY_PLAN === "vanish-always" || (COPY_PLAN === "vanish-once" && cleaned === 0))) {
-		cleaned++;
-		fs.rmSync(path, { recursive: true, force: true });
+	let cleaned = 0;
+	let reads = 0;
+	const failing = {
+		...fs,
+		lstatSync: (path) => {
+			if (path === cache && (plan === "vanish-always" || (plan === "vanish-once" && cleaned === 0))) {
+				cleaned++;
+				rmSync(path, { recursive: true, force: true });
+			}
+			if (path === dir && plan === "ancestor") throw Object.assign(new Error(`EACCES: permission denied, lstat '${path}'`), { code: "EACCES" });
+			return lstatSync(path);
+		},
+		readFileSync: (target) => {
+			if (typeof target === "number" && plan === "read" && reads++ > 0) throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+			return readFileSync(target);
+		},
+	};
+	let result;
+	try {
+		result = daemonCopy(source, cache, failing);
+	} catch (error) {
+		result = { threw: error.message };
 	}
-	if (path === COPY_PARENT && COPY_PLAN === "ancestor") throw Object.assign(new Error("EACCES: permission denied, lstat '" + path + "'"), { code: "EACCES" });
-	return fs.lstatSync(path, ...rest);
-};
-const readFileSync = (target, ...rest) => {
-	if (typeof target === "number" && COPY_PLAN === "read" && reads++ > 0) throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
-	return fs.readFileSync(target, ...rest);
-};
-mock.module("node:fs", { namedExports: { ...fs, lstatSync, readFileSync } });
-const { daemonCopy } = await import(COPY_MODULE);
-try {
-	console.log(JSON.stringify(daemonCopy(COPY_SOURCE, COPY_CACHE)));
-} catch (error) {
-	console.log(JSON.stringify({ threw: error.message }));
-}`;
-	const env = { ...process.env, COPY_MODULE: new URL("../dist/daemon-copy.js", import.meta.url).href, COPY_SOURCE: source, COPY_CACHE: cache, COPY_PARENT: dir, COPY_PLAN: plan };
-	const { stdout } = await promisify(execFile)(process.execPath, ["--experimental-test-module-mocks", "--no-warnings", "--input-type=module", "-e", script], { env });
-	return { result: JSON.parse(stdout.trim().split("\n").at(-1)), cache, dir };
+	return { result, cache, dir, cleaned };
 }
 
 test("a copy directory a cleaner removes right after it is made is made again once, and the copy is made", async () => {
-	const { result, cache } = await copyWithFailure("vanish-once");
+	const { result, cache, cleaned } = copyWithFailure("vanish-once");
+	assert.equal(cleaned, 1, "the cleaner ran");
 	assert.deepEqual(result, { ok: true, value: join(cache, COPY_NAME) });
 	assert.equal(lstatSync(cache).mode & 0o7777, 0o700);
 	assert.equal(readFileSync(join(cache, COPY_NAME), "utf8"), DAEMON_BYTES);
 });
 
 test("a copy directory that keeps vanishing, an unreadable directory above it, and a failing read of the copy are each a Result in words naming the path, never a throw", async () => {
-	const vanishing = await copyWithFailure("vanish-always");
+	const vanishing = copyWithFailure("vanish-always");
+	assert.equal(vanishing.cleaned, 2, "removed at each of the two tries");
 	assert.equal(vanishing.result.ok, false, JSON.stringify(vanishing.result));
 	assert.equal(vanishing.result.error.code, "invalid");
 	assert.match(vanishing.result.error.message, new RegExp(`the daemon copy directory ${vanishing.cache} vanished`));
-	const above = await copyWithFailure("ancestor");
+	const above = copyWithFailure("ancestor");
 	assert.equal(above.result.ok, false, JSON.stringify(above.result));
 	assert.equal(above.result.error.code, "invalid");
 	assert.match(above.result.error.message, new RegExp(`cannot check ${above.dir}, above the daemon copy directory .*EACCES`));
-	const read = await copyWithFailure("read");
+	const read = copyWithFailure("read");
 	assert.equal(read.result.ok, false, JSON.stringify(read.result));
 	assert.equal(read.result.error.code, "invalid");
 	assert.match(read.result.error.message, new RegExp(`cannot read the daemon's copy at ${join(read.cache, COPY_NAME)}: EIO`));
