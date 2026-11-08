@@ -95,8 +95,12 @@ export async function settingsRows(t: CaseContext, count: number): Promise<{ tre
 	}, `Settings' list with ${count} rows in apps.ui_tree`);
 }
 
-/** The node a field of text is typed into: an EditText. */
-const isField = (node: UiNode) => /EditText$/.test(node.role);
+/**
+ * A node text is typed into: any editable field, by its class, an EditText or a subclass the platform names apart
+ * (AutoCompleteTextView, MultiAutoCompleteTextView, ExtractEditText). A live Android 15's Settings search field is an
+ * AutoCompleteTextView (phone probe 2).
+ */
+const isField = (node: UiNode) => /(EditText|AutoCompleteTextView)$/.test(node.role);
 
 /**
  * Settings' search field, opened from its list: the case taps the search entry (the first clickable node that says

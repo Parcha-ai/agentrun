@@ -986,7 +986,9 @@ class AdbClient implements ComputerClient {
 			.reverse()
 			.find((line) => COMPONENT.test(line));
 		if (component === undefined) return refuse("not_found", `${id} has no activity to launch: is it installed?`);
-		const started = await this.#shell(`am start -W -n ${component}`);
+		// The app named comes to the front, not whatever its task last held: on Android 15 Settings' task keeps search (another
+		// package) on top, and a plain start resumes it there. A cleared task starts the app itself (phone probe 2).
+		const started = await this.#shell(`am start -W --activity-clear-task -n ${component}`);
 		if (!started.ok) return started;
 		if (/Error:|Exception/.test(started.value)) return refuse("phone", `am start of ${component}: ${started.value.trim().split("\n").at(-1)}`);
 		return ok({});

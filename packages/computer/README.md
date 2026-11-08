@@ -1845,7 +1845,8 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     `input motionevent` for a path of three points or more), the back, home and app switch buttons, `type`
     (`input text`, ASCII and line breaks) and one key at a time (`input keyevent`), and `wait`;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
-    launcher activity, `am start -W`) and `apps.terminate` (`am force-stop`);
+    launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
+    held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
   - `apps.ui_tree`: `uiautomator dump`.
 
   exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
