@@ -92,12 +92,12 @@ function archilRefusals({ disk, region, folder, token }: Record<string, unknown>
 
 /**
  * What a provider reads back of a mount it made as asked: its kind and source, never the token. An Archil mount is
- * always exclusive, and is read back under `epoch`, the computer's claim epoch; an Archil mount with no epoch, or a value
- * that is not one, is a caller's mistake, so it throws TypeError, in words. A bind takes no epoch.
+ * always exclusive, and is read back under `epoch`, the computer's claim epoch. With no epoch, or a value that is not
+ * one, it is `{ other }` in words: a mount under no claim, which no attach takes, never a guessed epoch. A bind takes none.
  */
 export function readBackOf(mount: MountSpec, epoch?: number): MountReadBack {
 	if (mount.kind === "bind") return { kind: "bind", path: mount.path };
 	const problem = epochProblem(epoch);
-	if (problem !== undefined) throw new TypeError(`an Archil mount is read back under the computer's claim epoch: ${problem}`);
+	if (problem !== undefined) return { other: `an Archil mount of ${mount.disk}:/${mount.folder} with no epoch to read it back under (${problem})` };
 	return { kind: "archil", disk: mount.disk, region: mount.region, folder: mount.folder, exclusive: true, epoch: epoch as number };
 }

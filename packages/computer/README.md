@@ -638,8 +638,8 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount, epoch)`), is its kind and source
   alone: `{ kind: "bind", path }` or `{ kind: "archil", disk, region, folder, exclusive, epoch }`, or
   `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
-  computer's `agentrun.epoch` label (Archil's hold on a folder carries none), and `readBackOf` throws for an Archil
-  mount with no epoch. The token is never in a label, a read-back or an error.
+  computer's `agentrun.epoch` label (Archil's hold on a folder carries none); an Archil mount with no epoch reads back
+  as `{ other }`, in words. The token is never in a label, a read-back or an error.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
   refused by `check`.
