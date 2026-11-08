@@ -2,18 +2,20 @@
 // The only code with SQL in it, besides the schema and the run patch. The file is on local disk, never on Archil: one
 // connection per process, and SQLite's one writer lock serializes the server's and every runner's commits. A unit of work
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { claimFence } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  Fenced, SchemaVersionUnknown, StoreConstraint,
+  CommandTaken, Fenced, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
-import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -45,16 +47,19 @@ const REVISION_COLUMNS = "id, agent_id, kind, body, package, created_at";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
-/** The runs a runner may claim, at a time bound three times (CLAIMABLE_AT): queued; running with no runner (released) or
- *  its claim run out; parked with its wake_at passed, an untaken stop, or an untaken command once its backoff (a failed
- *  resume's) has passed. */
+/** The runs a runner may claim, at a time bound five times (CLAIMABLE_AT): queued; running with no runner (released) or
+ *  its claim run out, once its backoff (an interrupted run's) has passed; parked, once no claim holds it (a run parks
+ *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop, or an untaken command
+ *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
+ *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run. */
 const CLAIMABLE = `(state = 'queued'
-  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?))
-  OR (state = 'parked' AND (
+  OR (state = 'running' AND (runner IS NULL OR claimed_until < ?) AND (backoff_until IS NULL OR backoff_until <= ?))
+  OR (state = 'parked' AND (runner IS NULL OR claimed_until < ?) AND (
     (wake_at IS NOT NULL AND wake_at <= ?)
     OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'stop')
-    OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL)))))`;
-const CLAIMABLE_AT = (at: number): number[] => [at, at, at];
+    OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
+      AND json_extract(commands.body, '$.answers') IS NOT 0)))))`;
+const CLAIMABLE_AT = (at: number): number[] => [at, at, at, at, at];
 /** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
 const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
 
@@ -68,11 +73,73 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 
+type McpServerRecord = {
+  name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; sealed: Uint8Array | null;
+  refresh_holder: string | null; refresh_until: number | null; created_at: number; updated_at: number;
+};
+type McpPinRecord = { run_id: string; body: string; pinned_at: number };
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, sealed, refresh_holder, refresh_until, created_at, updated_at";
+const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
+  name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), refreshHolder: r.refresh_holder, refreshUntil: r.refresh_until, createdAt: r.created_at, updatedAt: r.updated_at,
+});
+const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
+
 /** The store's schema version as the file holds it: null when the server has not set it up (no store_meta yet). */
 async function versionOf(db: Connection): Promise<number | null> {
   const table = await db.get<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'store_meta'");
   if (!table) return null;
   return (await db.get<{ schema_version: number }>("SELECT schema_version FROM store_meta WHERE singleton = 1"))?.schema_version ?? null;
+}
+
+/** The files only an earlier version kept at a data directory's top: its MCP servers, triggers, tool keys, trigger
+ *  secrets, webhook and its outbox, kept idempotency answers, learning's usage ledger, and the per-run door's token.
+ *  This version's own (.token, .server.json beside the store and its lock) and a leftover box-image.json are not among
+ *  them: a directory holding those opens. */
+const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl", ".door-token"];
+
+/** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
+ *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
+ *  disk/agents/<agent>/runs/<run>/run.sqlite), its settings files (EARLIER_ROOT_FILES) and its homes' sign-ins
+ *  (homes/<home>/sign-ins/sign-ins.json). Read only: nothing is opened for writing or made. */
+function earlierVersionIn(dataDir: string): string[] {
+  if (!existsSync(dataDir)) return [];
+  const found: string[] = [];
+  const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+  // A directory linked in counts as one (stat follows the link), as the server's check of old homes reads them: an
+  // earlier version's home or run kept elsewhere and linked in is still the earlier version's.
+  const isDir = (path: string) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  const dirsIn = (path: string) => (isDir(path) ? readdirSync(path).filter((name) => isDir(join(path, name))) : []);
+  const store = join(dataDir, STORE_FILE);
+  if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
+  for (const name of EARLIER_ROOT_FILES) if (isFile(join(dataDir, name))) found.push(name);
+  for (const home of dirsIn(join(dataDir, "homes"))) {
+    const signIns = join("homes", home, "sign-ins", "sign-ins.json");
+    if (isFile(join(dataDir, signIns))) found.push(signIns);
+  }
+  for (const agent of dirsIn(dataDir)) if (isFile(join(dataDir, agent, "agent.sqlite"))) found.push(join(agent, "agent.sqlite"));
+  for (const agent of dirsIn(join(dataDir, "agents"))) if (isFile(join(dataDir, "agents", agent, "agent.sqlite"))) found.push(join("agents", agent, "agent.sqlite"));
+  for (const run of dirsIn(join(dataDir, "runs"))) if (isFile(join(dataDir, "runs", run, "run.sqlite"))) found.push(join("runs", run, "run.sqlite"));
+  for (const agent of dirsIn(join(dataDir, "disk", "agents"))) {
+    for (const run of dirsIn(join(dataDir, "disk", "agents", agent, "runs"))) {
+      const file = join("disk", "agents", agent, "runs", run, "run.sqlite");
+      if (isFile(join(dataDir, file))) found.push(file);
+    }
+  }
+  return found.sort();
+}
+
+/** Whether `file` is this version's store, or one with nothing in it yet: an earlier one has tables and no store_meta. */
+function isThisVersionsStore(file: string): boolean {
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
+    if (tables.length === 0) return true;
+    if (!tables.some((table) => table.name === "store_meta")) return false;
+    return db.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get() !== undefined;
+  } finally {
+    db.close();
+  }
 }
 
 /** Opens the store in `dataDir` (its file is STORE_FILE there), or at `file` (the store's own tests). As the server (the
@@ -84,8 +151,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
   const role = options.role ?? "server";
   let file: string;
   if (options.dataDir !== undefined) {
-    // The server makes its data directory; a runner opens only one that is there.
-    if (role === "server") mkdirSync(options.dataDir, { recursive: true });
+    // The server makes its data directory; a runner opens only one that is there. No migration: a directory an earlier
+    // version wrote is refused before anything in it is opened or made.
+    if (role === "server") {
+      const earlier = earlierVersionIn(options.dataDir);
+      if (earlier.length > 0) throw new StoreFromEarlierVersion(options.dataDir, earlier);
+      mkdirSync(options.dataDir, { recursive: true });
+    }
     else if (!existsSync(options.dataDir)) throw new SchemaVersionUnknown(join(options.dataDir, STORE_FILE), null, SCHEMA_VERSION);
     file = join(options.dataDir, STORE_FILE);
   } else {
@@ -122,6 +194,8 @@ class SqliteStore implements Store {
   readonly templates: Templates;
   readonly triggers: Triggers;
   readonly runs: Runs;
+  readonly mcp: Mcp;
+  readonly live: Live;
   readonly #db: Connection;
   readonly #now: () => number;
   /** Each claim's one journal, until it is closed. */
@@ -278,7 +352,121 @@ class SqliteStore implements Store {
         return rows.map((row) => row.id);
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
-      update: async (claim: Claim, patch: RunPatch, also: readonly AlsoRow[] = []): Promise<RunRow> => db.transaction((tx) => applyRunPatch(tx, claim, patch, also, now())),
+      update: async (claim, patch, rows = {}) => {
+        if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take? }");
+        const { also = [], take = [] } = rows;
+        return db.transaction(async (tx) => {
+          const at = now();
+          const row = await applyRunPatch(tx, claim, patch, also, at);
+          for (const commandId of take) {
+            if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", at, commandId, claim.runId)) === 0) {
+              throw new CommandTaken(claim.runId, commandId);
+            }
+          }
+          // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
+          await refuseLeftovers(tx, claim.runId, patch.state, at);
+          return row;
+        });
+      },
+    };
+
+    const server = async (executor: SqliteExecutor, name: string) => {
+      const row = await executor.get<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE name = ?`, name);
+      return row && mcpServerOf(row);
+    };
+    this.mcp = {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, sealed = null }) => {
+        const at = now();
+        const [result] = await db.write([{
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, sealed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
+              prices = excluded.prices, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at
+            RETURNING ${MCP_SERVER_COLUMNS}`,
+          params: [name, url, auth, protocol, json(tools), json(prices), sealed, at, at],
+        }]);
+        return mcpServerOf(result!.rows[0] as McpServerRecord);
+      },
+      remove: async (name) => {
+        await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
+      },
+      servers: async () => (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map(mcpServerOf),
+      server: (name) => server(db, name),
+      pin: async (runId) => {
+        const row = await db.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", runId);
+        return row && mcpPinOf(row);
+      },
+      pinOnce: (claim, body) =>
+        db.transaction(async (tx) => {
+          // Under the claim's epoch and its lease: a runner paused past its lease pins nothing.
+          const fence = claimFence(claim, now());
+          await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+          await tx.run("INSERT INTO mcp_pins (run_id, body, pinned_at) VALUES (?, ?, ?) ON CONFLICT (run_id) DO NOTHING", claim.runId, json(body), now());
+          return mcpPinOf((await tx.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", claim.runId))!);
+        }),
+      // The credential as read is compared by its bytes (`sealed IS ?`, NULL included): updated_at can repeat within a ms.
+      leaseRefresh: async (name, { seen, holder, ms = MCP_REFRESH_LEASE_MS }) => {
+        if (!(Number.isFinite(ms) && ms > MCP_REFRESH_CALL_MS)) {
+          throw new RangeError(`a refresh lease must be longer than the refresh call's own deadline (${MCP_REFRESH_CALL_MS} ms), not ${ms} ms: it would lapse while its holder's call may still spend the token`);
+        }
+        return db.transaction(async (tx) => {
+          const at = now();
+          const granted = await tx.runCounted(
+            "UPDATE mcp_servers SET refresh_holder = ?, refresh_until = ? WHERE name = ? AND sealed IS ? AND (refresh_until IS NULL OR refresh_until < ?)",
+            holder, at + ms, name, seen, at,
+          );
+          const row = await server(tx, name);
+          if (!row) throw new StoreConstraint(`no MCP server ${name}: it is no longer saved`);
+          return { leased: granted === 1, row };
+        });
+      },
+      refreshToken: (name, { holder, sealed }) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const written = await tx.runCounted(
+            "UPDATE mcp_servers SET sealed = ?, refresh_holder = NULL, refresh_until = NULL, updated_at = max(?, updated_at + 1) WHERE name = ? AND refresh_holder = ?",
+            sealed, at, name, holder,
+          );
+          if (written === 0) throw new RefreshLeaseLost(name, holder);
+          return (await server(tx, name))!;
+        }),
+      releaseRefresh: async (name, holder) => {
+        await db.write([{ sql: "UPDATE mcp_servers SET refresh_holder = NULL, refresh_until = NULL WHERE name = ? AND refresh_holder = ?", params: [name, holder] }]);
+      },
+    };
+
+    this.live = {
+      // One transaction for the tick; each row written only under its run's current epoch and live lease (the SELECT finds
+      // no run row for a stale or lapsed claim, so nothing is inserted or changed). The drop below stays on the epoch.
+      put: (rows) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const written: string[] = [];
+          const fenced: string[] = [];
+          for (const { claim, state } of rows) {
+            const fence = claimFence(claim, at);
+            const changed = await tx.runCounted(
+              `INSERT INTO run_live (run_id, state, updated_at) SELECT id, ?, ? FROM runs WHERE ${fence.where}
+                ON CONFLICT (run_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+              json(state), at, ...fence.params,
+            );
+            (changed > 0 ? written : fenced).push(claim.runId);
+          }
+          return { written, fenced };
+        }),
+      read: async (runIds) => {
+        if (runIds.length === 0) return [];
+        const rows = await db.all<{ run_id: string; state: string; updated_at: number }>(
+          `SELECT run_id, state, updated_at FROM run_live WHERE run_id IN (${runIds.map(() => "?").join(", ")}) ORDER BY run_id`,
+          ...runIds,
+        );
+        return rows.map((row): LiveRow => ({ runId: row.run_id, state: JSON.parse(row.state), updatedAt: row.updated_at }));
+      },
+      drop: async (claim) => {
+        await db.write([{
+          sql: "DELETE FROM run_live WHERE run_id = ? AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND epoch = ?)",
+          params: [claim.runId, claim.runId, claim.epoch],
+        }]);
+      },
     };
   }
 
@@ -313,23 +501,51 @@ class SqliteStore implements Store {
 
   async renew(claim: Claim, { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<Claim> {
     // As a claim's: the lease runs from when the renew holds the writer lock.
+    // A lease that ran out is gone: no renew brings it back (its runner takes the run again, at a new epoch).
     const until = await this.#db.transaction(async (tx) => {
-      const at = this.#now() + leaseMs;
-      await tx.step(fenced(claim, "UPDATE runs SET claimed_until = ? WHERE id = ? AND epoch = ? AND runner = ?", [at, claim.runId, claim.epoch, claim.runner]));
+      const now = this.#now();
+      const at = now + leaseMs;
+      const fence = claimFence(claim, now);
+      await tx.step(fenced(claim, `UPDATE runs SET claimed_until = ? WHERE ${fence.where} AND runner = ?`, [at, ...fence.params, claim.runner]));
       return at;
     });
     return { ...claim, until };
   }
 
+  async renewMany(claims: readonly Claim[], { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<(Claim | Fenced)[]> {
+    if (claims.length === 0) return [];
+    // One transaction for every claim, each update on its own: a claim another runner took changes no row and is answered
+    // Fenced, never rolling the others back.
+    return this.#db.transaction(async (tx) => {
+      const now = this.#now();
+      const until = now + leaseMs;
+      const out: (Claim | Fenced)[] = [];
+      for (const claim of claims) {
+        const fence = claimFence(claim, now);
+        const renewed = await tx.all<{ id: string }>(`UPDATE runs SET claimed_until = ? WHERE ${fence.where} AND runner = ? RETURNING id`, until, ...fence.params, claim.runner);
+        out.push(renewed.length > 0 ? { ...claim, until } : new Fenced(claim.runId, claim.epoch));
+      }
+      return out;
+    });
+  }
+
   async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
     const ending = state !== undefined && FINAL_STATES.includes(state);
-    await this.#db.write([fenced(
-      claim,
-      // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
-      // never live until the next claim.
-      `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
-      [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
-    )], { full: true });
+    await this.#db.transaction(async (tx) => {
+      // A run its end already made final was released by that end (applyRunPatch): this release is a no-op, no second
+      // move of its epoch and no error, whatever its claim's lease says now.
+      const final = await tx.get<{ state: RunState; runner: string | null }>("SELECT state, runner FROM runs WHERE id = ?", claim.runId);
+      if (final && FINAL_STATES.includes(final.state) && final.runner === null) return;
+      const now = this.#now();
+      await tx.step(fenced(
+        claim,
+        // The epoch moves on at a release: the released claim is dead everywhere (its journal, its run updates, its takes),
+        // never live until the next claim. A claim whose lease ran out releases nothing: the run, running with its lease run
+        // out, is claimable at once, never stuck.
+        `UPDATE runs SET epoch = epoch + 1, runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE ${claimFence(claim, now).where} AND runner = ?`,
+        [wakeAt, backoffUntil, state ?? null, ...(ending ? [now] : []), ...claimFence(claim, now).params, claim.runner],
+      ));
+    }, { full: true });
     // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.
     this.#journals.delete(journalKey(claim));
     this.#released.delete(claim.runId);
@@ -375,19 +591,39 @@ class SqliteStore implements Store {
     return (await this.#db.all<CommandRecord>(`SELECT ${COMMAND_COLUMNS} FROM commands WHERE run_id = ? AND id > ? ORDER BY id`, runId, after)).map(commandOf);
   }
 
+  async commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>> {
+    const out = new Map<string, Command[]>();
+    if (cursors.length === 0) return out;
+    // One read for every run: each cursor a (run_id, after) row of a VALUES list joined against the commands.
+    const rows = await this.#db.all<CommandRecord>(
+      `WITH cursors(run_id, after) AS (VALUES ${cursors.map(() => "(?, ?)").join(", ")})
+       SELECT ${COMMAND_COLUMNS.split(", ").map((column) => `commands.${column}`).join(", ")} FROM commands JOIN cursors ON commands.run_id = cursors.run_id AND commands.id > cursors.after ORDER BY commands.id`,
+      ...cursors.flatMap((cursor) => [cursor.runId, cursor.after]),
+    );
+    for (const row of rows) {
+      const command = commandOf(row);
+      out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
+    }
+    return out;
+  }
+
   async take(claim: Claim, commandId: number, outcome: "taken" | "refused" = "taken", reason?: string): Promise<void> {
-    await this.#db.write([
-      fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]),
-      { sql: "UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", params: [this.#now(), outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId] },
-    ]);
+    // The clock is read inside the transaction, so the lease check and the write are one.
+    await this.#db.transaction(async (tx) => {
+      const now = this.#now();
+      const fence = claimFence(claim, now);
+      await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
+    });
   }
 
   async retry(claim: Claim, commandId: number): Promise<number> {
-    const [, counted] = await this.#db.write([
-      fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]),
-      { sql: "UPDATE commands SET tries = tries + 1 WHERE id = ? AND run_id = ? AND taken_at IS NULL RETURNING tries", params: [commandId, claim.runId] },
-    ]);
-    const row = counted!.rows[0] as { tries: number } | undefined;
+    const counted = await this.#db.transaction(async (tx) => {
+      const fence = claimFence(claim, this.#now());
+      await tx.step(fenced(claim, `UPDATE runs SET epoch = epoch WHERE ${fence.where}`, fence.params));
+      return tx.all<{ tries: number }>("UPDATE commands SET tries = tries + 1 WHERE id = ? AND run_id = ? AND taken_at IS NULL RETURNING tries", commandId, claim.runId);
+    });
+    const row = counted[0];
     if (!row) throw new StoreConstraint(`run ${claim.runId}: command ${commandId} is taken, or not the run's: no try to count`);
     return row.tries;
   }
