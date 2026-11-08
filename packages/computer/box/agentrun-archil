@@ -1,31 +1,34 @@
 #!/bin/sh
-# agentrun-archil: the root helper of a box on another machine, which keeps one run's work folder on the owner's Archil
-# disk at /workspace. It does five things and nothing else, each with fixed arguments to the archil client, or to
-# iptables and ip6tables:
+# agentrun-archil: the root helper of a remote computer, which keeps one run's work folder on the owner's Archil disk
+# at /workspace. It does five things and nothing else, each with fixed arguments to the archil client, to iptables and
+# ip6tables, or to computerd:
 #
 #   netlock <region>
 #   mount  <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
 #   revoke <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
-#   sync
+#   serve
 #   checkin
 #
-# netlock the box's firewall, run first: the tool user sends nothing, loopback included; root reaches Archil alone.
+# netlock the computer's firewall, run first: the tool user sends nothing, loopback included; root reaches Archil alone.
 # mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder.
-# revoke  the same with --force: takes the folder back from a box that is gone and left its delegation behind.
-# sync    archil sync /workspace: every write so far is durable when it returns.
-# checkin archil checkin /workspace: lets go of the folder (a box that cannot unmount syncs, then checks in).
+# revoke  the same with --force: takes the folder back from a computer that is gone and left its delegation behind.
+# serve   becomes `computerd sync-serve`, resident, holding no token: on its socket it takes one fixed byte and answers
+#         the exit code of `archil sync /workspace` (every write so far durable), coalesced; it exits when the mount
+#         goes or its socket is taken away.
+# checkin takes serve's socket away, then archil checkin /workspace: lets go of the folder.
 #
-# Install it root:root 0755 at /usr/local/sbin/agentrun-archil, with one sudoers line for the box's own user and no
-# other: `<user> ALL=(root) NOPASSWD: /usr/local/sbin/agentrun-archil`. The run's tools run as another user, which has
-# no sudo at all.
+# Install it root:root 0755 at /usr/local/sbin/agentrun-archil. The provider runs it as root through its own exec (the
+# image's user is root), never through sudo: the image has none. The run's tools run as agentrun-tool, through
+# computerd, with no way to root at all.
 #
 # The token is read from fd 0 and handed to archil only in the environment of its exec (archil reads it nowhere else),
-# never as an argument and never in a file. Every argument is checked here, whoever calls: a wrong verb or count, a
-# newline, a disk, region or folder of any other shape (an absolute path, `.` or `..`, an empty or extra segment), a
-# mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing. A sync or checkin with
-# nothing mounted exits 3 and runs nothing. A mount or revoke in a box whose /proc lets a user see another's processes
-# (no hidepid=2 or invisible) exits 4 and runs nothing; each first remounts /proc with hidepid=2, which a box whose root
-# may not remount leaves as it was. A netlock that cannot lock the tools' network exits 4.
+# never as an argument and never in a file. Every argument is checked here, whoever calls: a caller that is not root, a
+# wrong verb or count, a newline, a disk, region or folder of any other shape (an absolute path, `.` or `..`, an empty
+# or extra segment), a mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing.
+# A serve or checkin with nothing mounted exits 3 and runs nothing. A mount or revoke in a computer whose /proc lets a
+# user see another's processes (no hidepid=2 or invisible) exits 4 and runs nothing; each first remounts /proc with
+# hidepid=2, which a computer whose root may not remount leaves as it was. A netlock that cannot lock the tools' network
+# exits 4, and so does a serve whose computerd is not root's alone.
 set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -45,11 +48,17 @@ STATUS=/proc/self/status
 IF_INET6=/proc/net/if_inet6
 TOOL=agentrun-tool
 CHAIN=AGENTRUN-NET
+COMPUTERD=/opt/agentrun/computerd
+SOCK=/run/agentrun-archil/archil.sock
+ROOT_UID=0
+HELD_TOP=/
 
 refuse() {
   printf 'agentrun-archil: %s\n' "$1" >&2
   exit 2
 }
+
+[ "$(id -u)" = "$ROOT_UID" ] || refuse "run it as root, through the provider's own exec"
 
 # A newline in any argument is refused before anything reads one: the checks below are line by line.
 nl='
@@ -98,14 +107,40 @@ take() {
   exec "$ARCHIL" mount $force "$disk:/$folder" "$MP" --region "$region"
 }
 
-# sync and checkin act on the archil mount at $MP; with none there (a box made before it had one, or whose mount went),
-# nothing is held, and they say so with exit 3.
+# serve and checkin act on the archil mount at $MP; with none there (a computer whose mount went), nothing is held, and
+# they say so with exit 3.
 held() {
   [ "$#" -eq 0 ] || refuse "$verb takes no argument"
   if ! listed fuse.archil; then
     printf 'agentrun-archil: nothing is mounted at %s\n' "$MP" >&2
     exit 3
   fi
+}
+
+# Whether $COMPUTERD is root's alone: a regular file, it and every folder above it (to $HELD_TOP) owned by root and
+# writable by no group or other user, so no link and no ACL. Else a user who could rename an entry on the path could
+# put another program there, which serve would run as root. `ls -ldn` is in BusyBox and coreutils alike; a trailing `.`
+# (an SELinux label) is allowed, a `+` (an ACL) is not.
+rootsalone() {
+  [ -f "$COMPUTERD" ] && [ ! -L "$COMPUTERD" ] || return 1
+  x=$COMPUTERD
+  while :; do
+    set -- $(ls -ldn "$x" 2>/dev/null)
+    case "${1-}" in ?????[!w]??[!w]? | ?????[!w]??[!w]?.) ;; *) return 1 ;; esac
+    [ "${3-}" = "$ROOT_UID" ] || return 1
+    [ "$x" = "$HELD_TOP" ] || [ "$x" = / ] && return 0
+    x=${x%/*}
+    x=${x:-/}
+  done
+}
+
+# serve: computerd's resident sync server, as root, with fixed arguments alone: the socket, the mountpoint, the mount
+# table, the archil client and the tool user's group, which may connect. No token: its stdin is not passed on.
+serve() {
+  held "$@"
+  rootsalone || { printf 'agentrun-archil: computerd at %s is not root'"'"'s alone, so serve runs nothing\n' "$COMPUTERD" >&2; exit 4; }
+  gid=$(id -g "$TOOL" 2>/dev/null) || { printf 'agentrun-archil: there is no user %s\n' "$TOOL" >&2; exit 4; }
+  exec "$COMPUTERD" sync-serve --socket "$SOCK" --mountpoint "$MP" --mounts "$MOUNTS" --archil "$ARCHIL" --gid "$gid" </dev/null
 }
 
 # netlock <region>: the box's firewall, before any tool runs and before the mount. In a chain of its own, jumped to
@@ -195,14 +230,15 @@ netlock() {
   printf 'agentrun-archil: the tools'"'"' network is locked; root reaches %s on 8100 and any address on 32050\n' "$endpoint" >&2
 }
 
-[ "$#" -ge 1 ] || refuse "say netlock, mount, revoke, sync or checkin"
+[ "$#" -ge 1 ] || refuse "say netlock, mount, revoke, serve or checkin"
 verb=$1
 shift
 case "$verb" in
   netlock) netlock "$@" ;;
   mount) force= && take "$@" ;;
   revoke) force=--force && take "$@" ;;
-  sync) held "$@" && exec "$ARCHIL" sync "$MP" ;;
-  checkin) held "$@" && exec "$ARCHIL" checkin "$MP" ;;
-  *) refuse "say netlock, mount, revoke, sync or checkin" ;;
+  serve) serve "$@" ;;
+  # serve's socket goes first, so serve exits and no sync is asked of a folder let go.
+  checkin) held "$@" && rm -f -- "$SOCK" && exec "$ARCHIL" checkin "$MP" ;;
+  *) refuse "say netlock, mount, revoke, serve or checkin" ;;
 esac

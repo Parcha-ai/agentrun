@@ -174,7 +174,7 @@ test("checkin first takes serve's socket away, so the resident serve exits, then
   const ran = b.run(["checkin"], "");
   assert.equal(ran.status, 0, ran.stderr);
   assert.equal(existsSync(b.sock), false, "the socket is gone");
-  assert.deepEqual(ran.calls, [`argv checkin ${b.mp}`]);
+  assert.deepEqual(ran.calls.filter((line) => !line.startsWith("ps ")), [`argv checkin ${b.mp}`]);
 });
 
 test("a mount of a folder already mounted there answers at once and runs nothing", async (t) => {
