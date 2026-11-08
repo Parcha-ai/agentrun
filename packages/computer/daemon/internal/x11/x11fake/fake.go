@@ -319,13 +319,17 @@ func (f *Server) serve(conn net.Conn) {
 		_, _ = conn.Write(out)
 		return
 	}
-	if _, err := conn.Write(f.setupReply()); err != nil {
-		return
-	}
+	// The session is the fake's from the setup reply on, so Send reaches every client whose Open has returned.
 	s := &session{conn: conn}
+	s.mu.Lock()
 	f.mu.Lock()
 	f.sessions = append(f.sessions, s)
 	f.mu.Unlock()
+	_, err := conn.Write(f.setupReply())
+	s.mu.Unlock()
+	if err != nil {
+		return
+	}
 	var seq uint16
 	for {
 		h := make([]byte, 4)

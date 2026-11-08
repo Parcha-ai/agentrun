@@ -4,8 +4,8 @@
 // Protocol 2.2, with no cgo and no dependency, so computerd stays one static binary.
 //
 // A connection is little-endian. Requests are written in order through one buffer; a reader goroutine hands each reply
-// to the request that waits for it, keeps the errors of requests that have no reply for Sync, and queues events only
-// when EnableEvents asked for them.
+// to the request that waits for it, keeps the first errors of requests that have no reply for Sync, and queues events
+// only when EnableEvents asked for them.
 package x11
 
 import (
@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,6 +56,11 @@ const (
 	// maxEvent is the most bytes a GenericEvent may carry past its first 32. This client asks for none: the X Input 2
 	// and Present events that are GenericEvents are a few hundred bytes. Its bytes are read and dropped, never kept.
 	maxEvent = 1 << 20
+	// maxErrors is the most errors of requests with no reply kept for the next Sync; past it they are counted and
+	// dropped. A batch Syncs after each action the server may refuse and reports the first error, so 64 is more than
+	// any reader needs, while one action may send thousands of requests (a scroll of 10,000 clicks) that an honest
+	// server refuses one by one.
+	maxErrors = 64
 )
 
 // Event types, as in an event's first byte and XTEST's FakeInput.
@@ -120,11 +126,15 @@ type Conn struct {
 	wmu sync.Mutex
 	out []byte
 	seq uint16
+	// sent is how many requests with no reply this connection has buffered, and unasked how many errors came with no
+	// request waiting for them. An X server sends an error only for a request, so unasked never passes sent.
+	sent atomic.Uint64
 
 	mu        sync.Mutex
 	cond      *sync.Cond
 	pending   map[uint16]waiter
 	errs      []*Error
+	unasked   uint64
 	err       error
 	keep      bool
 	events    [][]byte
@@ -402,7 +412,12 @@ func (c *Conn) read() {
 				delete(c.pending, seq)
 				w.ch <- packet{err: e}
 			} else {
-				c.errs = append(c.errs, e)
+				c.unasked++
+				if sent := c.sent.Load(); c.unasked > sent {
+					failure = fmt.Errorf("the X server sent more errors with no request waiting than the %d requests with no reply this client sent; an X server sends an error only for a request", sent)
+				} else if len(c.errs) < maxErrors {
+					c.errs = append(c.errs, e)
+				}
 			}
 			c.mu.Unlock()
 		case 1:
@@ -502,7 +517,9 @@ func (c *Conn) buffer(opcode, data byte, body []byte, limit int) (chan packet, e
 	defer c.wmu.Unlock()
 	c.seq++
 	var ch chan packet
-	if reply {
+	if !reply {
+		c.sent.Add(1)
+	} else {
 		ch = make(chan packet, 1)
 		c.mu.Lock()
 		if c.err != nil {
@@ -570,7 +587,7 @@ func (c *Conn) call(opcode, data byte, body []byte, limit int) ([]byte, error) {
 }
 
 // Sync waits until the server has handled every request sent before it, with one round trip (GetInputFocus), and
-// returns the errors of requests with no reply since the last Sync.
+// returns the errors of requests with no reply since the last Sync, in order: the first maxErrors of them.
 func (c *Conn) Sync() ([]*Error, error) {
 	if _, err := c.call(43, 0, nil, smallReply); err != nil {
 		return nil, err
