@@ -274,7 +274,7 @@ test("a paused run's pending suggests a raise, spent + 10 × the refused request
   assert.deepEqual([run.status, run.error, run.cost.cap_usd, said(rows)], ["completed", null, 2, ["Write one.md", CONTINUE("$2")]], JSON.stringify(run));
 });
 
-test("the suggested raise is a whole dollar, always above the cap, and a float just past a dollar stays that dollar", async () => {
+test("from a dollar on, the suggested raise is a whole dollar, always above the cap, and a float just past a dollar stays that dollar", async () => {
   const { suggestedCap } = await import("../dist/runs.js");
   assert.equal(typeof suggestedCap, "function", "runs.js offers suggestedCap");
   assert.equal(suggestedCap(0.05, 0, 0.1024), 2);
@@ -550,10 +550,26 @@ test("a raise whose save is slow while the paused process exits sends its follow
 
 test("the suggested raise is above the cap by more than a float's tail, so a PATCH with it is always a raise", async () => {
   const { suggestedCap } = await import("../dist/runs.js");
-  // $0.05 needed, nothing spent: 10 × $0.05 is $0.50, up to $1, a hair (5e-10) above a 0.9999999995 cap: no raise.
-  assert.equal(suggestedCap(0.9999999995, 0, 0.05), 2);
+  // $0.05 needed, nothing spent: 10 × $0.05 is $0.50, under a 0.9999999995 cap: the cent above the cap, $1.01.
+  assert.equal(suggestedCap(0.9999999995, 0, 0.05), 1.01);
   // The next dollar above a cap a hair under $2 is $3: $2 is within the tail of it, and no raise.
   assert.equal(suggestedCap(1.9999999995, 0, 0.01), 3);
+});
+
+test("the suggested raise scales from the need: under a dollar, for a cap under one, to the cent; a $0.0002 cap needing $0.0024 is offered $0.03, never $1", async () => {
+  const { suggestedCap } = await import("../dist/runs.js");
+  assert.equal(suggestedCap(0.0002, 0, 0.0024), 0.03);
+  assert.equal(suggestedCap(0.05, 0.01, 0.05286), 0.54);
+});
+
+test("serve's suggested raise is the kernel cap's (run-adapters kernel/cap/words.ts suggestedRaise), figure for figure, until serve's cap retires", async () => {
+  const { suggestedCap } = await import("../dist/runs.js");
+  const { suggestedRaise } = await import("../../run-adapters/dist/kernel/cap/index.js");
+  for (const cap of [0.0002, 0.002, 0.03, 0.05, 0.5, 0.9999999995, 1, 1.9999999995, 2, 5]) {
+    for (const spent of [0, 0.0012, 0.03, 0.48, 2.0000000000000004]) {
+      for (const need of [0, 0.0024, 0.01, 0.05286, 0.1024, 0.28]) assert.equal(suggestedCap(cap, spent, need), suggestedRaise(cap, spent, need), `cap ${cap}, spent ${spent}, need ${need}`);
+    }
+  }
 });
 
 /** What the server writes to stderr from now until the test ends (its warn lines, runs.ts). */
