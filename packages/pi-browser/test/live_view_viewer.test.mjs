@@ -790,6 +790,10 @@ test("watch only reads as watching: its own banner (never that input is held), n
   // Where the agent is, as text: the page's URL, its whole in the tooltip, never a field or a focus stop.
   const where = await watching.evaluate(`(() => { const el = document.getElementById("where"); const r = el.getBoundingClientRect(); return { text: el.textContent, title: el.title, tag: el.tagName, editable: el.isContentEditable, tabIndex: el.tabIndex, shown: r.width > 0 && r.height > 0 }; })()`);
   assert.deepEqual(where, { text: "https://example.com/", title: "https://example.com/", tag: "SPAN", editable: false, tabIndex: -1, shown: true }, "the page's URL, read-only text");
+  // The "no picture yet" notice a watcher can see never promises that input works.
+  const still = await watching.evaluate(`document.getElementById("still").textContent`);
+  assert.doesNotMatch(still, /Typing and clicking still work/, `the no-picture notice in view only (${still})`);
+  assert.match(still, /no picture until it is shown/, "it still says why there is no picture");
   // The page fills the window at its own shape: as wide as the stage, or as tall, whichever binds first.
   const fit = (s) => Math.min(s.w / 2, s.h);
   assert.ok(Math.abs(seen.canvas.h - fit(seen.stage)) <= 2 && Math.abs(seen.canvas.w - 2 * fit(seen.stage)) <= 2, `the canvas fills the stage at 2:1 (${JSON.stringify(seen)})`);

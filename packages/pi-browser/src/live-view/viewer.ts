@@ -157,6 +157,8 @@ const js = `"use strict";
   function viewOnly() {
     document.body.classList.add("view-only");
     $("watching").hidden = false;
+    // Nothing a watcher types or clicks is sent, so the no-picture notice promises no input.
+    stillEl.textContent = "This page is in a background tab or has not drawn yet, so there is no picture until it is shown.";
     CONTROLS.forEach(function (id) { $(id).disabled = true; });
   }
   // A take-over viewer drives only while it holds the browser: Take over asks for it, Hand back gives it back.
