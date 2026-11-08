@@ -3,7 +3,8 @@
 // What the loop owns, the same for every harness:
 // - the claim and its journal: every commit the loop stages is matched to the commit that carries it (Gate);
 // - the run's end: an `agentrun.end` entry with the run row's patch (ended, stopped with why, failed with why) and a
-//   stop's take; a park (an ask with the run parked); an interrupt on a lost claim or a shutdown (nothing more written);
+//   stop's take; a park (an ask with the run parked); an interrupt on a lost claim or a shutdown (nothing more written;
+//   the session ended with the adapter's interrupt() and then close(), the path a CLI adapter's kill rides);
 // - a restart of the Session on the kernel's own fault between a call and its result, under a finite restart limit;
 // - the gate before a call's intent (io.gate: the kernel's beforeIntent point, then allow, deny or ask), and the rule
 //   before a side effect around every host tool (side-effects.ts: a flush unless the tool is replay-safe, the call, the
@@ -151,10 +152,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await closeSession();
           continue;
         }
-        if (end === "closed" || (stopReason && stopReason.kind !== "command")) {
-          gate.seal(new Interrupted(stopReason?.kind ?? "the Session closed"));
-          return { state: "interrupted" };
-        }
+        if (end === "closed" || (stopReason && stopReason.kind !== "command")) return await interrupted(stopReason?.kind ?? "the Session closed");
         if (end === "stop" && stopReason?.kind === "command") {
           await session!.interrupt().catch(() => {});
           await harness.waitForIdle(context).catch(() => {});
@@ -167,10 +165,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         return await writeEnd(harness, root, gate, outcome.status === "completed" ? { state: "ended" } : { state: "failed", summary: `the run gave no answer (${outcome.status})` }, []);
       }
     } catch (error) {
-      if (gate?.sealed || deps.signal.aborted) {
-        gate?.seal(new Interrupted("its claim's signal aborted"));
-        return { state: "interrupted" };
-      }
+      if (gate?.sealed || deps.signal.aborted) return await interrupted("its claim's signal aborted");
       return { state: "failed", error: { code: "adapter-loop", message: (error as Error).message } };
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
@@ -242,6 +237,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!observation) return;
     held = observation;
     report(observation.value);
+  }
+
+  /** An interrupted end (a lost claim, a shutdown, the Session closed): the journal sealed first, so nothing written after
+   *  reaches the store, then the adapter's interrupt() (where a CLI adapter stops its process), bounded; the session's
+   *  close() follows in run()'s finally. */
+  async function interrupted(reason: string): Promise<LoopEnd> {
+    gate?.seal(new Interrupted(reason));
+    if (session) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([session.interrupt().catch(() => {}), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+      clearTimeout(timer);
+    }
+    return { state: "interrupted" };
   }
 
   /** The session and its Harness closed behind the journal's seal: nothing they write after reaches the store. */
