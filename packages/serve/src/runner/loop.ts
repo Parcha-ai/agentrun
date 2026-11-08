@@ -39,7 +39,7 @@ import {
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
-import type { Claim, Command, CommandOutcome, HeldState, Journal, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { type Claim, type Command, type CommandOutcome, cutAtLimit, type HeldState, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { sideEffect } from "./side-effects.js";
 import type { Staged } from "../store/store.js";
 
@@ -235,6 +235,15 @@ function heldStateOf(value: unknown): HeldState | undefined {
 }
 
 /** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
+/** Why the run fails, when the answer it would end on (the root's last pi.assistant) was cut at the model's output limit
+ *  (stopReason "length"): unfinished, so never ended. A cut answer the run went on from (a later turn answered after it)
+ *  is not its last, and changes nothing. */
+function cutLast(entries: readonly EntryRecord[]): string | undefined {
+  const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant");
+  const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
+  return message?.stopReason === "length" ? cutAtLimit(message.usage?.output) : undefined;
+}
+
 function restartLimited(entries: readonly EntryRecord[]): string | undefined {
   for (const entry of entries) {
     if (entry.kind !== "pi.tool-result") continue;
@@ -482,10 +491,14 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         }
         await harness.waitForIdle(context);
         const record = await input.status(context);
-        const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
+        const settledEntries = await entriesOf(gate.journal, root.id, context);
+        const cutOff = restartLimited(settledEntries);
         if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
         const failed = record.status !== "done";
-        return await writeEnd(harness, root, gate, failed ? { state: "failed", summary: "the run gave no answer" } : { state: "ended" }, []);
+        if (failed) return await writeEnd(harness, root, gate, { state: "failed", summary: "the run gave no answer" }, []);
+        // An answer cut at the model's output limit is unfinished: the run fails, saying so, never ended.
+        const cut = cutLast(settledEntries);
+        return await writeEnd(harness, root, gate, cut ? { state: "failed", summary: cut } : { state: "ended" }, []);
       }
     } catch (error) {
       // A sealed journal (a lost claim, a shutdown) or an aborted claim: nothing more is written, the next claim resumes.
