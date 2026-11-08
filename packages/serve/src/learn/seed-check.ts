@@ -51,14 +51,18 @@ export function makeProposalCheck(deps: { open: (agentId: string) => { workspace
 /** What a run is laid from at commit `seed` (a reopened run re-lays from its pin's): MEMORY.md, each active note and each
  *  active skill's files, by path, each body checked against its blob id. From the snapshot and its bodies when its
  *  main is `seed` (no exec); else one read-only exec of the script's `read` at that commit (git's tree and blobs).
- *  `null` (a run that learns from an empty folder, no main yet): nothing. `gone` when the folder has no such commit,
+ *  A skill whose folder holds a tracked link (git mode 120000) at the seed is left out whole and named in `refused`
+ *  (always there, empty when nothing is). `null` (a run that learns from an empty folder, no main yet): nothing. `gone`
+ *  when the folder has no such commit,
  *  `unavailable` when it cannot be read. */
-export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok: true; files: { path: string; text: string }[] } | { ok: false; reason: "unavailable" | "gone"; detail: string }> {
-  if (seed === null) return { ok: true, files: [] };
+export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok: true; files: { path: string; text: string }[]; refused: { skill: string; why: string }[] } | { ok: false; reason: "unavailable" | "gone"; detail: string }> {
+  if (seed === null) return { ok: true, files: [], refused: [] };
+  // An active skill whose folder holds a tracked link is left out whole, and named.
+  const refusedOf = (snapshot: Snapshot) => snapshot.skills.filter((skill) => skill.status === "active" && skill.links?.length).map((skill) => ({ skill: skill.name, why: `a link at ${skill.links![0]}` }));
   const laid = (snapshot: Snapshot) => [
     ...(snapshot.index.bytes ? [{ path: INDEX_FILE, oid: snapshot.index.oid }] : []),
     ...snapshot.notes.filter((note) => note.status === "active").map((note) => ({ path: note.file, oid: note.oid })),
-    ...snapshot.skills.filter((skill) => skill.status === "active").flatMap((skill) => skill.files.map(({ path, oid }) => ({ path, oid }))),
+    ...snapshot.skills.filter((skill) => skill.status === "active" && !skill.links?.length).flatMap((skill) => skill.files.map(({ path, oid }) => ({ path, oid }))),
   ];
   try {
     const now = await readSnapshot(lw);
@@ -68,7 +72,7 @@ export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok
         if (snapshot?.main !== seed) return undefined;
         return Promise.all(laid(snapshot).map(async ({ path, oid }) => ({ path, text: await body(path, oid) })));
       });
-      if (files) return { ok: true, files: [...files, ...(now.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) };
+      if (files) return { ok: true, files: [...files, ...(now.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), refused: refusedOf(now) };
     }
     const at = await folderAt(lw, seed);
     if (!at) return { ok: false, reason: "gone", detail: `the learning folder has no commit ${seed}` };
@@ -78,7 +82,7 @@ export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok
       if (!blob) throw new Error(`the learning folder's read at ${seed} holds no blob for ${path}`);
       return { path, text: utf8.decode(blob) };
     });
-    return { ok: true, files: [...files, ...(at.snapshot.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) };
+    return { ok: true, files: [...files, ...(at.snapshot.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), refused: refusedOf(at.snapshot) };
   } catch (error) {
     return { ok: false, reason: "unavailable", detail: (error as Error)?.message ?? String(error) };
   }

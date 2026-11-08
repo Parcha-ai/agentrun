@@ -633,6 +633,15 @@ test("the not-metered counts are this server's own fields: TimelineUsage.not_met
   assert.equal(doc.components.schemas.UsageLine.properties.unpriced_runs?.type, "integer");
 });
 
+test("what /usage and an agentic run's pause answer is in the document: the report's unpriced_runs, and 501 on pause and resume", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const report = (await api("GET", "/usage")).body;
+  assert.equal(typeof report.unpriced_runs, "number");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Usage" }, report), []);
+  for (const path of ["/runs/{run_id}/pause", "/runs/{run_id}/resume"]) assert.ok(doc.paths[path].post.responses["501"], `${path} documents 501`);
+});
+
 test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, an agent's tools on its own route, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-10-31T12:00:00Z") });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
