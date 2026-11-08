@@ -62,10 +62,11 @@ function output(argv, { uid, status, users, user, probe, pathSockets = [] }) {
 		// computerd probe --connect <target>...: the interfaces the computer's programs see, the path unix sockets they
 		// connect to (none listed when pathSockets is "no list", a daemon too old to list them), and each target refused
 		// unless the fake's vendor agent answers it.
-		const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
+		const asked = argv[2] === "--sockets";
+		const targets = argv.slice(asked ? 3 : 2).filter((_, i) => i % 2 === 1);
 		const answered = targets.filter((target) => probe.answers.includes(target));
 		const results = targets.map((target) => ({ target, protocol: "any", outcome: answered.includes(target) ? "answered" : "refused", bytes: answered.includes(target) ? 12 : 0, detail: "" }));
-		const sockets = pathSockets === "no list" ? {} : { sockets: pathSockets };
+		const sockets = !asked || pathSockets === "no list" ? {} : { sockets: pathSockets };
 		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, reached: answered, accepted: [], results })}\n`;
 	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
