@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
 import { HARNESSES } from "./harness.js";
+import { MCP_SERVER_NAME } from "./mcp-servers.js";
 import { chooseModel, harnessRuns, hostModel, THINKING_LEVELS, type Tier } from "./model.js";
 import { isObject, type Json, MODEL_REF, unknownFields } from "./validate.js";
 
@@ -21,7 +22,7 @@ export const MANIFEST = "agent.md";
 export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balanced: "default", strong: "strong" };
 export const PARAMETER_TYPES = ["string", "number", "integer", "boolean"] as const;
 export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
-const FIELDS = ["name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "computer", "parameters", "secrets", "budget", "learning", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "computer", "parameters", "secrets", "budget", "learning", "triggers", "output", "checks"];
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 const SECRET = /^[A-Z][A-Z0-9_]{0,127}$/;
@@ -30,9 +31,12 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[
 const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
+export type McpNeed = { server: string; tools: string[]; required: boolean };
 type Parameter = { type: (typeof PARAMETER_TYPES)[number]; required: boolean; description: string; pattern?: string };
 export type Package = {
   name: string;
+  /** The agent's name, placeholders unfilled; absent, the package's name. */
+  displayName?: string;
   version: string;
   description: string;
   license?: string;
@@ -44,7 +48,9 @@ export type Package = {
   effort?: string;
   /** Absent, the tools the server gives a new agent that names none. */
   tools?: string[];
-  mcp: string[];
+  /** MCP servers by the name a server saves them under, and the tools of each the agent is granted (and allowed). One
+   *  `required` refuses an apply on a server that has not saved it; any other is skipped there, with a warning. */
+  mcp: McpNeed[];
   parameters: Record<string, Parameter>;
   secrets: string[];
   budget?: { per_run_usd: number };
@@ -132,6 +138,7 @@ export function readPackage(dir: string): Package {
   const manifest = front(MANIFEST);
   const f = manifest?.data ?? {};
   for (const issue of unknownFields(f, FIELDS)) bad(MANIFEST, `no field ${issue.field}: the fields are ${FIELDS.join(", ")}`);
+  if (f.display_name !== undefined && (typeof f.display_name !== "string" || !f.display_name.trim())) bad(MANIFEST, "display_name is the agent's name, text (it may hold ${parameters.<name>})");
   if (typeof f.name !== "string" || !NAME.test(f.name) || f.name.length > 64 || f.name !== name) bad(MANIFEST, `name is the folder's name, ${JSON.stringify(name)}: lowercase letters, digits and dashes, at most 64`);
   if (typeof f.version === "number") bad(MANIFEST, `version is ${f.version}, a number: a package's version is SemVer text ("1.2.3"), kept as package.version, never as definition.version, which is the agent's revision number`);
   else if (typeof f.version !== "string" || !SEMVER.test(f.version)) bad(MANIFEST, "version is SemVer 2 (1.2.3)");
@@ -144,10 +151,15 @@ export function readPackage(dir: string): Package {
   if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer"]).length && typeof f.model.tier === "string" && f.model.tier in MODEL_TIERS && (f.model.prefer === undefined || (typeof f.model.prefer === "string" && MODEL_REF.test(f.model.prefer))))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id"}`);
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
-  const mcp = list(f.mcp, "mcp", (server) => NAME.test(server));
-  const used = new Set((tools ?? []).filter((tool) => tool.startsWith("mcp:")).map((tool) => tool.slice(4).split("/")[0]!));
-  for (const server of used) if (!mcp.includes(server)) bad(MANIFEST, `tools grant mcp:${server}/..., and mcp does not name ${server}`);
-  for (const server of mcp) if (!used.has(server)) bad(MANIFEST, `mcp names ${server}, and no tool grants mcp:${server}/...`);
+  if (tools?.some((tool) => tool.startsWith("mcp:"))) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
+  const mcp: McpNeed[] = [];
+  for (const [i, need] of (f.mcp === undefined ? [] : Array.isArray(f.mcp) ? f.mcp : (bad(MANIFEST, "mcp is a list of {server, tools, required?}"), [])).entries()) {
+    const names = isObject(need) && Array.isArray(need.tools) ? need.tools : [];
+    const ok = isObject(need) && !unknownFields(need, ["server", "tools", "required"]).length && typeof need.server === "string" && MCP_SERVER_NAME.test(need.server) && names.length > 0 && names.every((tool) => typeof tool === "string" && /^[^\s/]+$/.test(tool)) && new Set(names).size === names.length && (need.required === undefined || typeof need.required === "boolean");
+    if (!ok) bad(MANIFEST, `mcp[${i}] is {server: an MCP server's name (${MCP_SERVER_NAME.source}), tools: its tool names, none twice, required?: true or false}`);
+    else if (mcp.some((m) => m.server === need.server)) bad(MANIFEST, `mcp[${i}]: the server ${need.server as string} is listed twice`);
+    else mcp.push({ server: need.server as string, tools: names as string[], required: need.required === true });
+  }
   // Computers by name come with the computer protocol; until then a package runs where this server puts a new agent.
   if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
   const parameters: Record<string, Parameter> = {};
@@ -190,7 +202,7 @@ export function readPackage(dir: string): Package {
   const checks = list(f.checks, "checks", (check) => NAME.test(check));
   const instructions = manifest?.body.trim() ?? "";
   if (manifest && !instructions) bad(MANIFEST, "its body is empty: the body is the agent's instructions");
-  for (const value of strings([instructions, triggers])) {
+  for (const value of strings([instructions, triggers, f.display_name])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(parameters, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
 
@@ -252,7 +264,7 @@ export function readPackage(dir: string): Package {
 
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return {
-    name, version: f.version as string, description: f.description as string,
+    name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, parameters, secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}),
@@ -268,7 +280,7 @@ export function readPackages(dir: string = TEMPLATES_DIR): Package[] {
 /** A package as GET /v2/templates lists it: what an apply asks for and makes. */
 export function packageView(p: Package) {
   return {
-    name: p.name, version: p.version, description: p.description, license: p.license ?? null, repository: p.repository ?? null,
+    name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, repository: p.repository ?? null,
     harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, mcp: p.mcp, parameters: p.parameters, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
@@ -316,13 +328,18 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
 export const packageRecord = (p: Package, parameters: Json) => ({ name: p.name, version: p.version, source: "builtin", ref: null, sha: null, parameters });
 
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
- *  every `${parameters.x}` filled. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string }): { agent: Json; triggers: Json[] } {
+ *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted and
+ *  set to allow (a triggered run never waits on an ask); beside the package's tools, or, when it names none,
+ *  `defaultTools`, those this server gives a new agent. */
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[] }): { agent: Json; triggers: Json[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
+  const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => `mcp:${server}/${tool}`));
+  const tools = granted.length ? [...(p.tools ?? chosen.defaultTools), ...granted] : p.tools;
   const definition = {
-    name: p.name, description: p.description, instructions: filled(p.instructions, parameters),
+    name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
-    ...(p.tools ? { tools: p.tools } : {}), ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
+    ...(tools ? { tools } : {}), ...(granted.length ? { tool_settings: Object.fromEntries(granted.map((tool) => [tool, { permission: "allow" }])) } : {}),
+    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json) };
 }

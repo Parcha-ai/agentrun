@@ -1366,7 +1366,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return { entry, warnings };
   }
 
-  /** A template package applied: its parameters checked (422), then the secrets it names (409, nothing made), then its
+  /** A template package applied: its parameters checked (422), then the secrets and required MCP servers it names (409,
+   *  nothing made; an MCP server it can do without is skipped, with a warning), then its
    *  agent made as POST /agents makes one, on the first harness of its list this server runs and the model packageModel
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
    *  before it and the agent are deleted, and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
@@ -1374,13 +1375,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   async function applyTemplate(pkg: Package, body: Json) {
     const { parameters, model: override } = applyBodyOf(pkg, body);
     const missing = pkg.secrets.filter((name) => !env[name]);
-    if (missing.length) {
+    const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
+    const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
+    const needed = unsaved.filter((need) => need.required);
+    if (missing.length || needed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${missing.join(" and ")}, which this server does not have. Nothing was created.`, { fields: missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })) });
+      const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
     }
+    // An MCP server the package can do without is skipped, and said: its tools are not granted.
+    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}) });
+    const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools });
     const { entry, warnings } = await createAgentOf(made.agent, packageRecord(pkg, parameters));
     const ids: string[] = [];
     try {
@@ -1403,7 +1411,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await agents.remove(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings };
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...warnings] };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,

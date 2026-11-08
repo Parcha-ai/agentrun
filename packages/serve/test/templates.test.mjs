@@ -11,12 +11,14 @@ import { test } from "node:test";
 import { PackageError, packageModel, readPackage, readPackages } from "../dist/templates.js";
 import { FINDINGS } from "./fixtures/faux-review.mjs";
 import { schemaProblems } from "./schema-support.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FIXTURES = new URL("./fixtures/templates/", import.meta.url).pathname;
 const REVIEW_FAUX = new URL("./fixtures/faux-review.mjs", import.meta.url).pathname;
 const KEY = "BRIEF_FEED_KEY";
+const GITHUB_TOOLS = ["pull_request_read", "get_file_contents", "search_code", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review"];
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 const file = (path) => readFileSync(join(REVIEW, path), "utf8");
 
@@ -46,8 +48,9 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.1.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "low", { per_run_usd: 0.5 }, false]);
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/REVIEW.md", "review/SKILL.md"]);
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
-  assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools instead of a shell/);
+  assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
   assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["null-name"], [], []]);
+  assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", undefined, [{ server: "github", tools: GITHUB_TOOLS, required: false }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
 
@@ -75,6 +78,11 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "REVIEW.md"), "mine"), /rules\/REVIEW\.md: skills\/review\/REVIEW\.md has the same name/);
   await refused(({ dir }) => mkdirSync(join(dir, "scripts")), /scripts\/: a package's folders are skills\/, rules\/ and evals\//);
   await refused(({ edit }) => edit("learning: false", "learning: false\nlearning: true"), /front matter is not YAML/);
+  await refused(({ edit }) => edit("server: github", "server: GitHub_Server"), /mcp\[0\] is \{server: an MCP server's name/);
+  await refused(({ edit }) => edit("tools: [pull_request_read,", "tools: [pull_request_read, pull_request_read,"), /mcp\[0\] is .*none twice/);
+  await refused(({ edit }) => edit(/tools: \[pull_request_read.*\]/, "tools: []"), /mcp\[0\] is /);
+  await refused(({ edit }) => edit("learning: false", "learning: false\ntools: [bash, mcp:github/search_code]"), /tools grants no MCP tool: mcp lists them/);
+  await refused(({ edit }) => edit('display_name: "Code review: ${parameters.repo}"', 'display_name: "Review of ${parameters.repository}"'), /\$\{parameters\.repository\} names no parameter/);
   assert.deepEqual(await problemsOf(t, () => {}), [], "the copy itself is valid");
 
   // A broken package the server ships stops its start.
@@ -109,12 +117,15 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   meets("/templates/{template}/apply", "post", "201", applied.body);
   assert.deepEqual([applied.body.template, applied.body.version, applied.body.trigger_ids], ["code-review", "0.1.0", []]);
+  const skipped = applied.body.warnings.find((w) => w.field === "mcp.github");
+  assert.match(skipped?.message ?? "", /No MCP server github is saved on this server, so the agent was made without its tools/, JSON.stringify(applied.body.warnings));
   assert.equal(applied.headers.get("location"), `/v2/agents/${applied.body.agent_id}`);
 
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   meets("/agents/{agent_id}", "get", "200", agent);
   const { definition } = agent;
-  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["code-review", 1, "pi", "low", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
+  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "low", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
+  assert.deepEqual([definition.tools, definition.tool_settings], [[], undefined], "no box and no GitHub MCP server here: no tools");
   assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
   assert.match(definition.instructions, /Clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
   assert.deepEqual(agent.package, { name: "code-review", version: "0.1.0", source: "builtin", ref: null, sha: null, parameters: { repo: "Parcha-ai/agentrun" } });
@@ -162,6 +173,10 @@ test("apply makes nothing when a secret is missing, its parameters do not check,
   await field({ parameters: { topic: "solar" }, overrides: { tools: ["bash"] } }, "overrides.tools", "not_allowed");
   await field({ parameters: { topic: "solar" }, overrides: { model: "particle-1" } }, "overrides.model", "bad_format");
   assert.equal((await api("POST", "/templates/nope/apply", { parameters: {} })).status, 404);
+  const tracker = await api("POST", "/templates/watcher/apply", {});
+  assert.equal(tracker.status, 409, JSON.stringify(tracker.body));
+  assert.match(tracker.body.error.message, /needs the MCP server tracker.*Nothing was created/);
+  assert.deepEqual(tracker.body.error.fields.map((f) => [f.field, f.reason]), [["mcp.tracker", "not_set_up_here"]]);
 
   const anonymous = await fetch(`${baseUrl}/templates/nightly/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ parameters: { topic: "solar" } }) });
   assert.equal(anonymous.status, 401);
@@ -172,7 +187,7 @@ test("apply makes nothing when a secret is missing, its parameters do not check,
 test("a package's triggers are made on its agent, placeholders filled; a trigger the server refuses deletes the agent and the triggers made before it", async (t) => {
   withEnv(t, { [KEY]: "feed-not-a-real-key-0000" });
   const { api } = await serve(t, { templates: FIXTURES });
-  assert.deepEqual((await api("GET", "/templates")).body.templates.map((x) => x.name), ["broken", "nightly"]);
+  assert.deepEqual((await api("GET", "/templates")).body.templates.map((x) => x.name), ["broken", "nightly", "watcher"]);
 
   const body = { parameters: { topic: "solar", words: 200 } };
   const applied = await api("POST", "/templates/nightly/apply", body, { "idempotency-key": "nightly-1" });
@@ -191,4 +206,21 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   assert.deepEqual(broken.body.error.fields.map((f) => f.field), ["triggers.1.source.cron"]);
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.id), [id], "the broken package's first trigger is gone");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((a) => a.agent_id), [applied.body.agent_id], "and its agent");
+});
+
+test("code-review on a server with a GitHub MCP server saved: its tools are granted and set to allow, beside the server's own", async (t) => {
+  const { api } = await serve(t);
+  const github = await startFakeMcp({ name: "github" });
+  t.after(() => github.close());
+  for (const name of GITHUB_TOOLS) github.tools[name] = { description: `GitHub's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
+  assert.equal((await api("PUT", "/settings/mcp-servers/github", { url: github.url, auth: { type: "none" } })).status, 200);
+
+  const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.equal(applied.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
+  const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
+  const granted = GITHUB_TOOLS.map((name) => `mcp:github/${name}`);
+  assert.deepEqual(agent.definition.tools, granted, "no box here, so the GitHub tools alone");
+  assert.deepEqual(agent.definition.tool_settings, Object.fromEntries(granted.map((tool) => [tool, { permission: "allow" }])), "allowed, so a triggered run never waits on an ask");
+  for (const tool of granted) assert.equal(agent.tools.find((x) => x.name === tool)?.permission, "allow", tool);
 });
