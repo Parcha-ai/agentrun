@@ -8,6 +8,8 @@ import { fakeDaytona, KEY as DAYTONA_KEY, API } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
 import { fakeE2B, KEY as E2B_KEY } from "./fake-e2b.mjs";
 import { fakeModal } from "./fake-modal.mjs";
+import { PhoneHarnessProvider } from "../dist/phone-harness.js";
+import { fakePhoneHarness, KEY as PHONE_KEY } from "./fake-phone-harness.mjs";
 
 const created = (fake) => fake.requests.filter((r) => r.method === "POST");
 
@@ -72,4 +74,34 @@ test("Modal: the provider's app read without creating it; ok whether it exists o
 	const refused = await provider.testConnection();
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.code, "unauthorized");
+});
+
+test("phone-harness: one GET /sessions, which rents nothing; ok with its own phones' count; a refused key is unauthorized, and a phone harness not reached unreachable", async () => {
+	const fake = fakePhoneHarness();
+	// A session on the account that this provider did not make is not counted.
+	fake.sessions.set("sess_other", { id: "sess_other", state: "ready", platform: "android", kind: "emulator", expires_at: Date.now() / 1000 + 600 });
+	const provider = new PhoneHarnessProvider({ apiKey: PHONE_KEY, fetch: fake.fetch, adb: fake.adb });
+	const tested = await provider.testConnection();
+	assert.equal(tested.ok, true, JSON.stringify(tested));
+	assert.match(tested.value.detail, /^Phone harness answered: 0 computers of this provider$/);
+	assert.deepEqual(fake.requests().map((r) => `${r.method} ${r.path}`), ["GET /sessions"], "one read, and nothing rented");
+	assert.deepEqual(fake.adbCalls(), [], "no phone is reached");
+
+	const wrongKey = new PhoneHarnessProvider({ apiKey: "another-fake-key", fetch: fake.fetch, adb: fake.adb });
+	const refused = await wrongKey.testConnection();
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "unauthorized");
+	assert.ok(!refused.error.message.includes("another-fake-key"), "the key is never in the words");
+
+	const away = new PhoneHarnessProvider({
+		apiKey: PHONE_KEY,
+		fetch: async () => {
+			throw new TypeError("fetch failed: getaddrinfo ENOTFOUND api.phone-harness.com");
+		},
+		adb: fake.adb,
+	});
+	const unreached = await away.testConnection();
+	assert.equal(unreached.ok, false);
+	assert.equal(unreached.error.code, "unreachable");
+	assert.match(unreached.error.message, /^GET \/sessions: the phone harness could not be reached: fetch failed/);
 });
