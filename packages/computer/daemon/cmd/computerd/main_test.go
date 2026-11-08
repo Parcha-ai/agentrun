@@ -416,6 +416,46 @@ func TestProbeTakesAUDPTargetAsHostPortSlashUDP(t *testing.T) {
 	}
 }
 
+// The probe's interfaces are the live ones (up or addressed) alone; quiet lists the rest (down, no address, as a
+// kernel's fallback tunnels are), and raised the quiet ones it could bring up as its user: none for a user with no
+// CAP_NET_ADMIN, which every program of a computer's is.
+func TestProbeReportsTheLiveInterfacesTheQuietOnesAndNoneItCouldRaise(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root the probe could raise an interface: the report's none is a non-root user's")
+	}
+	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe")
+	if code != 0 {
+		t.Fatalf("probe: exit %d, stderr %q", code, stderr)
+	}
+	var report struct {
+		Interfaces []string  `json:"interfaces"`
+		Quiet      *[]string `json:"quiet"`
+		Raised     *[]string `json:"raised"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("probe wrote %q: %v", stdout, err)
+	}
+	if report.Quiet == nil || report.Raised == nil {
+		t.Fatalf("probe wrote %q; want quiet and raised, each a list", stdout)
+	}
+	if len(*report.Raised) != 0 {
+		t.Fatalf("probe raised %v as uid %d; want none", *report.Raised, os.Geteuid())
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range ifaces {
+		addrs, _ := iface.Addrs()
+		live := iface.Flags&net.FlagUp != 0 || len(addrs) > 0
+		listed := strings.Contains(","+strings.Join(report.Interfaces, ",")+",", ","+iface.Name+",")
+		quiet := strings.Contains(","+strings.Join(*report.Quiet, ",")+",", ","+iface.Name+",")
+		if live != listed || live == quiet {
+			t.Fatalf("%s (live %v): interfaces %v, quiet %v; want it in exactly the one its state says", iface.Name, live, report.Interfaces, *report.Quiet)
+		}
+	}
+}
+
 func TestProbeRefusesATargetThatIsNotHostAndPort(t *testing.T) {
 	for _, args := range [][]string{
 		{"probe", "--connect"},
