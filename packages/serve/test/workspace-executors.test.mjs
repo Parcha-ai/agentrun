@@ -63,3 +63,14 @@ test("an executor keeps a failure's output and says its words apart; streamed ou
   setTimeout(() => controller.abort(), 200);
   await assert.rejects(bash({ command: "sleep 30" }, { signal: controller.signal }));
 });
+
+test("an executor gives pi's tool the call's model (the registry's ToolCall.model), whose image limits read uses; none, pi's defaults", async () => {
+  const root = scratch();
+  const env = piEnv(localWorkspace(root), { cwd: "/workspace", env: shellEnv(), defaultTimeoutS: 120 });
+  // A stand-in tool that says the model pi's api hands it, as read asks for it.
+  const probe = { name: "probe", description: "", parameters: { type: "object" }, async execute(_args, api) { return { output: [{ type: "text", text: JSON.stringify((await api.agent()).model ?? null) }] }; } };
+  const run = piExecutor(probe, env, ctx);
+  assert.equal((await run({}, { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } })).text, '{"provider":"anthropic","modelId":"claude-sonnet-5-5"}');
+  assert.equal((await run({}, {})).text, "null");
+  assert.equal((await run({}, { model: "not a model" })).text, "null", "anything else is no model");
+});

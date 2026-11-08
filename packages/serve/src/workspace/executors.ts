@@ -5,9 +5,10 @@
 // call since the host tools began, now for pi's runs too.
 //
 // pi's tools take only the environment, their output and their diagnostics from a call's API, and read its agent's
-// model for an image's limits: a call here has no pi model, so read uses pi's default image limits, as a host tool
-// always has. A tool's thrown failure (bash's timeout, a nonzero exit is a result) is not thrown on: it is the
-// answer's `error`, so the output that came before it is kept, and the registry's bound on bash can add its words to it.
+// model for an image's limits: the call's model when the registry passes one ({ provider, modelId }), else pi's
+// default image limits, as a host tool always has. A tool's thrown failure (bash's timeout; a nonzero exit is a result)
+// is not thrown on: it is the answer's `error`, so the output that came before it is kept, and the registry's bound on
+// bash can add its words to it. Only an abort throws, as the registry's executors do.
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
@@ -15,6 +16,7 @@ import { withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { ToolAnswer, ToolCall } from "@parcha/agentrun-kernel/kernel";
 
 /** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
  *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
@@ -84,18 +86,18 @@ export const textOf = (content: unknown): string =>
 export const imagesOf = (content: unknown): { mimeType: string; data: string }[] =>
   Array.isArray(content) ? content.flatMap((block) => (block && typeof block === "object" && block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? [{ mimeType: block.mimeType, data: block.data }] : [])) : [];
 
-/** A tool's answer, as the kernel registry's ToolAnswer, with the failure's words apart (`error`). */
-export type PiAnswer = {
-  readonly text: string;
-  readonly images?: readonly { mimeType: string; data: string }[];
-  readonly isError?: boolean;
-  /** The words of the failure the tool threw ("Command timed out after 120 seconds"), after its output. */
-  readonly error?: string;
-  readonly diagnostics?: readonly { readonly severity: "info" | "warn" | "error"; readonly code?: string; readonly message: string }[];
-};
-/** A call's world, as the kernel registry gives it to an executor: its signal, and where output streamed goes. */
-export type PiCall = { readonly signal?: AbortSignal; output?(chunk: string): void };
+/** A tool's answer: the kernel registry's ToolAnswer, the failure's words apart (`error`). */
+export type PiAnswer = ToolAnswer;
+/** A call's world as the kernel registry gives it to an executor: what an executor here reads of it (its signal, where
+ *  output streamed goes, and the call's model, whose image limits read uses). */
+export type PiCall = Pick<ToolCall, "signal" | "output" | "model">;
 export type PiExecutor = (args: unknown, call: PiCall) => Promise<PiAnswer>;
+
+/** The call's model as pi names one ({ provider, modelId }), when the call gives one. */
+const modelRef = (model: unknown): { provider: string; modelId: string } | undefined => {
+  const ref = model as { provider?: unknown; modelId?: unknown } | null | undefined;
+  return typeof ref?.provider === "string" && typeof ref.modelId === "string" ? { provider: ref.provider, modelId: ref.modelId } : undefined;
+};
 
 /** The text a model reads for `answer`: the output, the failure's words, then each diagnostic, apart by blank lines. */
 export const answerText = (answer: PiAnswer): string =>
@@ -115,8 +117,8 @@ export function piExecutor(tool: ToolRegistration, env: ExecutionEnv, context: C
       },
       outputWindow: undefined, retainedOutput: () => out.retained(),
       diagnostic: (note: { severity: "info" | "warn" | "error"; code?: string; message: string }) => void notes.push(note),
-      // pi's read asks the calling agent for its model, for an image's limits: none here, so pi's defaults.
-      agent: async () => ({ model: undefined }),
+      // pi's read asks the calling agent for its model, for an image's limits: the call's, else pi's defaults.
+      agent: async () => ({ model: modelRef(call.model) }),
       models: createModels(),
     };
     // Only these members (host-tools.ts HOST_API_MEMBERS, which scripts/host-tool-api.test.mjs holds to every member
