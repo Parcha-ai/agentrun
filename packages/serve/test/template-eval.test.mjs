@@ -244,11 +244,11 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
   assert.equal((await api("GET", "/agents")).body.agents.length, 0, "the agent it made is archived, and no other was made");
 });
 
-/** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to every timeline read and passes the rest
- *  on: a server whose timeline fails under the eval. Its /v2 address. */
-async function timelineFails(t, baseUrl) {
+/** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to each request `refuses(req)` says so,
+ *  and passes the rest on. Its /v2 address. */
+async function refusing(t, baseUrl, refuses) {
   const proxy = createServer(async (req, res) => {
-    if (/\/runs\/[^/]+\/timeline/.test(req.url)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"timeline down"}}');
+    if (refuses(req)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"refused by the test proxy"}}');
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
@@ -265,11 +265,21 @@ test("a run whose wait fails is cancelled before the eval goes on, never left go
   process.env.AGENTRUN_TEST_EVAL_HOLD = join(await scratch(t), "holding");
   t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
-  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: await timelineFails(t, baseUrl), token } });
-  assert.match(report.cases[0].error, /timeline down/);
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: await refusing(t, baseUrl, (req) => /\/runs\/[^/]+\/timeline/.test(req.url)), token } });
+  assert.match(report.cases[0].error, /timeline: 500 refused by the test proxy/);
   const runs = (await api("GET", "/runs?archived=true")).body.runs;
   assert.equal(runs.length, 1);
   assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+});
+
+test("a listing of the server's templates that fails once fails that case alone: the next case asks again", { timeout: 300_000 }, async (t) => {
+  const { baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  let refused = 0;
+  const proxy = await refusing(t, baseUrl, (req) => req.method === "GET" && req.url === "/v2/templates" && refused++ === 0);
+  const report = await evalTemplate({ dir: PKG, cases: ["held", "learned"], server: { baseUrl: proxy, token } });
+  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["held", false], ["learned", true]], JSON.stringify(report.cases, null, 1));
+  assert.match(report.cases[0].error, /^listing the server's templates: 500 refused by the test proxy/);
+  assert.equal(refused, 2, "asked once more after the refusal, then kept");
 });
 
 test("an eval's agent has none of the package's triggers: market-monitor's weekly schedule is deleted at its apply", { timeout: 300_000 }, async (t) => {

@@ -610,7 +610,7 @@ export type EvalOptions = {
 /** What the eval made on the server: its agents (archived at the end on an owner's server), its runs not known to have
  *  ended (cancelled at each case's end), and the package's triggers its applies made (deleted). */
 type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Promise<Json> };
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[] };
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
@@ -822,11 +822,12 @@ async function gradeLlm(ctx: Ctx, agentId: string, input: string): Promise<{ pas
  *  another version, and its eval would measure that one: the case fails, naming each field that differs. */
 async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> {
   const { pkg } = ctx;
-  ctx.served ??= (async () => {
+  // Kept once read: a listing that fails fails this case alone, and the next case asks again.
+  if (!ctx.served) {
     const listed = expectOk("listing the server's templates", await ctx.api("GET", "/templates"));
-    return ((listed.templates as Json[] | undefined) ?? []).find((t) => t.name === pkg.name) ?? {};
-  })();
-  const served = await ctx.served;
+    ctx.served = ((listed.templates as Json[] | undefined) ?? []).find((t) => t.name === pkg.name) ?? {};
+  }
+  const served = ctx.served;
   const view = JSON.parse(JSON.stringify(packageView(pkg))) as Json;
   const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
