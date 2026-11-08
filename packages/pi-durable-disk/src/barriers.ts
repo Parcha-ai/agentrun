@@ -183,6 +183,7 @@ export const STORES = {
     opens: ["serve/src/store/sqlite/worker.ts"],
     synchronous: "NORMAL",
     effects: "none",
+    interface: "serve/src/store/",
     what: "the one store (store.sqlite in the data directory) and its owner lock: WAL at NORMAL, flush() one FULL commit; unused until the cutover, so no tool and no model runs through it yet (at the cutover its effects pass flush() barriers)",
   },
 } as const satisfies Record<string, StoreRow>;
