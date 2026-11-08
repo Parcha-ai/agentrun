@@ -677,3 +677,124 @@ test("an ask whose waiting row cannot be written fails, and says so: nothing is 
   assert.deepEqual(held.notes, ["Do thing 51"], "its waiting row written");
   assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-51-1" }])?.id, second.interactionId, "the owner sees it");
 });
+
+/** A run's process side on `root` that records every person-time hold it asks for (`what`, `seconds`, `from`), and can
+ *  refuse while `refuse` is set: the clock, timers and gates are the caller's. */
+function recordingHands(root, { timers, now, holdMs }) {
+  const calls = [];
+  const state = { refuse: null };
+  const person = personHands({
+    root, gates: () => ({ give: () => false }), timers, now, holdMs, pollMs: 60_000,
+    personTime: async (what, seconds, options = {}) => {
+      calls.push({ what, seconds, from: options.from });
+      if (state.refuse) return { refused: state.refuse };
+      return { drop() {} };
+    },
+    note: async () => {},
+  });
+  return { person, calls, state };
+}
+
+test("a re-hold after the cap refused starts from max(where coverage ends, now): the idle gap since it lapsed is not held again", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const { person, calls, state } = recordingHands(root, { timers: clock.timers, now: clock.now, holdMs });
+  t.after(() => person.close());
+  const tag = "ar-run-rehold-1";
+  // The take holds the first stretch from t=0; its coverage reaches holdMs.
+  const take = await person.take(tag);
+  assert.ok("end" in take);
+  assert.equal(calls.at(-1).from, 0, "the first hold is from now");
+  // At holdMs the re-hold is refused: the ledger is marked refused, its coverage still ending at holdMs.
+  state.refuse = "spend_cap_reached: no room";
+  await clock.tick(holdMs);
+  assert.equal(calls.at(-1).from, holdMs, "again() re-holds from where coverage ends (equal to now here), not from the past");
+  // 100 s pass past the lapse; a newcomer (an ask) joins with room again and re-holds the refused ledger. The gap
+  // [until, now] is idle time with no users, already covered by the reserve and calls, so it is not held again: the
+  // re-hold is a bare holdMs from now. Holding from `until` (the earlier bug) would hold that idle gap twice and could
+  // falsely refuse a person returning long after a refusal.
+  state.refuse = null;
+  await clock.tick(100_000);
+  await person.handoff.request(ask(1, tag));
+  const rehold = calls.at(-1);
+  assert.equal(rehold.from, clock.now(), `the re-hold starts from now, not the lapsed coverage end: ${JSON.stringify(rehold)}`);
+  assert.equal(rehold.seconds, holdMs / 1000, "a bare window from now");
+});
+
+test("a person returning long after a refusal is held, not refused, when the cap has room for exactly one window", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const calls = [];
+  // The cap has room for exactly one window (holdMs of seconds): a hold is granted only when it asks for no more.
+  let refuseAll = false;
+  const window = holdMs / 1000;
+  const person = personHands({
+    root, gates: () => ({ give: () => false }), timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000,
+    personTime: async (what, seconds, options = {}) => {
+      calls.push({ what, seconds, from: options.from });
+      if (refuseAll || seconds > window + 1e-9) return { refused: "spend_cap_reached: no room" };
+      return { drop() {} };
+    },
+    note: async () => {},
+  });
+  t.after(() => person.close());
+  const tag = "ar-run-rehold-3";
+  await person.take(tag);
+  // The re-hold at holdMs is refused: the ledger is marked refused.
+  refuseAll = true;
+  await clock.tick(holdMs);
+  // Thirty minutes later, with room again for exactly one window, a person comes back. Held from now (one window);
+  // starting from the lapsed coverage end would ask for the window plus the 30 idle minutes and be refused.
+  refuseAll = false;
+  await clock.tick(30 * 60_000);
+  const asked = await person.handoff.request(ask(3, tag));
+  assert.ok("interactionId" in asked, `held, not refused: ${JSON.stringify(asked)}`);
+});
+
+test("two newcomers on a refused ledger in one tick re-hold the person's time once, not once each", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const { person, calls, state } = recordingHands(root, { timers: clock.timers, now: clock.now, holdMs });
+  t.after(() => person.close());
+  const tag = "ar-run-rehold-2";
+  await person.take(tag);
+  state.refuse = "spend_cap_reached: no room";
+  await clock.tick(holdMs);
+  state.refuse = null;
+  const before = calls.length;
+  // Two newcomers at once on the refused ledger: an ask and a second take-over, racing through the same turn.
+  await Promise.all([person.handoff.request(ask(2, tag)), person.take(tag)]);
+  const reholds = calls.slice(before).filter((call) => call.seconds > 0);
+  assert.equal(reholds.length, 1, `the refused ledger is re-held once for both newcomers: ${JSON.stringify(calls.slice(before))}`);
+});
+
+test("a refusal-path re-hold while coverage still runs past now holds from where it ends, so [now, until] is not held twice", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 15 * 60_000;
+  const { person, calls, state } = recordingHands(root, { timers: clock.timers, now: clock.now, holdMs });
+  t.after(() => person.close());
+  const tag = "ar-run-rehold-4";
+  // The take holds [0, holdMs]; its again() timer is set to fire at holdMs.
+  await person.take(tag);
+  // Five minutes in, an ask extends coverage to now + holdMs (1,200,000), past where the again() timer fires.
+  await clock.tick(5 * 60_000); // now = 300,000
+  await person.handoff.request(ask(4, tag)); // reach 1,200,000 > until 900,000: until becomes 1,200,000
+  // The again() timer fires at 900,000 with coverage still reaching to 1,200,000; its re-hold of the tail is refused, so the
+  // ledger is marked refused while until (1,200,000) is still ahead of now (900,000).
+  state.refuse = "spend_cap_reached: no room";
+  await clock.tick(10 * 60_000); // now = 900,000; again() fires and is refused
+  state.refuse = null;
+  const before = calls.length;
+  // A newcomer joins the refused ledger while coverage still runs past now.
+  await person.take(tag);
+  const rehold = calls.slice(before).find((call) => call.seconds > 0);
+  assert.ok(rehold, `a re-hold happened: ${JSON.stringify(calls.slice(before))}`);
+  // Held from where coverage ends (until), not from now, for now + holdMs - until seconds: the already-covered gap
+  // [now, until] is never held a second time.
+  assert.equal(rehold.from, 1_200_000, "from where coverage ends (until), not from now");
+  assert.equal(rehold.seconds, (clock.now() + holdMs - 1_200_000) / 1000, "for now + holdMs - until seconds");
+});

@@ -299,7 +299,13 @@ export function personHands(options: {
           // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
           // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
           if (known.refused) {
-            const hold = await options.personTime(what, holdMs / 1000, { pauses, tag, from: now() }).catch(() => ({ refused: "the person's time could not be held" }));
+            // Re-held from max(where coverage ends, now): a ledger refused at its coverage end has no live users over the
+            // idle gap since (the reserve and any calls already cover it), so re-holding from `until` would hold that gap a
+            // second time and could falsely refuse a person returning long after. again() differs: it runs only while the
+            // ledger has live users, so its from-until never spans an idle gap.
+            const from = Math.max(known.until, now());
+            const seconds = Math.max(0, now() + holdMs - from) / 1000;
+            const hold = await options.personTime(what, seconds, { pauses, tag, from }).catch(() => ({ refused: "the person's time could not be held" }));
             if ("refused" in hold) return { refused: hold.refused };
             if (ledgers.get(tag) !== known) {
               hold.drop();
