@@ -113,6 +113,20 @@ test("at a public address a setup with no code is refused and never counts again
   assert.equal((await setup(server, { password: PASSWORD, code })).status, 201, "the code from the log, after six tries with none");
 });
 
+test("the server's API token in the code field stands in for the setup code; a wrong token counts as a wrong code", async (t) => {
+  const server = await serve(t, { accounts: true });
+  assert.equal((await setup(server, { password: PASSWORD, code: server.token })).status, 201, "the token as the code");
+  const other = await serve(t, { accounts: true });
+  let fifth;
+  const printed = await printedCodes(async () => {
+    for (let i = 0; i < 4; i++) assert.equal((await setup(other, { password: PASSWORD, code: `${other.token}x` })).status, 403);
+    fifth = await setup(other, { password: PASSWORD, code: `${other.token}x` });
+  });
+  assert.match(fifth.json.error.message, /a new one is in the server's log/, "five wrong tokens void the code, as five wrong codes do");
+  assert.equal(printed.length, 1);
+  assert.ok(!fifth.text.includes(other.token), "the refusal never says the token");
+});
+
 test("the token stands in for the setup code at a public address", async (t) => {
   const server = await serve(t, { accounts: true });
   const byToken = await setup(server, { password: PASSWORD }, { ...json, authorization: `Bearer ${server.token}` });
