@@ -46,7 +46,12 @@ async function order(t, tool) {
   return seen;
 }
 
+// Both runs make the same model requests, each after a flush of its own (runner-loop-model-flush), so the call's own
+// flush is the difference between them: one more for the effect, right before it; none for the read.
 test("a call that is not replay-safe runs after a flush; a replay-safe one runs without", async (t) => {
-  assert.deepEqual(await order(t, "effect"), ["flush", "effect"], "the effect waited for its intent to be durable");
-  assert.deepEqual(await order(t, "read"), ["read"], "the replay-safe read needed no flush");
+  const effect = await order(t, "effect");
+  const read = await order(t, "read");
+  const flushes = (seen) => seen.filter((what) => what === "flush").length;
+  assert.equal(effect[effect.indexOf("effect") - 1], "flush", `the effect waited for its intent to be durable: ${JSON.stringify(effect)}`);
+  assert.equal(flushes(effect), flushes(read) + 1, `the replay-safe read needed no flush of its own: ${JSON.stringify({ effect, read })}`);
 });

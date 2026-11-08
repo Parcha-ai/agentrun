@@ -8,9 +8,11 @@ import test, { after } from "node:test";
 import { DaytonaProvider, ModalProvider } from "../dist/index.js";
 import * as daytona from "../dist/daytona.js";
 import * as docker from "../dist/docker.js";
+import * as e2b from "../dist/e2b.js";
 import * as modal from "../dist/modal.js";
 import { API, fakeDaytona, KEY } from "./fake-daytona.mjs";
 import { fakeDocker } from "./fake-docker.mjs";
+import { fakeE2B, KEY as E2B_KEY } from "./fake-e2b.mjs";
 import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "computer-provider-mount-"));
@@ -37,4 +39,10 @@ test("Daytona: MOUNT is [] until D6, what its provider declares", () => {
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: fake.fetch, webSocket: fake.webSocket });
 	assert.deepEqual([...daytona.MOUNT], []);
 	assert.deepEqual([...daytona.MOUNT], declared(provider));
+});
+
+test("E2B: MOUNT is [] until D6, what its provider declares", () => {
+	const provider = new e2b.E2BProvider({ apiKey: E2B_KEY, Sandbox: fakeE2B().Sandbox, daemonPath: DAEMON });
+	assert.deepEqual([...e2b.MOUNT], []);
+	assert.deepEqual([...e2b.MOUNT], declared(provider));
 });

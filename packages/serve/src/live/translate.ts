@@ -76,14 +76,17 @@ const dataOf = <T>(entry: EntryRecord): T => entry.data as unknown as T;
 const modelOf = (entry: EntryRecord) => (entry as { model?: { role?: string; content?: unknown; toolCallId?: string }[] }).model?.[0];
 const doc = (state: LiveState, kind: string) => (state.root === undefined ? undefined : state.docs.get(state.root)?.get(kind));
 
-/** The run as the snapshot gives it: the entries so far and the documents' values. */
+/** The run as the snapshot gives it: the entries so far, the calls running now and the documents' values. */
 export function snapshotOf(state: LiveState): LiveEvent {
   const inbox = doc(state, "pi.inbox") as { items?: { id: number; mode: string }[] } | undefined;
+  // The calls started and not ended in the commits read so far, as the door's snapshot lists pi.live's running tool
+  // slots: a stream opened while one runs shows it (its held start is skipped after, since its start is folded here).
+  const running = [...state.started_calls].filter((callId) => !state.ended_calls.has(callId)).map((callId) => ({ callId, name: state.calls.get(callId)?.name ?? "", status: "running" }));
   return {
     type: "snapshot",
     entries: state.entries,
     ...(state.run ? { run: { inputs: state.run.inputs } } : {}),
-    tools: [],
+    tools: running,
     compactions: [],
     inbox: (inbox?.items ?? []).map((item) => ({ id: item.id, mode: item.mode })),
     agent: (doc(state, "pi.agent") as JsonValue | undefined) ?? AgentDoc.definition.initial(),

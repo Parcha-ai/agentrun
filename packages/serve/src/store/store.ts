@@ -133,8 +133,12 @@ export interface Learning {
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
 }
 
-/** A command a journal commit takes, with the id of the record that is its effect: written only by the commit that stores
- *  that record, in its transaction, so the command is taken with its effect or not at all. */
+/** A command a journal commit takes, with the id of the record that is its effect, an id the effect's batch newly
+ *  allocates (an entry, a created document, a new task): written only by the commit that newly writes that record, in its
+ *  transaction, so the command is taken with its own effect or not at all. An effect that updates an existing record (a
+ *  document change or retire, a task update) carries a marker entry minted for it in the same batch: an entry of kind
+ *  `agentrun.command` on the run's root conversation, data `{ command }`, which the runner's reader and live view skip.
+ *  The effect must be an id the journal minted and has not yet written: stage() refuses any other. */
 export interface StagedTake {
   readonly command: number;
   readonly effect: number;
@@ -316,6 +320,85 @@ export interface Mcp {
   releaseRefresh(name: string, holder: string): Promise<void>;
 }
 
+/** A server setting as a row (store schema `settings`): its key, its value (JSON) and when it was last written. */
+export interface SettingRow {
+  readonly key: string;
+  readonly value: unknown;
+  readonly updatedAt: number;
+}
+
+export interface Settings {
+  /** The value saved under `key`, or undefined when none is (a value saved as null reads as null, told apart from none). */
+  get(key: string): Promise<unknown | undefined>;
+  /** Saves `value` (JSON) under `key`, inserted or replaced in place. */
+  put(key: string, value: unknown): Promise<void>;
+  /** The key's row goes; a key with no row is left as it is. */
+  remove(key: string): Promise<void>;
+  /** Every setting, by key. */
+  all(): Promise<SettingRow[]>;
+}
+
+/** A sealed key as a row (store schema `sealed_keys`): its name and the bytes the server sealed (store/seal.ts, AAD
+ *  sealed_keys|<name>|sealed), which the store never opens. */
+export interface SealedKeyRow {
+  readonly name: string;
+  readonly sealed: Uint8Array;
+  readonly updatedAt: number;
+}
+
+export interface SealedKeys {
+  /** The sealed bytes saved under `name`, or undefined when none is. */
+  get(name: string): Promise<Uint8Array | undefined>;
+  /** Saves `sealed` under `name`, inserted or replaced in place. */
+  put(name: string, sealed: Uint8Array): Promise<void>;
+  /** The key's row goes. */
+  remove(name: string): Promise<void>;
+  /** Every saved key, by name (its bytes never opened here). */
+  all(): Promise<SealedKeyRow[]>;
+}
+
+/** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
+ *  server-wide set, or a trigger's id for its own), field, and the value sealed (store/seal.ts) under AAD
+ *  trigger_settings|<adapter>|<scope>|<field>: TEXT the store never opens. */
+export interface TriggerSettingRow {
+  readonly adapter: string;
+  readonly scope: string;
+  readonly field: string;
+  readonly sealed: string;
+  readonly updatedAt: number;
+}
+
+export interface TriggerSettings {
+  /** Every (scope, field) the adapter has, by scope then field. */
+  get(adapter: string): Promise<TriggerSettingRow[]>;
+  /** Saves (inserts or replaces in place) the sealed value for the adapter's scope and field. */
+  put(setting: { adapter: string; scope: string; field: string; sealed: string }): Promise<void>;
+  /** A scope's fields go (a deleted trigger's). */
+  removeScope(adapter: string, scope: string): Promise<void>;
+}
+
+/** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, the PKCE
+ *  verifier sealed (store/seal.ts, AAD mcp_oauth_pending|<state>|verifier) as bytes the store never opens, the cookie it is
+ *  bound to, and when it expires (ms). */
+export interface McpOauthPendingRow {
+  readonly state: string;
+  readonly server: string;
+  readonly verifierSealed: Uint8Array;
+  readonly cookieBinding: string;
+  readonly expiresAt: number;
+}
+
+export interface McpOauth {
+  /** Saves a pending sign-in, inserted or replaced by its state. */
+  put(pending: McpOauthPendingRow): Promise<void>;
+  /** The pending sign-in `state`, or undefined; with `now`, one whose expiry has passed (expiresAt <= now) reads as gone. */
+  get(state: string, now?: number): Promise<McpOauthPendingRow | undefined>;
+  /** The pending sign-in `state` goes. */
+  remove(state: string): Promise<void>;
+  /** Removes every pending sign-in whose expiry is at or before `now`; answers how many went. */
+  sweepExpired(now: number): Promise<number>;
+}
+
 /** A running run's live view as the store keeps it: `state` is JSON (the tool it runs now, its partial text). */
 export interface LiveRow {
   readonly runId: string;
@@ -329,8 +412,9 @@ export interface Live {
   put(rows: readonly { readonly claim: Claim; readonly state: unknown }[]): Promise<{ written: string[]; fenced: string[] }>;
   /** The rows of `runIds` that have one, in one query: the server's read. */
   read(runIds: readonly string[]): Promise<LiveRow[]>;
-  /** The run's row goes, at its end. */
-  drop(runId: string): Promise<void>;
+  /** The run's row goes, at its end, under `claim`: fenced by its epoch like a put, so a loop that ends after its claim
+   *  was lost drops nothing of the row a later claim wrote. */
+  drop(claim: Claim): Promise<void>;
 }
 
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
@@ -345,6 +429,14 @@ export interface Store {
   readonly mcp: Mcp;
   readonly live: Live;
   readonly learning: Learning;
+  /** The server's tool settings and any other server setting it keeps (design 2.1): one JSON value per key. */
+  readonly settings: Settings;
+  /** The model and provider keys the server holds, sealed (store/seal.ts): bytes the store never opens. */
+  readonly sealedKeys: SealedKeys;
+  /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
+  readonly triggerSettings: TriggerSettings;
+  /** MCP OAuth sign-ins in flight (design 2.1): one row per pending sign-in, its verifier sealed. */
+  readonly mcpOauth: McpOauth;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

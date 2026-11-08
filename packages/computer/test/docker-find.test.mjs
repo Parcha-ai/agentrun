@@ -275,8 +275,12 @@ test("network() with the policy the computer has returns it; any change is refus
 	assert.equal(closed.ok, false);
 	assert.equal(closed.error.code, "refused");
 	assert.match(closed.error.message, /fixed at create/);
+	const listed = await provider.network(a, { allow: ["example.com"] });
+	assert.equal(listed.ok, false);
+	assert.equal(listed.error.code, "refused");
+	assert.match(listed.error.message, /fixed at create/, "an allowlist on a computer made with none is a change, refused");
 	const before = calls().length;
-	for (const policy of [{ allow: ["example.com"] }, "wifi"]) {
+	for (const policy of [{ allow: [] }, { allow: ["pypi.org:443"] }, "wifi"]) {
 		const refused = await provider.network(a, policy);
 		assert.equal(refused.ok, false);
 		assert.equal(refused.error.code, "refused");
@@ -299,7 +303,7 @@ test("network() refuses a name this provider does not make, and is not_found for
 test("sweep() on Docker deletes the stopped computer past its deadline, since list() lists stopped computers too", async () => {
 	const { provider, calls, names } = seeded();
 	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date() });
-	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1 } });
+	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1, leftovers: [] } });
 	assert.ok(calls().some((args) => args[0] === "rm" && args.at(-1) === B));
 	assert.deepEqual(names().sort(), [A, "computer-0000000000cc", "postgres"].sort(), "only the expired computer is gone");
 });
