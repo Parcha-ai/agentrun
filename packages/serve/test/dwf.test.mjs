@@ -7,7 +7,8 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { completer } from "../dist/llm.js";
-import { documentPath, MAX_PAGE_PX, pagesStem, pdfPages } from "../dist/pdf-pages.js";
+import { MAX_PAGE_PX, pagesStem, pdfPages } from "../dist/pdf-pages.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { gated, RUN_PAUSED } from "../dist/pause.js";
 import { flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
@@ -28,7 +29,7 @@ test("pdf_pages draws a document's first pages into the run's work directory, wi
   await mkdir(docs);
   await mkdir(work);
   pdf(join(docs, "coi acme.pdf"), "CERTIFICATE OF INCORPORATION Acme");
-  const out = await pdfPages({ path: "coi acme.pdf", maxPages: 1, dpi: 50 }, { work, documents: docs });
+  const out = await pdfPages({ path: "coi acme.pdf", maxPages: 1, dpi: 50 }, { work: localWorkspace(work), documents: docs });
   // The page directory is the document's own: its path below the documents directory, made one safe name (pdf-pages-stem.test.mjs).
   const coi = pagesStem({ base: "documents", rel: "coi acme.pdf" });
   assert.match(coi, /^coi_acme-[0-9a-f]{12}$/);
@@ -37,7 +38,7 @@ test("pdf_pages draws a document's first pages into the run's work directory, wi
   const png = await readFile(join(work, `pages/${coi}/50/1.png`));
   assert.equal(png.subarray(1, 4).toString(), "PNG");
   // Drawn again at another dpi, the earlier image stays; asked past the cap, the page is drawn at the dpi that fits.
-  const big = await pdfPages({ path: "coi acme.pdf", maxPages: 1, dpi: 300 }, { work, documents: docs });
+  const big = await pdfPages({ path: "coi acme.pdf", maxPages: 1, dpi: 300 }, { work: localWorkspace(work), documents: docs });
   // Ghostscript's page is A4 (842 points tall) or letter (792), whichever its default is here.
   assert.ok([842, 792].map((points) => Math.floor(((MAX_PAGE_PX - 2) * 72) / points)).includes(big.dpi), String(big.dpi));
   assert.equal(big.pages[0].image, `pages/${coi}/${big.dpi}/1.png`);
@@ -46,10 +47,10 @@ test("pdf_pages draws a document's first pages into the run's work directory, wi
   assert.ok(Math.max(drawn.readUInt32BE(16), drawn.readUInt32BE(20)) <= MAX_PAGE_PX, `${drawn.readUInt32BE(16)} x ${drawn.readUInt32BE(20)}`);
   assert.deepEqual(await readFile(join(work, `pages/${coi}/50/1.png`)), png);
   await writeFile(join(work, "scan.png"), png);
-  assert.deepEqual(await pdfPages({ path: "scan.png" }, { work, documents: docs }), { name: "scan.png", pageCount: 1, dpi: null, pages: [{ page: 1, image: `pages/${pagesStem({ base: "work", rel: "scan.png" })}/1.png` }], text: "" });
+  assert.deepEqual(await pdfPages({ path: "scan.png" }, { work: localWorkspace(work), documents: docs }), { name: "scan.png", pageCount: 1, dpi: null, pages: [{ page: 1, image: `pages/${pagesStem({ base: "work", rel: "scan.png" })}/1.png` }], text: "" });
   // A scan over the cap passes through scaled to it, its proportions kept.
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=white:s=2000x1000", "-frames:v", "1", join(work, "wide.png")]);
-  const wide = await pdfPages({ path: "wide.png" }, { work, documents: docs });
+  const wide = await pdfPages({ path: "wide.png" }, { work: localWorkspace(work), documents: docs });
   const scaled = await readFile(join(work, wide.pages[0].image));
   assert.deepEqual([scaled.readUInt32BE(16), scaled.readUInt32BE(20)], [MAX_PAGE_PX, 784]);
 });
@@ -60,10 +61,12 @@ test("pdf_pages reads only under the documents and the work directory: no absolu
   for (const d of [docs, work, outside]) await mkdir(d);
   await writeFile(join(outside, "secret.pdf"), "x");
   await symlink(join(outside, "secret.pdf"), join(docs, "link.pdf"));
-  for (const path of [join(outside, "secret.pdf"), "../outside/secret.pdf", "link.pdf", "missing.pdf", ""]) {
-    await assert.rejects(documentPath(path, { work, documents: docs }), /pdf_pages:/, path);
+  // A link in the run's work/ out of it is no file there either: the Workspace follows none.
+  await symlink(join(outside, "secret.pdf"), join(work, "worklink.pdf"));
+  for (const path of [join(outside, "secret.pdf"), "../outside/secret.pdf", "link.pdf", "worklink.pdf", "missing.pdf", ""]) {
+    await assert.rejects(pdfPages({ path }, { work: localWorkspace(work), documents: docs }), /pdf_pages:/, path);
   }
-  await assert.rejects(pdfPages({ path: "x.pdf", maxPages: 0 }, { work, documents: docs }), /pdf_pages:/);
+  await assert.rejects(pdfPages({ path: "x.pdf", maxPages: 0 }, { work: localWorkspace(work), documents: docs }), /pdf_pages:/);
 });
 
 test("llm completes once on the tier's model: text, model, usage, and a null cost for an unpriced model", async () => {

@@ -90,7 +90,8 @@ async function crashedRaise(t, point, { short = false } = {}) {
     for (;;) {
       const row = await server.runs.get("run-1");
       if (row.state === state && row.runner === null) return row;
-      if (["ended", "stopped", "failed"].includes(row.state) || Date.now() - from > ms) throw new Error(`not ${state} within ${ms} ms: ${JSON.stringify(row)}; ${sent.length} requests sent`);
+      // A final state other than the one waited for fails at once; the one waited for waits for its release too.
+      if ((row.state !== state && ["ended", "stopped", "failed"].includes(row.state)) || Date.now() - from > ms) throw new Error(`not ${state} within ${ms} ms: ${JSON.stringify(row)}; ${sent.length} requests sent`);
       await sleep(20);
     }
   };

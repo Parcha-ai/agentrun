@@ -14,7 +14,7 @@
   "license": "Apache-2.0",
   "author": "Parcha Labs, Inc.",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.11.0"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -30,7 +30,6 @@
   },
   "files": [
     "dist",
-    "!dist/workspace",
     "launcher",
     "harnesses",
     "skills",

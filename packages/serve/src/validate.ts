@@ -3,7 +3,7 @@ import { type InputIssue, invalid } from "./errors.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { placeIssues } from "./place.js";
-import { settingsIssues } from "./tool-plane.js";
+import { AGENT_LAYER_PINS, AGENT_PIN_LATER, settingsIssues } from "./tool-plane.js";
 import { CAP_MODES } from "./cap.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -80,7 +80,17 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.skills !== undefined) names(d.skills, `${at}.skills`, out);
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
   // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
-  if (d.tool_settings !== undefined) out.push(...settingsIssues(d.tool_settings, `${at}.tool_settings`));
+  if (d.tool_settings !== undefined) {
+    const settings = settingsIssues(d.tool_settings, `${at}.tool_settings`);
+    out.push(...settings);
+    // An agent's own pin, once its store keeps one (AGENT_LAYER_PINS); until then a pin that is one is the server's to set.
+    if (!AGENT_LAYER_PINS && isObject(d.tool_settings)) {
+      for (const [name, setting] of Object.entries(d.tool_settings)) {
+        const field = `${at}.tool_settings.${name}.pin`;
+        if (isObject(setting) && setting.pin !== undefined && !settings.some((one) => one.field === field || one.field.startsWith(`${field}.`))) out.push(issue(field, "not_set_up_here", AGENT_PIN_LATER));
+      }
+    }
+  }
   // The agent's default cap of each run started without one of its own: above 0 sets it, 0 clears it (no default), and
   // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {

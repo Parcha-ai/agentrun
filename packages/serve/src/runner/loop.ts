@@ -35,6 +35,8 @@ export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: 
 export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 export const STOP_SETTLE_MS = 30_000;
+/** The most a cut run's end-of-run step (a store read), or the end's patch, may take before the end is written without it. */
+export const CUT_STEP_MS = 2_000;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };

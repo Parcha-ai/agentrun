@@ -51,6 +51,7 @@ export type ConformanceCase =
   | "crash-after-intent"
   | "crash-before-intent-process"
   | "crash-after-intent-process"
+  | "stalled-past-lease-process"
   | "replay-safe-rerun"
   | "steer-mid-turn"
   | "stop-ends-turn"

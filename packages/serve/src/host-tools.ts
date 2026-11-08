@@ -11,7 +11,6 @@
 // refusal, an error and a write's or edit's result name a path in the workspace relative to it (`hello.md`), never by
 // the server's data directory (`workspaceRelative`); in a box they name the box's paths. Each call passes the run's tool
 // gate first (tool-gate.ts): a denied call is refused, an asked one parked, and the harness is told so it ends the turn.
-import { StringDecoder } from "node:string_decoder";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -26,7 +25,9 @@ import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { realOf, workspaceRelative } from "./workspace-paths.js";
+import { localWorkspace } from "./workspace/index.js";
 import type { Park, RunGate } from "./tool-gate.js";
+import { bounded, imagesOf, textOf } from "./workspace/executors.js";
 
 export { workspaceRelative } from "./workspace-paths.js";
 
@@ -35,65 +36,8 @@ export { workspaceRelative } from "./workspace-paths.js";
  *  each other) is never run again. */
 export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never", bash_background: "never", bash_output: "safe", bash_input: "never", bash_signal: "never", bash_list: "safe", learned_workflow: "never" };
 
-/** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
- *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
-export const MAX_BYTES = 50 * 1024;
-export const MAX_LINES = 2000;
-
-/** Whether `byte` continues a UTF-8 character (0b10xxxxxx), so a cut before it would split one. */
-const continues = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
-
-/** `bytes` (UTF-8) cut to at most `max` bytes, its tail or its head, at a character boundary: a character the limit
- *  would split is left out whole, so the text never ends or starts in a U+FFFD. */
-export function cutUtf8(bytes: Uint8Array, max: number, tail: boolean): Uint8Array {
-  if (bytes.length <= max) return bytes;
-  if (tail) {
-    let start = bytes.length - max;
-    while (continues(bytes[start])) start++;
-    return bytes.subarray(start);
-  }
-  // The byte at `end` is the first one left out: while it continues a character, that character goes too.
-  let end = max;
-  while (end > 0 && continues(bytes[end])) end--;
-  return bytes.subarray(0, end);
-}
-
-/** A call's output, held within the tool's limits as it arrives: its tail (bash's) or its head. */
-function bounded(limits: ToolRegistration["outputLimits"]) {
-  const maxBytes = limits?.maxBytes ?? MAX_BYTES;
-  const maxLines = limits?.maxLines ?? MAX_LINES;
-  const tail = limits?.retain === "tail";
-  // Bytes are decoded as one stream: a character whose bytes arrive in two chunks is one character.
-  const decoder = new StringDecoder("utf8");
-  let kept = "";
-  let cut = false;
-  const trim = (text: string): string => {
-    const lines = text.split("\n");
-    let out = lines.length > maxLines ? (tail ? lines.slice(-maxLines) : lines.slice(0, maxLines)).join("\n") : text;
-    const bytes = Buffer.from(out, "utf8");
-    if (bytes.length > maxBytes) out = Buffer.from(cutUtf8(bytes, maxBytes, tail)).toString("utf8");
-    if (out !== text) cut = true;
-    return out;
-  };
-  return {
-    push(chunk: string | Uint8Array) {
-      const text = typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
-      if (!tail && cut) return;
-      kept += text;
-      // Trimmed once it is twice the limit, so a long output costs a bounded amount of memory and work.
-      if (kept.length > 2 * maxBytes) kept = trim(kept);
-    },
-    /** What is kept so far, and whether any was cut: pi 1.2's `retainedOutput`. */
-    retained: () => {
-      const text = trim(kept);
-      return { text, truncated: cut };
-    },
-    text(): string {
-      const out = trim(kept);
-      return cut ? (tail ? `[earlier output omitted]\n${out}` : `${out}\n[later output omitted]`) : out;
-    },
-  };
-}
+// pi's limits on a tool's output, and how a call's output is held within them, are the executors' (workspace/executors.ts).
+export { cutUtf8, MAX_BYTES, MAX_LINES } from "./workspace/executors.js";
 
 /** One call's result, kept by its call id for the run's timeline (an adapter's tool_end carries none). */
 export type ToolResults = Map<string, { text: string; isError: boolean }>;
@@ -120,15 +64,6 @@ const hostApi = (given: HostApi): ToolExecutionApi =>
 const SAYS_PATH = new Set(["write", "edit"]);
 
 
-const textOf = (content: unknown): string =>
-  Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
-
-/** A result's image blocks (pi-ai's `ImageContent`: read's image in a box), as HostTool's `images`: the harness sends
- *  them with the text, where `textOf` alone would drop them. */
-const imagesOf = (content: unknown): { mimeType: string; data: string }[] =>
-  Array.isArray(content) ? content.flatMap((block) => (block && typeof block === "object" && block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? [{ mimeType: block.mimeType, data: block.data }] : [])) : [];
-
-
 /** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
  *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
  *  gate's own run of an approved call), each call runs as asked. `extra`: the run's own tools beyond the table (its
@@ -142,7 +77,7 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
   // monid's, only for a run that names one: its key is the one this process was handed over its pipe (secrets.ts),
   // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
   // the call. They are outside the coding source, which holds the coding tools only.
-  const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => run.claim.work) : [];
+  const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => localWorkspace(run.claim.work)) : [];
   // `extra`: the run's own tools beyond the table, its learned_workflow (learned-workflow.ts) when its pin names one.
   const tools = new Map([...coding, ...web, ...monid, ...extra].map((tool) => [tool.name, tool as ToolRegistration] as const));
   return names.flatMap((name) => {
