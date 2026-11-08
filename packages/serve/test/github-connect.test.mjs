@@ -13,7 +13,7 @@ import { runDir, serve, withEnv } from "./support.mjs";
 import { firings, keyOf, made } from "./trigger-support.mjs";
 
 const target = (agentId, content = "Review it.") => ({ kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 });
-const pr = (extra = {}) => ({ action: "opened", number: 12, pull_request: { draft: false, title: "Add a thing" }, repository: { full_name: "acme/widgets" }, installation: { id: 777 }, sender: { login: "dev" }, ...extra });
+const pr = (extra = {}) => ({ action: "opened", number: 12, pull_request: { number: 12, draft: false, title: "Add a thing" }, repository: { full_name: "acme/widgets" }, installation: { id: 777 }, sender: { login: "dev" }, ...extra });
 
 test("Connect GitHub starts GitHub's app-manifest flow: the manifest names the server's public hook, its redirect and setup URLs and the App's permissions and events, under a single-use state bound to this browser", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);

@@ -89,7 +89,7 @@ test("demo: a GitHub delivery signed with the trigger's whole secret fires once,
   assert.deepEqual(schemaProblems(doc, doc.paths["/triggers"].post.responses["201"].content["application/json"].schema, created.body), []);
   assert.deepEqual((await api("GET", `/triggers/${id}`)).body.source, created.body.source);
 
-  const event = { action: "opened", number: 7, pull_request: { url: "https://api.github.com/repos/o/r/pulls/7", draft: false } };
+  const event = { action: "opened", number: 7, pull_request: { number: 7, url: "https://api.github.com/repos/o/r/pulls/7", draft: false } };
   const delivery = randomUUID();
   const first = await deliver(baseUrl, id, "pull_request", event, { secret, delivery });
   assert.equal(first.status, 202, JSON.stringify(first.body));
