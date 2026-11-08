@@ -11,3 +11,4 @@ export {
 } from "./paths.js";
 export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
 export { localWorkspace, workspaceAt } from "./local.js";
+export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
