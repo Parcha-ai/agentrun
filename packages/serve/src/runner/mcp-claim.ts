@@ -28,7 +28,7 @@ import { type McpCredentials, type McpPin, mcpPinOf } from "../mcp-gateway.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
-import { type Claim, Fenced, MCP_REFRESH_LEASE_MS, type McpServerRow, RefreshLeaseLost, type Store } from "../store/store.js";
+import { type Claim, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type McpServerRow, RefreshLeaseLost, type Store } from "../store/index.js";
 
 /** A claim the MCP step refused, in the words a person reads: nothing was sent. */
 export class McpClaimRefused extends Error {
@@ -75,10 +75,11 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const network = options.network ?? systemNetwork;
   const requestMs = options.bounds?.requestMs ?? REFRESH_REQUEST_MS;
   const tries = options.bounds?.tries ?? 2;
-  // This step's refresh lease (the store's one bound, MCP_REFRESH_LEASE_MS, longer than the refresh's own two 4 s tries;
-  // a refresh bounded longer here leases that long and a second more), so a holder that dies frees it for the next claim.
+  // The whole refresh call (every try) is given up at the store's one deadline, MCP_REFRESH_CALL_MS (two tries of 4 s),
+  // or sooner at a test's own bound; its lease (MCP_REFRESH_LEASE_MS, the store's default) outlasts that, so the lease
+  // never lapses while the call may still spend the refresh token. A holder that dies frees it for the next claim.
+  const callMs = Math.min(MCP_REFRESH_CALL_MS, requestMs * tries);
   const holder = `${claim.runId}@${claim.epoch}:${randomUUID()}`;
-  const leaseMs = Math.max(MCP_REFRESH_LEASE_MS, requestMs * tries + 1_000);
   const pin = await pinOf(options);
   const credentials: McpCredentials = Object.create(null);
   const secrets = new Set<string>();
@@ -97,8 +98,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   /** The OAuth token set refreshed at its authorization server, bounded: the new set, or why not. */
   const refresh = async (row: McpServerRow, set: TokenSet, stop: AbortSignal): Promise<{ set: TokenSet } | { refused: true } | { silent: true }> => {
     if (!set.tokens.refresh_token) return { refused: true };
-    for (let tried = 0; tried < tries && !stop.aborted; tried++) {
-      const one = AbortSignal.any([stop, AbortSignal.timeout(requestMs)]);
+    const call = AbortSignal.any([stop, AbortSignal.timeout(callMs)]);
+    for (let tried = 0; tried < tries && !call.aborted; tried++) {
+      const one = AbortSignal.any([call, AbortSignal.timeout(requestMs)]);
       try {
         return { set: await bounded(refreshed(set, row.url, one, network), one) };
       } catch (error) {
@@ -112,7 +114,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
    *  it go), within the lease's own time. */
   const settled = async (name: string, stop: AbortSignal): Promise<McpServerRow | undefined> => {
     // Waited no longer than this step's own refresh would take: past that, the row as it is.
-    const until = Date.now() + requestMs * tries + 1_000;
+    const until = Date.now() + MCP_REFRESH_LEASE_MS;
     for (;;) {
       const row = await store.mcp.server(name);
       if (!row || row.refreshHolder === null || Date.now() >= until || stop.aborted) return row;
@@ -164,7 +166,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       // One refresh at a time per server, across claims and runners: a provider that rotates its refresh tokens spends
       // the one used, so a second refresh with it would sign the server out. Without the lease, take the row the
       // holder leaves.
-      const lease = await store.mcp.leaseRefresh(name, { seen: row.sealed, holder, ms: leaseMs });
+      const lease = await store.mcp.leaseRefresh(name, { seen: row.sealed, holder });
       if (!lease.leased) {
         const left = await settled(name, stop);
         if (!stop.aborted && !released && left) await open(name, pinnedUrl, left);
