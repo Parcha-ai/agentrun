@@ -59,10 +59,10 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     }
     // The run's spend and holds: the runner's (its model requests) and the host's (its priced tools).
     // $0 only with no hook: a figure that is not one (null, undefined, NaN, Infinity, below 0), the runner's or a hook's,
-    // makes the run's spend or holds unknown, refused by the rule, never free and never room.
+    // makes the run's spend or holds unknown, refused by the rule, never free and never room. Each part is checked before
+    // it is summed: a positive part would hide a negative one in the sum ($1 and -$0.50 read as a valid $0.50).
     const toolSpent = options.spentUsd ? options.spentUsd() : 0;
-    const spentUsd = request.spentUsd === null || toolSpent === null ? null : request.spentUsd + toolSpent;
-    // A held hook's null would add as 0: checked here, the rest by the rule.
+    const spentUsd = isFigure(request.spentUsd) && isFigure(toolSpent) ? request.spentUsd + toolSpent : null;
     const toolHeld = options.heldUsd ? options.heldUsd() : 0;
     const heldUsd = isFigure(toolHeld) ? inFlight + toolHeld : null;
     try {
