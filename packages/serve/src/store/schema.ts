@@ -224,10 +224,12 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
   // The computer ledger: a provider whose sessions carry no labels of their own (a phone provider's) keeps ours here, by
   // its session id (the run, the claim's epoch...), so its list, an attach by labels and the janitor outlive a restart.
+  // detail is the rest of the provider's entry for the session, as it gave it (a phone's image and deadline).
   `CREATE TABLE IF NOT EXISTS computer_ledger (
     provider TEXT NOT NULL,
     session_id TEXT NOT NULL,
     ${json("labels")},
+    ${json("detail")},
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (provider, session_id)
   ) STRICT`,
