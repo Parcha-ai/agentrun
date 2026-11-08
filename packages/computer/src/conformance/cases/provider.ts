@@ -296,9 +296,12 @@ export const providerCases: Case[] = [
 			const nonce = randomBytes(6).toString("hex");
 			const run = `conformance-${nonce}`;
 			const other = `conformance-other-${nonce}`;
-			const [e1, e2, e3, o1] = await Promise.all(
-				[runLabels(run, 1), runLabels(run, 2), runLabels(run, 3), runLabels(other, 1)].map((epochs) => t.create({ labels: { ...labels, ...epochs } })),
-			);
+			// Compared by id and name: create may return notes beside the ref (a provider's probe records what it found).
+			const [e1, e2, e3, o1] = (
+				await Promise.all(
+					[runLabels(run, 1), runLabels(run, 2), runLabels(run, 3), runLabels(other, 1)].map((epochs) => t.create({ labels: { ...labels, ...epochs } })),
+				)
+			).map(refOf);
 			// The provider carries both labels and reads them back.
 			const read = t.ok(await t.provider.list({ [RUN_LABEL]: run }), `list by ${RUN_LABEL}`);
 			for (const [ref, of, epoch] of [[e1, run, "1"], [e2, run, "2"], [e3, run, "3"]] as const) {
