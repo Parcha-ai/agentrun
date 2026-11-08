@@ -1,8 +1,9 @@
 // The one owner of the folder layout and of the relative-path rule.
 //
-// Layout, under a server's data directory:
-//   <data>/disk/agents/<agent>/runs/<run>/work   a run's folder (runFolder): the root of the run's Workspace
-//   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder): its git folder
+// Layout, under a server's data directory, or from the root of an Archil disk (the same keys, without <data>/disk):
+//   <data>/disk/agents/<agent>/runs/<run>/work   a run's folder (runFolder; runKey on a disk): its Workspace's root
+//   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder; learningKey): its git
+//                                                folder
 // <agent> is the id in lower case, a dash, and 16 hex digits of the id's SHA-256, so ids that differ only in case never
 // share a folder on a disk that folds case.
 //
@@ -27,12 +28,17 @@ export const agentDirName = (agentId: string): string =>
 /** Agent `agentId`'s folder: `<data>/disk/agents/<agent>`. */
 export const agentFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, "agents", agentDirName(agentId));
 
+/** Run `runId`'s folder as a key from a disk's root: `agents/<agent>/runs/<run>/work` (an Archil workspace's root). */
+export const runKey = (agentId: string, runId: string): string => `agents/${agentDirName(agentId)}/runs/${checkId(runId, "run")}/work`;
+
+/** Agent `agentId`'s learning folder as a key from a disk's root: `agents/<agent>/learning`. */
+export const learningKey = (agentId: string): string => `agents/${agentDirName(agentId)}/learning`;
+
 /** Run `runId`'s folder, the root of its Workspace: `<data>/disk/agents/<agent>/runs/<run>/work`. */
-export const runFolder = (dataDir: string, agentId: string, runId: string): string =>
-  join(agentFolder(dataDir, agentId), "runs", checkId(runId, "run"), "work");
+export const runFolder = (dataDir: string, agentId: string, runId: string): string => join(dataDir, DISK_DIR, runKey(agentId, runId));
 
 /** Agent `agentId`'s learning folder, the root of its learning Workspace: `<data>/disk/agents/<agent>/learning`. */
-export const agentLearningFolder = (dataDir: string, agentId: string): string => join(agentFolder(dataDir, agentId), "learning");
+export const agentLearningFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, learningKey(agentId));
 
 /**
  * The segments of relative path `path`: "" and "." are the root itself (no segments). Anything that could name a place
