@@ -187,10 +187,16 @@ func (k *desk) events() []event {
 	return out
 }
 
-// eventsOf parses the fixture's event log as read so far.
+// eventsOf parses the fixture's event log as read so far: whole lines only, since the fixture may be writing the last.
 func eventsOf(data []byte) ([]event, error) {
 	var out []event
-	for _, line := range strings.Split(string(data), "\n") {
+	whole := string(data)
+	if end := strings.LastIndexByte(whole, '\n'); end >= 0 {
+		whole = whole[:end]
+	} else {
+		whole = ""
+	}
+	for _, line := range strings.Split(whole, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
