@@ -3,7 +3,7 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { FINAL_STATES, Fenced, type AlsoRow, type Claim, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type RunPatch, type RunRow, type RunState } from "../store.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 
 export type RunRecord = {
@@ -52,4 +52,12 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
     }
   }
   return runOf(row);
+}
+
+/** After a write that made the run final has taken its own rows: every command row of the run still untaken is refused
+ *  with the end's reason, in that same transaction. The store takes no new row on a final run (RunFinal), so a row the
+ *  end left untaken would stay so for good, as it would if the runner died right after the end. */
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run">, runId: string, state: RunState | undefined, now: number): Promise<void> {
+  if (state !== "ended" && state !== "stopped" && state !== "failed") return;
+  await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason(state), runId);
 }

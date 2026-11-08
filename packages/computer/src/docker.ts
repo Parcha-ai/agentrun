@@ -31,6 +31,7 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
+import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import {
 	ALLOW_PORTS,
 	allowOf,
@@ -117,6 +118,9 @@ export interface DockerProviderOptions {
 	 *  1000:1000 when its uid or gid is 0. Root and root's group are refused here: a computer runs as either only when
 	 *  its spec asks. */
 	user?: string;
+	/** The image its computers start from, which image() makes ready: a recipe, built once, or an image by name, pulled
+	 *  when Docker has none. Default the provider's own recipe, DOCKER_RECIPE (src/docker/image.ts). */
+	image?: ImageSource;
 }
 
 /** The environment fromEnv reads, by name. */
@@ -152,7 +156,8 @@ export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<Docke
 
 /**
  * A DockerProvider from COMPUTER_DOCKER_* alone. Without COMPUTER_DOCKER_DAEMON it asks Docker its architecture and takes
- * this package's daemon for it, and says when that daemon is not built. Options win over the environment.
+ * this package's daemon for it, and says when that daemon is not built. Options win over the environment. The image is
+ * an option only (default the provider's own recipe): no image name is read from the environment.
  */
 export async function fromEnv(env: Record<string, string | undefined> = process.env, options: DockerFromEnvOptions = {}): Promise<DockerProvider> {
 	const { timeoutMs, ...given } = options;
@@ -229,6 +234,7 @@ export class DockerProvider implements ComputerProvider {
 	readonly #docker: string;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
+	readonly #image: ImageSource;
 	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[]; hostRoot: string };
 	/** Why this provider's own interfaces are not the Docker host's, in words, or none: read once, for the first allowlist
 	 *  with no egress.hostAddresses (#elsewhere). */
@@ -238,10 +244,13 @@ export class DockerProvider implements ComputerProvider {
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress }: DockerProviderOptions) {
+	constructor({ daemonPath, daemonCache, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE } }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#daemonCache = resolve(daemonCache ?? defaultDaemonCache());
 		this.#docker = docker;
+		const unusable = imageSourceProblem(image);
+		if (unusable !== undefined) throw new Error(`the provider's image: ${unusable}`);
+		this.#image = image;
 		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		this.#egress = egressOptionsOf(egress ?? {});
 		const given = user === undefined ? defaultUser() : userOf(user);
@@ -275,6 +284,14 @@ export class DockerProvider implements ComputerProvider {
 			stopDeletes: false,
 			mount: [...MOUNT],
 		};
+	}
+
+	/**
+	 * The provider's image ready in Docker, and its tag for create's spec.image: built from its recipe, or pulled, when
+	 * Docker has none; one inspect when it has. Concurrent calls in one process share one build (ensureImage).
+	 */
+	image(options: CallContext & Pick<EnsureImageOptions, "timeoutMs" | "onWait"> = {}): Promise<Result<string>> {
+		return ensureImage(this.#image, { ...options, docker: this.#docker });
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, a bind or an

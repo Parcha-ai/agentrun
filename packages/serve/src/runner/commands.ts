@@ -48,8 +48,6 @@ export async function sendCommand(store: CommandSink, runId: string, input: Comm
   return store.command(runId, { kind: input.kind, body });
 }
 
-/** The reason a runner gives for a command still untaken when its run ended. */
-export function endedReason(state: "ended" | "stopped" | "failed"): string {
-  const how = state === "ended" ? "ended" : state === "stopped" ? "was stopped" : "failed";
-  return `the run ${how} before this command was taken`;
-}
+/** The reason a command still untaken when its run ended is refused with: the store's own words (the write that makes a
+ *  run final refuses such rows itself). */
+export { endedReason } from "../store/store.js";
