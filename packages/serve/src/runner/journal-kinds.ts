@@ -32,6 +32,12 @@ export const KINDS = {
    *  takeRaises, all a claim found at once). A budget entry with a raise entry after it is answered. Neither a call nor a
    *  message, so the reader passes over it. */
   raise: "agentrun.raise",
+  /** A workflow run parked for a raise: a step its spend cap held let go, the run parks (its row's patch rides on this
+   *  commit), and a raise or its wake makes it claimable again, when the resumed run reads the raised cap. Its data is the
+   *  refusal a reader shows as the run's pending (its words and figures); neither a call nor a message, so the reader
+   *  passes over it. Both parks are kept for now: the workflow loop's moves onto agentrun.budget when it runs on the
+   *  kernel cap. */
+  workflowParked: "agentrun.workflow.parked",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
