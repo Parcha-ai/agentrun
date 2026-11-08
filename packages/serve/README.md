@@ -2645,6 +2645,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   value under another name.
 - The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
   server has read it.
+- The browser's evidence is numbered from the highest number the run's `evidence/` holds when its browser first files
+  there, through the run's Workspace, which has no exclusive create. One browser per run files there, so two never pick
+  one number; two filing into one run's `evidence/` at the same moment could.
 
 ## Test
 
