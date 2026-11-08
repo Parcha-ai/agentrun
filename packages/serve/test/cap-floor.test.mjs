@@ -6,7 +6,14 @@
 // counted, is refused (422 below_least) with both figures. Nothing measured yet: no floor, and the create goes as before.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agent, follow, serve } from "./support.mjs";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { join } from "node:path";
+import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { piFloor } from "../dist/cap.js";
+import { adapterRun } from "../dist/harness-app.js";
+import { startServe } from "../dist/index.js";
+import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
 
 /** Priced on both sides, input $10 and output $100 a million: a first request's least moves with its input. */
 const FLOOR_PRICED = new URL("./fixtures/faux-floor-priced.mjs", import.meta.url).pathname;
@@ -96,4 +103,102 @@ test("pi: a floor is its revision's: a new revision has none until its own first
   assert.equal((await api("GET", "/agents/floor-rev")).body.cap_floor, undefined, "no floor on the new revision yet");
   const small = await api("POST", "/agents/floor-rev/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.02 });
   assert.equal(small.status, 202, `the new revision's first run is never refused: ${JSON.stringify(small.body)}`);
+});
+
+/** A ready upload of `bytes` at `path`. */
+async function upload(server, path, bytes) {
+  const made = await server.api("POST", "/files", { path, size_bytes: bytes.length });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const sent = await fetch(`${server.url}${made.body.upload.url}`, { method: "PUT", headers: { authorization: `Bearer ${server.token}`, "content-type": "application/octet-stream" }, body: bytes });
+  const ready = await sent.json();
+  assert.equal(sent.status, 200, JSON.stringify(ready));
+  return ready.file_id;
+}
+
+test("pi: a run whose first message carried a file list measures no input-free floor a run without files is refused by", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t, { faux: FLOOR_PRICED });
+  const { api } = server;
+  assert.equal((await api("POST", "/agents", agent("floor-files"))).status, 201);
+  // A file with a long name: the first message's file list adds its line to the measured request.
+  const file = await upload(server, `${"long-name-".repeat(20)}notes.txt`, Buffer.from("notes"));
+  const first = await api("POST", "/agents/floor-files/runs", { input: { content: "Write one.md" }, file_ids: [file], max_cost_usd: 0.02 });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await follow(api, first.body.run_id, SETTLED);
+  const { pending } = (await api("GET", `/runs/${first.body.run_id}`)).body;
+  assert.equal(pending?.kind, "budget", JSON.stringify(pending));
+  // Without the file the same message needs less than the measured request did, by at least the list's 209 name bytes
+  // ($0.00209 at $10 a million): a cap a tenth of a cent under what the file's run needed covers it, so it is never
+  // refused on that run's figure.
+  const without = await api("POST", "/agents/floor-files/runs", { input: { content: "Write one.md" }, max_cost_usd: Math.round((pending.needs_usd - 0.001) * 1e6) / 1e6 });
+  assert.equal(without.status, 202, `the file list's bytes are not counted in a run without it: ${JSON.stringify(without.body)}`);
+});
+
+test("pi: a floor measured under other host settings (here the host's thinking level) never refuses a run under the current ones", { timeout: 120_000 }, async (t) => {
+  // Measured on a server whose host thinking level is high.
+  withEnv(t, { AGENT_THINKING: "high" });
+  const data = join(await scratch(t), "agents");
+  let server = await startServe({ data, port: 0, faux: FLOOR_PRICED, drainTimeout: "5s" });
+  t.after(() => server?.close());
+  let api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("floor-host"))).status, 201);
+  const first = await api("POST", "/agents/floor-host/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.02 });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await follow(api, first.body.run_id, SETTLED);
+  assert.equal((await api("GET", "/agents/floor-host")).body.cap_floor?.effort, "high", "measured at the host's level");
+  await server.close();
+  // The host's thinking level is now low: a run of the same revision with no effort of its own runs at low.
+  process.env.AGENT_THINKING = "low";
+  server = await startServe({ data, port: 0, faux: FLOOR_PRICED, drainTimeout: "5s" });
+  api = client(server.baseUrl, server.token);
+  const small = await api("POST", "/agents/floor-host/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.02 });
+  assert.equal(small.status, 202, `measured at high, the low run is not refused on it: ${JSON.stringify(small.body)}`);
+});
+
+test("pi: only a fresh conversation's first request has a floor: a request after an answer (a follow-up in a later process) has none", async () => {
+  const floorOf = await piFloor("medium");
+  const model = { id: "floor-1", name: "floor-1", api: "openai-responses", provider: "p", maxTokens: 64_000, contextWindow: 400_000, cost: { input: 10, output: 100, cacheRead: 0, cacheWrite: 0 } };
+  const user = { role: "user", content: "Write one.md", timestamp: 1 };
+  assert.ok(floorOf(model, { systemPrompt: "Answer.", messages: [user] }, {}), "the first request of a fresh conversation");
+  const answered = { role: "assistant", content: [{ type: "text", text: "Done." }], api: model.api, provider: "p", model: model.id, stopReason: "stop", timestamp: 2, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+  assert.equal(floorOf(model, { systemPrompt: "Answer.", messages: [user, answered, { ...user, timestamp: 3 }] }, {}), undefined, "a request after an answer");
+});
+
+test("another harness: a session opened again (not new) records no floor on its first request; a new one does", async () => {
+  const mark = { model: "m", inputTokens: 1, leastUsd: 1, typicalUsd: 1, inputUsdPerToken: 0 };
+  const floorsAt = async (state) => {
+    const adapter = {
+      id: "floored", version: "0", capabilities: () => ({ fork: false }), check: () => [],
+      async open(_spec, io) {
+        let ended = Promise.resolve({ status: "completed" });
+        return {
+          state,
+          async send() {
+            const ticket = await io.models.beforeRequest({ model: "m", inputTokensMax: 1 });
+            await io.models.afterRequest({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, usd: 0 }, ticket ?? undefined);
+            ended = Promise.resolve({ status: "completed" });
+          },
+          async recover() {},
+          async settleOpenTurn() {},
+          turnEnd: () => ended,
+          async interrupt() {},
+          async close() {},
+        };
+      },
+    };
+    const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+    const app = adapterRun(async () => adapter, "floored", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx, undefined, [], undefined, undefined, () => false, undefined, undefined, undefined, undefined, [], () => mark);
+    app.door.attach(() => {});
+    await app.onOpen({ harness, env: async () => ({ confinePrefix: () => ["/usr/bin/setpriv", "--no-new-privs", "--"] }) });
+    const door = { run: { harness }, signal: new AbortController().signal, emit: () => {}, adopt: () => {} };
+    assert.deepEqual(await app.door.submit({ requestId: "m1", content: "Answer.", whenBusy: "followUp" }, door), { accepted: true });
+    const root = await harness.conversation(ROOT_CONVERSATION_ID, ctx);
+    for (const end = Date.now() + 10_000; ; await new Promise((resolve) => setTimeout(resolve, 10))) {
+      const { items } = await root.entries({ order: "ascending" }, 500, undefined, ctx);
+      const starts = items.filter((entry) => entry.kind === REQUEST_STARTED);
+      if (starts.length) return starts.filter((entry) => entry.data?.floor !== undefined).length;
+      assert.ok(Date.now() < end, "no request was marked");
+    }
+  };
+  assert.equal(await floorsAt("new"), 1, "a new session's first request");
+  assert.equal(await floorsAt("idle"), 0, "a session opened again");
 });
