@@ -31,7 +31,7 @@ import {
 	type NetworkSpec,
 	type Refusal,
 } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
 import { waitUntil } from "./wait.js";
 
 /** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
@@ -417,6 +417,17 @@ function call<T>(what: string, run: () => Promise<T>, ms: number, signal?: Abort
 		return Promise.resolve(fail(codeOf(error), `${what} failed: ${words(error)}`));
 	}
 	return race(promise, what, ms, signal);
+}
+
+/** A timeout of a call within list(): listBound when what bounded it was what was left of the listing's deadline. */
+type ListBound = { listBound?: true };
+
+/**
+ * Marks result's timeout listBound when left, what was left of a listing's deadline as the call began, was its bound,
+ * not its own requestMs: then the listing's deadline ended it, whatever Date.now() reads a moment after.
+ */
+function boundBy<T>(result: Result<T>, left: number | undefined, requestMs: number): Result<T> & ListBound {
+	return !result.ok && result.error.code === "timeout" && left !== undefined && left <= requestMs ? { ...result, listBound: true } : result;
 }
 
 function labelProblem(key: string, value: unknown): string | undefined {
@@ -931,13 +942,15 @@ export class E2BProvider implements ComputerProvider {
 
 	/**
 	 * getInfo, bounded by requestMs; not_found for a sandbox E2B does not have. With until, a time a whole listing must
-	 * end by, the read is bounded by what is left of it as well, its race included.
+	 * end by, the read is bounded by what is left of it as well, its race included, and a timeout of a read whose bound
+	 * was that remainder is marked listBound: the listing's deadline ended it, whatever Date.now() reads after.
 	 */
-	#info(id: string, signal?: AbortSignal, until?: number): Promise<Result<E2BSandboxInfo>> {
+	async #info(id: string, signal?: AbortSignal, until?: number): Promise<Result<E2BSandboxInfo> & ListBound> {
 		const { requestMs } = this.#timeouts;
 		const left = until === undefined ? undefined : Math.max(1, until - Date.now());
 		const ms = left === undefined ? requestMs : Math.min(requestMs, left);
-		return call(`Sandbox.getInfo of ${id}`, () => this.#Sandbox.getInfo(id, this.#api(ms, signal)), left === undefined ? requestMs + CALL_SLACK_MS : left, signal);
+		const read = await call(`Sandbox.getInfo of ${id}`, () => this.#Sandbox.getInfo(id, this.#api(ms, signal)), left === undefined ? requestMs + CALL_SLACK_MS : left, signal);
+		return boundBy(read, left, requestMs);
 	}
 
 	/** This provider's sandbox for ref, as E2B reads it, or why not. */
@@ -1227,10 +1240,12 @@ export class E2BProvider implements ComputerProvider {
 
 	/**
 	 * Every sandbox E2B lists with these metadata pairs (running and paused, index.d.mts:10289), all pages, within listMs,
-	 * or by until when the caller's own bound is given.
+	 * or by until when the caller's own bound is given; then a page's timeout whose bound was what was left of it is
+	 * marked listBound.
 	 */
-	async #listPages(metadata: Record<string, string>, signal?: AbortSignal, until = Date.now() + this.#timeouts.listMs): Promise<Result<E2BListedSandbox[]>> {
+	async #listPages(metadata: Record<string, string>, signal?: AbortSignal, given?: number): Promise<Result<E2BListedSandbox[]> & ListBound> {
 		const { requestMs } = this.#timeouts;
+		const until = given ?? Date.now() + this.#timeouts.listMs;
 		let paginator: E2BPaginator;
 		try {
 			paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: requestMs, query: { metadata }, limit: PAGE });
@@ -1242,7 +1257,7 @@ export class E2BProvider implements ComputerProvider {
 			if (page >= MAX_PAGES) return fail("e2b", `Sandbox.list ran past ${MAX_PAGES} pages`);
 			const left = Math.max(1, until - Date.now());
 			const items = await call("Sandbox.list", () => paginator.nextItems({ requestTimeoutMs: Math.min(requestMs, left), ...(signal ? { signal } : {}) }), left, signal);
-			if (!items.ok) return items;
+			if (!items.ok) return boundBy(items, given === undefined ? undefined : left, requestMs);
 			if (!Array.isArray(items.value)) return fail("e2b", "Sandbox.list: a page that is not a list of sandboxes");
 			for (const sb of items.value) if (typeof sb?.sandboxId === "string") found.set(sb.sandboxId, sb);
 		}
@@ -1260,8 +1275,12 @@ export class E2BProvider implements ComputerProvider {
 		const { listMs } = this.#timeouts;
 		const until = Date.now() + listMs;
 		const late = (why: string) => fail("timeout", `list did not finish within ${seconds(listMs)}: ${why}`);
+		// A call the listing's deadline bounded (listBound) failed because that deadline passed, whichever of its timer and
+		// Date.now() reads first; one bounded by its own requestMs, with time left, keeps its own words.
+		const failed = ({ error, listBound }: { error: ComputerError } & ListBound) =>
+			error.code === "timeout" && (listBound === true || Date.now() >= until) ? late(error.message) : fail(error.code, error.message);
 		const listed = await this.#listPages({ ...labels, [COMPUTER_LABEL]: "1" }, signal, until);
-		if (!listed.ok) return listed.error.code === "timeout" ? late(listed.error.message) : listed;
+		if (!listed.ok) return failed(listed);
 		const infos: ComputerInfo[] = [];
 		for (const item of listed.value) {
 			if (!ours(item.metadata) || !Object.entries(labels).every(([key, value]) => item.metadata[key] === value)) continue;
@@ -1269,7 +1288,7 @@ export class E2BProvider implements ComputerProvider {
 			const read = await this.#info(item.sandboxId, signal, until);
 			if (!read.ok) {
 				if (read.error.code === "not_found") continue;
-				return read.error.code === "timeout" && Date.now() >= until ? late(read.error.message) : read;
+				return failed(read);
 			}
 			const info = read.value;
 			if (info.state !== "running" && info.state !== "paused") continue;
