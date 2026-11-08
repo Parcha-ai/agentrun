@@ -172,6 +172,101 @@ test("a symbolic link at the copy's own name is refused in words and not followe
 	assert.equal(statSync(target).mode & 0o7777, 0o600);
 });
 
+test("a cached copy this user cannot open (mode 0000 or 0111) is replaced by create and by attach, never left to fail them", async () => {
+	for (const mode of [0o000, 0o111]) {
+		const { provider, bound } = fakeDocker({ daemonMode: 0o700 });
+		const created = await provider.create(SPEC);
+		assert.equal(created.ok, true, JSON.stringify(created));
+		chmodSync(bound, mode);
+		const again = await provider.create(SPEC);
+		assert.equal(again.ok, true, `${mode.toString(8)}: ${JSON.stringify(again)}`);
+		assert.equal(statSync(bound).mode & 0o7777, 0o755);
+		assert.equal(readFileSync(bound, "utf8"), DAEMON_BYTES);
+		chmodSync(bound, mode);
+		const attached = await provider.attach({ id: created.value.name });
+		assert.equal(attached.ok, true, `${mode.toString(8)}: ${JSON.stringify(attached)}`);
+		assert.equal(statSync(bound).mode & 0o7777, 0o755);
+		assert.deepEqual(readdirSync(dirname(bound)), [COPY_NAME], "no temporary file is left");
+	}
+});
+
+test("a file another user owns at the copy's name is refused in words, not replaced", { skip: process.getuid() === 0 ? false : "only root can give a file another owner" }, async () => {
+	const cache = fresh();
+	const planted = join(cache, COPY_NAME);
+	writeFileSync(planted, DAEMON_BYTES, { mode: 0o755 });
+	chownSync(planted, 65534, 65534);
+	const { provider, calls } = fakeDocker({ daemonCache: cache });
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "refused");
+	assert.match(result.error.message, new RegExp(`${COPY_NAME} is owned by uid 65534, not this process's uid 0`));
+	assert.deepEqual(calls(), []);
+	assert.equal(statSync(planted).uid, 65534);
+});
+
+/**
+ * daemonCopy in a child process whose node:fs is the real one but for one failure, as a cleaner or a failing disk
+ * would cause it: "vanish-once" removes the copy directory right after it is made, the first time it is checked;
+ * "vanish-always" every time; "ancestor" fails the check of the directory above it with EACCES; "read" fails every read
+ * of an open file after the daemon's own with EIO. Its answer is the Result, or { threw } when daemonCopy threw.
+ */
+async function copyWithFailure(plan) {
+	const dir = fresh();
+	const source = join(dir, "computerd");
+	writeFileSync(source, DAEMON_BYTES, { mode: 0o700 });
+	const cache = join(dir, "cache");
+	const script = `
+import { mock } from "node:test";
+import * as fs from "node:fs";
+const { COPY_MODULE, COPY_SOURCE, COPY_CACHE, COPY_PARENT, COPY_PLAN } = process.env;
+let cleaned = 0;
+let reads = 0;
+const lstatSync = (path, ...rest) => {
+	if (path === COPY_CACHE && (COPY_PLAN === "vanish-always" || (COPY_PLAN === "vanish-once" && cleaned === 0))) {
+		cleaned++;
+		fs.rmSync(path, { recursive: true, force: true });
+	}
+	if (path === COPY_PARENT && COPY_PLAN === "ancestor") throw Object.assign(new Error("EACCES: permission denied, lstat '" + path + "'"), { code: "EACCES" });
+	return fs.lstatSync(path, ...rest);
+};
+const readFileSync = (target, ...rest) => {
+	if (typeof target === "number" && COPY_PLAN === "read" && reads++ > 0) throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+	return fs.readFileSync(target, ...rest);
+};
+mock.module("node:fs", { namedExports: { ...fs, lstatSync, readFileSync } });
+const { daemonCopy } = await import(COPY_MODULE);
+try {
+	console.log(JSON.stringify(daemonCopy(COPY_SOURCE, COPY_CACHE)));
+} catch (error) {
+	console.log(JSON.stringify({ threw: error.message }));
+}`;
+	const env = { ...process.env, COPY_MODULE: new URL("../dist/daemon-copy.js", import.meta.url).href, COPY_SOURCE: source, COPY_CACHE: cache, COPY_PARENT: dir, COPY_PLAN: plan };
+	const { stdout } = await promisify(execFile)(process.execPath, ["--experimental-test-module-mocks", "--no-warnings", "--input-type=module", "-e", script], { env });
+	return { result: JSON.parse(stdout.trim().split("\n").at(-1)), cache, dir };
+}
+
+test("a copy directory a cleaner removes right after it is made is made again once, and the copy is made", async () => {
+	const { result, cache } = await copyWithFailure("vanish-once");
+	assert.deepEqual(result, { ok: true, value: join(cache, COPY_NAME) });
+	assert.equal(lstatSync(cache).mode & 0o7777, 0o700);
+	assert.equal(readFileSync(join(cache, COPY_NAME), "utf8"), DAEMON_BYTES);
+});
+
+test("a copy directory that keeps vanishing, an unreadable directory above it, and a failing read of the copy are each a Result in words naming the path, never a throw", async () => {
+	const vanishing = await copyWithFailure("vanish-always");
+	assert.equal(vanishing.result.ok, false, JSON.stringify(vanishing.result));
+	assert.equal(vanishing.result.error.code, "invalid");
+	assert.match(vanishing.result.error.message, new RegExp(`the daemon copy directory ${vanishing.cache} vanished`));
+	const above = await copyWithFailure("ancestor");
+	assert.equal(above.result.ok, false, JSON.stringify(above.result));
+	assert.equal(above.result.error.code, "invalid");
+	assert.match(above.result.error.message, new RegExp(`cannot check ${above.dir}, above the daemon copy directory .*EACCES`));
+	const read = await copyWithFailure("read");
+	assert.equal(read.result.ok, false, JSON.stringify(read.result));
+	assert.equal(read.result.error.code, "invalid");
+	assert.match(read.result.error.message, new RegExp(`cannot read the daemon's copy at ${join(read.cache, COPY_NAME)}: EIO`));
+});
+
 test("a daemon this process cannot read is refused in words, with no docker call", { skip: process.getuid() === 0 ? "root reads any file" : false }, async () => {
 	const { provider, calls, daemonPath } = fakeDocker({ daemonMode: 0o000 });
 	const result = await provider.create(SPEC);
