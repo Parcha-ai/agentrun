@@ -111,6 +111,26 @@ export async function owner(server, password = PASSWORD) {
   check(setup.ok, `the setup answered ${setup.status}`);
 }
 
+/** A /v2 client with the server's token, for the flows that set up or read what the page should show: `api(method, path,
+ *  body?)` answers `{ status, body }` (body parsed as JSON when it is). The token is the started server's own (from its
+ *  output), or E2E_API_KEY for an attached server; it is never printed. */
+export function apiOf(server) {
+  let token;
+  return async (method, path, body) => {
+    token ??= server.attached ? process.env.E2E_API_KEY : await tokenOf(server);
+    check(!!token, "this flow calls the API: set E2E_API_KEY for an attached server");
+    const response = await fetch(`${server.baseUrl}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const text = await response.text();
+    let parsed = text;
+    try { parsed = text ? JSON.parse(text) : null; } catch { /* not JSON: the text */ }
+    return { status: response.status, body: parsed };
+  };
+}
+
 /** A port free on 127.0.0.1 now: for a flow whose server must know its own address before it starts (its public URL). */
 export function freePort() {
   return new Promise((resolve, reject) => {
