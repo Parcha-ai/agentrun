@@ -254,6 +254,45 @@ test("syncingClient: coalesced: calls during a sync in flight wait for it, then 
 	assert.equal(client.methods().filter((method) => method === "mount.sync").length, 2, "one in flight, then one shared by the three");
 });
 
+test("syncingClient: a caller whose signal fires stops waiting for the sync, in words; the sync goes on, and others still wait for it", async () => {
+	// Review (#1994, P1): the sync is held until the test lets it go, so no clock is involved.
+	let finish;
+	const held = new Promise((resolve) => {
+		finish = resolve;
+	});
+	const calls = [];
+	const client = {
+		async call(method) {
+			calls.push(method);
+			if (method === "mount.sync") return held;
+			return ok({});
+		},
+		close() {},
+	};
+	const syncing = syncingClient(client);
+	const stopping = new AbortController();
+	const cancelled = syncing.call("files.write", { path: "/workspace/a", data: "" }, { signal: stopping.signal });
+	const patient = syncing.call("files.write", { path: "/workspace/b", data: "" });
+	await Promise.resolve();
+	stopping.abort();
+	const stopped = await cancelled;
+	assert.equal(stopped.ok, false);
+	assert.equal(stopped.error.code, "aborted");
+	assert.match(stopped.error.message, /files\.write ran/);
+	assert.match(stopped.error.message, /sync/);
+
+	// Already aborted when the call returns: it answers at once, without waiting for any sync.
+	const gone = new AbortController();
+	gone.abort();
+	const late = await syncing.call("files.write", { path: "/workspace/c", data: "" }, { signal: gone.signal });
+	assert.equal(late.ok, false);
+	assert.equal(late.error.code, "aborted");
+
+	finish(ok({ exitCode: 0 }));
+	assert.equal((await patient).ok, true, "a caller with no signal still waits for the sync, and gets its answer");
+	assert.ok(calls.includes("mount.sync"));
+});
+
 test("archilReadBack: fuse.archil at /workspace with the asked source, under the epoch, exclusive once serve answers; anything else is in words", () => {
 	const line = `${MOUNT.disk}:/${MOUNT.folder}[${MOUNT.region}] /workspace fuse.archil rw,nosuid,nodev 0 0`;
 	const proc = "proc /proc proc rw,hidepid=invisible 0 0";
