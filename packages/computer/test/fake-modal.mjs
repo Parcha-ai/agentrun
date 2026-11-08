@@ -39,6 +39,33 @@ export function rootVerb(command) {
 	if (command?.[0] === "touch" && command[1] === ARCHIL_GATE && command.length === 2) return "gate";
 	return undefined;
 }
+/**
+ * A fake of an Archil disk's object API, the outside of a run folder in the conformance modules: keys relative to the
+ * disk's root; a missing key throws as the SDK does, with status 404, and a key holding "broken" with status 500.
+ */
+export function fakeObjects() {
+	const objects = new Map();
+	const calls = [];
+	return {
+		objects,
+		calls,
+		async getObject(key) {
+			calls.push(["getObject", key]);
+			if (key.includes("broken")) throw Object.assign(new Error("500: the disk is unreachable"), { status: 500 });
+			if (!objects.has(key)) throw Object.assign(new Error(`404: ${key} not found`), { status: 404 });
+			return new Uint8Array(objects.get(key));
+		},
+		async putObject(key, body) {
+			calls.push(["putObject", key]);
+			objects.set(key, Buffer.from(body));
+		},
+		async deleteObject(key) {
+			calls.push(["deleteObject", key]);
+			objects.delete(key);
+		},
+	};
+}
+
 /** The mount table a sandbox's daemon reads at /proc/self/mounts. */
 export function mountsOf(box) {
 	const lines = ["proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0", "overlay / overlay rw,relatime 0 0"];

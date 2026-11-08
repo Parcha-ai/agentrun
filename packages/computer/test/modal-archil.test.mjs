@@ -9,7 +9,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { ModalProvider } from "../dist/index.js";
 import * as modal from "../dist/modal.js";
-import { ARCHIL_GATE, ARCHIL_HELPER, DAEMON, DAEMON_IMAGE, ENTRYPOINT_MARK, fakeModal } from "./fake-modal.mjs";
+import { ARCHIL_GATE, ARCHIL_HELPER, DAEMON, DAEMON_IMAGE, ENTRYPOINT_MARK, fakeModal, fakeObjects } from "./fake-modal.mjs";
 
 const TOKEN = "tok-modal-archil-0123456789abcdef";
 const RUN = "r1";
@@ -335,6 +335,40 @@ test("Modal attach: an Archil computer's mount is read back from inside, fuse.ar
 	const epochDrift = await relabelled.provider.attach({ id: refOf(relabelled.fake).id });
 	assert.equal(epochDrift.ok, false);
 	assert.match(epochDrift.error.message, /epoch/);
+});
+
+test("the Modal conformance module: mountFor(\"archil\") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk's object API", async () => {
+	const { MODAL_ENV, mountFor, settingsFromEnv } = await import("../dist/conformance/modal.js");
+	assert.equal(MODAL_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
+	assert.equal(MODAL_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
+	assert.equal(MODAL_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
+	const env = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", COMPUTER_ARCHIL_DISK: MOUNT.disk, COMPUTER_ARCHIL_REGION: MOUNT.region, COMPUTER_ARCHIL_TOKEN: TOKEN };
+	assert.equal(settingsFromEnv({}), undefined, "no disk named: no Archil run folder");
+	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN });
+	assert.throws(() => settingsFromEnv({ COMPUTER_ARCHIL_DISK: MOUNT.disk }), (error) => /COMPUTER_ARCHIL_REGION/.test(error.message) && /COMPUTER_ARCHIL_TOKEN/.test(error.message));
+
+	assert.equal(await mountFor("bind", { env }), undefined, "a Modal computer takes no bind");
+	assert.equal(await mountFor("archil", { env: {} }), undefined, "no disk named: the case is skipped");
+	await assert.rejects(mountFor("archil", { env: { ...env, AGENTRUN_COMPUTER_LIVE_MODAL: undefined }, archilDisk: fakeObjects() }), /AGENTRUN_COMPUTER_LIVE_MODAL/);
+	await assert.rejects(mountFor("archil", { env }), /archilDisk/);
+
+	const objects = fakeObjects();
+	const folder = await mountFor("archil", { env, archilDisk: objects });
+	assert.equal(folder.mount.kind, "archil");
+	assert.equal(folder.mount.disk, MOUNT.disk);
+	assert.equal(folder.mount.region, MOUNT.region);
+	assert.equal(folder.mount.token, TOKEN);
+	assert.match(folder.mount.folder, /^agents\/conformance\/runs\/[A-Za-z0-9][A-Za-z0-9_-]*\/work$/);
+	assert.notEqual((await mountFor("archil", { env, archilDisk: objects })).mount.folder, folder.mount.folder, "a fresh folder each time");
+	await folder.write("a.txt", Buffer.from("outside\n"));
+	assert.deepEqual(objects.calls.at(-1), ["putObject", `${folder.mount.folder}/a.txt`]);
+	assert.equal(Buffer.from(await folder.read("a.txt")).toString("utf8"), "outside\n");
+	assert.equal(await folder.read("missing.txt"), undefined, "a file that is not there");
+	await assert.rejects(folder.read("broken.txt"), /unreachable/, "any other failure is said");
+	await folder.close();
+	assert.equal(objects.objects.size, 0, "close removes what the case wrote");
+	assert.ok(objects.calls.some(([name, key]) => name === "deleteObject" && key === `${folder.mount.folder}/missing.txt`), "and what it read, which the computer may have written");
+	noToken(objects.calls, "the object API's calls");
 });
 
 /** Runs argv here, as Modal would run the sandbox's command, and answers its exit code and what it printed. */

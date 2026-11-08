@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DAEMON, fakeE2B, KEY } from "./fake-e2b.mjs";
-import { ARCHIL_HELPER } from "./fake-modal.mjs";
+import { ARCHIL_HELPER, fakeObjects } from "./fake-modal.mjs";
 
 const e2b = await import("../dist/e2b.js");
 const { E2BProvider } = e2b;
@@ -307,6 +307,31 @@ test("E2B attach: an Archil computer's mount is read back from inside, exclusive
 	const refused = await closed.provider.attach({ id: vendorNone.ref.id });
 	assert.equal(refused.ok, false, "an Archil computer whose vendor network is not the one create makes is drift");
 	assert.match(refused.error.message, /network/);
+});
+
+test("the E2B conformance module: mountFor(\"archil\") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk's object API", async () => {
+	const { E2B_ENV, mountFor, settingsFromEnv } = await import("../dist/conformance/e2b.js");
+	assert.equal(E2B_ENV.archilDisk, "COMPUTER_ARCHIL_DISK");
+	assert.equal(E2B_ENV.archilRegion, "COMPUTER_ARCHIL_REGION");
+	assert.equal(E2B_ENV.archilToken, "COMPUTER_ARCHIL_TOKEN");
+	const env = { AGENTRUN_COMPUTER_LIVE_E2B: "1", COMPUTER_ARCHIL_DISK: MOUNT.disk, COMPUTER_ARCHIL_REGION: MOUNT.region, COMPUTER_ARCHIL_TOKEN: TOKEN };
+	assert.equal(settingsFromEnv({}), undefined);
+	assert.deepEqual(settingsFromEnv(env), { disk: MOUNT.disk, region: MOUNT.region, token: TOKEN });
+	assert.throws(() => settingsFromEnv({ COMPUTER_ARCHIL_TOKEN: TOKEN }), (error) => /COMPUTER_ARCHIL_DISK/.test(error.message) && !error.message.includes(TOKEN));
+	assert.equal(await mountFor("bind", { env }), undefined);
+	assert.equal(await mountFor("archil", { env: {} }), undefined);
+	await assert.rejects(mountFor("archil", { env: { ...env, AGENTRUN_COMPUTER_LIVE_E2B: undefined }, archilDisk: fakeObjects() }), /AGENTRUN_COMPUTER_LIVE_E2B/);
+	await assert.rejects(mountFor("archil", { env }), /archilDisk/);
+	const objects = fakeObjects();
+	const folder = await mountFor("archil", { env, archilDisk: objects });
+	assert.deepEqual({ ...folder.mount, folder: undefined }, { ...MOUNT, folder: undefined });
+	assert.match(folder.mount.folder, /^agents\/conformance\/runs\/[A-Za-z0-9][A-Za-z0-9_-]*\/work$/);
+	await folder.write("b.txt", Buffer.from("outside\n"));
+	assert.equal(Buffer.from(await folder.read("b.txt")).toString("utf8"), "outside\n");
+	assert.equal(await folder.read("missing.txt"), undefined);
+	await folder.close();
+	assert.equal(objects.objects.size, 0);
+	noToken(objects.calls, "the object API's calls");
 });
 
 test("E2B network(): an Archil computer's network none is its tools', read from inside by the probe; an answer reads back another network", async () => {
