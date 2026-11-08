@@ -1,38 +1,95 @@
-// An agent's tool setting reaches its run's gate whole: what the agent's revision stores for a tool (its permission and any
-// other key a setting carries, such as an argument pin) is kept as it was given, and the gate of a run on that revision is
-// handed exactly that setting. The cutover moves agents and runs into the one store; this pins that nothing on the way
-// drops a setting's keys.
+// An agent's own pin survives the store cutover whole: what POST /agents takes for an MCP tool's setting (its permission
+// and its pin, a one-of list among its values) is kept in the one store's revision in the canonical form
+// (tool-plane.ts canonicalToolSettings: arguments sorted, each list de-duplicated and sorted, null first), read back the
+// same, and handed to the gate of a run on that revision, which refuses a call not as pinned in the pin's own words
+// and lets one as pinned through. `pin_broken` is the server's mark of a pin its own settings file holds that does not
+// read; in an agent's settings it is refused.
 //
-// The pin below is a PLACEHOLDER shape until the argument pin's own form lands (an agent-level `pin` in toolSettings: at
-// most 8 argument -> JSON scalar). Replace PIN with that exact form, and add the API's acceptance and the gate's refusal of
-// a differing argument, when it does.
+// This is the cutover's acceptance for the agent-level pin (#1990's rules): its cases run once AGENT_LAYER_PINS is on,
+// as #1990's own agent-layer cases do, and are skipped with that reason until then. On the cutover base as it is, an
+// agent's pin is refused twice over: by validate.ts (the not_set_up_here issue of AGENT_PIN_LATER) while the flag is off,
+// and, with it on, by pi-durable-agent's agent store, whose tool settings take only names; agents in the one store, which
+// keeps a revision's body as given (store-tool-pin.test.mjs), and the flag on, they pass.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { Agents } from "../dist/agents.js";
 import { runGate } from "../dist/tool-gate.js";
-import { agent, scratch } from "./support.mjs";
+import { AGENT_LAYER_PINS } from "../dist/tool-plane.js";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { agent, serve, withEnv } from "./support.mjs";
 
-const PIN = { to: "C0123" };
-const SETTING = { permission: "allow", pin: PIN };
+const SEND = "mcp:slack/slack_send_message";
+/** The pin as a person writes it: arguments out of order, a one-of list with a repeat, and an argument pinned absent. */
+const GIVEN = { permission: "allow", pin: { thread_ts: null, channel_id: ["C0B", "C0A", "C0B"] } };
+/** The same pin as the cutover keeps it: arguments sorted, the list de-duplicated and sorted. */
+const KEPT = { permission: "allow", pin: { channel_id: ["C0A", "C0B"], thread_ts: null } };
+const fields = (answer) => (answer.body?.error?.fields ?? []).map((f) => [f.field, f.reason]);
+/** An agent's own pin is kept from the store cutover on (tool-plane.ts AGENT_LAYER_PINS): these cases run from then. */
+const AGENT_PINS = AGENT_LAYER_PINS ? {} : { skip: "an agent's own pin waits for the store cutover (AGENT_LAYER_PINS)" };
 
-test("a tool setting's keys are stored with the revision as they were given, a pin included", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
-  const created = await agents.create(agent("pinned", { tool_settings: { web_fetch: SETTING } }));
-  assert.deepEqual(created.revision.body.toolSettings, { web_fetch: SETTING });
-  const read = await agents.get("pinned");
-  assert.deepEqual(read.revision.body.toolSettings, { web_fetch: SETTING }, "and read back the same");
+/** The text of revision `id`'s tool settings as the one store holds it. */
+function storedSettings(data, revisionId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    const row = db.prepare("SELECT body FROM revisions WHERE id = ?").get(revisionId);
+    return row && JSON.stringify(JSON.parse(row.body).toolSettings);
+  } finally {
+    db.close();
+  }
+}
+
+/** A server with the MCP server slack saved, listing its send tool: saved through the API as a person saves one, its
+ *  tools listed from the suite's fake MCP server (on a port the system picks; it only answers the listing). */
+async function slackServer(t) {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const server = await serve(t, {});
+  const fake = await startFakeMcp({ name: "slack" });
+  t.after(() => fake.close());
+  fake.tools.slack_send_message = {
+    description: "Post a message to a channel.",
+    input: { type: "object", properties: { channel_id: { type: "string" }, thread_ts: { type: "string" }, message: { type: "string" } }, required: ["channel_id", "message"], additionalProperties: false },
+    run: ({ channel_id }) => ({ content: [{ type: "text", text: `posted to ${channel_id}` }] }),
+  };
+  const saved = await server.api("PUT", "/settings/mcp-servers/slack", { url: fake.url, auth: { type: "none" } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  return server;
+}
+
+async function pinned(t) {
+  const server = await slackServer(t);
+  const made = await server.api("POST", "/agents", agent("pinned", { tools: [SEND], tool_settings: { [SEND]: GIVEN } }));
+  assert.equal(made.status, 201, `the agent's own pin is taken: ${JSON.stringify(made.body)}`);
+  return { ...server, made };
+}
+
+test("an agent's own pin is taken and read back in the canonical form: arguments sorted, its one-of list de-duplicated and sorted", { timeout: 120_000, ...AGENT_PINS }, async (t) => {
+  const { api } = await pinned(t);
+  const read = (await api("GET", "/agents/pinned")).body;
+  assert.equal(JSON.stringify(read.definition.tool_settings), JSON.stringify({ [SEND]: KEPT }));
 });
 
-test("the gate of a run on that revision is handed the setting whole, the pin included", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
-  const { revision } = await agents.create(agent("pinned", { tool_settings: { web_fetch: SETTING } }));
-  const root = join(await scratch(t), "data", "runs", "run-1");
-  const gate = runGate({ root, work: join(root, "work") }, "run-1", revision);
-  assert.deepEqual(gate["overrides"], { web_fetch: SETTING });
+test("the one store's revision keeps the pin as that same text", { timeout: 120_000, ...AGENT_PINS }, async (t) => {
+  const { api, data } = await pinned(t);
+  const { revision } = (await api("GET", "/agents/pinned")).body;
+  assert.equal(storedSettings(data, revision), JSON.stringify({ [SEND]: KEPT }));
 });
 
-test.todo("the API takes an agent definition whose tool setting has a pin (its schema names pin)");
-test.todo("the gate refuses a call whose pinned argument differs from the pin, and runs one that matches");
+test("the gate of a run on that revision is handed the pin whole: a call not as pinned is refused in the pin's words, one as pinned goes through", { timeout: 120_000, ...AGENT_PINS }, async (t) => {
+  const { api, data } = await pinned(t);
+  const read = (await api("GET", "/agents/pinned")).body;
+  const root = join(data, "runs", "run-pin");
+  const gate = runGate({ root, work: join(root, "work") }, "run-pin", { kind: "agentic", body: { toolSettings: read.definition.tool_settings } });
+  assert.deepEqual(gate["overrides"], { [SEND]: KEPT });
+  const refused = gate["pinned"](SEND, { channel_id: "C0EVIL", message: "the digest" });
+  assert.equal(refused?.text, `${SEND} may only be called with channel_id in (C0A | C0B), thread_ts absent: its destination is fixed by the agent's settings. It was not run: nothing was sent and nothing was charged.`);
+  assert.equal(gate["pinned"](SEND, { channel_id: "C0B", message: "the digest" }), undefined, "a call as pinned goes through");
+});
+
+test("pin_broken in an agent's own settings is refused: it is the server's mark of a pin its settings file holds that does not read", { timeout: 120_000 }, async (t) => {
+  const { api } = await slackServer(t);
+  const broken = await api("POST", "/agents", agent("broken", { tools: [SEND], tool_settings: { [SEND]: { permission: "allow", pin_broken: true } } }));
+  assert.equal(broken.status, 422, JSON.stringify(broken.body));
+  assert.deepEqual(fields(broken), [[`definition.tool_settings.${SEND}.pin_broken`, "not_allowed"]]);
+});
