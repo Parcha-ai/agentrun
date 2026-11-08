@@ -313,6 +313,12 @@ const MAX_PAGES = 100;
 const PAGE = 100;
 /** E2B's end, read back, is its start plus the timeout create gave it, to the second it rounds to (index.mjs:502-504). */
 const END_SLACK_MS = 2_000;
+/** The longest a Node timer or AbortSignal.timeout holds. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+/** What a call's race adds to its SDK request's own bound, so the SDK's timeout, not the race, reports a slow call. */
+const CALL_SLACK_MS = 5_000;
+/** The longest timeout the provider takes: the race of a call bounded by it must still fit a Node timer. */
+const MAX_TIMEOUT_MS = MAX_TIMER_MS - CALL_SLACK_MS;
 const STAGING = "/tmp/agentrun-computerd-";
 /**
  * Public anycast resolvers, by address, as Modal's: TCP to 443, and DNS over UDP to 53, the classic path out where TCP
@@ -571,9 +577,14 @@ export class E2BProvider implements ComputerProvider {
 		}
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
-		if (user[1] === "0" || user[2] === "0") throw new Error(`the daemon user ${daemonUser} is root or in root's group; an E2B computer's daemon runs as neither`);
+		// The numbers, not the text: "00" is root as much as "0" is.
+		if (Number(user[1]) === 0 || Number(user[2]) === 0) throw new Error(`the daemon user ${daemonUser} is root or in root's group; an E2B computer's daemon runs as neither`);
 		const merged = { ...DEFAULTS, ...timeouts };
-		for (const [key, value] of Object.entries(merged)) if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(`timeouts.${key} must be a number of ms above 0`);
+		// AbortSignal.timeout and Node's timers take whole ms up to 2^31 - 1 (a fraction throws, a longer one fires at
+		// once), and a call's race adds CALL_SLACK_MS to its bound: refused here, before any sandbox exists, not in create.
+		for (const [key, value] of Object.entries(merged)) {
+			if (!isWhole(value) || value <= 0 || value > MAX_TIMEOUT_MS) throw new Error(`timeouts.${key} must be a whole number of ms above 0 and at most ${MAX_TIMEOUT_MS}, not ${value}`);
+		}
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0 || probeTargets.some((target) => typeof target !== "string" || !TARGET.test(target))) {
 			throw new Error("probeTargets must name at least one address for the probe, each host:port or host:port/udp");
 		}
@@ -696,7 +707,7 @@ export class E2BProvider implements ComputerProvider {
 		} catch (error) {
 			return fail(codeOf(error), `Sandbox.create failed: ${words(error)}`);
 		}
-		const created = await race(creating, "Sandbox.create", this.#timeouts.createMs + 5_000, signal);
+		const created = await race(creating, "Sandbox.create", this.#timeouts.createMs + CALL_SLACK_MS, signal);
 		if (!created.ok) {
 			if (created.error.code === "aborted" || created.error.code === "timeout") {
 				// One that lands is killed by its id; one whose answer never comes, by its name label.
@@ -737,7 +748,7 @@ export class E2BProvider implements ComputerProvider {
 
 	/** Sandbox.kill, never signalled: a kill that cleans up after an abort must outlive it. Not found is done. */
 	async #kill(id: string): Promise<Result<void>> {
-		const killed = await call(`Sandbox.kill of ${id}`, () => this.#Sandbox.kill(id, this.#api(this.#timeouts.requestMs)), this.#timeouts.requestMs + 5_000);
+		const killed = await call(`Sandbox.kill of ${id}`, () => this.#Sandbox.kill(id, this.#api(this.#timeouts.requestMs)), this.#timeouts.requestMs + CALL_SLACK_MS);
 		return killed.ok || killed.error.code === "not_found" ? ok(undefined) : killed;
 	}
 
@@ -763,7 +774,7 @@ export class E2BProvider implements ComputerProvider {
 		if (vendor.length > 0) return fail("refused", `it did not match its spec: ${vendor.join("; ")}`);
 		const staging = `${STAGING}${randomBytes(8).toString("hex")}`;
 		const bytes = daemon.buffer.slice(daemon.byteOffset, daemon.byteOffset + daemon.byteLength) as ArrayBuffer;
-		const uploaded = await call(`the daemon's upload into ${ref.name}`, () => sandbox.files.write(staging, bytes, { user: "root", requestTimeoutMs: uploadMs, ...(signal ? { signal } : {}) }), uploadMs + 5_000, signal);
+		const uploaded = await call(`the daemon's upload into ${ref.name}`, () => sandbox.files.write(staging, bytes, { user: "root", requestTimeoutMs: uploadMs, ...(signal ? { signal } : {}) }), uploadMs + CALL_SLACK_MS, signal);
 		if (!uploaded.ok) return fail(uploaded.error.code, `the daemon's upload was refused: ${uploaded.error.message}`);
 		const commands = childCommands({ staging, deadline, user: `${this.#uid}:${this.#gid}`, display: this.#desktop?.display ?? "", maxDeadline });
 		const install = await this.#run(sandbox, commands.install, execMs, signal);
@@ -776,7 +787,7 @@ export class E2BProvider implements ComputerProvider {
 		const init = await call(
 			`starting the daemon in ${ref.name}`,
 			() => sandbox.commands.run(commands.init, { background: true, user: "root", timeoutMs: 0, requestTimeoutMs: requestMs }),
-			requestMs + 5_000,
+			requestMs + CALL_SLACK_MS,
 			signal,
 		);
 		if (!init.ok) return init;
@@ -856,7 +867,7 @@ export class E2BProvider implements ComputerProvider {
 					throw error;
 				}
 			},
-			ms + 5_000,
+			ms + CALL_SLACK_MS,
 			signal,
 		);
 		return ran;
@@ -888,7 +899,7 @@ export class E2BProvider implements ComputerProvider {
 	/** getInfo, bounded; not_found for a sandbox E2B does not have. */
 	#info(id: string, signal?: AbortSignal): Promise<Result<E2BSandboxInfo>> {
 		const { requestMs } = this.#timeouts;
-		return call(`Sandbox.getInfo of ${id}`, () => this.#Sandbox.getInfo(id, this.#api(requestMs, signal)), requestMs + 5_000, signal);
+		return call(`Sandbox.getInfo of ${id}`, () => this.#Sandbox.getInfo(id, this.#api(requestMs, signal)), requestMs + CALL_SLACK_MS, signal);
 	}
 
 	/** This provider's sandbox for ref, as E2B reads it, or why not. */
@@ -908,7 +919,7 @@ export class E2BProvider implements ComputerProvider {
 		const { requestMs } = this.#timeouts;
 		const left = info.endAt instanceof Date ? info.endAt.getTime() - Date.now() : 0;
 		const timeoutMs = Math.max(1_000, Math.floor(left / 1000) * 1000 - 2_000);
-		return call(`Sandbox.connect of ${info.sandboxId}`, () => this.#Sandbox.connect(info.sandboxId, { ...this.#api(requestMs, signal), timeoutMs }), requestMs + 5_000, signal);
+		return call(`Sandbox.connect of ${info.sandboxId}`, () => this.#Sandbox.connect(info.sandboxId, { ...this.#api(requestMs, signal), timeoutMs }), requestMs + CALL_SLACK_MS, signal);
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
@@ -948,7 +959,7 @@ export class E2BProvider implements ComputerProvider {
 						stderr = (stderr + data).slice(-4096);
 					},
 				}),
-			requestMs + 5_000,
+			requestMs + CALL_SLACK_MS,
 			signal,
 		);
 		if (!started.ok) return started;
@@ -989,7 +1000,7 @@ export class E2BProvider implements ComputerProvider {
 	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<ProbeReport>> {
 		const { probeMs } = this.#timeouts;
 		const argv = [DAEMON_IN_COMPUTER, "probe", ...this.#probeTargets.flatMap((target) => ["--connect", target])];
-		const ran = await connection.client.call("exec.run", { argv, timeoutMs: probeMs }, { signal: this.#bounded(probeMs + 5_000, signal) });
+		const ran = await connection.client.call("exec.run", { argv, timeoutMs: probeMs }, { signal: this.#bounded(probeMs + CALL_SLACK_MS, signal) });
 		if (!ran.ok) {
 			if (signal?.aborted) return fail("aborted", `the probe in ${name} was aborted`);
 			if (ran.error.code === "aborted") return fail("timeout", `the probe in ${name} did not answer within ${seconds(probeMs)}`);
@@ -1049,7 +1060,7 @@ export class E2BProvider implements ComputerProvider {
 	async #probeDiagnose(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<unknown>> {
 		const { probeMs } = this.#timeouts;
 		const what = `probe --diagnose in ${name}`;
-		const ran = await connection.client.call("exec.run", { argv: [DAEMON_IN_COMPUTER, "probe", "--diagnose"], timeoutMs: probeMs }, { signal: this.#bounded(probeMs + 5_000, signal) });
+		const ran = await connection.client.call("exec.run", { argv: [DAEMON_IN_COMPUTER, "probe", "--diagnose"], timeoutMs: probeMs }, { signal: this.#bounded(probeMs + CALL_SLACK_MS, signal) });
 		if (!ran.ok) {
 			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 			return fail(ran.error.code === "aborted" ? "timeout" : ran.error.code, `${what} failed: ${ran.error.message}`);
@@ -1266,7 +1277,7 @@ export class E2BProvider implements ComputerProvider {
 		}
 		if (target <= current.getTime()) return ok({ deadline: current });
 		const { requestMs } = this.#timeouts;
-		const moved = await call(`Sandbox.setTimeout of ${ref.name}`, () => this.#Sandbox.setTimeout(ref.id, ttlMs, this.#api(requestMs, signal)), requestMs + 5_000, signal);
+		const moved = await call(`Sandbox.setTimeout of ${ref.name}`, () => this.#Sandbox.setTimeout(ref.id, ttlMs, this.#api(requestMs, signal)), requestMs + CALL_SLACK_MS, signal);
 		if (!moved.ok) return fail(moved.error.code, `E2B's timer did not move, so nothing did: ${moved.error.message}`);
 		const after = await this.#info(ref.id, signal);
 		if (!after.ok) return fail(after.error.code, `E2B's timer was asked to move, and reading it back failed: ${after.error.message}; init's deadline did not move`);
