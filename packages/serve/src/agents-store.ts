@@ -13,8 +13,9 @@ import { harnessOfBody } from "./harness.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
-  type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type WorkflowBody,
+  type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
+import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
 import { type DefinitionBody, type Json, skillIssues, skillNames } from "./validate.js";
 
 /** A UUIDv7: time-ordered, so a listing by created_at is stable, and unique per revision and per minted agent. */
@@ -53,6 +54,18 @@ function storeError(error: unknown): never {
   throw error;
 }
 
+/** A definition's tool settings as a revision body keeps them, through the one copy: checked by tool-plane's settingsIssues
+ *  (a refusal is an input error) and made canonical by canonicalToolSettings (sorted keys, empty tools dropped, a pin's
+ *  arguments sorted). `{ toolSettings }` when any survive, `{}` when none. Whether an agent may set its own pin is the
+ *  request layer's gate (validate.ts AGENT_LAYER_PINS); here a pin that reaches this is kept canonical. */
+function toolSettingsOf(given: unknown): { toolSettings?: ToolSettings } {
+  if (!isObject(given)) return {};
+  const issues = settingsIssues(given, "tool_settings");
+  if (issues.length) throw invalid(issues);
+  const canonical = canonicalToolSettings(given as ToolSettingsMap);
+  return Object.keys(canonical).length ? { toolSettings: canonical as ToolSettings } : {};
+}
+
 /** The revision a checked definition makes, in the store's shape (store/agent-body.ts's input), ready for bodyOf. `files`
  *  are the skill files by path. Ported from serve/src/agents.ts's revisionOf, over the folded validator. */
 function revisionInputOf(definition: Json, files: Record<string, string>): RevisionBodyInput {
@@ -62,9 +75,10 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   const stored = typeof definition.harness === "string" ? storedHarness(definition.harness) : undefined;
   const harness = stored ? { harness: stored } : {};
   const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
-  // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
-  const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
-  const set = kept.length ? { toolSettings: Object.fromEntries(kept) } : {};
+  // Tool settings go through the one copy (tool-plane.ts): settingsIssues checks them (providers, permissions, keys, and
+  // an MCP tool's pin via pinIssues), then canonicalToolSettings makes the one form (sorted keys, empty tools dropped, a
+  // pin's arguments sorted) so two revisions that say the same are one body. The store never reimplements it.
+  const set = toolSettingsOf(definition.tool_settings);
   const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set };
   const capped = {
     ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}),

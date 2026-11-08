@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { AgentBodyInvalid, bodyOf, canonical, isToolSettingsKey } from "../dist/store/agent-body.js";
+import { AgentBodyInvalid, bodyOf, canonical } from "../dist/store/agent-body.js";
 
 const refused = (pattern) => (error) => error instanceof AgentBodyInvalid && (!pattern || pattern.test(error.message));
 const A = { kind: "agentic", instructions: "Research the company.", skills: { "read/SKILL.md": "Read the site." }, tools: ["read"] };
@@ -32,18 +32,14 @@ test("a revision keeps the harness it names, in its body; a harness that is not 
   for (const harness of ["", "Claude", "claude agent", 3]) assert.throws(() => bodyOf({ ...A, harness }), refused(/harness/), String(harness));
 });
 
-test("a revision keeps the tool settings it names, sorted; a catalog's tool and an MCP server's wildcard among them; none or an empty map keeps none; settings that are not names are refused", () => {
+test("tool settings are kept as the caller made them canonical (bodyOf keeps them as given); an empty map keeps none; a non-object is refused", () => {
+  // bodyOf keeps tool settings as given: the caller (agents-store.ts) has already checked and made them canonical through
+  // tool-plane's one copy (settingsIssues + canonicalToolSettings), which the agents-store tests exercise.
   assert.equal("toolSettings" in bodyOf({ ...A, toolSettings: {} }).body, false, "an empty map is no setting");
-  const set = bodyOf({ ...A, toolSettings: { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "parallel" } } }).body;
-  assert.deepEqual(Object.entries(set.toolSettings), [["web_fetch", { provider: "parallel" }], ["web_search", { provider: "exa-keyless" }]], "sorted");
+  const given = { web_fetch: { provider: "parallel" }, web_search: { provider: "exa-keyless" } };
+  assert.deepEqual(bodyOf({ ...A, toolSettings: given }).body.toolSettings, given, "kept as given");
   assert.deepEqual(bodyOf({ ...WF, toolSettings: { web_fetch: { provider: "parallel" } } }).body.toolSettings, { web_fetch: { provider: "parallel" } }, "a workflow revision has them too");
-  const catalog = { "monid.run": { permission: "allow" }, "mcp:srv/*": { permission: "ask" }, "mcp:srv/echo": { permission: "deny" } };
-  assert.deepEqual(bodyOf({ ...A, toolSettings: catalog }).body.toolSettings, catalog, "a catalog's tool and an MCP server's tool or wildcard");
-  for (const toolSettings of [[], "parallel", { web_search: "parallel" }, { web_search: { provider: 1 } }, { "Web Search": { provider: "parallel" } }, { web_search: { provider: "" } }, { "mcp:srv": { permission: "ask" } }, { "mcp:srv/*": { "per mission": "ask" } }]) {
-    assert.throws(() => bodyOf({ ...A, toolSettings }), refused(/tool settings/), JSON.stringify(toolSettings));
-  }
-  assert.equal(isToolSettingsKey("mcp:srv/*"), true);
-  assert.equal(isToolSettingsKey("Web Search"), false);
+  for (const toolSettings of ["parallel", 7, []]) assert.throws(() => bodyOf({ ...A, toolSettings }), refused(/tool settings/), JSON.stringify(toolSettings));
 });
 
 test("a revision keeps the place it names, {mode, box?}; one that names none keeps none; a place that is not {mode, box?} of ids is refused", () => {
@@ -65,9 +61,10 @@ test("a revision keeps a default spend cap and its mode, and the learning switch
   assert.throws(() => bodyOf({ ...A, learning: "yes" }), refused(/learning/));
 });
 
-test("the agent-level argument pin is refused by this validator until it is wired through tool-plane's canonicalToolSettings", () => {
-  // Until AGENT_LAYER_PINS flips and bodyOf calls tool-plane's pinIssues + canonicalToolSettings (the one copy), a pin is an
-  // unknown tool setting and is refused. The acceptance and dedup of a pin are tested with those functions, not here.
-  assert.throws(() => bodyOf({ ...A, toolSettings: { "weather.lookup": { pin: { country: "US" } } } }), refused(/tool settings/));
+test("bodyOf keeps a tool setting's pin as given (the caller made it canonical); it does not reimplement the pin check", () => {
+  // The pin's own check and canonical form are tool-plane's (settingsIssues + canonicalToolSettings), called by
+  // agents-store.ts; bodyOf keeps what it is handed. Its acceptance and "equal pins = one revision" are in agents-store.test.
+  const given = { "mcp:github/pr_review": { pin: { body: "lgtm", event: "APPROVE" } } };
+  assert.deepEqual(bodyOf({ ...A, toolSettings: given }).body.toolSettings, given, "the pin is kept as given");
   void canonical;
 });

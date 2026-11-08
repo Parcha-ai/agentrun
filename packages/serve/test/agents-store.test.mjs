@@ -136,6 +136,25 @@ test("tool settings survive a round trip, sorted, and equal settings are one rev
   assert.equal(changed.revisions, 2);
 });
 
+test("tool settings go through the one copy: an argument pin is checked, kept canonical (keys sorted), and an equal pin is one revision; a bad setting is refused", async (t) => {
+  const { store } = await storeOn(t);
+  const withPin = (pin) => DEF({ id: "a", tool_settings: { "mcp:github/pull_request_review_write": { pin } } });
+  // settingsIssues accepts a valid pin on an MCP tool's key (the request-layer AGENT_LAYER_PINS gate is validate.ts's, not
+  // this module's); canonicalToolSettings sorts the pin's arguments.
+  const entry = await createAgent(store, { definition: withPin({ event: "APPROVE", body: "lgtm" }), skills: SKILLS });
+  const def = definitionOf(entry.agent, entry.revision, entry.version);
+  assert.deepEqual(def.tool_settings["mcp:github/pull_request_review_write"].pin, { body: "lgtm", event: "APPROVE" }, "the pin is kept, its arguments sorted");
+  // The same pin, the arguments in another order, is the same revision: the one copy makes them one body.
+  const again = await commitAgent(store, entry, { definition: withPin({ body: "lgtm", event: "APPROVE" }), skills: SKILLS });
+  assert.equal(again.revision.id, entry.revision.id, "an equal pin is one revision");
+  assert.equal(again.revisions, 1);
+  // A different pin is a new revision.
+  const changed = await commitAgent(store, again, { definition: withPin({ event: "REQUEST_CHANGES" }), skills: SKILLS });
+  assert.notEqual(changed.revision.id, entry.revision.id);
+  // A tool setting the one copy refuses (a provider that is not offered) is an input error, nothing written.
+  await assert.rejects(createAgent(store, { definition: DEF({ id: "b", tool_settings: { web_search: { provider: "nope" } } }) }), (e) => e instanceof ApiError && e.code === "input_invalid");
+});
+
 test("agentView: the contract shape, its skills with sizes, the sign-ins and run counts the caller passes in", async (t) => {
   const { store } = await storeOn(t);
   const entry = await createAgent(store, { definition: DEF({ id: "a" }), skills: SKILLS });
