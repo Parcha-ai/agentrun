@@ -19,7 +19,7 @@ const DEADLINE = "agentrun.computer.deadline";
 const SPEC_TAG = "agentrun.computer.spec";
 const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
 // The image route holds the daemon's path to root's alone in the image itself, right after the COPY (exec form).
-const LAYER = [`COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`, `RUN ${JSON.stringify(modalCommands().hold)}`, "ENV HOME=/work", "WORKDIR /work"];
+const LAYER = [`COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`, `RUN ${JSON.stringify(modal.modalCommands().hold)}`, "ENV HOME=/work", "WORKDIR /work"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function setup(options = {}, fakeOptions = {}) {
