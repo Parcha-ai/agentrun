@@ -25,6 +25,7 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
+import { DOCKER_RECIPE, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -69,6 +70,9 @@ export interface DockerProviderOptions {
 	 *  1000:1000 when its uid or gid is 0. Root and root's group are refused here: a computer runs as either only when
 	 *  its spec asks. */
 	user?: string;
+	/** The image its computers start from, which image() makes ready: a recipe, built once, or an image by name, pulled
+	 *  when Docker has none. Default the provider's own recipe, DOCKER_RECIPE (src/docker/image.ts). */
+	image?: ImageSource;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -131,12 +135,16 @@ export class DockerProvider implements ComputerProvider {
 	readonly #docker: string;
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
+	readonly #image: ImageSource;
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, docker = "docker", user, desktop }: DockerProviderOptions) {
+	constructor({ daemonPath, docker = "docker", user, desktop, image = { recipe: DOCKER_RECIPE } }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#docker = docker;
+		const unusable = imageSourceProblem(image);
+		if (unusable !== undefined) throw new Error(`the provider's image: ${unusable}`);
+		this.#image = image;
 		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
@@ -168,6 +176,14 @@ export class DockerProvider implements ComputerProvider {
 			stopDeletes: false,
 			mount: ["bind"],
 		};
+	}
+
+	/**
+	 * The provider's image ready in Docker, and its tag for create's spec.image: built from its recipe, or pulled, when
+	 * Docker has none; one inspect when it has. Concurrent calls in one process share one build (ensureImage).
+	 */
+	image({ signal, timeoutMs }: CallContext & { timeoutMs?: number } = {}): Promise<Result<string>> {
+		return ensureImage(this.#image, { docker: this.#docker, ...(signal ? { signal } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 	}
 
 	/** The spec's refusals, and the host's once create, attach or host() has read it. */

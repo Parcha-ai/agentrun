@@ -1,0 +1,11 @@
+---
+packages: @parcha/agentrun-computer
+kind: feature
+---
+The Docker provider owns the image its computers start from: `ensureImage(source, { docker?, signal?, timeoutMs? })` (`src/docker/image.ts`) and `DockerProvider`'s `image` option and `image()` method make it ready in the provider's own process and give its tag for `create`. There is no state file between processes: Docker's own tag is the shared state.
+- `{ recipe }`, a Dockerfile with no build context, is built with `docker build -` (the recipe on stdin), tagged `agentrun-computer:<first 12 hex digits of its sha256>` and labelled `agentrun.computer.recipe=<the whole sha256>`, and only when Docker has no image of that recipe under the tag. `{ image }`, an image by name, is pulled once when Docker has none, and never built.
+- The default is the provider's own recipe, `DOCKER_RECIPE` (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest, with git, curl, nodejs, npm, ripgrep and socat. `COMPUTER_DOCKER_IMAGE` names another image instead (`imageSourceOf(env)`).
+- Concurrent callers in one process share one build; a failure is never kept, so the next call tries again. Two processes that miss the tag at once both build the same recipe, and both end with the tag on an image of it.
+- One bound, `timeoutMs` (default 10 minutes), covers the inspect and the build or pull; past it the docker CLI is killed. A caller's `signal` ends its own wait, and the last caller's abort stops the build.
+- Failures are in words with none of Docker's output: Docker not answering, a build that could not reach the network, pull its base, find disk space or install a package, a recipe Docker could not parse at a line or whose `RUN` step failed with an exit code, and a pull the registry refused, does not have, or could not be reached for.
+- The live desktop suite builds its fixture image through `ensureImage`.

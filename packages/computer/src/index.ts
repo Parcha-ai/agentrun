@@ -7,6 +7,23 @@ export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } fro
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
 export { type DockerDesktopOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
+export {
+	DEFAULT_DOCKER_IMAGE,
+	DOCKER_BASE,
+	DOCKER_IMAGE_ENV,
+	DOCKER_RECIPE,
+	DOCKER_RECIPE_HAS,
+	ensureImage,
+	type EnsureImageOptions,
+	IMAGE_REPOSITORY,
+	IMAGE_TIMEOUT_MS,
+	type ImageSource,
+	imageSourceOf,
+	imageSourceProblem,
+	RECIPE_LABEL,
+	recipeHash,
+	recipeTag,
+} from "./docker/image.js";
 export { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
 export {
 	ModalProvider,
