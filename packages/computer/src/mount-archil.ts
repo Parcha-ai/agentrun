@@ -206,9 +206,10 @@ const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remo
 /**
  * A computerd client whose every call that may change the folder (files.write, move, remove and mkdir; tar.push.end;
  * exec.run; process.start, which makes its log and the folders above it; process.write and signal; a process seen
- * ended, by process.wait or a process.read that says so) syncs
- * before it answers, through mount.sync, coalesced: a call during a sync in flight waits for it, then shares one more.
- * A failed sync fails the call in words; a call that failed still syncs, and answers its own error.
+ * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
+ * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
+ * failed still syncs, and answers its own error. A caller whose signal fires stops waiting, answered "aborted" in words
+ * (or its own error), while the shared sync goes on for every other caller.
  */
 export function syncingClient(client: ComputerClient): ComputerClient {
 	let running: Promise<Result<void>> | undefined;
@@ -239,7 +240,20 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 			const result = await client.call(method, params, options);
 			const ended = method === "process.read" && result.ok && (result.value as DaemonMethods["process.read"]["result"]).exited;
 			if (!MUTATING.has(method) && !ended) return result;
-			const synced = await sync();
+			// The sync is shared and goes on whatever this caller does; a caller whose signal fires stops waiting for it.
+			const shared = sync();
+			const signal = options?.signal;
+			const stopped = (): Result<never> => fail("aborted", `${method} ran, but its caller stopped waiting for the sync that makes the run's folder durable; the sync goes on`);
+			if (signal?.aborted) return result.ok ? stopped() : result;
+			const synced = signal === undefined ? await shared : await new Promise<Result<void> | "stopped">((resolve) => {
+				const onAbort = () => resolve("stopped");
+				signal.addEventListener("abort", onAbort, { once: true });
+				shared.then((value) => {
+					signal.removeEventListener("abort", onAbort);
+					resolve(value);
+				});
+			});
+			if (synced === "stopped") return result.ok ? stopped() : result;
 			if (!result.ok || synced.ok) return result;
 			return fail(synced.error.code, `${method} ran, but the run's folder could not be made durable: ${synced.error.message}`);
 		},
