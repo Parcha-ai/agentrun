@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { runRow, scratchConnection } from "./store-support.mjs";
 
-const { RunStorage, journalTables } = await import("../dist/store/journal/storage.js");
+const { RunStorage } = await import("../dist/store/index.js");
 const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
 
@@ -28,10 +28,9 @@ async function fill(storage, mark) {
 }
 
 test("two runs' journals in one store never cross: the same ids in each, each run reading only its own rows", async (t) => {
-  const connection = scratchConnection(t);
-  await connection.exec(journalTables());
-  const a = await RunStorage.open(connection, await runRow(connection, "run-a", 1));
-  const b = await RunStorage.open(connection, await runRow(connection, "run-b", 1));
+  const db = await scratchConnection(t);
+  const a = await RunStorage.open(db.connection, await runRow(db, "run-a", 1));
+  const b = await RunStorage.open(db.connection, await runRow(db, "run-b", 1));
   const ids = { a: await fill(a, "a"), b: await fill(b, "b") };
   // Each run's namespace is its own: the same ids, minted in the same order.
   assert.deepEqual(ids.a, ids.b, "each run mints its own ids from the same start");
@@ -54,9 +53,9 @@ test("two runs' journals in one store never cross: the same ids in each, each ru
   assert.equal(await a.mintId(), ids.a.documentId + 1);
   assert.equal(await b.mintId(), ids.b.documentId + 1);
   // A reopened journal continues its own namespace.
-  const again = await RunStorage.open(connection, { runId: "run-a", epoch: 1 });
+  const again = await RunStorage.open(db.connection, { runId: "run-a", epoch: 1 });
   assert.ok((await again.mintId()) > ids.a.documentId, "a reopened run mints past its stored ids");
   // And the store holds both runs' rows, side by side.
-  const counts = await connection.all("SELECT run_id, COUNT(*) AS n FROM pi_entries GROUP BY run_id ORDER BY run_id");
+  const counts = await db.all("SELECT run_id, COUNT(*) AS n FROM pi_entries GROUP BY run_id ORDER BY run_id");
   assert.deepEqual(counts.map((row) => [row.run_id, Number(row.n)]), [["run-a", 1], ["run-b", 1]]);
 });

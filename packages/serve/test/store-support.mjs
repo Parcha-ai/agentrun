@@ -1,89 +1,31 @@
-// The store tests' connection until the store's own worker connection lands (store/sqlite/connection.ts): one
-// node:sqlite connection in this process, behind the same interface (Chord's SqliteDatabase: exec, run, runCounted,
-// get, all, transaction, close), every write transaction a BEGIN IMMEDIATE, transactions queued one at a time. A
-// minimal runs table stands in for the store's schema (store/schema.ts) where a test needs a run row to fence.
+// The journal tests' store: the store's own connection (store/sqlite/connection.ts, on its worker thread) to a fresh file
+// with the store's whole schema (store/schema.ts: the runs, the commands and pi-durable's tables), and a few calls for a
+// test to arrange and read rows with. Every write here is the store's one-transaction write.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
-/** A connection to a fresh store file in a scratch directory of test `t`, closed and removed after it. */
-export function scratchConnection(t) {
+const { Connection } = await import("../dist/store/sqlite/connection.js");
+const { DDL } = await import("../dist/store/schema.js");
+
+/** A store file in a scratch directory of test `t`, its schema in place, closed and removed after the test. `db.connection`
+ *  is what the journal takes; db.exec/run/get/all arrange and read rows (params after the SQL). */
+export async function scratchConnection(t) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-  const connection = openConnection(join(dir, "store.sqlite"));
+  const connection = await Connection.open(join(dir, "store.sqlite"));
   t.after(async () => {
     await connection.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
   });
-  return connection;
-}
-
-/** A SqliteDatabase over one node:sqlite connection to `file` (WAL, synchronous NORMAL). */
-export function openConnection(file) {
-  const db = new DatabaseSync(file);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON");
-  const statements = new Map();
-  const prepared = (sql) => {
-    let statement = statements.get(sql);
-    if (!statement) statements.set(sql, (statement = db.prepare(sql)));
-    return statement;
-  };
-  const executor = {
-    exec: async (sql) => void db.exec(sql),
-    run: async (sql, ...params) => void prepared(sql).run(...params),
-    runCounted: async (sql, ...params) => Number(prepared(sql).run(...params).changes),
-    get: async (sql, ...params) => prepared(sql).get(...params),
-    all: async (sql, ...params) => prepared(sql).all(...params),
-  };
-  let queue = Promise.resolve();
-  let closed = false;
-  const queued = (work) => {
-    const next = queue.then(() => {
-      if (closed) throw new Error("the store connection is closed");
-      return work();
-    });
-    queue = next.catch(() => undefined);
-    return next;
-  };
+  await connection.write(DDL.map((sql) => ({ sql })));
   return {
-    exec: (sql) => queued(() => executor.exec(sql)),
-    run: (sql, ...params) => queued(() => executor.run(sql, ...params)),
-    runCounted: (sql, ...params) => queued(() => executor.runCounted(sql, ...params)),
-    get: (sql, ...params) => queued(() => executor.get(sql, ...params)),
-    all: (sql, ...params) => queued(() => executor.all(sql, ...params)),
-    transaction: (callback) => queued(async () => {
-      db.exec("BEGIN IMMEDIATE");
-      let result;
-      try {
-        result = await callback(executor);
-      } catch (error) {
-        try {
-          db.exec("ROLLBACK");
-        } catch (rollback) {
-          throw new AggregateError([error, rollback], "the transaction failed and its rollback failed");
-        }
-        throw error;
-      }
-      db.exec("COMMIT");
-      return result;
-    }),
-    close: () => queued(async () => {
-      closed = true;
-      db.close();
-    }),
+    connection,
+    exec: async (...statements) => void (await connection.write(statements.map((sql) => ({ sql })))),
+    run: async (sql, ...params) => (await connection.write([{ sql, params }]))[0],
+    get: (sql, ...params) => connection.get(sql, params),
+    all: (sql, ...params) => connection.all(sql, params),
   };
 }
-
-/** The store's runs table as far as the journal needs it (store/schema.ts owns the real one). */
-export const RUNS_DDL = `CREATE TABLE IF NOT EXISTS runs (
-  id TEXT PRIMARY KEY,
-  state TEXT NOT NULL DEFAULT 'queued',
-  epoch INTEGER NOT NULL DEFAULT 0,
-  cost_usd REAL,
-  metrics TEXT,
-  summary TEXT,
-  ended_at TEXT
-)`;
 
 /** An outbox table for staged rows of run moments (tl-triggers' outbox, as far as these tests need it). */
 export const OUTBOX_DDL = `CREATE TABLE IF NOT EXISTS outbox (
@@ -93,19 +35,16 @@ export const OUTBOX_DDL = `CREATE TABLE IF NOT EXISTS outbox (
   body TEXT
 )`;
 
-/** The store's commands table as far as the journal needs it (store/schema.ts owns the real one). */
-export const COMMANDS_DDL = `CREATE TABLE IF NOT EXISTS commands (
-  id INTEGER PRIMARY KEY,
-  run_id TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  body TEXT,
-  created_at TEXT,
-  taken_at TEXT
-)`;
-
-/** A run row `id` claimed at `epoch` (state running). */
-export async function runRow(connection, id, epoch = 1) {
-  await connection.exec(RUNS_DDL);
-  await connection.run("INSERT INTO runs (id, state, epoch) VALUES (?, 'running', ?)", id, epoch);
+/** A run row `id` claimed at `epoch` (state running), with the agent and revision it belongs to. */
+export async function runRow(db, id, epoch = 1) {
+  const at = "2026-11-08T06:00:00.000Z";
+  await db.run("INSERT INTO agents (id, name, created_at) VALUES ('agent-1', 'Agent', ?) ON CONFLICT (id) DO NOTHING", at);
+  await db.run("INSERT INTO revisions (id, agent_id, kind, body, created_at) VALUES ('rev-1', 'agent-1', 'agentic', '{}', ?) ON CONFLICT (id) DO NOTHING", at);
+  await db.run("INSERT INTO runs (id, agent_id, revision_id, state, epoch, runner, started_at) VALUES (?, 'agent-1', 'rev-1', 'running', ?, 'runner-1', ?)", id, epoch, at);
   return { runId: id, epoch };
+}
+
+/** A command row of run `runId`, taken at `takenAt` (null: untaken). */
+export async function commandRow(db, id, runId, takenAt = null) {
+  await db.run("INSERT INTO commands (id, run_id, kind, body, created_at, taken_at) VALUES (?, ?, 'approve', '{}', '2026-11-08T07:00:00.000Z', ?)", id, runId, takenAt);
 }

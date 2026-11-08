@@ -7,7 +7,6 @@
 // run's end and its last journal commit are one commit; so do the commands it takes (taken_at, exactly once). `close` leaves the store's connection open: the store owns it.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { apply } from "@earendil-works/chord/delta";
-import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/chord/sqlite";
 import {
   type CommitResult,
   type ConversationId,
@@ -36,53 +35,47 @@ import {
   type TaskQuery,
   type TaskRecord,
 } from "@earendil-works/pi-durable";
-import { JOURNAL_TABLES as T, journalTables } from "./tables.js";
-
-export { journalTables };
+import { PI_TABLE as T } from "../schema.js";
+import type { Connection, Tx } from "../sqlite/connection.js";
+import { type AlsoRow, type Claim, CommandTaken, Fenced, FINAL_STATES, type Journal, type RunPatch, type Staged } from "../store.js";
 
 /** A run's claim, as the journal is opened under it: the run and the epoch its claim holds. */
-export type JournalClaim = { readonly runId: string; readonly epoch: number };
+export type JournalClaim = Pick<Claim, "runId" | "epoch">;
 
-/** The run row's columns a journal commit may write with it (runs.state, cost_usd, metrics, summary, ended_at). */
-export type RunPatch = { readonly state?: string; readonly costUsd?: number | null; readonly metrics?: JsonValue; readonly summary?: string; readonly endedAt?: string };
+/** The store's connection as the journal uses it (sqlite/connection.ts): reads, and one interactive transaction per commit. */
+export type JournalConnection = Pick<Connection, "get" | "all" | "transaction">;
 
-/** A row a journal commit inserts with it (an outbox row for a run moment): its table and its columns' values. */
-export type AlsoRow = { readonly table: string; readonly row: Readonly<Record<string, SqliteValue | JsonValue>> };
+/** A value a statement binds. */
+type SqliteValue = null | number | bigint | string | Uint8Array;
 
-/**
- * What a journal commit writes beside its batches, in its one transaction: the run row's patch, other rows, and the
- * commands it takes (ids in the commands table, each marked taken in the commit that carries its effect, exactly once).
- */
-export type Staged = { readonly run?: RunPatch; readonly also?: readonly AlsoRow[]; readonly take?: readonly number[] };
+/** The calls the journal's queries make (pi's SqliteStorage shape): inside a transaction, steps of it; outside, reads. */
+interface SqliteExecutor {
+  run(sql: string, ...params: SqliteValue[]): Promise<void>;
+  runCounted(sql: string, ...params: SqliteValue[]): Promise<number>;
+  get<R extends object>(sql: string, ...params: SqliteValue[]): Promise<R | undefined>;
+  all<R extends object>(sql: string, ...params: SqliteValue[]): Promise<R[]>;
+}
+
+/** The steps of `tx` as the journal's executor. */
+function stepsOf(tx: Tx): SqliteExecutor {
+  const step = (sql: string, params: SqliteValue[]) => tx.step({ sql, params });
+  return {
+    run: async (sql, ...params) => void (await step(sql, params)),
+    runCounted: async (sql, ...params) => (await step(sql, params)).changes,
+    get: async <R extends object>(sql: string, ...params: SqliteValue[]) => (await step(sql, params)).rows[0] as R | undefined,
+    all: async <R extends object>(sql: string, ...params: SqliteValue[]) => (await step(sql, params)).rows as R[],
+  };
+}
+
+/** Reads on `db` outside a transaction, as the journal's executor (a read writes nothing, so it has no run or runCounted). */
+function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
+  return {
+    get: <R extends object>(sql: string, ...params: SqliteValue[]) => db.get<R>(sql, params),
+    all: <R extends object>(sql: string, ...params: SqliteValue[]) => db.all<R>(sql, params),
+  };
+}
 
 const TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
-
-/** A commit refused because the run's claim moved on (its epoch is no longer the run's): nothing of it was written. */
-export class Fenced extends Error {
-  readonly runId: string;
-  readonly epoch: number;
-  constructor(runId: string, epoch: number) {
-    super(`run ${runId}: the claim at epoch ${epoch} is no longer the run's; the commit was refused and nothing was written`);
-    this.name = "Fenced";
-    this.runId = runId;
-    this.epoch = epoch;
-  }
-}
-
-/**
- * A commit refused because a command it takes is not this run's untaken command (already taken, or another run's):
- * nothing of it was written, so the command's effect can't apply twice. Like Fenced, it fails the Session.
- */
-export class CommandTaken extends Error {
-  readonly runId: string;
-  readonly commandId: number;
-  constructor(runId: string, commandId: number) {
-    super(`run ${runId}: command ${commandId} is not the run's untaken command; the commit was refused and nothing was written`);
-    this.name = "CommandTaken";
-    this.runId = runId;
-    this.commandId = commandId;
-  }
-}
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 type Row = Record<string, SqliteValue>;
@@ -184,7 +177,6 @@ function watchCalls(executor: SqliteExecutor, calls: { failed: boolean }): Sqlit
     }
   };
   return {
-    exec: (sql) => watched(() => executor.exec(sql)),
     run: (sql, ...params) => watched(() => executor.run(sql, ...params)),
     runCounted: (sql, ...params) => watched(() => executor.runCounted(sql, ...params)),
     get: <R extends object>(sql: string, ...params: SqliteValue[]) => watched(() => executor.get<R>(sql, ...params)),
@@ -193,32 +185,50 @@ function watchCalls(executor: SqliteExecutor, calls: { failed: boolean }): Sqlit
 }
 
 /** pi-durable's Storage for one run in the one store. */
-export class RunStorage implements Storage {
-  readonly #db: SqliteDatabase;
+export class RunStorage implements Journal {
+  readonly #db: JournalConnection;
+  readonly #read: Pick<SqliteExecutor, "get" | "all">;
   readonly #runId: string;
   readonly #epoch: number;
-  #nextId: number;
+  #nextId = Number.NaN;
+  #opening: Promise<void> | undefined;
   #staged: Staged | undefined;
   #closed = false;
   #closing: Promise<void> | undefined;
   #admittedReads = 0;
   #readsDrained: (() => void) | undefined;
 
-  private constructor(db: SqliteDatabase, claim: JournalClaim, nextId: number) {
+  /** The journal of `claim`'s run on `db` (the store's connection, its schema in place). Its id namespace is read, and made
+   *  on first use, by its first commit or mintId. */
+  constructor(db: JournalConnection, claim: JournalClaim) {
     this.#db = db;
+    this.#read = readsOf(db);
     this.#runId = claim.runId;
     this.#epoch = claim.epoch;
-    this.#nextId = nextId;
   }
 
-  /** The journal of `claim`'s run on `db` (the store's connection, its schema in place): its namespace made on first use. */
-  static async open(db: SqliteDatabase, claim: JournalClaim): Promise<RunStorage> {
-    const metadata = await db.transaction(async (tx) => {
-      await tx.run(`INSERT OR IGNORE INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, '2', 1)`, claim.runId);
-      return tx.get<{ next_id: string }>(`SELECT next_id FROM ${T.metadata} WHERE run_id = ?`, claim.runId);
+  /** The journal of `claim`'s run on `db`, its id namespace read (and made on first use). */
+  static async open(db: JournalConnection, claim: JournalClaim): Promise<RunStorage> {
+    const storage = new RunStorage(db, claim);
+    await storage.#opened();
+    return storage;
+  }
+
+  /** The run's id namespace, read once (pi_metadata's row, made on first use). */
+  #opened(): Promise<void> {
+    this.#opening ??= this.#transaction(async (tx) => {
+      await tx.run(`INSERT OR IGNORE INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, '2', 1)`, this.#runId);
+      return tx.get<{ next_id: string }>(`SELECT next_id FROM ${T.metadata} WHERE run_id = ?`, this.#runId);
+    }).then((metadata) => {
+      if (metadata === undefined) throw new Error(`run ${this.#runId}: the journal's metadata is missing`);
+      this.#nextId = Number(metadata.next_id);
     });
-    if (metadata === undefined) throw new Error(`run ${claim.runId}: the journal's metadata is missing`);
-    return new RunStorage(db, claim, Number(metadata.next_id));
+    return this.#opening;
+  }
+
+  /** One transaction of the store's connection, its work stepping only its own statements (it holds every other call). */
+  #transaction<R>(work: (tx: SqliteExecutor) => Promise<R>): Promise<R> {
+    return this.#db.transaction((tx) => work(stepsOf(tx)));
   }
 
   /** The run whose journal this is. */
@@ -251,11 +261,13 @@ export class RunStorage implements Storage {
    */
   async commit(batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, _context: Context): Promise<CommitResult> {
     this.#assertOpen();
+    await this.#opened();
     const seqs: Seq[] = [];
     let refused: { error: unknown } | undefined;
     let candidateNextId = this.#nextId;
     const staged = this.#staged;
-    await this.#db.transaction(async (tx) => {
+    // The transaction holds the store's one connection: its work awaits only its own statements, never a model or a tool.
+    await this.#transaction(async (tx) => {
       if ((await tx.runCounted("UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", this.#runId, this.#epoch)) === 0) {
         throw new Fenced(this.#runId, this.#epoch);
       }
@@ -310,13 +322,15 @@ export class RunStorage implements Storage {
   }
 
   async #writeRun(tx: SqliteExecutor, patch: RunPatch): Promise<void> {
+    // As the store's runs.update writes a run's row: a final state with no endedAt is stamped now.
     const sets: string[] = [];
     const params: SqliteValue[] = [];
     if (patch.state !== undefined) (sets.push("state = ?"), params.push(patch.state));
     if (patch.costUsd !== undefined) (sets.push("cost_usd = ?"), params.push(patch.costUsd));
-    if (patch.metrics !== undefined) (sets.push("metrics = ?"), params.push(encodeJson(patch.metrics)));
+    if (patch.metrics !== undefined) (sets.push("metrics = ?"), params.push(patch.metrics === null ? null : encodeJson(patch.metrics as JsonValue)));
     if (patch.summary !== undefined) (sets.push("summary = ?"), params.push(patch.summary));
     if (patch.endedAt !== undefined) (sets.push("ended_at = ?"), params.push(patch.endedAt));
+    else if (patch.state !== undefined && FINAL_STATES.includes(patch.state)) (sets.push("ended_at = ?"), params.push(new Date().toISOString()));
     if (sets.length === 0) return;
     if ((await tx.runCounted(`UPDATE runs SET ${sets.join(", ")} WHERE id = ? AND epoch = ?`, ...params, this.#runId, this.#epoch)) === 0) {
       throw new Fenced(this.#runId, this.#epoch);
@@ -328,7 +342,8 @@ export class RunStorage implements Storage {
     const columns = Object.keys(also.row);
     const values = columns.map((column): SqliteValue => {
       const value = also.row[column];
-      return value === null || typeof value === "number" || typeof value === "bigint" || typeof value === "string" || value instanceof Uint8Array ? value : typeof value === "boolean" ? (value ? 1 : 0) : encodeJson(value);
+      if (value === null || value === undefined) return null;
+      return typeof value === "number" || typeof value === "bigint" || typeof value === "string" || value instanceof Uint8Array ? value : typeof value === "boolean" ? (value ? 1 : 0) : encodeJson(value as JsonValue);
     });
     await tx.run(`INSERT INTO ${also.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`, ...values);
   }
@@ -352,6 +367,7 @@ export class RunStorage implements Storage {
 
   async mintId<I extends Id<string>>(): Promise<I> {
     this.#assertOpen();
+    await this.#opened();
     if (!Number.isSafeInteger(this.#nextId)) throw new Error("ID space is exhausted");
     return idOf<I>(this.#nextId++);
   }
@@ -370,7 +386,7 @@ export class RunStorage implements Storage {
     if (query.ownerConversationId !== undefined) (clauses.push("owner_conversation_id = ?"), params.push(query.ownerConversationId as unknown as number));
     if (query.ownerTaskId !== undefined) (clauses.push("owner_task_id = ?"), params.push(query.ownerTaskId as unknown as number));
     params.push(limit + 1);
-    const rows = await this.#db.all<Row>(`SELECT id, record FROM ${T.conversations} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`, ...params);
+    const rows = await this.#read.all<Row>(`SELECT id, record FROM ${T.conversations} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`, ...params);
     return page(rows.map((row) => parseJson<ConversationRecord>(row.record!)), limit, start.order);
   }
 
@@ -397,7 +413,7 @@ export class RunStorage implements Storage {
       conversation = await this.#readConversation(conversationId);
       if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
     }
-    const row = await this.#db.get<Row>(`SELECT record, commit_seq FROM ${T.entries} WHERE run_id = ? AND id = ?`, this.#runId, id);
+    const row = await this.#read.get<Row>(`SELECT record, commit_seq FROM ${T.entries} WHERE run_id = ? AND id = ?`, this.#runId, id);
     if (row === undefined) return undefined;
     const entry = parseJson<EntryRecord>(row.record!);
     if (conversation !== undefined) {
@@ -420,8 +436,8 @@ export class RunStorage implements Storage {
     while (true) {
       const row =
         upper === undefined
-          ? await this.#db.get<Row>(`SELECT record FROM ${T.entries} WHERE run_id = ? AND conversation_id = ? AND head IS NOT NULL ORDER BY id DESC LIMIT 1`, this.#runId, conversation.id as unknown as number)
-          : await this.#db.get<Row>(`SELECT record FROM ${T.entries} WHERE run_id = ? AND conversation_id = ? AND head IS NOT NULL AND id <= ? ORDER BY id DESC LIMIT 1`, this.#runId, conversation.id as unknown as number, upper);
+          ? await this.#read.get<Row>(`SELECT record FROM ${T.entries} WHERE run_id = ? AND conversation_id = ? AND head IS NOT NULL ORDER BY id DESC LIMIT 1`, this.#runId, conversation.id as unknown as number)
+          : await this.#read.get<Row>(`SELECT record FROM ${T.entries} WHERE run_id = ? AND conversation_id = ? AND head IS NOT NULL AND id <= ? ORDER BY id DESC LIMIT 1`, this.#runId, conversation.id as unknown as number, upper);
       if (row !== undefined) return parseJson<EntryRecord & { readonly head: EntryId }>(row.record!);
       const parent: Parent | undefined = parentOf(conversation);
       if (parent === undefined) return undefined;
@@ -446,7 +462,7 @@ export class RunStorage implements Storage {
       if (minEntryId !== undefined) (clauses.push("id >= ?"), params.push(minEntryId));
       if (upper !== undefined) (clauses.push("id <= ?"), params.push(upper));
       params.push(limit + 1 - values.length);
-      const rows = await this.#db.all<Row>(`SELECT record FROM ${T.entries} WHERE ${clauses.join(" AND ")} ORDER BY id DESC LIMIT ?`, ...params);
+      const rows = await this.#read.all<Row>(`SELECT record FROM ${T.entries} WHERE ${clauses.join(" AND ")} ORDER BY id DESC LIMIT ?`, ...params);
       values.push(...rows.map((row) => parseJson<EntryRecord>(row.record!)));
       const parent: Parent | undefined = parentOf(conversation);
       if (values.length > limit || parent === undefined) break;
@@ -482,7 +498,7 @@ export class RunStorage implements Storage {
       if (lower !== undefined) (clauses.push("id >= ?"), params.push(lower));
       if (segment.upper !== undefined) (clauses.push("id <= ?"), params.push(segment.upper));
       params.push(limit + 1 - values.length);
-      const rows = await this.#db.all<Row>(`SELECT record FROM ${T.entries} WHERE ${clauses.join(" AND ")} ORDER BY id ASC LIMIT ?`, ...params);
+      const rows = await this.#read.all<Row>(`SELECT record FROM ${T.entries} WHERE ${clauses.join(" AND ")} ORDER BY id ASC LIMIT ?`, ...params);
       values.push(...rows.map((row) => parseJson<EntryRecord>(row.record!)));
       if (values.length > limit) break;
     }
@@ -491,7 +507,7 @@ export class RunStorage implements Storage {
 
   async task(id: TaskId, _context: Context): Promise<StoredTask | undefined> {
     this.#assertOpen();
-    const row = await this.#db.get<Row>(`SELECT record FROM ${T.tasks} WHERE run_id = ? AND id = ?`, this.#runId, id as unknown as number);
+    const row = await this.#read.get<Row>(`SELECT record FROM ${T.tasks} WHERE run_id = ? AND id = ?`, this.#runId, id as unknown as number);
     return row === undefined ? undefined : parseJson<StoredTask>(row.record!);
   }
 
@@ -507,13 +523,13 @@ export class RunStorage implements Storage {
     if (query.abortRequested !== undefined) (clauses.push("abort_requested = ?"), params.push(query.abortRequested ? 1 : 0));
     if (query.background !== undefined) (clauses.push("background = ?"), params.push(query.background ? 1 : 0));
     params.push(limit + 1);
-    const rows = await this.#db.all<Row>(`SELECT record FROM ${T.tasks} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`, ...params);
+    const rows = await this.#read.all<Row>(`SELECT record FROM ${T.tasks} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`, ...params);
     return page(rows.map((row) => parseJson<StoredTask>(row.record!)), limit, start.order);
   }
 
   async submission(id: SubmissionId, _context: Context): Promise<SubmissionRecord | undefined> {
     this.#assertOpen();
-    const row = await this.#db.get<Row>(`SELECT record FROM ${T.submissions} WHERE run_id = ? AND id = ?`, this.#runId, id as unknown as number);
+    const row = await this.#read.get<Row>(`SELECT record FROM ${T.submissions} WHERE run_id = ? AND id = ?`, this.#runId, id as unknown as number);
     return row === undefined ? undefined : parseJson<SubmissionRecord>(row.record!);
   }
 
@@ -526,13 +542,13 @@ export class RunStorage implements Storage {
     if (query.conversationId !== undefined) (clauses.push("conversation_id = ?"), params.push(query.conversationId as unknown as number));
     if (query.status !== undefined) (clauses.push("status = ?"), params.push(query.status));
     params.push(limit + 1);
-    const rows = await this.#db.all<Row>(`SELECT record FROM ${T.submissions} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`, ...params);
+    const rows = await this.#read.all<Row>(`SELECT record FROM ${T.submissions} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`, ...params);
     return page(rows.map((row) => parseJson<SubmissionRecord>(row.record!)), limit, start.order);
   }
 
   async submissionByRequest(conversationId: ConversationId, requestId: string, _context: Context): Promise<SubmissionRecord | undefined> {
     this.#assertOpen();
-    const row = await this.#db.get<Row>(`SELECT record FROM ${T.submissions} WHERE run_id = ? AND conversation_id = ? AND request_id = ?`, this.#runId, conversationId as unknown as number, encodeIndexedString(requestId));
+    const row = await this.#read.get<Row>(`SELECT record FROM ${T.submissions} WHERE run_id = ? AND conversation_id = ? AND request_id = ?`, this.#runId, conversationId as unknown as number, encodeIndexedString(requestId));
     return row === undefined ? undefined : parseJson<SubmissionRecord>(row.record!);
   }
 
@@ -550,14 +566,14 @@ export class RunStorage implements Storage {
           ORDER BY created_at DESC LIMIT 1`;
     const params: SqliteValue[] = [this.#runId, parts.kind, parts.scopeKind, parts.ownerId, parts.family, parts.keyValue];
     if (at !== "current") params.push(at as unknown as number, at as unknown as number);
-    const row = await this.#db.get<Row>(sql, ...params);
+    const row = await this.#read.get<Row>(sql, ...params);
     return row === undefined ? undefined : parseJson<DocumentRecord>(row.record!);
   }
 
   async document(id: DocumentId, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
     this.#assertOpen();
     // The record and revision queries must observe one committed state; a commit between them can replace the base.
-    return this.#db.transaction((tx) => this.#materializeDocument(tx, id as unknown as number, at));
+    return this.#transaction((tx) => this.#materializeDocument(tx, id as unknown as number, at));
   }
 
   async scanDocuments(query: DocumentQuery, limit: number, cursor: Cursor | undefined, _context: Context): Promise<Page<DocumentRecord, Cursor>> {
@@ -569,7 +585,7 @@ export class RunStorage implements Storage {
     if (query.at === "current") clauses.push("retired_at IS NULL");
     else (clauses.push("created_at <= ?", "(retired_at IS NULL OR retired_at > ?)"), params.push(query.at as unknown as number, query.at as unknown as number));
     params.push(limit + 1);
-    const rows = await this.#db.all<Row>(`SELECT record FROM ${T.documents} WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT ?`, ...params);
+    const rows = await this.#read.all<Row>(`SELECT record FROM ${T.documents} WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT ?`, ...params);
     return page(rows.map((row) => parseJson<DocumentRecord>(row.record!)), limit);
   }
 
@@ -594,7 +610,7 @@ export class RunStorage implements Storage {
   }
 
   async #readConversation(id: ConversationId): Promise<ConversationRecord | undefined> {
-    const row = await this.#db.get<Row>(`SELECT record FROM ${T.conversations} WHERE run_id = ? AND id = ?`, this.#runId, id as unknown as number);
+    const row = await this.#read.get<Row>(`SELECT record FROM ${T.conversations} WHERE run_id = ? AND id = ?`, this.#runId, id as unknown as number);
     return row === undefined ? undefined : parseJson<ConversationRecord>(row.record!);
   }
 

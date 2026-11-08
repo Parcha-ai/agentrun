@@ -3,10 +3,13 @@
 // interactive transaction (transaction()) holds every other call until it commits or rolls back. Errors come back typed:
 // Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed.
 import { Worker } from "node:worker_threads";
-import { Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint } from "../store.js";
+import { Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline } from "../store.js";
 import type { Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
 export type { Params, Statement, StatementResult } from "./worker.js";
+
+/** How long an interactive transaction may stay open (it holds every other call of the process) before it is rolled back. */
+export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
 
 /** An open interactive transaction: its statements run in order inside one BEGIN IMMEDIATE. */
 export interface Tx {
@@ -97,8 +100,11 @@ export class Connection {
   }
 
   /** An interactive write transaction: `work` steps its statements, deciding each from the ones before it; it commits when
-   *  `work` resolves and rolls back when it throws (or a step misses). Every other call waits for it. */
-  transaction<T>(work: (tx: Tx) => Promise<T>, { full = false }: { full?: boolean } = {}): Promise<T> {
+   *  `work` resolves and rolls back when it throws (or a step misses). Every other call of this process waits for it, so
+   *  `work` awaits nothing but its own steps (no model or tool call inside), and a transaction still open `deadlineMs` after
+   *  it began is rolled back and rejects with StoreDeadline: a later step of its work is refused, and the calls behind it go
+   *  on. */
+  transaction<T>(work: (tx: Tx) => Promise<T>, { full = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS }: { full?: boolean; deadlineMs?: number } = {}): Promise<T> {
     return this.#queued(async () => {
       await this.#send({ op: "begin", full });
       let open = true;
@@ -114,15 +120,27 @@ export class Connection {
           }
         },
       };
+      let timer: NodeJS.Timeout | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new StoreDeadline(deadlineMs)), deadlineMs);
+      });
       try {
-        const value = await work(tx);
+        // The worker answers in order: a step already sent finishes before the rollback a deadline sends after it.
+        const running = work(tx);
+        // Past the deadline the work's own end is nobody's: its refused next step must not surface as an unhandled rejection.
+        running.catch(() => undefined);
+        const value = await Promise.race([running, deadline]);
         if (open) await this.#send({ op: "commit" });
         else throw new Error("the store's transaction ended on a failed step");
         return value;
       } catch (error) {
-        if (open) await this.#send({ op: "rollback" }).catch(() => undefined);
+        if (open) {
+          open = false;
+          await this.#send({ op: "rollback" }).catch(() => undefined);
+        }
         throw error;
       } finally {
+        clearTimeout(timer);
         open = false;
       }
     });

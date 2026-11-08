@@ -1,9 +1,9 @@
 // SqliteStore: the Store (store.ts) on one SQLite file, through the one connection (connection.ts, on its worker thread).
 // The only code with SQL in it, besides the schema. The file is on local disk, never on Archil: one connection per
 // process, and SQLite's one writer lock serializes the server's and every runner's commits.
-import type { Storage } from "@earendil-works/pi-durable";
+import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
-import { FINAL_STATES, type AgentRow, type Agents, type Claim, type Command, type RevisionRow, type RunRow, type Runs, type RunState, type Store } from "../store.js";
+import { FINAL_STATES, type AgentRow, type Agents, type Claim, type Command, type Journal, type RevisionRow, type RunRow, type Runs, type RunState, type Store } from "../store.js";
 import { Connection, type Params } from "./connection.js";
 
 /** A claim's length when the caller names none. */
@@ -151,8 +151,8 @@ class SqliteStore implements Store {
     await this.#db.write([fenced(claim, "UPDATE runs SET runner = NULL, claimed_until = NULL WHERE id = ? AND epoch = ? AND runner = ?", [claim.runId, claim.epoch, claim.runner])], { full: true });
   }
 
-  journal(_claim: Claim): Storage {
-    throw new Error("the store's journal (pi-durable's Storage by run_id) is module A2's: not in this build yet");
+  journal(claim: Claim): Journal {
+    return new RunStorage(this.#db, claim);
   }
 
   async flush(): Promise<void> {

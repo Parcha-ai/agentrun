@@ -1,14 +1,16 @@
-// pi's own storage conformance suite (@earendil-works/pi-durable/testing) over RunStorage: one run's journal in the one
-// store, scoped by run_id, each case on a fresh run in a fresh store file. RunStorage is a pi Storage in every case pi
-// itself checks: atomic commits and their seqs, global ids, conversations, entries and their ancestry, tasks,
-// submissions, documents and their history, cursors, close.
+// pi's own storage conformance suite (@earendil-works/pi-durable/testing) over the store's journal: store.journal(claim) on
+// the one store (openSqliteStore, its connection on a worker), scoped by run_id, each case on a fresh claimed run in a
+// fresh store file. The journal is a pi Storage in every case pi itself checks: atomic commits and their seqs, global
+// ids, conversations, entries and their ancestry, tasks, submissions, documents and their history, cursors, close.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createStorageConformance } from "@earendil-works/pi-durable/testing";
-import { runRow, scratchConnection } from "./store-support.mjs";
 
-const { RunStorage, journalTables } = await import("../dist/store/journal/storage.js");
+const { openSqliteStore } = await import("../dist/store/index.js");
 
 /** pi's assertions on node:assert. */
 const assertions = {
@@ -22,21 +24,34 @@ const assertions = {
   },
 };
 
-describe("RunStorage passes pi's storage conformance (one run's journal in the one store)", () => {
+/** The one store in a scratch directory of test `t`, closed and removed after it. */
+async function scratchStore(t) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite") });
+  t.after(async () => {
+    await store.close().catch(() => undefined);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await store.agents.put({ id: "agent-1", name: "Agent" });
+  await store.agents.addRevision({ id: "rev-1", agentId: "agent-1", kind: "agentic", body: {} });
+  return store;
+}
+
+describe("the store's journal passes pi's storage conformance (one run's journal in the one store)", () => {
   let current;
   const cases = createStorageConformance({
     assertions,
     withStorage: async (use) => {
-      const connection = current.connection;
-      await connection.exec(journalTables());
-      const claim = await runRow(connection, `run-${randomUUID()}`, 1);
-      const storage = await RunStorage.open(connection, claim);
-      await use(storage);
+      const { store } = current;
+      const run = await store.runs.create({ id: `run-${randomUUID()}`, agentId: "agent-1", revisionId: "rev-1" });
+      const claim = await store.claim(run.id, "runner-1");
+      assert.ok(claim, "the run is claimed");
+      await use(store.journal(claim));
     },
   });
   for (const testCase of cases) {
     it(testCase.name, async (t) => {
-      current = { connection: scratchConnection(t) };
+      current = { store: await scratchStore(t) };
       await testCase.run();
     });
   }

@@ -74,6 +74,28 @@ export interface RunPatch {
   readonly endedAt?: string | null;
 }
 
+/** A row a journal commit inserts beside its batches (an outbox row for a run moment): its table and its columns' values,
+ *  an object or array as JSON text and a boolean as 0 or 1. */
+export interface AlsoRow {
+  readonly table: string;
+  readonly row: Readonly<Record<string, unknown>>;
+}
+
+/** What the run's next journal commit writes beside its batches, in its one transaction, under its fence: the run row's
+ *  patch, rows beside it, and the commands it takes (each marked taken once, in the commit that carries its effect). */
+export interface Staged {
+  readonly run?: RunPatch;
+  readonly also?: readonly AlsoRow[];
+  readonly take?: readonly number[];
+}
+
+/** A run's journal: pi-durable's Storage for the one run, every commit fenced by the claim, and stage() for what its next
+ *  commit writes beside its batches. Staged rows are cleared once a commit stores a batch and kept when it does not. */
+export interface Journal extends Storage {
+  readonly runId: string;
+  stage(staged: Staged): void;
+}
+
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -106,8 +128,9 @@ export interface Store {
   renew(claim: Claim, options?: { leaseMs?: number }): Promise<Claim>;
   /** Gives the run back (no runner, no claimed_until), in a durable commit (as flush). Fenced when the epoch moved on. */
   release(claim: Claim): Promise<void>;
-  /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). */
-  journal(claim: Claim): Storage;
+  /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
+   *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
+  journal(claim: Claim): Journal;
   /** One durable commit: every commit before it, of every run, is on the disk when it resolves. Before a call that must
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
@@ -130,6 +153,32 @@ export class Fenced extends Error {
     this.name = "Fenced";
     this.runId = runId;
     this.epoch = epoch;
+  }
+}
+
+/**
+ * A journal commit that takes a command which is not the run's untaken command (already taken, or another run's): the
+ * whole commit is refused and nothing of it written, so a command's effect never applies twice. Like Fenced, it fails the
+ * run's Session (pi: any commit error is final).
+ */
+export class CommandTaken extends Error {
+  readonly runId: string;
+  readonly commandId: number;
+  constructor(runId: string, commandId: number) {
+    super(`run ${runId}: command ${commandId} is not the run's untaken command, so the commit was refused and nothing was written`);
+    this.name = "CommandTaken";
+    this.runId = runId;
+    this.commandId = commandId;
+  }
+}
+
+/** An interactive transaction still open at its deadline: rolled back, nothing of it written, and the calls behind it go on. */
+export class StoreDeadline extends Error {
+  readonly deadlineMs: number;
+  constructor(deadlineMs: number) {
+    super(`the store's transaction was still open after ${deadlineMs} ms, so it was rolled back and nothing of it was written`);
+    this.name = "StoreDeadline";
+    this.deadlineMs = deadlineMs;
   }
 }
 
