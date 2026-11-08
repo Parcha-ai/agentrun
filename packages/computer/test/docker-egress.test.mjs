@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { DockerProvider, EGRESS_IMAGE, sweep } from "../dist/index.js";
 import { checkAddress } from "../dist/docker/egress-table.js";
-import { allowed, CODE_DIR, container, fakeDocker, idOf, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
+import { allowed, CODE_DIR, container, egressVolume, fakeDocker, idOf, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ALLOW } };
@@ -70,14 +70,19 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "context inspect", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
 	assert.deepEqual(calls()[1], ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], "where the docker CLI's daemon is, as the CLI itself resolves it");
 	const [uid, gid] = DEFAULT_USER.split(":");
-	assert.deepEqual(calls()[2], ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`, "--label", `agentrun.computer.egress=${name}`, volume]);
 	const computer = computerRunOf(calls());
 	const deadline = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
+	// The volume carries the computer's name, its deadline and the spec's labels, so the janitor finds it with no computer.
+	assert.deepEqual(calls()[2], [
+		"volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`,
+		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", volume,
+	]);
 	assert.deepEqual(proxyRunOf(calls()), [
 		"run", "--detach", "--name", volume,
 		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a",
 		"--user", DEFAULT_USER, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private",
-		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",
+		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--cpu-period", "100000", "--cpu-quota", "50000", "--ulimit", "nofile=1024:1024",
+		"--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",
 		"--network", "bridge",
 		"--mount", `type=volume,src=${volume},dst=/egress`,
 		"--mount", `type=bind,src=${CODE_DIR},dst=/code/docker,readonly`,
@@ -338,8 +343,37 @@ test("the janitor's sweep removes an expired computer's proxy and volume too, si
 	const past = "2026-01-01T00:00:00.000Z";
 	const { provider, names, volumeNames } = fakeDocker(allowed({ name: A, allow: ALLOW, deadline: past, running: false }));
 	const swept = await sweep(provider, { now: new Date() });
-	assert.deepEqual(swept, { ok: true, value: { deleted: [A], kept: 0 } });
+	assert.deepEqual(swept, { ok: true, value: { deleted: [A], kept: 0, leftovers: [] } });
 	assert.deepEqual([names(), volumeNames()], [[], []]);
+});
+
+test("the janitor's sweep also removes a proxy or volume whose computer is gone, or whose deadline has passed, by its label; a live computer's, and a proxy just made, stay", async () => {
+	const live = allowed({ name: A, allow: ALLOW, labels: { run: "1" } });
+	const B = "computer-0000000000bb"; // gone by hand: its proxy and volume stay behind
+	const C = "computer-0000000000cc"; // the provider died after the volume, before the proxy
+	const D = "computer-0000000000dd"; // its create is under way: the proxy is seconds old, with no computer yet
+	const E = "computer-0000000000ee"; // its computer is gone and its deadline has passed, made moments ago
+	const past = "2026-01-01T00:00:00.000Z";
+	const now = new Date().toISOString();
+	const proxyOf = (name, extra = {}) => proxyReport({ id: idOf(`${name}-egress`), name: `${name}-egress`, labels: { run: "1", "agentrun.computer.egress": name, "agentrun.computer.deadline": extra.deadline ?? new Date(Date.now() + 600_000).toISOString() }, cmd: [], ...extra });
+	const impostor = proxyReport({ id: idOf("computer-0000000000ff-egress"), name: "computer-0000000000ff-egress", labels: { run: "1" }, cmd: [] });
+	const { provider, calls, names, volumeNames } = fakeDocker({
+		containers: [...live.containers, proxyOf(B), proxyOf(D, { created: now }), proxyOf(E, { created: now, deadline: past }), impostor],
+		volumes: [...live.volumes, egressVolume({ computer: B, labels: { run: "1" } }), egressVolume({ computer: C, labels: { run: "1" } }), egressVolume({ computer: D, labels: { run: "1" }, created: now }), { Name: "computer-0000000000ff-egress", Labels: { run: "1" } }],
+	});
+	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date() });
+	assert.equal(swept.ok, true, JSON.stringify(swept));
+	assert.deepEqual(swept.value.deleted, []);
+	assert.equal(swept.value.kept, 1);
+	assert.deepEqual(swept.value.leftovers.sort(), [`${B}-egress`, `${B}-egress (volume)`, `${C}-egress (volume)`, `${E}-egress`].sort());
+	assert.deepEqual(names().sort(), [A, `${A}-egress`, `${D}-egress`, "computer-0000000000ff-egress"].sort(), "a live computer's proxy, one just made, and a container without the label stay");
+	assert.deepEqual(volumeNames().sort(), [`${A}-egress`, `${D}-egress`, "computer-0000000000ff-egress"].sort());
+	assert.ok(calls().every((args) => !(args[0] === "rm" && args.at(-1) === "computer-0000000000ff-egress")), "a container is never removed by its name alone");
+	// A sweep scoped to other labels touches none of them.
+	const other = fakeDocker({ containers: [proxyOf(B)], volumes: [egressVolume({ computer: C, labels: { run: "1" } })] });
+	const scoped = await sweep(other.provider, { labels: { run: "2" }, now: new Date() });
+	assert.deepEqual(scoped, { ok: true, value: { deleted: [], kept: 0, leftovers: [] } });
+	assert.deepEqual([other.names(), other.volumeNames()], [[`${B}-egress`], [`${C}-egress`]]);
 });
 
 test("a crashed proxy fails closed: the computer reaches nothing, network() and list() read back other in words, and attach refuses it and leaves it", async () => {
@@ -384,6 +418,13 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		[{ HostConfig: { LogConfig: { Type: "json-file", Config: {} } } }, /log .*not json-file with max-size 1m and max-file 2/],
 		[{ HostConfig: { LogConfig: { Type: "json-file", Config: { "max-size": "1g", "max-file": "2" } } } }, /log .*not json-file with max-size 1m and max-file 2/],
 		[{ HostConfig: { LogConfig: { Type: "syslog", Config: { "max-size": "1m", "max-file": "2" } } } }, /log .*not json-file/],
+		// Half a CPU, and at most 1024 open files.
+		[{ HostConfig: { CpuQuota: 0 } }, /CPU quota 0 of 100000, not 50000/],
+		[{ HostConfig: { CpuQuota: 200_000 } }, /CPU quota 200000 of 100000, not 50000/],
+		[{ HostConfig: { CpuPeriod: 0 } }, /CPU quota 50000 of 0, not 50000 of 100000/],
+		[{ HostConfig: { Ulimits: [] } }, /open-file limit .*not nofile 1024:1024/],
+		[{ HostConfig: { Ulimits: [{ Name: "nofile", Hard: 1048576, Soft: 1024 }] } }, /open-file limit .*not nofile 1024:1024/],
+		[{ HostConfig: { Ulimits: [{ Name: "nofile", Hard: 1024, Soft: 1024 }, { Name: "nproc", Hard: 1, Soft: 1 }] } }, /open-file limit .*not nofile 1024:1024/],
 	];
 	for (const [proxy, words] of cases) {
 		const seeded = allowed({ name: A, allow: ALLOW, proxy: proxy === null ? null : {} });

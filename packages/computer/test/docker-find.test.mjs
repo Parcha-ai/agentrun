@@ -303,7 +303,7 @@ test("network() refuses a name this provider does not make, and is not_found for
 test("sweep() on Docker deletes the stopped computer past its deadline, since list() lists stopped computers too", async () => {
 	const { provider, calls, names } = seeded();
 	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date() });
-	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1 } });
+	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1, leftovers: [] } });
 	assert.ok(calls().some((args) => args[0] === "rm" && args.at(-1) === B));
 	assert.deepEqual(names().sort(), [A, "computer-0000000000cc", "postgres"].sort(), "only the expired computer is gone");
 });

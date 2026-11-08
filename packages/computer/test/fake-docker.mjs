@@ -93,17 +93,19 @@ export function container({ name, labels = {}, network = "none", running = true,
 export function proxyReport({
 	id, name, image = "node:22.23.4-bookworm-slim", labels = {}, entrypoint = ["node"], cmd, user = "1000:1000", running = true, exitCode = 0, network = "bridge", capDrop = ["ALL"], securityOpt = ["no-new-privileges"],
 	readonlyRootfs = true, privileged = false, mounts = [], logs = "", memory = 256 * 1024 * 1024, swap = memory, pids = 64, ipc = "private", cgroupns = "private",
-	logConfig = { Type: "json-file", Config: { "max-file": "2", "max-size": "1m" } },
+	logConfig = { Type: "json-file", Config: { "max-file": "2", "max-size": "1m" } }, period = 100_000, quota = 50_000, ulimits = [{ Name: "nofile", Hard: 1024, Soft: 1024 }],
+	created = "2026-01-01T00:00:00.000000000Z",
 }) {
 	return {
 		Id: id,
 		Name: `/${name}`,
+		Created: created,
 		State: { Running: running, Status: running ? "running" : "exited", ExitCode: running ? 0 : exitCode, Error: "" },
 		Config: { User: user, Image: image, Entrypoint: entrypoint, Cmd: cmd, Labels: labels, Env: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "NODE_VERSION=22.23.4"] },
 		HostConfig: {
 			NetworkMode: network, CapDrop: capDrop, CapAdd: null, Privileged: privileged, SecurityOpt: securityOpt, ReadonlyRootfs: readonlyRootfs, PortBindings: {}, PublishAllPorts: false,
 			Binds: null, VolumesFrom: null, Devices: [], PidMode: "", UsernsMode: "", IpcMode: ipc, CgroupnsMode: cgroupns, RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
-			Memory: memory, MemorySwap: swap, PidsLimit: pids, LogConfig: logConfig,
+			Memory: memory, MemorySwap: swap, PidsLimit: pids, LogConfig: logConfig, CpuPeriod: period, CpuQuota: quota, Ulimits: ulimits,
 			Mounts: mounts.map((m) => ({ Type: m.type, Source: m.src, Target: m.dst, ...(m.readonly ? { ReadOnly: true } : {}) })),
 		},
 		Mounts: mounts.map((m) =>
@@ -136,7 +138,13 @@ export function allowed({ name, allow, deadline = new Date(Date.now() + 600_000)
 		mounts: [{ type: "volume", src: volume, dst: "/egress" }, { type: "bind", src: CODE_DIR, dst: "/code/docker", readonly: true }, { type: "bind", src: PACKAGE_JSON, dst: "/code/package.json", readonly: true }],
 		...proxy,
 	})];
-	return { containers: [computer, ...made], volumes: [{ Name: volume, Labels: { "agentrun.computer.egress": name } }] };
+	return { containers: [computer, ...made], volumes: [egressVolume({ computer: name, deadline, labels })] };
+}
+
+/** A computer's egress volume as `docker volume inspect` reports it: its labels (the computer's, its deadline, the
+ *  spec's) and when it was made. */
+export function egressVolume({ computer, deadline = new Date(Date.now() + 600_000).toISOString(), labels = {}, created = "2026-01-01T00:00:00Z" }) {
+	return { Name: `${computer}-egress`, Labels: { ...labels, "agentrun.computer.egress": computer, "agentrun.computer.deadline": deadline }, CreatedAt: created, Driver: "local" };
 }
 
 /**
@@ -186,7 +194,8 @@ const save = (all) => writeFileSync(config.state, JSON.stringify(all));
 const loadVolumes = () => JSON.parse(readFileSync(config.volumeState, "utf8"));
 const saveVolumes = (all) => writeFileSync(config.volumeState, JSON.stringify(all));
 const labelFilters = () => args.flatMap((arg, i) => (arg === "--filter" && args[i + 1].startsWith("label=") ? [args[i + 1].slice("label=".length)] : []));
-const hasLabels = (labels) => labelFilters().every((f) => (labels ?? {})[f.slice(0, f.indexOf("="))] === f.slice(f.indexOf("=") + 1));
+// A filter of a label's name alone (label=k) asks only that the label is there.
+const hasLabels = (labels) => labelFilters().every((f) => (f.includes("=") ? (labels ?? {})[f.slice(0, f.indexOf("="))] === f.slice(f.indexOf("=") + 1) : Object.hasOwn(labels ?? {}, f)));
 const find = (all, key) => all.find((c) => c.Name === "/" + key) ?? all.find((c) => /^[0-9a-f]{12,64}$/.test(key) && c.Id.startsWith(key));
 const noSuch = (key) => { process.stderr.write("Error response from daemon: No such container: " + key + "\\n"); process.exit(1); };
 // A held step waits for its proceed file, at most a minute.
@@ -226,6 +235,8 @@ switch (args[0]) {
 				memory: Number.parseInt(flags["--memory"]?.[0] ?? "0", 10) * 1024 * 1024, swap: Number.parseInt(flags["--memory-swap"]?.[0] ?? "0", 10) * 1024 * 1024,
 				pids: Number(flags["--pids-limit"]?.[0] ?? 0), ipc: flags["--ipc"]?.[0] ?? "", cgroupns: flags["--cgroupns"]?.[0] ?? "",
 				logConfig: { Type: flags["--log-driver"]?.[0] ?? "json-file", Config: Object.fromEntries((flags["--log-opt"] ?? []).map((o) => [o.slice(0, o.indexOf("=")), o.slice(o.indexOf("=") + 1)])) },
+				period: Number(flags["--cpu-period"]?.[0] ?? 0), quota: Number(flags["--cpu-quota"]?.[0] ?? 0), created: new Date().toISOString(),
+				ulimits: (flags["--ulimit"] ?? []).map((u) => { const [n, limits] = u.split("="); const [soft, hard = soft] = limits.split(":").map(Number); return { Hard: hard, Name: n, Soft: soft }; }),
 				logs: config.egress === "ready" ? "egress ready allow=" + args[args.indexOf("--allow") + 1] + "\\n" : ends ? "egress: no host list, so the proxy does not start\\n" : "",
 			});
 			save([...load(), merge(made, config.proxyPatch)]);
@@ -267,10 +278,9 @@ switch (args[0]) {
 		if (missing) noSuch(missing);
 	}); break;
 	case "ps": {
-		const filters = args.flatMap((arg, i) => (arg === "--filter" ? [args[i + 1].slice("label=".length)] : []));
+		const names = args.includes("{{.Names}}");
 		for (const c of load()) {
-			const has = filters.every((f) => c.Config.Labels[f.slice(0, f.indexOf("="))] === f.slice(f.indexOf("=") + 1));
-			if (has) process.stdout.write((config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
+			if (hasLabels(c.Config.Labels)) process.stdout.write((names || config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
 		}
 		break;
 	}
@@ -301,8 +311,16 @@ switch (args[0]) {
 			const name = args.at(-1);
 			const labels = Object.fromEntries(args.flatMap((arg, i) => (arg === "--label" ? [args[i + 1]] : [])).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 			const options = args.flatMap((arg, i) => (arg === "--opt" ? [args[i + 1]] : []));
-			if (!all.some((v) => v.Name === name)) saveVolumes([...all, { Name: name, Labels: labels, Options: options }]);
+			if (!all.some((v) => v.Name === name)) saveVolumes([...all, { Name: name, Labels: labels, Options: options, CreatedAt: new Date().toISOString().replace(/\\.\\d+Z$/, "Z"), Driver: "local" }]);
 			process.stdout.write(name + "\\n");
+		} else if (args[1] === "inspect") {
+			let missing;
+			for (const name of args.slice(4)) {
+				const found = all.find((v) => v.Name === name);
+				if (found) process.stdout.write(JSON.stringify(found) + "\\n");
+				else missing = name;
+			}
+			if (missing) { process.stderr.write("Error response from daemon: get " + missing + ": no such volume\\n"); process.exit(1); }
 		} else if (args[1] === "ls") {
 			for (const v of all) if (hasLabels(v.Labels)) process.stdout.write(v.Name + "\\n");
 		} else if (args[1] === "rm") {
