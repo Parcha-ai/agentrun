@@ -1,0 +1,31 @@
+{
+  "server": "slack",
+  "description": "A fake Slack MCP server for the post-happens case. Its one tool is named as Slack's MCP server (https://mcp.slack.com/mcp) names it. A post to C0MKTINTEL succeeds; a post anywhere else answers channel_not_found, so a stray post is visible in the recorded calls.",
+  "tools": {
+    "slack_send_message": {
+      "description": "Send a message to a channel or a person.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "channel_id": { "type": "string", "description": "the channel's id" },
+          "message": { "type": "string", "description": "the message text, Slack mrkdwn" }
+        },
+        "required": ["channel_id", "message"]
+      },
+      "answers": [
+        {
+          "when": { "channel_id": "C0MKTINTEL" },
+          "result": {
+            "content": [
+              { "type": "text", "text": "{\"ok\":true,\"message_context\":{\"channel_id\":\"C0MKTINTEL\",\"ts\":\"1762675200.000400\"},\"permalink\":\"https://example.slack.com/archives/C0MKTINTEL/p1762675200000400\"}" }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "isError": true,
+        "content": [{ "type": "text", "text": "{\"ok\":false,\"error\":\"channel_not_found\"}" }]
+      }
+    }
+  }
+}
