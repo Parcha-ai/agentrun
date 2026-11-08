@@ -59,6 +59,33 @@ export function computerStateOf<S extends string>(runId: string, state: S): S | 
   return computers.get(runId)?.hold.state().held ? "taken_over" : state;
 }
 
+/** What the runner holding a run's computer says of it (the run read's computer field reads it: run-computer.ts's
+ *  ComputerLive, which this matches): ready, or taken_over while the owner holds it; ended once it is down. */
+export type ComputerLive = { readonly state: "ready" | "taken_over" | "ended"; readonly viewer?: { readonly url: string } };
+
+/** The register as the port the run read's computer field reads (run-computer.ts's ComputerLivePort): what a run's
+ *  computer is doing, and the owner's take-over and hand-back. A run with no registered desktop or phone has no word. */
+export function computerLivePort(): {
+  live(runId: string): Promise<ComputerLive | undefined>;
+  takeOver(runId: string): Promise<ComputerLive>;
+  handBack(runId: string): Promise<ComputerLive>;
+} {
+  const word = async (runId: string): Promise<ComputerLive | undefined> => {
+    const computer = computers.get(runId);
+    if (!computer) return undefined;
+    if (!computer.live()) return { state: "ended" };
+    const held = computer.hold.state().held;
+    const viewer = await viewerOf(computer, !held);
+    return { state: held ? "taken_over" : "ready", ...(viewer ? { viewer } : {}) };
+  };
+  const after = async (runId: string, change: (id: string) => Promise<unknown>): Promise<ComputerLive> => {
+    const done = await change(runId);
+    if (done && typeof done === "object" && "code" in done) throw new ApiError((done as ViewRefusal).code, (done as ViewRefusal).message);
+    return (await word(runId))!;
+  };
+  return { live: word, takeOver: (runId) => after(runId, takeOver), handBack: (runId) => after(runId, handBack) };
+}
+
 /** The routes' names in serve's route table: each takes the owner's password session, never a token. */
 export const COMPUTER_ROUTES: ReadonlySet<string> = new Set(["getRunComputer", "takeOverRunComputer", "handBackRunComputer"]);
 
