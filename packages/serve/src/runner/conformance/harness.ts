@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openSqliteStore, type RunRow, type Store } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
-import { callsOf, journalEntries, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
+import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { startRunner, type Runner } from "../runner.js";
 import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks, ScriptStep, SuiteTool, ToolName } from "./subject.js";
 
@@ -132,7 +132,8 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   const run = async (): Promise<RunRow> => (await server.runs.get(RUN))!;
   const read = async (): Promise<{ calls: CallRecord[]; messages: MessageRecord[] }> => {
     const row = await run();
-    const entries = await journalEntries(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
+    // pi's tool tasks and the CLI record alike: the kernel's one reader.
+    const entries = await journalRecords(server.journal({ runId: RUN, runner: "conformance-reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
     return { calls: callsOf(entries), messages: messagesOf(entries) };
   };
   const ended = (state: RunRow["state"], ms = 15_000) =>
