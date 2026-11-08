@@ -20,7 +20,7 @@ import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { MODEL_KEYS } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { git } from "./learn-support.mjs";
+import { git, resnap } from "./learn-support.mjs";
 import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -50,6 +50,7 @@ async function folderWith(data, id, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
+  await resnap(data, id);
 }
 const pinOf = (data, runId) => JSON.parse(readFileSync(join(runDir(data, runId), "learning.json"), "utf8"));
 /** The run's store entries of `kinds`, each `{ kind, ...data }`. */

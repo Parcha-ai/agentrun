@@ -9,9 +9,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseNoteFile } from "../dist/learn/notes.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, resnap, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
+import { forgetBodies } from "../dist/learn/folder.js";
 import { learningTestHooks } from "../dist/learning.js";
+import { spiedWorkspace } from "./learn-support.mjs";
 import { agent, call, follow, runsFolders, scratch, serve, withEnv } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -273,8 +275,9 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   const state = () => ({
     main: git(outside, ["rev-parse", "main"]),
     objects: objects(outside),
-    files: Object.fromEntries(readdirSync(outside).filter((file) => file !== ".git").sort().map((file) => [file, readFileSync(join(outside, file), "utf8")])),
+    files: Object.fromEntries(readdirSync(outside).filter((file) => file !== ".git" && file !== ".agentrun").sort().map((file) => [file, readFileSync(join(outside, file), "utf8")])),
     git: readdirSync(join(outside, ".git")).sort(),
+    host: [readdirSync(join(outside, ".agentrun")).sort(), readFileSync(join(outside, ".agentrun", "snapshot.json"), "utf8")],
   });
   const before = state();
   assert.deepEqual(Object.keys(before.files), ["MEMORY.md", "check-units.md"]);
@@ -364,35 +367,42 @@ test("a commit's notes are read once: a later page and the view at the same main
     const res = await call(port, { method: "PUT", path: `${files}/${file}`, headers: { authorization: `Bearer ${token}`, "content-type": "text/markdown", "if-none-match": "*" }, body: text });
     assert.equal(res.status, 201, file);
   }
+  // Every read is the folder's snapshot and the bodies it names, through the workspace's file API: no git, no exec.
   const calls = [];
-  learningTestHooks.git = (args) => calls.push(args);
-  t.after(() => void (learningTestHooks.git = undefined));
-  /** The git calls since the last look that read history, a tree or a note, each with its page bounds, if any. */
-  const reads = () => calls.splice(0).filter(([command, ...rest]) => ["log", "rev-list", "ls-tree"].includes(command) || (command === "cat-file" && rest.includes("--batch"))).map((args) => [args[0], ...args.filter((arg) => /^--(skip|max-count)=/.test(arg))]);
+  const gitCalls = [];
+  learningTestHooks.git = (args) => gitCalls.push(args);
+  learningTestHooks.workspace = spiedWorkspace(calls);
+  forgetBodies();
+  t.after(() => void (learningTestHooks.git = undefined, learningTestHooks.workspace = undefined));
+  /** The workspace calls since the last look, each its method and path (exec: its argv). */
+  const reads = () => calls.splice(0).map(([method, what]) => `${method} ${what}`);
 
-  // The first page at main reads its notes; the next, at the same commit, reads none of them again.
+  // The first page at main reads its one note; the next reads its own, and none read before again.
   const page1 = (await api("GET", "/agents/paged/learning/notes?limit=1")).body;
   assert.deepEqual([page1.items.map((n) => n.file), page1.total], [["c-three.md"], 3]);
-  assert.ok(reads().some(([command]) => command === "cat-file"), "the first page reads the notes");
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json", "read c-three.md"], "the first page reads the snapshot and its note");
   const page2 = (await api("GET", `/agents/paged/learning/notes?limit=1&cursor=${page1.next_cursor}`)).body;
   assert.deepEqual(page2.items.map((n) => n.file), ["b-two.md"]);
-  assert.deepEqual(reads(), [], "a later page at the same commit reads no note, tree or history");
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json", "read b-two.md"], "a later page reads its own note alone");
+  await api("GET", "/agents/paged/learning/notes?limit=1");
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"], "a note read once at its blob is not read again");
 
-  // The log reads its page's commits alone (skip and max-count), counting them once a commit.
+  // The log is the snapshot's: a page of it reads no note.
   const log1 = (await api("GET", "/agents/paged/learning/log?limit=1")).body;
   assert.deepEqual([log1.items.map((c) => c.reason), log1.total], [["created by a person: c-three.md"], 3]);
-  assert.deepEqual(reads().sort(), [["log", "--skip=0", "--max-count=1"], ["rev-list"]]);
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
   const log2 = (await api("GET", `/agents/paged/learning/log?limit=1&cursor=${log1.next_cursor}`)).body;
   assert.deepEqual([log2.items.map((c) => c.reason), log2.total], [["created by a person: b-two.md"], 3]);
-  assert.deepEqual(reads(), [["log", "--skip=1", "--max-count=1"]]);
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
 
-  // The view at the same main: its notes as kept, its log's first page read, and its skills and workflows listed once
-  // (one tree read; a folder with none reads no history for them). A second view reads its log's page alone.
+  // The view at the same main: its notes, the index and the log; only what no read before read is read. A second view
+  // reads the snapshot alone.
   const view = (await api("GET", "/agents/paged/learning")).body;
   assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length, view.skills, view.workflows], [["c-three.md", "b-two.md", "a-one.md"], 3, [], []]);
-  assert.deepEqual(reads().sort(), [["log", "--skip=0", "--max-count=20"], ["ls-tree"]]);
+  assert.deepEqual(reads().sort(), ["read .agentrun/snapshot.json", "read MEMORY.md", "read a-one.md"]);
   await api("GET", "/agents/paged/learning");
-  assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
+  assert.deepEqual(gitCalls, [], "no read runs git");
 });
 
 test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log, the run's diff and the notes a run learned and used read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
@@ -472,6 +482,7 @@ test("a key a person saves on the server is cut like the server's own secrets, f
   writeFileSync(join(repo, "host.md"), note("Host", "What the host wrote", `The pass is ${value}.\n`));
   git(repo, ["add", "host.md"]);
   git(repo, ["commit", "-q", "-m", "a host's hand"]);
+  await resnap(data, "saver");
   assert.ok(JSON.stringify((await api("GET", "/agents/saver/learning")).body).includes(value), "shown as it is while no secret");
 
   // Saved through the settings API, the server running on: each read after it cuts the value.
@@ -519,6 +530,7 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   writeFileSync(join(repo, "bare.md"), "no front matter\n");
   git(repo, ["add", "huge.md", "bare.md"]);
   git(repo, ["commit", "-q", "-m", "an operator's hand"]);
+  await resnap(data, "revoker");
   await first.close();
 
   // The server again, with the vault code as a launcher's secret (the model key).
@@ -541,8 +553,11 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   const main = git(repo, ["rev-parse", "main"]);
   const huge = await api("POST", `${files}/huge.md/retire`, undefined, { "if-match": await etag("huge.md") });
   assert.deepEqual([huge.status, huge.body?.error?.problems?.map((p) => p.rule)], [400, ["too_large"]]);
-  const bare = await api("POST", `${files}/bare.md/retire`, undefined, { "if-match": await etag("bare.md") });
-  assert.deepEqual([bare.status, bare.body?.error?.problems?.map((p) => p.rule)], [400, ["note"]]);
+  // A file with no front matter is no note: the snapshot every read reads names none by it, so it reads 404 and a retire
+  // by its blob is 412, as any file on main that is no note (the test below).
+  assert.equal((await api("GET", `${files}/bare.md`)).status, 404);
+  const bare = await api("POST", `${files}/bare.md/retire`, undefined, { "if-match": `"${git(repo, ["rev-parse", "main:bare.md"])}"` });
+  assert.deepEqual([bare.status, bare.body?.error?.code], [412, "precondition_failed"]);
   assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
 });
 
@@ -594,6 +609,7 @@ test("a file on main that is not a note (over the read cap, not UTF-8, executabl
   git(repo, ["add", "big.md", "latin.md", "exec.md", "link.md"]);
   git(repo, ["update-index", "--chmod=+x", "exec.md"]);
   git(repo, ["commit", "-q", "-m", "an operator's hand"]);
+  await resnap(data, "holder");
   const tree = (file) => git(repo, ["ls-tree", "-l", "main", "--", file]);
   assert.deepEqual(["big.md", "latin.md", "exec.md", "link.md"].map((file) => tree(file).split(/\s+/)[0]), ["100644", "100644", "100755", "120000"]);
   const main = git(repo, ["rev-parse", "main"]);
