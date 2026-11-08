@@ -905,10 +905,15 @@ export class E2BProvider implements ComputerProvider {
 		return found;
 	}
 
-	/** getInfo, bounded; not_found for a sandbox E2B does not have. */
-	#info(id: string, signal?: AbortSignal): Promise<Result<E2BSandboxInfo>> {
+	/**
+	 * getInfo, bounded by requestMs; not_found for a sandbox E2B does not have. With until, a time a whole listing must
+	 * end by, the read is bounded by what is left of it as well, its race included.
+	 */
+	#info(id: string, signal?: AbortSignal, until?: number): Promise<Result<E2BSandboxInfo>> {
 		const { requestMs } = this.#timeouts;
-		return call(`Sandbox.getInfo of ${id}`, () => this.#Sandbox.getInfo(id, this.#api(requestMs, signal)), requestMs + CALL_SLACK_MS, signal);
+		const left = until === undefined ? undefined : Math.max(1, until - Date.now());
+		const ms = left === undefined ? requestMs : Math.min(requestMs, left);
+		return call(`Sandbox.getInfo of ${id}`, () => this.#Sandbox.getInfo(id, this.#api(ms, signal)), left === undefined ? requestMs + CALL_SLACK_MS : left, signal);
 	}
 
 	/** This provider's sandbox for ref, as E2B reads it, or why not. */
@@ -1177,10 +1182,12 @@ export class E2BProvider implements ComputerProvider {
 		});
 	}
 
-	/** Every sandbox E2B lists with these metadata pairs (running and paused, index.d.mts:10289), all pages, within listMs. */
-	async #listPages(metadata: Record<string, string>, signal?: AbortSignal): Promise<Result<E2BListedSandbox[]>> {
-		const { listMs, requestMs } = this.#timeouts;
-		const until = Date.now() + listMs;
+	/**
+	 * Every sandbox E2B lists with these metadata pairs (running and paused, index.d.mts:10289), all pages, within listMs,
+	 * or by until when the caller's own bound is given.
+	 */
+	async #listPages(metadata: Record<string, string>, signal?: AbortSignal, until = Date.now() + this.#timeouts.listMs): Promise<Result<E2BListedSandbox[]>> {
+		const { requestMs } = this.#timeouts;
 		let paginator: E2BPaginator;
 		try {
 			paginator = this.#Sandbox.list({ ...this.#connection, requestTimeoutMs: requestMs, query: { metadata }, limit: PAGE });
@@ -1201,20 +1208,25 @@ export class E2BProvider implements ComputerProvider {
 
 	/**
 	 * Every computer this provider made that carries all of these labels, running or paused (stopped), each one's
-	 * network read back by getInfo, since a listing does not carry it.
+	 * network read back by getInfo, since a listing does not carry it. One deadline, listMs from the call, bounds every
+	 * page and every read-back.
 	 */
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const problem = filterProblem(labels);
 		if (problem) return fail("invalid", problem);
-		const listed = await this.#listPages({ ...labels, [COMPUTER_LABEL]: "1" }, signal);
-		if (!listed.ok) return listed;
+		const { listMs } = this.#timeouts;
+		const until = Date.now() + listMs;
+		const late = (why: string) => fail("timeout", `list did not finish within ${seconds(listMs)}: ${why}`);
+		const listed = await this.#listPages({ ...labels, [COMPUTER_LABEL]: "1" }, signal, until);
+		if (!listed.ok) return listed.error.code === "timeout" ? late(listed.error.message) : listed;
 		const infos: ComputerInfo[] = [];
 		for (const item of listed.value) {
 			if (!ours(item.metadata) || !Object.entries(labels).every(([key, value]) => item.metadata[key] === value)) continue;
-			const read = await this.#info(item.sandboxId, signal);
+			if (Date.now() >= until) return late(`${infos.length} computers were read back, ${item.sandboxId} and any after it were not`);
+			const read = await this.#info(item.sandboxId, signal, until);
 			if (!read.ok) {
 				if (read.error.code === "not_found") continue;
-				return read;
+				return read.error.code === "timeout" && Date.now() >= until ? late(read.error.message) : read;
 			}
 			const info = read.value;
 			if (info.state !== "running" && info.state !== "paused") continue;

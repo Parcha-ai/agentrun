@@ -1400,7 +1400,9 @@ leaves x11vnc listening on every interface (`dist/index.mjs:502`); this provider
   create; one that drifts is refused and left as it is. `image` is the template create was asked for, from its label,
   and `snapshot` the id E2B reports.
 - `list(labels)` asks E2B for the labels with `agentrun.computer=1` (`Sandbox.list`, running and paused sandboxes,
-  `index.d.mts:10289`), every page, and reads each one back with `getInfo` for its network; paused is `stopped`.
+  `index.d.mts:10289`), every page, and reads each one back with `getInfo` for its network; paused is `stopped`. One
+  deadline, `listMs` (60 s) from the call, bounds every page and every read-back, each read's own request bound
+  included; past it, `list()` is a timeout in words.
 - `connect(ref)` refuses a paused computer without connecting, since E2B's connect resumes one; it gives E2B a timeout
   a little under what is left, and E2B moves a running sandbox's timer only to a longer one (`index.d.mts:10250`), so
   connecting never moves the end.
