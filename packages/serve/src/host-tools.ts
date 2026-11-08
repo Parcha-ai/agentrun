@@ -26,6 +26,7 @@ import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { realOf, workspaceRelative } from "./workspace-paths.js";
+import { localWorkspace } from "./workspace/index.js";
 import type { Park, RunGate } from "./tool-gate.js";
 
 export { workspaceRelative } from "./workspace-paths.js";
@@ -142,7 +143,7 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
   // monid's, only for a run that names one: its key is the one this process was handed over its pipe (secrets.ts),
   // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
   // the call. They are outside the coding source, which holds the coding tools only.
-  const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => run.claim.work) : [];
+  const monid = names.some((name) => name.startsWith("monid.")) ? monidTools(withSecrets(process.env), () => localWorkspace(run.claim.work)) : [];
   // `extra`: the run's own tools beyond the table, its learned_workflow (learned-workflow.ts) when its pin names one.
   const tools = new Map([...coding, ...web, ...monid, ...extra].map((tool) => [tool.name, tool as ToolRegistration] as const));
   return names.flatMap((name) => {

@@ -15,9 +15,7 @@
 // under a cap a run is refused before it is sent unless the run's spend plus what it is held at fits. discover and
 // inspect cost nothing, and are never refused.
 import { randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
-import { writeInWork } from "./workspace.js";
+import { localWorkspace, type Workspace } from "./workspace/index.js";
 import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
@@ -156,24 +154,21 @@ export function monidClient(options: MonidOptions) {
   };
 }
 
-/** `answer` as the model reads it: JSON, cut at CLIP characters, the whole then filed under `work`'s evidence/monid/
- *  (by run id, else by `label` and the time) and the cut saying where. A copy that cannot be filed (a full disk) still
- *  answers, cut and saying so: the answer may have been paid for. */
-export async function monidText(answer: MonidAnswer, work: string, label: string): Promise<string> {
+/** `answer` as the model reads it: JSON, cut at CLIP characters, the whole then filed in the run's evidence/monid/
+ *  through its Workspace (by run id, else by `label` and the time) and the cut saying where. A copy that cannot be filed
+ *  (a full disk, a link in the way, which the Workspace never writes through) still answers, cut and saying so: the
+ *  answer may have been paid for. */
+export async function monidText(answer: MonidAnswer, work: Workspace, label: string): Promise<string> {
   const text = JSON.stringify(answer);
   if (text.length <= CLIP) return text;
   const runId = typeof answer.runId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(answer.runId) ? answer.runId : undefined;
   const name = `${runId ?? `${label}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`}.json`;
   const cut = `${text.slice(0, CLIP)}\n[cut at ${CLIP} of ${text.length} characters; `;
   try {
-    // Never through a link a box's command planted in work/ (workspace.ts). An answer filed already keeps its file;
-    // anything else in its place (a planted link) is no filing, and the answer says it could not be saved.
-    await writeInWork(work, ["evidence", "monid"], name, text).catch(async (error: NodeJS.ErrnoException) => {
-      if (error.code !== "EEXIST" || !(await lstat(join(work, "evidence", "monid", name)).then((held) => held.isFile(), () => false))) throw error;
-    });
+    await work.write(`evidence/monid/${name}`, text);
   } catch (error) {
-    // The error's code only (ENOSPC, ENOTDIR): its message names the server's paths.
-    return `${cut}the whole answer could not be saved (${(error as NodeJS.ErrnoException)?.code ?? "write failed"})]`;
+    // The error's code only (ESCAPE, UNAVAILABLE): its message names paths.
+    return `${cut}the whole answer could not be saved (${(error as { code?: string })?.code ?? "write failed"})]`;
   }
   return `${cut}the whole answer is in the run's files at evidence/monid/${name}]`;
 }
@@ -223,7 +218,7 @@ const record = (api: ToolExecutionApi, kind: string, data: Record<string, string
  *  allowance) and settled by its charge (TOOL_COST): a crash between the two leaves the cap counting the held figure
  *  and the run's cost unknown, never $0. pi binds it (monidTool); another harness runs it as a host tool
  *  (host-tools.ts), whose `api` commits to the run's store as pi's does. */
-export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => string): ToolRegistration {
+export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => Workspace): ToolRegistration {
   const { description, properties, required, replay } = SPECS[kind];
   return defineTool({
     name: wireName(`monid.${kind}`), description, replay,
@@ -264,7 +259,7 @@ export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () =
 }
 
 /** The three, as another harness's host tools. */
-export const monidTools = (env: NodeJS.ProcessEnv, work: () => string): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
+export const monidTools = (env: NodeJS.ProcessEnv, work: () => Workspace): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
 
 /** The table's entry for `monid.<kind>`: it needs MONID_API_KEY, and no workflow node names it yet. */
 export const monidTool = (kind: Kind): ToolEntry => ({
@@ -272,7 +267,7 @@ export const monidTool = (kind: Kind): ToolEntry => ({
   needs: [MONID_KEY_ENV],
   nodes: false,
   bind: async (host) => {
-    const tool = monidRegistration(kind, host.env, () => host.where.work);
+    const tool = monidRegistration(kind, host.env, () => localWorkspace(host.where.work));
     const extension = defineExtension({ name: `monid-${kind}`, tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };

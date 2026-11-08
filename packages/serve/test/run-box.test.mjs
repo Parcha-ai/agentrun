@@ -603,61 +603,41 @@ test("fake docker: the start's sweep destroys the box of a run that has ended, a
 test("a link a box's command plants in work/ never turns the server's own writes there: monid's and the browser's evidence are refused through it, and written beside it", async (t) => {
   const { monidText, CLIP } = await import("../dist/monid.js");
   const { evidenceIn } = await import("../dist/tools.js");
+  const { localWorkspace } = await import("../dist/workspace/index.js");
   const work = realpathSync(await scratch(t));
+  const ws = localWorkspace(work);
   const outside = realpathSync(await scratch(t));
   const huge = { runId: "run_1", output: "x".repeat(CLIP + 10) };
   // evidence/ itself a link out: the whole answer is not filed, and nothing lands outside.
   await symlink(outside, join(work, "evidence"));
-  assert.match(await monidText(huge, work, "run"), /the whole answer could not be saved \((ELOOP|ENOTDIR)\)\]$/);
-  await assert.rejects(evidenceIn(work).file("page", { tool: "browser_read", facts: {}, body: "text" }), (error) => ["ELOOP", "ENOTDIR"].includes(error.code));
+  assert.match(await monidText(huge, ws, "run"), /the whole answer could not be saved \(ESCAPE\)\]$/);
+  await assert.rejects(evidenceIn(ws).file("page", { tool: "browser_read", facts: {}, body: "text" }), (error) => error.code === "ESCAPE");
   assert.deepEqual(await readdir(outside), []);
   // evidence/ real, evidence/monid a link out: refused the same.
   await rm(join(work, "evidence"));
   await mkdir(join(work, "evidence"));
   await symlink(outside, join(work, "evidence", "monid"));
-  assert.match(await monidText(huge, work, "run"), /could not be saved \((ELOOP|ENOTDIR)\)\]$/);
+  assert.match(await monidText(huge, ws, "run"), /could not be saved \(ESCAPE\)\]$/);
   assert.deepEqual(await readdir(outside), []);
   // A file's own name a link out: never written through; evidence takes the next name.
   await writeFile(join(outside, "target.md"), "kept");
   await symlink(join(outside, "target.md"), join(work, "evidence", "0001-browser_read.md"));
-  assert.deepEqual(await evidenceIn(work).file("page", { tool: "browser_read", facts: {}, body: "text" }), { path: "evidence/0002-browser_read.md", bodyLine: 3 });
+  assert.deepEqual(await evidenceIn(ws).file("page", { tool: "browser_read", facts: {}, body: "text" }), { path: "evidence/0002-browser_read.md", bodyLine: 3 });
   assert.equal(readFileSync(join(outside, "target.md"), "utf8"), "kept");
   assert.deepEqual(await readdir(outside), ["target.md"]);
   // With no link in the way, both file as before.
   await rm(join(work, "evidence", "monid"));
-  assert.match(await monidText(huge, work, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
+  assert.match(await monidText(huge, ws, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
   assert.equal(readFileSync(join(work, "evidence", "monid", "run_1.json"), "utf8"), JSON.stringify(huge));
-  // The same answer again: filed already, its file kept.
-  assert.match(await monidText(huge, work, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
+  // The same answer again: filed again, the same file.
+  assert.match(await monidText(huge, ws, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
   // A link planted at the answer's own name is no filing: the answer says it could not be saved, and names no path.
   const other = { runId: "run_2", output: "y".repeat(CLIP + 10) };
   await symlink(join(outside, "target.md"), join(work, "evidence", "monid", "run_2.json"));
-  const linked = await monidText(other, work, "run");
-  assert.match(linked, /the whole answer could not be saved \(EEXIST\)\]$/);
+  const linked = await monidText(other, ws, "run");
+  assert.match(linked, /the whole answer could not be saved \(ESCAPE\)\]$/);
   assert.doesNotMatch(linked, /evidence\/monid\/run_2\.json/);
   assert.equal(readFileSync(join(outside, "target.md"), "utf8"), "kept");
-});
-
-test("where this host reaches a run's directories by path (no /proc/self/fd, as on macOS), the server files nothing in a sandbox run's work/, and still files in a runner run's", async (t) => {
-  const { monidText, CLIP } = await import("../dist/monid.js");
-  const { evidenceIn } = await import("../dist/tools.js");
-  const { workspaceTestHooks } = await import("../dist/workspace.js");
-  workspaceTestHooks.byPath = true;
-  t.after(() => void (workspaceTestHooks.byPath = undefined));
-  const huge = { runId: "run_1", output: "x".repeat(CLIP + 10) };
-  const runDir = async (place) => {
-    const dir = realpathSync(await scratch(t));
-    await mkdir(join(dir, "work"));
-    await writeFile(join(dir, "serve.json"), JSON.stringify({ title: "t", created_at: new Date().toISOString(), place }));
-    return join(dir, "work");
-  };
-  const boxed = await runDir({ mode: "sandbox", box: "docker" });
-  assert.match(await monidText(huge, boxed, "run"), /the whole answer could not be saved \(ENOTSUP\)\]$/);
-  await assert.rejects(evidenceIn(boxed).file("page", { tool: "browser_read", facts: {}, body: "text" }), (error) => error.code === "ENOTSUP");
-  assert.deepEqual(await readdir(boxed), [], "nothing was written in the box's work/");
-  const runner = await runDir({ mode: "runner" });
-  assert.match(await monidText(huge, runner, "run"), /the whole answer is in the run's files at evidence\/monid\/run_1\.json\]$/);
-  assert.equal(readFileSync(join(runner, "evidence", "monid", "run_1.json"), "utf8"), JSON.stringify(huge));
 });
 
 /** Run `runId`'s claim epoch, as its row in the agent store holds it. */

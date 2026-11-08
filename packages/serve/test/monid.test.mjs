@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { wireName } from "../dist/catalog.js";
 import { capBefore, capToolSpend, holdsInFlight, paidCall, spentIn, useSpend } from "../dist/cap.js";
 import { chargeOf, CLIP, monidClient, monidText } from "../dist/monid.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
 import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -32,9 +33,9 @@ test("discover and inspect pass monid's answer through; one over 60,000 characte
   assert.deepEqual([found.count, found.results[0].endpoint, found.results[0].price.amount.value], [2, "/person/enrich", 0.003]);
   const shown = await monid().inspect({ provider: "faux", endpoint: "/person/enrich" });
   assert.deepEqual(shown.input.body.required, ["name"]);
-  assert.equal(await monidText(shown, work, "inspect"), JSON.stringify(shown), "a short answer is its JSON, whole");
+  assert.equal(await monidText(shown, localWorkspace(work), "inspect"), JSON.stringify(shown), "a short answer is its JSON, whole");
   const wide = await monid().discover({ query: "everything at once" });
-  const text = await monidText(wide, work, "discover");
+  const text = await monidText(wide, localWorkspace(work), "discover");
   const where = /the whole answer is in the run's files at (evidence\/monid\/discover-[^\]\s]+\.json)\]$/.exec(text)?.[1];
   assert.ok(where, text.slice(-200));
   assert.equal(text.indexOf("\n[cut at"), CLIP);
@@ -253,15 +254,16 @@ test("a cut answer whose whole copy cannot be filed still answers, cut and sayin
   await mkdir(join(work, "evidence"), { recursive: true });
   await writeFile(join(work, "evidence", "monid"), "a file where the directory would go");
   const huge = await monid().run({ provider: "faux", endpoint: "/huge" });
-  const text = await monidText(huge, work, "run");
+  const text = await monidText(huge, localWorkspace(work), "run");
   assert.equal(text.indexOf("\n[cut at"), CLIP);
-  assert.match(text, /the whole answer could not be saved \(E[A-Z]+\)\]$/);
+  // The Workspace's code, never its message (which names paths).
+  assert.match(text, /the whole answer could not be saved \((EXISTS|NOT_FOUND|REFUSED)\)\]$/);
 });
 
 test("a run's answer over 60,000 characters is cut, the whole of it filed as evidence/monid/<run id>.json", async (t) => {
   const work = await scratch(t);
   const huge = await monid().run({ provider: "faux", endpoint: "/huge" });
-  const text = await monidText(huge, work, "run");
+  const text = await monidText(huge, localWorkspace(work), "run");
   assert.ok(text.endsWith(`the whole answer is in the run's files at evidence/monid/${huge.runId}.json]`), text.slice(-200));
   assert.equal(text.indexOf("\n[cut at"), CLIP);
   assert.deepEqual(JSON.parse(await readFile(join(work, "evidence", "monid", `${huge.runId}.json`), "utf8")), huge);

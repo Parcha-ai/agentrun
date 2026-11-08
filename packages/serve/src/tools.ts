@@ -14,7 +14,7 @@ import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
-import { writeInWork } from "./workspace.js";
+import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
@@ -145,28 +145,45 @@ const fileTool = (name: string, summary: string, sandboxOnly = false): ToolEntry
   },
 });
 
-/** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
- *  text body follows one line of the read's facts; a capture's bytes go beside its facts. Each read takes the next free
- *  number, reserved by an exclusive create, so reads at once (parallel nodes, one turn's calls) and the reads of a later
- *  process never overwrite one another. */
-export const evidenceIn = (work: string) => {
-  let seq = 0;
+/** The folder the browser files what it reads in. */
+const EVIDENCE = "evidence";
+/** How many names taken by a link a read steps past before it gives up. */
+const EVIDENCE_TRIES = 100;
+
+/** The highest number a file in the run's evidence/ is named by (`0007-browser_read.md`), 0 for none or no folder. A
+ *  link at evidence/ itself throws (ESCAPE): nothing is filed through it. */
+async function lastEvidence(work: Workspace): Promise<number> {
+  try {
+    return Math.max(0, ...(await work.list(EVIDENCE)).map((entry) => Number(/^(\d+)-/.exec(entry.name)?.[1] ?? 0)));
+  } catch (error) {
+    if (isWorkspaceError(error, "NOT_FOUND")) return 0;
+    throw error;
+  }
+}
+
+/** Where the browser files what it reads: the run's `evidence/`, through its Workspace, so the run's files show it and
+ *  the agent can read it back. A text body follows one line of the read's facts; a capture's bytes go beside its facts.
+ *  Each read takes the next number after the highest the folder holds when the sink first files, so a later process's
+ *  sink never overwrites one, and reads at once (parallel nodes, one turn's calls) each take their own. A name a link
+ *  holds is never written through: the read takes the next. */
+export const evidenceIn = (work: Workspace) => {
+  let seq: Promise<{ n: number }> | undefined;
   return {
     file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
       const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
       const text = typeof record.body === "string";
-      for (;;) {
-        const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
+      const counter = await (seq ??= lastEvidence(work).then((n) => ({ n })));
+      for (let tries = 0; ; tries++) {
+        const name = `${String(++counter.n).padStart(4, "0")}-${record.tool}`;
         try {
-          // Never through a link a box's command planted in work/ (files.ts).
-          await writeInWork(work, ["evidence"], text ? `${name}.md` : `${name}.json`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
+          await work.write(`${EVIDENCE}/${text ? `${name}.md` : `${name}.json`}`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          if (isWorkspaceError(error, "ESCAPE") && tries < EVIDENCE_TRIES) continue;
           throw error;
         }
-        if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
-        await writeInWork(work, ["evidence"], `${name}.${record.ext ?? "bin"}`, record.body);
-        return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
+        if (text) return { path: `${EVIDENCE}/${name}.md`, bodyLine: 3 };
+        await work.write(`${EVIDENCE}/${name}.${record.ext ?? "bin"}`, record.body);
+        return { path: `${EVIDENCE}/${name}.json`, bodyPath: `${EVIDENCE}/${name}.${record.ext ?? "bin"}` };
       }
     },
   };
@@ -280,7 +297,7 @@ const browserTool: ToolEntry = {
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -350,7 +367,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.run": monidTool("run"),
   [PDF_PAGES_TOOL]: callOnly(
     "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
-    (args, run) => pdfPages(args, { work: run.work, documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
+    (args, run) => pdfPages(args, { work: localWorkspace(run.work), documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
   ),
   [LLM_TOOL]: callOnly(
     "A workflow call: { prompt, system?, maxTokens?, tier? } -> { text, model, usage, cost_usd }; one completion on the model of the tier (default), no tools and no loop.",

@@ -170,7 +170,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // the run is open.
   let runHarness: Harness | undefined;
   const commit = () => runHarness && (<T>(change: (tx: unknown) => Promise<T>) => runHarness!.commit(change as never, BACKGROUND) as Promise<T>);
-  const gateway = pinned && Object.keys(pinned).length ? mcpGateway({ pin: pinned, credentials: mcpCredentials(), work: () => where.work, commit, gate: toolGate }) : undefined;
+  const gateway = pinned && Object.keys(pinned).length ? mcpGateway({ pin: pinned, credentials: mcpCredentials(), work: () => localWorkspace(where.work), commit, gate: toolGate }) : undefined;
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
   // installed first so it comes before every other extension's and the instructions.
@@ -307,7 +307,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const gatedTools = toolGate.extension([...nodeTools.values()].flatMap((binding) => binding.tools));
   registry.install(gatedTools);
   // A decision node's images are files of the run's work directory (pdf_pages draws them there).
-  const loadImage = imageLoader(where.work);
+  const loadImage = imageLoader(localWorkspace(where.work));
   const log = nodeLog(where.root);
   // The receipts earlier processes recorded, read before this one opens the store, which then holds it exclusively.
   // Lock-free, as the server reads it: nothing made beside the store (a plain read leaves a -shm there).

@@ -5,6 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { evidenceIn } from "../dist/tools.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { answerFlow, client, follow, runDir, scratch, serve } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -83,10 +84,11 @@ test("a workflow's model node names browser: it browses, delivers its record, an
 test("evidence names never collide: reads filed at once each keep their own file, and a later process's sink never overwrites one", async (t) => {
   const work = await scratch(t);
   const read = (n) => ({ tool: "browser_read", args: {}, status: "ok", facts: { sha256: `sha-${n}` }, body: `page ${n}` });
-  const sink = evidenceIn(work);
+  // Filed through the run's Workspace: each sink a fresh one on the same folder, as a later process's is.
+  const sink = evidenceIn(localWorkspace(work));
   const filed = await Promise.all([1, 2, 3].map((n) => sink.file("run", read(n))));
-  const later = await evidenceIn(work).file("run", read(4));
-  const shot = await evidenceIn(work).file("run", { tool: "screenshot", args: {}, status: "ok", facts: { sha256: "sha-5" }, body: new Uint8Array([5]), ext: "png" });
+  const later = await evidenceIn(localWorkspace(work)).file("run", read(4));
+  const shot = await evidenceIn(localWorkspace(work)).file("run", { tool: "screenshot", args: {}, status: "ok", facts: { sha256: "sha-5" }, body: new Uint8Array([5]), ext: "png" });
   const paths = [...filed, later].map((at) => at.path);
   assert.equal(new Set(paths).size, 4, paths.join(", "));
   for (const [i, path] of paths.entries()) assert.match(await readFile(join(work, path), "utf8"), new RegExp(`"sha256":"sha-${i + 1}"[^]*\\n\\npage ${i + 1}$`), path);

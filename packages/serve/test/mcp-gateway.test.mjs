@@ -12,6 +12,7 @@ import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { useSpend } from "../dist/cap.js";
 import { HEADER_SCAN_DEPTH, isParked, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf, mcpRegistrations } from "../dist/mcp-gateway.js";
 import { deniedText, GATED_BY_GATEWAY, gateOf, waitingText } from "../dist/tool-gate.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
@@ -32,7 +33,7 @@ async function setup(t, { token = TOKEN, url, prices, gate, commit, bounds } = {
     if (typeof init?.body === "string" && init.body.includes('"tools/call"')) sent.push(init);
     return fetch(input, init);
   };
-  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => work, fetch: spy, ...(gate ? { gate } : {}), ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}) });
+  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => localWorkspace(work), fetch: spy, ...(gate ? { gate } : {}), ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}) });
   /** Whether the server was told the call was cancelled: notifications/cancelled (2025 era), or its request closed. */
   const cancelled = () => fake.log.some((entry) => entry.method === "notifications/cancelled") || sent.some((init) => init.signal?.aborted);
   return { fake, gateway, work, cancelled };
