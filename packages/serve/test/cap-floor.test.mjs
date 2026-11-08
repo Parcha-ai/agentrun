@@ -105,6 +105,31 @@ test("pi: a floor is its revision's: a new revision has none until its own first
   assert.equal(small.status, 202, `the new revision's first run is never refused: ${JSON.stringify(small.body)}`);
 });
 
+test("pi: the agent read while a run of the agent is live and writing its store answers 200 with the floor, its stores read only and never locked", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FLOOR_PRICED });
+  assert.equal((await api("POST", "/agents", agent("floor-live"))).status, 201);
+  const done = await api("POST", "/agents/floor-live/runs", { input: { content: "Write one.md" } });
+  assert.equal(done.status, 202, JSON.stringify(done.body));
+  await follow(api, done.body.run_id, SETTLED);
+  const measured = (await api("GET", "/agents/floor-live")).body.cap_floor;
+  assert.ok(measured, "the finished run measured it");
+  // A run held at its answer: its store has its start mark and is written as it goes (the turn's entries, its marks).
+  const gate = join(await scratch(t), "go");
+  const live = await api("POST", "/agents/floor-live/runs", { input: { content: `Answer once ${gate} exists.` } });
+  assert.equal(live.status, 202, JSON.stringify(live.body));
+  for (const end = Date.now() + 30_000; (await api("GET", `/runs/${live.body.run_id}`)).body.status !== "working"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the held run never started working");
+  // Read while it is live: each read answers, with a floor (the finished run's, or the live one's once its first request
+  // was marked, the same revision and settings), and the live run goes on to its answer, its store not held.
+  for (let i = 0; i < 5; i++) {
+    const read = await api("GET", "/agents/floor-live");
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    assert.ok(read.body.cap_floor && read.body.cap_floor.least_usd > 0, JSON.stringify(read.body.cap_floor));
+  }
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(gate, "");
+  await follow(api, live.body.run_id, ["completed"]);
+});
+
 /** A ready upload of `bytes` at `path`. */
 async function upload(server, path, bytes) {
   const made = await server.api("POST", "/files", { path, size_bytes: bytes.length });

@@ -55,7 +55,7 @@ import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
+import { CAP_MODES, type CapMode, floorIn, type FloorMark, meterFiguresIn } from "./cap.js";
 import { belowLeast, capFloorView, FLOOR_RUNS, floorSetting, type MeasuredRun } from "./cap-floor.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
@@ -1456,12 +1456,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (revision.kind !== "agentic") return [];
     const rows = (await agents.request(() => agents.store.listRuns({ agent: agentId, revision: revision.id }))).filter((row) => row.kind === "agentic").sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, FLOOR_RUNS);
     const measured: MeasuredRun[] = [];
+    // Each from its folder on the disk, read only: a read never loads a run into this server (a run it has not read in,
+    // or one that does not load, is read the same way), and a run whose files do not read has no floor.
     for (const row of rows) {
-      const run = await runs.get(row.id);
+      const dir = runDirIn(agents.dir, agentId, row.id);
       // A run that was handed files told of them in its first message (run-manifest.ts firstMessage): not its agent's.
-      if (!run || (await readdir(join(run.dir, "work", "inputs")).then((names) => names.length > 0, () => false))) continue;
-      const mark = runs.floorOf(run);
-      if (mark) measured.push({ mark, input: run.meta.input, at: row.startedAt });
+      if (await readdir(join(dir, "work", "inputs")).then((names) => names.length > 0, () => false)) continue;
+      let mark: FloorMark | undefined;
+      try {
+        mark = floorIn(join(dir, "store", "run.sqlite"));
+      } catch {
+        continue;
+      }
+      if (!mark) continue;
+      const meta = await readJson(join(dir, RUN_META)).catch(() => null);
+      if (isObject(meta) && isObject(meta.input)) measured.push({ mark, input: meta.input, at: row.startedAt });
     }
     return measured;
   }
