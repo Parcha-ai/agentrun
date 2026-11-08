@@ -29,7 +29,8 @@ The quickstart is `node examples/01-durable-chat/on-a-directory.mjs`.
 
 Node 22.19 or later runs the TypeScript directly. A run on a local directory runs on Linux, and on macOS for development
 ([On macOS](../docs/reference.md#on-macos) says what is weaker there). On macOS every example needs 0.1.0-beta.14 or later, the
-first release that runs there, whatever its Since says.
+first release that runs there, whatever its Since says. From an install on pi 1.5.0, every example needs the first release
+whose peers take pi 1.5.0 (0.1.0-beta.32, the next beta; every earlier beta's peers stop below pi 1.4).
 
 ## Run one from an install
 
@@ -53,8 +54,8 @@ The `ExperimentalWarning` about SQLite on stderr is Node's own and harmless.
 
 The Since cells are checked, not just written: the `stranger` CI job (`scripts/stranger.mjs pi-durable-disk`, spec
 `scripts/stranger/pi-durable-disk.json`) installs each keyless example's Since from npm the way the section above says,
-runs it and expects its `ok:` line; on macOS it installs 0.1.0-beta.14 at the least (the spec's `platformFloors`), and the
-macOS CI job runs the same walk on a Mac. An example whose version is above the registry's `latest` tag is skipped, with the
+runs it and expects its `ok:` line, at 0.1.0-beta.32 at the least on Linux and macOS (the spec's `platformFloors`: the
+first release on pi 1.5.0, which the install line pins), and the macOS CI job runs the same walk on a Mac. An example whose version is above the registry's `latest` tag is skipped, with the
 reason printed; `node scripts/stranger.mjs pi-durable-disk --examples` runs just this check.
 
 ## Writing an example
