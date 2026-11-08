@@ -39,6 +39,12 @@ async function start(env) {
   child.stdout.on("data", (c) => (out += c));
   child.stderr.on("data", () => {});
   const exited = new Promise((r) => child.once("exit", r));
+  /** Its process group stopped, while alive, and its directory gone. */
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) process.kill(-child.pid, "SIGTERM");
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 15_000).unref())]);
+    await rm(root, { recursive: true, force: true });
+  };
   const base = await new Promise((resolve, reject) => {
     // Its output holds the server's token: never echoed, here or on a failure.
     const timer = setTimeout(() => reject(new Error("the server did not print its address in 60 s")), 60_000);
@@ -46,7 +52,7 @@ async function start(env) {
     const look = () => { const m = /^agentrun-serve on (http:\/\/[^\s/]+)/m.exec(out); if (m) { clearTimeout(timer); child.stdout.off("data", look); resolve(m[1]); } };
     child.stdout.on("data", look);
     look();
-  });
+  }).catch(async (error) => { await stop(); throw error; });
   const codes = () => [...out.matchAll(SETUP_LINE)].map((m) => m[1]);
   return {
     base,
@@ -66,11 +72,7 @@ async function start(env) {
       child.stdout.on("data", look);
       look();
     }),
-    stop: async () => {
-      if (child.exitCode === null && child.signalCode === null) process.kill(-child.pid, "SIGTERM");
-      await Promise.race([exited, new Promise((r) => setTimeout(r, 15_000).unref())]);
-      await rm(root, { recursive: true, force: true });
-    },
+    stop,
   };
 }
 

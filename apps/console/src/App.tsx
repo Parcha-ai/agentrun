@@ -130,6 +130,8 @@ export function App() {
       setSetupCode(code);
     };
     window.addEventListener("hashchange", take);
+    // And one opened before setup showed (while the session read was on its way), whose change came before this listened.
+    take();
     return () => window.removeEventListener("hashchange", take);
   }, [auth]);
   // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
