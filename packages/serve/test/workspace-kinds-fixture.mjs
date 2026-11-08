@@ -34,8 +34,8 @@ export const PROVIDERS = [
   entry({ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], mounts: [], metered: true, capabilities: [SANDBOX, LINUX_DESKTOP] }),
   entry({ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], mounts: [], metered: true, capabilities: [LINUX_DESKTOP] }),
   entry({ id: "phone-harness", label: "Phone harness", keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }] }),
-  entry({ id: "browserbase", label: "Browserbase", keys: [{ name: "BROWSERBASE_API_KEY", required: true }, { name: "BROWSERBASE_PROJECT_ID", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp"] }] }),
-  entry({ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp"] }] }),
+  entry({ id: "browserbase", label: "Browserbase", keys: [{ name: "BROWSERBASE_API_KEY", required: true }, { name: "BROWSERBASE_PROJECT_ID", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }] }),
+  entry({ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }] }),
 ];
 
 /** The module as the resolver takes it. */
