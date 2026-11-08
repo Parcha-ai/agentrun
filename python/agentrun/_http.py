@@ -12,11 +12,12 @@ import math
 import re
 import socket
 import ssl
+import threading
 import time
 from dataclasses import dataclass, field
 from email.message import Message
 from email.utils import parsedate_to_datetime
-from typing import Any, Iterator, Mapping, Optional, Sequence, Tuple, Type, cast
+from typing import Any, Iterator, List, Mapping, Optional, Sequence, Tuple, Type, cast
 from urllib.parse import quote
 
 from ._errors import AgentRunUsage
@@ -317,10 +318,11 @@ class Origin:
     port: int
 
     def connect(self, clock: _Clock, context: Optional[ssl.SSLContext]) -> http.client.HTTPConnection:
-        """A connection made here, not by http.client: the TCP connect and then the TLS handshake each get what is left
-        of the try's one clock, so the two together never take longer than the try."""
+        """A connection made here, not by http.client: the name's lookup, the TCP connect to each of its addresses and
+        then the TLS handshake each get what is left of the try's one clock, so together they never take longer than
+        the try."""
         connection = http.client.HTTPSConnection(self.host, self.port) if self.scheme == "https" else http.client.HTTPConnection(self.host, self.port)
-        sock = socket.create_connection((self.host, self.port), timeout=clock.left())
+        sock = _connect(_resolve(self.host, self.port, clock), clock)
         try:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             if self.scheme == "https":
@@ -331,6 +333,52 @@ class Origin:
             raise
         connection.sock = cast(Any, _Socket(sock, clock))
         return connection
+
+
+def _resolve(host: str, port: int, clock: _Clock) -> List[Tuple[Any, ...]]:
+    """The addresses of `host`, looked up within the try's time. getaddrinfo takes no timeout, so it runs on a thread of
+    its own, waited for as long as the try has left; past that the try is a timeout, and the lookup is left to end."""
+    found: List[Any] = []
+
+    def lookup() -> None:
+        try:
+            found.append(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM))
+        except BaseException as error:  # noqa: BLE001 - handed to the try, which names it by its code
+            found.append(error)
+
+    thread = threading.Thread(target=lookup, name="agentrun-resolve", daemon=True)
+    thread.start()
+    thread.join(clock.left())
+    if not found:
+        clock.expired = True
+        raise socket.timeout("timed out")
+    if isinstance(found[0], BaseException):
+        raise found[0]
+    addresses: List[Tuple[Any, ...]] = list(found[0])
+    if not addresses:
+        raise socket.gaierror(socket.EAI_NONAME, "no address")
+    return addresses
+
+
+def _connect(addresses: Sequence[Tuple[Any, ...]], clock: _Clock) -> socket.socket:
+    """A TCP connection to the first of `addresses` that takes one, each tried with what the try has left."""
+    failed: Optional[BaseException] = None
+    for family, kind, proto, _, address in addresses:
+        sock = socket.socket(family, kind, proto)
+        try:
+            sock.settimeout(clock.left())
+            sock.connect(address)
+            return sock
+        except (socket.timeout, TimeoutError):
+            sock.close()
+            if clock.end - time.monotonic() <= 0:
+                clock.expired = True
+                raise
+            failed = socket.timeout("timed out")
+        except OSError as error:
+            sock.close()
+            failed = error
+    raise failed or socket.gaierror(socket.EAI_NONAME, "no address")
 
 
 class Failure(Exception):
