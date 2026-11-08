@@ -16,15 +16,10 @@ const DEFAULT_SERVER = "https://api.modal.com:443";
 const SERVER = "https://modal-server.example.invalid:443";
 const TOKEN = { tokenId: "ak-server-url-test", tokenSecret: "as-server-url-test" };
 
-/**
- * The server the client modalClient builds with ModalClient holds, read after modalClient returned. The call carries
- * both shapes modalClient has taken: the token and server as options, and as the COMPUTER_MODAL_* environment it once
- * read. Each version reads its own and ignores the other's.
- */
+/** The server the client modalClient builds with ModalClient holds, read after modalClient returned. */
 async function serverOf(ModalClient) {
 	assert.equal(process.env.MODAL_SERVER_URL, undefined, "no ambient MODAL_SERVER_URL: modalClient would refuse it");
-	const env = { COMPUTER_MODAL_TOKEN_ID: TOKEN.tokenId, COMPUTER_MODAL_TOKEN_SECRET: TOKEN.tokenSecret, COMPUTER_MODAL_SERVER_URL: SERVER };
-	const client = await modalClient({ ...TOKEN, serverUrl: SERVER, env, ModalClient });
+	const client = await modalClient({ ...TOKEN, serverUrl: SERVER, ModalClient });
 	assert.equal(process.env.MODAL_SERVER_URL, undefined, "modalClient put MODAL_SERVER_URL back");
 	return client.profile?.serverUrl;
 }
