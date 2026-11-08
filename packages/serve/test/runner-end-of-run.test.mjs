@@ -97,6 +97,25 @@ test("the rows the end-of-run step returns land with the end, in its one commit"
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "proposed" }], "the step's row is stored with the end");
 });
 
+test("the learning hook on a pi run: its turn and proposal kept with the end, and one learning run queued", async (t) => {
+  const { server, start, until } = await setup(t);
+  const { createReflectHook } = await import("../dist/runner/reflect-hook.js");
+  const hook = createReflectHook({
+    facts: async (runId) => ({ learns: runId === "run-1", costUsd: 0 }),
+    promptFacts: async () => ({ active: 0, tools: [] }),
+    asked: async () => ({ asked: ["Follow the script."] }),
+    check: async ({ turn }) => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "s", notes: [{ file: "n.md", text: turn.answer }], asked: turn.asked } }),
+    newRunId: () => "run-1-learning",
+  });
+  await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), hook), "runner-a");
+  await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
+  const kept = await server.learning.proposal("run-1");
+  assert.equal(kept?.turn?.answer, "a note", "the turn's answer is kept with the end");
+  assert.equal(kept?.proposal?.state, "proposed");
+  const learning = await server.runs.get("run-1-learning");
+  assert.deepEqual(learning && [learning.agentId, learning.revisionId], ["agent-1", "rev-1"], "one learning run of the run's agent and revision");
+});
+
 test("a run whose step returns nothing stores no row beside its end", async (t) => {
   const { start, until, toldRows } = await setup(t);
   await start(loopWith(piSpec({ script: [{ say: "done" }, { say: "" }], tools: {}, hooks: quiet }), async () => undefined), "runner-a");
