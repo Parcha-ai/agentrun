@@ -8,7 +8,7 @@ import { isHeld, held } from "./skills.js";
 import { buildIndex, INDEX_FILE, INDEX_LINES, type LearnedNote, mergedNote, NOTE_FILE, parseNoteFile, supersede } from "./notes.js";
 import { mergeProblems, type Problem, supersededBy } from "./check.js";
 import type { IndexEntry, NoteText } from "./grade.js";
-import { FolderRefused, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, topOf, writeLearning } from "./folder.js";
+import { FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, topOf, writeLearning } from "./folder.js";
 import type { Workspace } from "../workspace/index.js";
 
 export type LearningChange =
@@ -27,6 +27,10 @@ export type LearningChange =
       supersede?: { path: string; by: string }[];
       /** Path to the blob the grader read; one that is another blob on main now is a conflict. */
       graded: Record<string, string>;
+      /** The commit the run started from (its pin's seed): a skill's or a draft's file that is not on main as it was on
+       *  it (a person retired or approved it, another run's merge changed it) is a conflict, never written over. The
+       *  script checks it on main as it commits. Optional, past COMMIT-API.md v1. */
+      seed?: string;
     }
   | {
       kind: "person";
@@ -96,9 +100,13 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
     if (!("pending" in done.result)) return done.result;
     return { ok: true, main: done.main!, commit: done.main!, files: done.snapshot?.log[0]?.commit === done.main ? done.snapshot!.log[0]!.files : [] };
   } catch (error) {
+    // The script's exit 4: a file changed since the seed is a conflict; a name held on main by a file that is no note
+    // (a create over it) is refused.
     if (error instanceof FolderRefused) {
-      return { ok: false, reason: "refused", problems: [...error.absent.map((path): Problem => ({ rule: "exists", path, detail: "the folder has a file by this name" })), ...error.same.map((path): Problem => ({ rule: "supersedes", path, detail: `${path} changed on main since it was read` }))] };
+      if (error.same.length) return { ok: false, reason: "conflict", problems: error.same.map((path): Problem => ({ rule: "supersedes", path, detail: `${path} changed on main after the run started` })) };
+      return { ok: false, reason: "refused", problems: error.absent.map((path): Problem => ({ rule: "exists", path, detail: "the folder has a note by this name" })) };
     }
+    if (error instanceof FolderTooLarge) return { ok: false, reason: "refused", problems: [{ rule: "too_large", detail: error.message }] };
     return { ok: false, reason: "unavailable", error: (error as Error)?.message ?? String(error) };
   }
 }
@@ -106,8 +114,6 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
 /** A run's merge on main as the snapshot has it: its files (the held ones pending), the notes it supersedes marked, and
  *  MEMORY.md rebuilt from what is active then. */
 async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snapshot: Snapshot | undefined, body: (path: string, oid: string) => Promise<string>): Promise<{ result: Computed; change?: FolderChange }> {
-  const conflicts = Object.entries(change.graded).filter(([path, oid]) => blobOf(snapshot, path) !== oid).map(([path]): Problem => ({ rule: "supersedes", path, detail: `${path} changed after the grade read it` }));
-  if (conflicts.length) return { result: { ok: false, reason: "conflict", problems: conflicts } };
   const held = new Set(change.held ?? []);
   // Each new note as main keeps it (mergedNote): its own origin, `status: pending` when held, the run's risky mark gone.
   // A skill's SKILL.md or a draft's README.md held: `status: pending` last in its front matter.
@@ -126,6 +132,12 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
     return Array.isArray(note) ? [] : [note];
   });
   const marks = change.supersede ?? [...supersededBy(fresh)].map(([path, by]) => ({ path, by }));
+  // The verdict was on the blobs the grade read: one this merge would write (mark or replace) that is another blob on
+  // main now is the caller's conflict, named by the note that would mark it. One it leaves alone (a held note marks
+  // nothing) is not written over, so it stands.
+  const touched = new Set([...marks.map((mark) => mark.path), ...change.files.map(({ path }) => path)]);
+  const conflicts = Object.entries(change.graded).filter(([path, oid]) => touched.has(path) && blobOf(snapshot, path) !== oid).map(([path]): Problem => ({ rule: "supersedes", path: marks.find((mark) => mark.path === path)?.by ?? path, detail: `${path} changed after the grade read it` }));
+  if (conflicts.length) return { result: { ok: false, reason: "conflict", problems: conflicts } };
   for (const { path, by } of marks) {
     if (!active.has(path)) refused.push({ rule: "supersedes", path: by, detail: `it supersedes ${path}, which is not an active note` });
     else files.set(path, supersede(await body(path, blobOf(snapshot, path)!), by));
@@ -152,7 +164,12 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
   files.set(INDEX_FILE, buildIndex([...notes.filter((note) => !marked.has(note.file)), ...written]));
   return {
     result: { pending: true },
-    change: { by: { run: change.runId, reason: change.reason }, writes: [...files].map(([path, text]) => ({ path, text })), absent: added.map((note) => note.file) },
+    change: {
+      by: { run: change.runId, reason: change.reason },
+      writes: [...files].map(([path, text]) => ({ path, text })),
+      absent: added.map((note) => note.file),
+      ...(change.seed ? { same: change.files.filter(({ path }) => !isNote(path)).map(({ path }) => ({ commit: change.seed!, path })) } : {}),
+    },
   };
 }
 

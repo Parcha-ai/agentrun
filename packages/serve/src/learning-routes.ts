@@ -18,10 +18,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, unstorable, WORKFLOWS_DIR } from "./learn/index.js";
-import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
+import { beforeRetire, blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { readJson } from "./files.js";
-import { currentLearning, holdsForOk, type ItemStatus, detailShown, learningWorkspace, type NoteRuns, notesView, PROPOSAL, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { currentLearning, holdsForOk, type ItemStatus, detailShown, learningFolderOf, type NoteRuns, notesView, PROPOSAL, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -70,11 +70,18 @@ const seenKey = (agentId: string, main: string) => `${agentId}\0${main}`;
 export const etagOf = (oid: string) => `"${oid}"`;
 const EMPTY: Page<never> = { items: [], total: 0, next_cursor: null };
 
+/** A folder failure as a route answers it, failing closed: a link in the folder is an error whose words name it, a
+ *  backend that cannot answer (or a body that changed twice as it was read) is 503. */
+function routeFailure(error: unknown): unknown {
+  if (error instanceof FolderBusy) return new ApiError("unavailable", error.message);
+  if (error instanceof FolderUnreadable) return error.link ? new Error(error.message) : new ApiError("unavailable", error.message);
+  return error;
+}
+
 /** A read of agent `agentId`'s folder: `read` over its snapshot and the bodies it names (learn/folder.ts readLearning),
- *  `none` for a folder never made or with no main yet. A body that changed twice as it was read is 503. */
+ *  `none` for a folder with no main yet; the folder ended after. */
 async function reading<T>(data: string, agentId: string, read: (folder: { ws: Workspace; snapshot: Snapshot; body: (path: string, oid: string) => Promise<string> }) => Promise<T>, none: () => T): Promise<T> {
-  const ws = await learningWorkspace(data, agentId);
-  if (!ws) return none();
+  const { workspace: ws, end } = learningFolderOf(data, agentId);
   try {
     return await readLearning(ws, async ({ snapshot, body }) => {
       if (!snapshot) return none();
@@ -82,8 +89,9 @@ async function reading<T>(data: string, agentId: string, read: (folder: { ws: Wo
       return read({ ws, snapshot, body });
     });
   } catch (error) {
-    if (error instanceof FolderBusy) throw new ApiError("unavailable", error.message);
-    throw error;
+    throw routeFailure(error);
+  } finally {
+    await end();
   }
 }
 
@@ -160,9 +168,9 @@ const statusBy = new Map<string, { sha: string; status: ReadonlyMap<string, Item
  *  with what a note supersedes. Built once per main (a list asks for many runs). A folder never made, or with no main,
  *  holds none; one whose snapshot cannot be read is undefined. */
 export async function statusesOf(data: string, agentId: string): Promise<ReadonlyMap<string, ItemStatus> | undefined> {
+  const folder = learningFolderOf(data, agentId);
   try {
-    const ws = await learningWorkspace(data, agentId);
-    const snapshot = ws ? await readSnapshot(ws) : undefined;
+    const snapshot = await readSnapshot(folder.workspace);
     if (!snapshot) return new Map();
     const known = statusBy.get(agentId);
     if (known?.sha === snapshot.main) return known.status;
@@ -177,6 +185,8 @@ export async function statusesOf(data: string, agentId: string): Promise<Readonl
     return status;
   } catch {
     return undefined;
+  } finally {
+    await folder.end();
   }
 }
 
@@ -334,7 +344,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
 /** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text), or POST .../retire or .../approve (`approve`;
  *  no body), as a person: the precondition, then the checks (a retire's and an approve's, the note's format alone: never
  *  its secrets), then one commit on main by the learning script (learn/folder.ts writeLearning), in the agent's queue,
- *  on the folder learningWorkspace checked: the note, and MEMORY.md rebuilt from main's notes with it, its message
+ *  on the agent's learning folder: the note, and MEMORY.md rebuilt from main's notes with it, its message
  *  `learning: <edited|created|retired|approved> by a person: <file>` and a `Changed-By: user` trailer (and
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
@@ -352,9 +362,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
   }
   type Written = { status: 200 | 201; file: string; text: string; etag: string };
   return withAgentRepo(data, agentId, async () => {
-    // The folder through learningWorkspace, as a run's merge reaches it: a link at the agent's home, its learning/ or
-    // its .git is refused (an error, nothing written), never followed.
-    const ws = (await learningWorkspace(data, agentId, { make: true }))!;
+    // The folder as a run's merge reaches it: a link in it is refused (an error naming it, nothing written), never
+    // followed.
+    const { workspace: ws, end } = learningFolderOf(data, agentId);
     try {
       const { result } = await writeLearning<Written>(ws, async ({ snapshot, body, bytes }) => {
         const main = snapshot?.main;
@@ -473,8 +483,10 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       return result;
     } catch (error) {
       if (error instanceof FolderRefused) throw new ApiError("precondition_failed", NOT_NOTE);
-      if (error instanceof FolderBusy) throw new ApiError("unavailable", error.message);
-      throw error;
+      if (error instanceof FolderTooLarge) throw refused([{ rule: "too_large", path: file, detail: error.message }]);
+      throw routeFailure(error);
+    } finally {
+      await end();
     }
   });
 }
@@ -526,8 +538,8 @@ export async function runDiff(data: string, run: Run, shown: Shown) {
     return Buffer.byteLength(patch) > PATCH_CAP ? { path, status, withheld: "too_large" } : shown.holds(patch) ? { path, status, withheld: "secret" } : { path, status, patch };
   };
   if (learning.merged) {
-    const ws = await learningWorkspace(data, run.agentId);
-    const diff = ws ? await readRunDiff(ws, run.id) : undefined;
+    const folder = learningFolderOf(data, run.agentId);
+    const diff = await readRunDiff(folder.workspace, run.id).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
     if (!diff || diff.merge !== learning.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
     return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }

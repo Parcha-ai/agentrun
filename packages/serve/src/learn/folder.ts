@@ -19,7 +19,9 @@
 // The snapshot's shape is SNAPSHOT.md's, v1 (tl-learning, 2026-11-09): what the learning routes and a run's seed read.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { isWorkspaceError, type Workspace } from "../workspace/index.js";
+import { lstat, mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { agentLearningFolder, DISK_DIR, isWorkspaceError, localWorkspace, type Workspace, WorkspaceError } from "../workspace/index.js";
 import { INDEX_FILE, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { learnedFront, learnedName, learnedPlace, learnedStatus, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
 
@@ -404,6 +406,84 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
 const withMain = (snapshot: Snapshot, main: string): Snapshot => JSON.parse(JSON.stringify(snapshot).replaceAll(ESCAPED_PLACEHOLDER, main)) as Snapshot;
 
 // ---------------------------------------------------------------------------------------------------------------------
+// The folder's Workspace: the seam ws-c3's learningWorkspace (E4c) replaces, with its signature and return value.
+
+/** Where an agent's learning folder is: Mode 1's local folder under the data directory (Mode 2's Archil disk is ws-c3's). */
+export type LearningPlace = { readonly mode: "local"; readonly agentId: string; readonly data: string; readonly log?: (line: string) => void };
+/** The folder's Workspace, and its end: called in a finally after every use (on Archil it sweeps the exec spill). */
+export type LearningFolder = { readonly workspace: Workspace; end(): Promise<void> };
+
+/** `dir` made where absent by a plain mkdir (never recursive, which would follow a link on the way), then checked by
+ *  lstat: a symbolic link there, or anything but a folder, refuses the folder whole. */
+async function folderLevel(data: string, dir: string, make: boolean): Promise<void> {
+  if (make) await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
+  const stats = await lstat(dir).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" && !make ? undefined : Promise.reject(error)));
+  if (stats?.isSymbolicLink()) throw new FolderUnreadable(true, `a link in the learning folder at ${dir.slice(data.length + 1)} can't be followed, so nothing learned is read or written; remove the link`);
+  if (stats && !stats.isDirectory()) throw new FolderUnreadable(false, `the learning folder's ${dir.slice(data.length + 1)} is not a folder`);
+}
+
+/**
+ * Agent `agentId`'s learning folder as a Workspace (Mode 1: `<data>/disk/agents/<agent>/learning`), made by the first
+ * write (a read makes nothing: a folder not made reads as no main yet), each level on the way checked, so a link there
+ * refuses it (the Local Workspace trusts its root and refuses a link
+ * anywhere below it). TODO(tl-places, ws-c3 E4c): their learningWorkspace({ mode, agentId, log, data | archil }) replaces
+ * this function, same signature, same return value; folderTestHooks.workspace stands in for it in tests.
+ */
+export function learningWorkspace(place: LearningPlace): LearningFolder {
+  if (folderTestHooks.workspace) return folderTestHooks.workspace(place);
+  const root = agentLearningFolder(place.data, place.agentId);
+  const levels: string[] = [];
+  for (let dir = root; dir.length > place.data.length && dir !== join(place.data, DISK_DIR, ".."); dir = dirname(dir)) levels.unshift(dir);
+  let made: Promise<Workspace> | undefined;
+  // A write makes the folder, each level checked; a read makes nothing: a level missing is NOT_FOUND (no main yet).
+  const open = async (make: boolean): Promise<Workspace> => {
+    if (make) {
+      return (made ??= (async () => {
+        for (const dir of levels) await folderLevel(place.data, dir, true);
+        await folderLevel(place.data, join(root, ".git"), false);
+        return localWorkspace(root);
+      })().catch((error: unknown) => { made = undefined; throw error; }));
+    }
+    if (made) return made;
+    for (const dir of levels) {
+      if (!(await lstat(dir).then(() => true, () => false))) throw new WorkspaceError("NOT_FOUND", "the learning folder is not made yet", { path: "" });
+      await folderLevel(place.data, dir, false);
+    }
+    return localWorkspace(root);
+  };
+  const READS = new Set(["read", "stat", "list", "grep", "mountSpec"]);
+  const call = <K extends "read" | "write" | "append" | "stat" | "list" | "mkdir" | "grep" | "remove" | "exec" | "mountSpec" | "attach">(name: K) =>
+    (async (...args: unknown[]) => ((await open(!READS.has(name)))[name] as (...a: unknown[]) => unknown)(...args)) as unknown as Workspace[K];
+  const workspace: Workspace = {
+    read: call("read"), write: call("write"), append: call("append"), stat: call("stat"), list: call("list"), mkdir: call("mkdir"), grep: call("grep"), remove: call("remove"), exec: call("exec"), mountSpec: call("mountSpec"), attach: call("attach"),
+    get process() { return localWorkspace(root).process; },
+  };
+  return { workspace, end: async () => undefined };
+}
+
+/** A learning folder this server cannot read or write: a link in it (`link`, its words naming it), or a backend that
+ *  cannot answer. Fails closed: nothing learned is read, nothing is written. */
+export class FolderUnreadable extends Error {
+  readonly link: boolean;
+  constructor(link: boolean, message: string) {
+    super(message);
+    this.name = "FolderUnreadable";
+    this.link = link;
+  }
+}
+
+/** A workspace failure as the folder's: ESCAPE (a link below the root, Local) or a read of a link (Archil's file API:
+ *  UNAVAILABLE naming a symbolic link) in words that name the link; any other UNAVAILABLE as the folder unreadable. */
+export function folderFailure(error: unknown): unknown {
+  if (error instanceof FolderUnreadable) return error;
+  if (isWorkspaceError(error, "ESCAPE") || (isWorkspaceError(error, "UNAVAILABLE") && /symbolic link/.test(error.message))) {
+    return new FolderUnreadable(true, `a link in the learning folder at ${(error as WorkspaceError).path || "its root"} can't be followed, so nothing learned is read or written; remove the link`);
+  }
+  if (isWorkspaceError(error, "UNAVAILABLE")) return new FolderUnreadable(false, `the agent's learning folder can't be read right now: ${(error as WorkspaceError).message}`);
+  return error;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Reading: the snapshot and the bodies it names, through the file API alone.
 
 /** A body that was not the snapshot's blob as it was read twice: a write is in flight. Routes answer 503. */
@@ -427,7 +507,7 @@ export async function readSnapshot(ws: Workspace): Promise<Snapshot | undefined>
     bytes = await ws.read(SNAPSHOT_FILE);
   } catch (error) {
     if (isWorkspaceError(error, "NOT_FOUND")) return undefined;
-    throw error;
+    throw folderFailure(error);
   }
   const value = JSON.parse(Buffer.from(bytes).toString("utf8")) as Snapshot;
   if (value?.v !== 1 || !isOidField(value.main) || !Array.isArray(value.notes) || !Array.isArray(value.skills) || !Array.isArray(value.workflows) || !Array.isArray(value.log) || !isOidField(value.index?.oid)) throw new Error("the learning folder's snapshot is not one this server reads (v1)");
@@ -462,7 +542,7 @@ async function bytesOf(ws: Workspace, path: string, oid: string): Promise<Buffer
     bytes = await ws.read(path);
   } catch (error) {
     if (isWorkspaceError(error, "NOT_FOUND")) throw new Mismatch();
-    throw error;
+    throw folderFailure(error);
   }
   if (blobOid(bytes) !== oid) throw new Mismatch();
   return Buffer.from(bytes);
@@ -505,7 +585,7 @@ export async function readRunDiff(ws: Workspace, run: string): Promise<RunDiff |
     bytes = await ws.read(`${DIFFS_DIR}/${run}.json`);
   } catch (error) {
     if (isWorkspaceError(error, "NOT_FOUND")) return undefined;
-    throw error;
+    throw folderFailure(error);
   }
   const diff = JSON.parse(Buffer.from(bytes).toString("utf8")) as RunDiff;
   if (diff?.v !== 1 || diff.run !== run || !isOidField(diff.merge) || !isOidField(diff.parent) || !Array.isArray(diff.files)) throw new Error(`the learning folder's diff of ${run} is not one this server reads (v1)`);
@@ -524,8 +604,9 @@ export const topOf = (snapshot: Snapshot | undefined): string[] => (snapshot ? [
 export const LEARNING_SH = readFileSync(new URL("./learning.sh", import.meta.url), "utf8");
 export const SCRIPT_FILE = `${HOST_DIR}/learning-${createHash("sha256").update(LEARNING_SH).digest("hex").slice(0, 8)}.sh`;
 
-/** Test seams, tests only: variables added to the script's environment (AGENTRUN_LEARNING_FAIL), and each exec's argv. */
-export const folderTestHooks: { env?: Record<string, string>; exec?: (argv: readonly string[]) => void } = {};
+/** Test seams, tests only: variables added to the script's environment (AGENTRUN_LEARNING_FAIL), each exec's argv, and
+ *  the folder's Workspace in place of learningWorkspace's (a spy, or another backend). */
+export const folderTestHooks: { env?: Record<string, string>; exec?: (argv: readonly string[]) => void; workspace?: (place: LearningPlace) => LearningFolder } = {};
 
 /** The script's environment, whole: exec inherits nothing. */
 const scriptEnv = (): Record<string, string> => ({
@@ -546,9 +627,9 @@ const scriptEnv = (): Record<string, string> => ({
 async function ensureScript(ws: Workspace): Promise<void> {
   const there = await ws.read(SCRIPT_FILE).then((bytes) => Buffer.from(bytes).toString("utf8"), (error: unknown) => {
     if (isWorkspaceError(error, "NOT_FOUND")) return undefined;
-    throw error;
+    throw folderFailure(error);
   });
-  if (there !== LEARNING_SH) await ws.write(SCRIPT_FILE, LEARNING_SH);
+  if (there !== LEARNING_SH) await ws.write(SCRIPT_FILE, LEARNING_SH).catch((error: unknown) => { throw folderFailure(error); });
 }
 
 /** One run of the script: `op` and its arguments, `stdin`. Its exit code and output; a run that could not finish (its
@@ -557,9 +638,12 @@ async function runScript(ws: Workspace, args: readonly string[], stdin?: Uint8Ar
   await ensureScript(ws);
   const argv = ["sh", SCRIPT_FILE, ...args];
   folderTestHooks.exec?.(argv);
-  const result = await ws.exec(argv, { env: scriptEnv(), timeoutMs: SCRIPT_TIMEOUT_MS, ...(stdin ? { stdin } : {}) });
+  const raw = await ws.exec(argv, { env: scriptEnv(), timeoutMs: SCRIPT_TIMEOUT_MS, ...(stdin ? { stdin } : {}) }).catch((error: unknown) => { throw folderFailure(error); });
+  // The port's ExecResult, in one line (ws-c3 renames code to exitCode).
+  const result = { code: raw.code, stdout: raw.stdout, stderr: raw.stderr, timedOut: raw.timedOut, truncated: raw.truncated };
   if (result.timedOut || result.code === null) throw new Error(`the learning script's ${args[0]} did not finish${result.timedOut ? ` in ${SCRIPT_TIMEOUT_MS / 1000} s` : ""}: ${result.stderr.trim().slice(0, 500)}`);
-  if (result.truncated) throw new Error(`the learning script's ${args[0]} said more than this server reads`);
+  // A cut stdout is never parsed: the folder is unavailable for this call.
+  if (result.truncated) throw new FolderUnreadable(false, `the learning script's ${args[0]} said more than this server reads`);
   return { code: result.code, stdout: Buffer.from(result.stdout), stderr: result.stderr };
 }
 const failed = (op: string, run: { code: number; stderr: string }) => new Error(`the learning script's ${op} failed (exit ${run.code}): ${run.stderr.trim().slice(0, 500)}`);
@@ -604,6 +688,18 @@ function snapshotLine(snapshot: Snapshot, placeholders: number): string {
   return json.replaceAll(ESCAPED_PLACEHOLDER, PLACEHOLDER);
 }
 
+/** The most stdin one exec of the script is given: what both backends are verified to carry byte for byte. */
+export const STDIN_MAX = 2 * 1024 * 1024;
+/** A write whose exec would carry more than STDIN_MAX: refused whole, nothing run. */
+export class FolderTooLarge extends Error {
+  readonly bytes: number;
+  constructor(bytes: number) {
+    super(`the write would hand the learning script ${bytes} bytes; one exec takes at most ${STDIN_MAX}`);
+    this.name = "FolderTooLarge";
+    this.bytes = bytes;
+  }
+}
+
 /** What one commit did: landed (its main and the snapshot written), stale (main is `main`, not the one it read:
  *  nothing was written), refused (a precondition failed on main: nothing was written), or landed without its files
  *  brought in line (main moved, no snapshot written). */
@@ -639,7 +735,9 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
   ];
   const stream = importStream(ref, base?.main, writes, change?.deletes ?? [], messageOf(change?.by).message, seconds);
   const args = base ? ["commit", base.main, ...(run ? [run] : [])] : ["init"];
-  const result = await runScript(ws, args, stdinOf(header, stream));
+  const stdin = stdinOf(header, stream);
+  if (stdin.length > STDIN_MAX) throw new FolderTooLarge(stdin.length);
+  const result = await runScript(ws, args, stdin);
   const said = result.stdout.toString("utf8").trim();
   if (result.code === 0 && /^[0-9a-f]{40,64}$/.test(said)) return { landed: true, main: said, snapshot: withMain(snapshot, said) };
   if (result.code === 3) return { stale: true, main: said || undefined };
@@ -656,11 +754,19 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
 /** The snapshot of `commit` as main would have it (the script's read at that commit), or undefined when the folder has
  *  no such commit. One exec, read-only: for a run's seed that is no longer main. */
 export async function snapshotAt(ws: Workspace, commit: string): Promise<Snapshot | undefined> {
+  return (await folderAt(ws, commit))?.snapshot;
+}
+
+/** `commit` as main would have it (snapshotAt) with the blobs its tree holds, by oid, as git gave them: one read-only
+ *  exec. Undefined when the folder has no such commit. */
+export async function folderAt(ws: Workspace, commit: string): Promise<{ snapshot: Snapshot; blobs: ReadonlyMap<string, Buffer> } | undefined> {
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
   const read = await runScript(ws, ["read", commit]);
   if (read.code === 1) return undefined;
   if (read.code !== 0) throw failed("read", read);
-  return snapshotOfRead(parseRead(read.stdout));
+  const parsed = parseRead(read.stdout);
+  const snapshot = snapshotOfRead(parsed);
+  return snapshot ? { snapshot, blobs: parsed.blobs } : undefined;
 }
 
 export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {

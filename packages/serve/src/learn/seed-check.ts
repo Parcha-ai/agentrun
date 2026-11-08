@@ -4,7 +4,8 @@
 // learning script at that commit.
 import { type Base, type Change, checkProposal, type Problem } from "./check.js";
 import { type DraftReader } from "./skills.js";
-import { readSnapshot, type Snapshot, snapshotAt, snapshotNotes, topOf } from "./folder.js";
+import { folderAt, readLearning, readSnapshot, type Snapshot, snapshotAt, snapshotNotes, topOf } from "./folder.js";
+import { INDEX_FILE } from "./notes.js";
 import type { Workspace } from "../workspace/index.js";
 
 /** What the seed holds as the checker reads it: every path at its top and in its learned folders, and its active notes.
@@ -45,4 +46,40 @@ export function makeProposalCheck(deps: { open: (agentId: string) => { workspace
       await end();
     }
   };
+}
+
+/** What a run is laid from at commit `seed` (a reopened run re-lays from its pin's): MEMORY.md, each active note and each
+ *  active skill's files, by path, each body checked against its blob id. From the snapshot and its bodies when its
+ *  main is `seed` (no exec); else one read-only exec of the script's `read` at that commit (git's tree and blobs).
+ *  `null` (a run that learns from an empty folder, no main yet): nothing. `gone` when the folder has no such commit,
+ *  `unavailable` when it cannot be read. */
+export async function readSeed(lw: Workspace, seed: string | null): Promise<{ ok: true; files: { path: string; text: string }[] } | { ok: false; reason: "unavailable" | "gone"; detail: string }> {
+  if (seed === null) return { ok: true, files: [] };
+  const laid = (snapshot: Snapshot) => [
+    ...(snapshot.index.bytes ? [{ path: INDEX_FILE, oid: snapshot.index.oid }] : []),
+    ...snapshot.notes.filter((note) => note.status === "active").map((note) => ({ path: note.file, oid: note.oid })),
+    ...snapshot.skills.filter((skill) => skill.status === "active").flatMap((skill) => skill.files.map(({ path, oid }) => ({ path, oid }))),
+  ];
+  try {
+    const now = await readSnapshot(lw);
+    if (now?.main === seed) {
+      const files = await readLearning(lw, async ({ snapshot, body }) => {
+        // The folder moved on as it was read: read at the seed below.
+        if (snapshot?.main !== seed) return undefined;
+        return Promise.all(laid(snapshot).map(async ({ path, oid }) => ({ path, text: await body(path, oid) })));
+      });
+      if (files) return { ok: true, files: [...files, ...(now.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) };
+    }
+    const at = await folderAt(lw, seed);
+    if (!at) return { ok: false, reason: "gone", detail: `the learning folder has no commit ${seed}` };
+    const utf8 = new TextDecoder("utf-8", { fatal: true });
+    const files = laid(at.snapshot).map(({ path, oid }) => {
+      const blob = at.blobs.get(oid);
+      if (!blob) throw new Error(`the learning folder's read at ${seed} holds no blob for ${path}`);
+      return { path, text: utf8.decode(blob) };
+    });
+    return { ok: true, files: [...files, ...(at.snapshot.index.bytes ? [] : [{ path: INDEX_FILE, text: "" }])].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) };
+  } catch (error) {
+    return { ok: false, reason: "unavailable", detail: (error as Error)?.message ?? String(error) };
+  }
 }
