@@ -129,6 +129,9 @@ jobs:
       - name: undici in this install is at or above its floor
         if: matrix.shard == 'checks'
         run: node scripts/check-undici.mjs
+      - name: Imports follow the layer direction
+        if: matrix.shard == 'checks'
+        run: npm run check:direction
       - if: matrix.shard == 'checks'
         run: node scripts/generate-schema.mjs --check
       - if: matrix.shard == 'checks'
