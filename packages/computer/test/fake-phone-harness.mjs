@@ -153,9 +153,13 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 				if (y < HEADER || y + ROW > SCREEN.height) continue;
 				rows.push(node("android.widget.LinearLayout", { clickable: "true", bounds: box([0, y, SCREEN.width, ROW]), ...pkg }, [node("android.widget.TextView", { text: title, "resource-id": "android:id/title", bounds: box([72, y + 16, 240, 32]), ...pkg })]));
 			}
+			// As a live Android 15 Settings shows it (run 4): the search entry is the list's first item, a clickable bar
+			// whose text is on a child, inside the scrollable list beside the rows.
+			const search = node("android.widget.LinearLayout", { "resource-id": "com.android.settings:id/search_action_bar", clickable: "true", bounds: box([16, 24, 328, 56]), ...pkg }, [
+				node("android.widget.TextView", { text: "Search settings", "resource-id": "com.android.settings:id/search_action_bar_title", bounds: box([72, 40, 200, 24]), ...pkg }),
+			]);
 			return node("android.widget.FrameLayout", { bounds: box(full), ...pkg }, [
-				node("android.widget.TextView", { text: "Search settings", "resource-id": "com.android.settings:id/search_action_bar_title", clickable: "true", bounds: box([16, 16, 328, 56]), ...pkg }),
-				node("androidx.recyclerview.widget.RecyclerView", { scrollable: "true", bounds: box([0, HEADER, SCREEN.width, SCREEN.height - HEADER]), ...pkg }, rows),
+				node("androidx.recyclerview.widget.RecyclerView", { scrollable: "true", bounds: box([0, 16, SCREEN.width, SCREEN.height - 16]), ...pkg }, [search, ...rows]),
 			]);
 		}
 		if (phone.screen === "page") {
@@ -196,7 +200,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const n = hit(x, y);
 		if (!n) return;
 		if (phone.foreground === LAUNCHER) return launch(SETTINGS);
-		if (phone.screen === "top" && n.attrs.text === "Search settings") return Object.assign(phone, { screen: "search", search: "" });
+		if (phone.screen === "top" && n.attrs["resource-id"] === "com.android.settings:id/search_action_bar") return Object.assign(phone, { screen: "search", search: "" });
 		if (phone.screen === "top" && n.cls === "android.widget.LinearLayout") return Object.assign(phone, { screen: "page", page: n.children[0].attrs.text });
 		if (phone.screen === "page" && n.attrs["content-desc"] === "Navigate up") phone.screen = "top";
 	}
