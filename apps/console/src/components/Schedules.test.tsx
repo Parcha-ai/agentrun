@@ -227,9 +227,9 @@ describe("a new schedule", () => {
     expect(t.issue("target.max_cost_usd")).toBe("A cost cap is needed: every run a schedule starts is capped.");
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
   });
-  it("shows each issue of the server's 422 under the field it names: a workflow agent under the agent", async () => {
-    const message = "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow.";
-    const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "not_allowed", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });
+  it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
+    const message = "the agent flow has no current revision";
+    const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "invalid", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });
     const t = await open(v2, { schedule: null });
     await t.set("cron", "30 1 * *");
     await t.set("agent", "flow");
