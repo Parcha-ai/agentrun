@@ -42,8 +42,12 @@ test("Mode 2 takes a remote box it holds a key for, and refuses one with no key 
     assert.deepEqual(resolvePlace(2, box(id), "agentic", all), { computer: id });
     assert.deepEqual(resolvePlace(2, box(id), "agentic", { docker: true, keyed: new Set(["daytona", "modal", "e2b"].filter((other) => other !== id)) }), { refused: `place sandbox asks for ${id}, and this server holds no key for it: add its key, or pick another place.` }, id);
   }
-  assert.deepEqual(resolvePlace(2, box("docker"), "agentic", all), { computer: "docker" });
-  assert.deepEqual(resolvePlace(2, box("docker"), "agentic", none), { refused: "place sandbox asks for Docker, and Docker is not answering on this machine: start Docker, or run this agent with place runner." });
+});
+
+test("Mode 2 refuses docker in words, whether Docker answers or not: the run's folder is on the disk, never mounted here", () => {
+  const words = "place sandbox asks for Docker, and in Mode 2 the run's folder is on the owner's disk, which this server never mounts: a local Docker computer has nothing to bind. Use a remote computer, or place runner.";
+  assert.deepEqual(resolvePlace(2, box("docker"), "agentic", all), { refused: words });
+  assert.deepEqual(resolvePlace(2, box("docker"), "agentic", none), { refused: words });
 });
 
 test("a box no provider has is refused in words, in either mode", () => {
