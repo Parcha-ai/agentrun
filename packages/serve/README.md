@@ -1662,7 +1662,9 @@ this App's id) and as GitHub, asked with the App's JWT, bears it out: `X-GitHub-
 event's signed body sent as one changes nothing. GitHub out of reach when an event is checked answers it `503`, so
 GitHub shows the delivery failed and it can be sent again; and the list is repaired from GitHub's own installations at
 the server's start and when `GET /v2/integrations/github` is read (at most once a minute), by the same rule: none left
-turns the github triggers off, one dropped only shrinks it.
+turns the github triggers off, one dropped only shrinks it. A list that an event or the install redirect wrote while
+GitHub was asked is not overwritten by GitHub's older answer: the repair asks once more, and leaves the list as it is
+when it moved again. A server that closes stops its repair, which writes nothing after.
 `GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
 
 A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a

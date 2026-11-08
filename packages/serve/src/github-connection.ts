@@ -84,6 +84,13 @@ export function startedHere(cookies: string | undefined, port: number | undefine
 export class GitHubConnection {
   constructor(private readonly settings: SealedSettings | undefined) {}
 
+  /** Bumped by every write of the connection or its installations (an event, the installed redirect, a repair): a
+   *  repair reads it before it asks GitHub for the list, and takes the answer only when it has not moved. */
+  private written = 0;
+  get version(): number {
+    return this.written;
+  }
+
   private get(field: string): string | undefined {
     return this.settings?.get(SCOPE, field);
   }
@@ -126,6 +133,7 @@ export class GitHubConnection {
     settings.set(SCOPE, FIELDS.installations, "[]");
     // Last: a connection reads as there only once every field is.
     settings.set(SCOPE, FIELDS.appId, app.id);
+    this.written++;
   }
 
   /** The installation list as `list`, sorted; whether it changed. */
@@ -133,23 +141,27 @@ export class GitHubConnection {
     const next = JSON.stringify([...list].sort((a, b) => a.id - b.id));
     if (next === JSON.stringify(installationsIn(this.get(FIELDS.installations)))) return false;
     this.settings!.set(SCOPE, FIELDS.installations, next);
+    this.written++;
     return true;
   }
 
   addInstallation(installation: Installation): void {
     this.settings!.set(SCOPE, FIELDS.installations, withInstallation(installationsIn(this.get(FIELDS.installations)), installation));
+    this.written++;
   }
 
   /** Installation `id` gone from the list; how many are left. */
   removeInstallation(id: number): number {
     const list = installationsIn(this.get(FIELDS.installations));
     this.settings!.set(SCOPE, FIELDS.installations, withoutInstallation(list, id));
+    this.written++;
     return list.filter((i) => i.id !== id).length;
   }
 
   /** The connection gone from this server: every field. The App itself stays on GitHub. */
   remove(): void {
     this.settings?.remove(SCOPE);
+    this.written++;
   }
 }
 
@@ -323,24 +335,68 @@ export class GitHubConnect {
 
   /** When the list was last repaired from GitHub's (reconcile). */
   private reconciled = 0;
+  /** Aborted as the server closes: a repair's GitHub calls stop waiting, and it writes nothing after. */
+  private readonly stopping = new AbortController();
+  /** The repairs under way, which close waits for. */
+  private readonly repairs = new Set<Promise<void>>();
 
   /** The installation list repaired from GitHub's own (GET /app/installations with the App's JWT, every page; a suspended
    *  one is not listed), at most once a minute unless `force`: a missed or refused installation event is put right at the
    *  next read of the connection, and at the server's start. The same rule as an event's: a list that comes to hold none
-   *  turns every github trigger off (`turnOff`); one dropped only shrinks it. GitHub out of reach leaves it as it is. */
-  async reconcile(turnOff: (detail: string) => number, { force = false }: { force?: boolean } = {}): Promise<void> {
+   *  turns every github trigger off (`turnOff`); one dropped only shrinks it. GitHub out of reach leaves it as it is, and
+   *  so does a list written meanwhile (an event, the installed redirect), asked once more first: GitHub's answer is
+   *  older than that write. Never rejects; after close it does nothing. */
+  reconcile(turnOff: (detail: string) => number, { force = false }: { force?: boolean } = {}): Promise<void> {
+    if (this.stopping.signal.aborted) return Promise.resolve();
+    const repair = this.repair(turnOff, force).catch((error: unknown) => {
+      if (!this.stopping.signal.aborted) this.options.say({ condition: "github_installations_unrepaired", reason: (error as Error).message });
+    });
+    this.repairs.add(repair);
+    void repair.finally(() => this.repairs.delete(repair));
+    return repair;
+  }
+
+  /** The repairs stopped: their GitHub calls aborted, nothing written after this, and each one ended when it resolves. */
+  async close(): Promise<void> {
+    this.stopping.abort();
+    await Promise.all([...this.repairs]);
+  }
+
+  private async repair(turnOff: (detail: string) => number, force: boolean): Promise<void> {
     const now = this.options.now?.() ?? Date.now();
     const view = this.connection.view();
-    const credentials = this.connection.credentials();
-    if (!view || !credentials || (!force && now - this.reconciled < 60_000)) return;
+    if (!view || !this.connection.credentials() || (!force && now - this.reconciled < 60_000)) return;
     this.reconciled = now;
+    for (let asked = 1; ; asked++) {
+      const version = this.connection.version;
+      const found = await this.listed();
+      // Read for the App connected when it was asked: one replaced meanwhile takes nothing of it. Nothing after close.
+      if (!found || this.stopping.signal.aborted || this.connection.view()?.app_id !== view.app_id) return;
+      if (this.connection.version !== version) {
+        if (asked < 2) continue;
+        this.options.say({ condition: "github_installations_unrepaired", reason: "the list was written again while GitHub was asked twice; the next read repairs it" });
+        return;
+      }
+      const before = this.connection.view()?.installations ?? [];
+      if (!this.connection.setInstallations(found)) return;
+      const off = !found.length && before.length ? turnOff("GitHub holds no installation of the App left (deleted or suspended there): install the App again, then turn the trigger on.") : 0;
+      this.options.say({ condition: "github_installations_repaired", installations: String(found.length), was: String(before.length), triggers_off: String(off) });
+      return;
+    }
+  }
+
+  /** The App's installations as GitHub lists them now, not suspended; undefined when GitHub is out of reach (said) or the
+   *  server closes meanwhile. */
+  private async listed(): Promise<Installation[] | undefined> {
+    const credentials = this.connection.credentials();
+    if (!credentials) return undefined;
     const found: Installation[] = [];
     try {
       for (let page = 1; page <= 20; page++) {
-        const answer = await githubCall(this.options.api, `/app/installations?per_page=100&page=${page}`, { jwt: appJwt(credentials.appId, credentials.pem, now) });
+        const answer = await githubCall(this.options.api, `/app/installations?per_page=100&page=${page}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), signal: this.stopping.signal });
         if (answer.status !== 200 || !Array.isArray(answer.json)) {
           this.options.say({ condition: "github_unavailable", reason: `the App's installations: HTTP ${answer.status}` });
-          return;
+          return undefined;
         }
         for (const item of answer.json) {
           if (!isObject(item) || !Number.isSafeInteger(item.id) || !isObject(item.account) || typeof item.account.login !== "string") continue;
@@ -349,15 +405,10 @@ export class GitHubConnect {
         if (answer.json.length < 100) break;
       }
     } catch (error) {
-      this.options.say({ condition: "github_unavailable", reason: `the App's installations: ${(error as Error).message}` });
-      return;
+      if (!this.stopping.signal.aborted) this.options.say({ condition: "github_unavailable", reason: `the App's installations: ${(error as Error).message}` });
+      return undefined;
     }
-    // Read for the App connected when it was asked: one replaced meanwhile takes nothing of it.
-    if (this.connection.view()?.app_id !== view.app_id) return;
-    const before = this.connection.view()?.installations ?? [];
-    if (!this.connection.setInstallations(found)) return;
-    const off = !found.length && before.length ? turnOff("GitHub holds no installation of the App left (deleted or suspended there): install the App again, then turn the trigger on.") : 0;
-    this.options.say({ condition: "github_installations_repaired", installations: String(found.length), was: String(before.length), triggers_off: String(off) });
+    return found;
   }
 
   /** The App's installation tokens minted and not yet long past their hour, by token: every one is a secret this server

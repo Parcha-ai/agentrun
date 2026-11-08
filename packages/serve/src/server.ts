@@ -1180,9 +1180,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return row ? runs.statusOfRow(row) : null;
     },
   });
+  // A repair of the GitHub installations (below) stops before the triggers close, in a start that fails as in close.
+  stops.push(() => githubConnect.close());
   stops.push(async () => triggers.close());
   triggers.start();
-  // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down.
+  // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
+  // never rejects, and close (or a start that fails) aborts it and waits for it before the lock goes.
   void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
@@ -2751,6 +2754,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
     // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
     const mcpStopped = mcpServers.close();
+    // A repair of the GitHub installations under way stops waiting on GitHub and writes nothing from here: before the
+    // triggers close, so it never turns one off into a closed file.
+    const githubStopped = githubConnect.close();
     triggers.close();
     for (const [worker, { task }] of workers) {
       if (task === "plan") void worker.terminate();
@@ -2772,6 +2778,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
     await mcpStopped;
+    await githubStopped;
     // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
     lock.release();
   }
