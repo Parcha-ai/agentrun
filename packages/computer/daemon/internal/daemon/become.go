@@ -36,6 +36,9 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 	if !filepath.IsAbs(home) {
 		return fmt.Errorf("--user needs HOME to be an absolute path, the computer's user's own; it is %q", home)
 	}
+	if isolation.OwnNetwork && uid == 0 {
+		return fmt.Errorf("--own-network refuses uid 0 for init's programs: root shares its uid with every root process of the vendor's, its agent among them; give them a uid of their own")
+	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("--user needs init to start as root, to give HOME and %s to uid %d and then become it; it runs as uid %d, so the provider gives the user itself (Docker: --user)", filepath.Dir(socket), uid, os.Geteuid())
 	}

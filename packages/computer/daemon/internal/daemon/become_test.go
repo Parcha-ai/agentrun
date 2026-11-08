@@ -91,6 +91,19 @@ func TestBecomeRefusesARelativeHome(t *testing.T) {
 	}
 }
 
+// Root's programs share uid 0 with every root process of the vendor's, its agent among them: an isolated Become refuses
+// uid 0 before anything else, whoever runs it, not only when another root process happens to be listed at start.
+func TestBecomeWithOwnNetworkRefusesUidZeroBeforeAnything(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "work")
+	err := Become(0, 1000, home, filepath.Join(t.TempDir(), "run", "computerd.sock"), Isolation{OwnNetwork: true})
+	if err == nil || !strings.Contains(err.Error(), "uid 0") || !strings.Contains(err.Error(), "--own-network") {
+		t.Fatalf("an isolated Become(0:1000): %v; want a refusal that names uid 0 and --own-network", err)
+	}
+	if _, statErr := os.Stat(home); statErr == nil {
+		t.Fatalf("Become made %s before it refused", home)
+	}
+}
+
 func TestBecomeNeedsInitToStartAsRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root: the drop itself is a live case, never run in a test process")
