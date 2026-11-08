@@ -168,17 +168,32 @@ export interface BackgroundOptions {
 	cwd?: string;
 }
 
+/** The last start in flight on each client: a start waits for it, so the cap's count and the start it allows are one
+ *  step, and nine starts at once on one client start eight. Starts on another client (another process attached to
+ *  the same computer) are not held by this. */
+const starting = new WeakMap<ComputerClient, Promise<unknown>>();
+
+/** Runs `step` once every start before it on `client` has settled. */
+function inTurn<T>(client: ComputerClient, step: () => Promise<T>): Promise<T> {
+	const turn = (starting.get(client) ?? Promise.resolve()).then(step, step);
+	starting.set(client, turn.catch(() => undefined));
+	return turn;
+}
+
 /** bash_background: starts `command` (on a terminal with `tty: true`) and answers at once with its id. */
 export async function bashBackground(client: ComputerClient, args: { command?: unknown; tty?: unknown }, options: BackgroundOptions = {}): Promise<Result<ToolAnswer>> {
 	const command = typeof args.command === "string" ? args.command : "";
 	const tty = args.tty === true;
 	if (!command.trim()) return refuse("command is the shell command to start");
-	const listed = await backgrounds(client);
-	if (!listed.ok) return listed;
-	const running = listed.value.filter((info) => info.running).length;
-	if (running >= BACKGROUND_MAX) return fail("limit", `${running} background processes already run in this run's box, the most at once (${BACKGROUND_MAX}): end one with bash_signal (bash_list shows them), or wait for one to exit, then start this again.`);
-	const started = await startShell(client, { script: SCRIPT, marker: BACKGROUND_MARKER, command, cwd: options.cwd ?? WORKSPACE, ...(tty ? { pty: { ...BACKGROUND_TTY_SIZE } } : { stdin: true }) });
-	if (!started.ok) return fail(started.error.code, `the run's box did not start the process: ${started.error.message}`);
+	const started = await inTurn(client, async () => {
+		const listed = await backgrounds(client);
+		if (!listed.ok) return listed;
+		const running = listed.value.filter((info) => info.running).length;
+		if (running >= BACKGROUND_MAX) return fail("limit", `${running} background processes already run in this run's box, the most at once (${BACKGROUND_MAX}): end one with bash_signal (bash_list shows them), or wait for one to exit, then start this again.`);
+		const shell = await startShell(client, { script: SCRIPT, marker: BACKGROUND_MARKER, command, cwd: options.cwd ?? WORKSPACE, ...(tty ? { pty: { ...BACKGROUND_TTY_SIZE } } : { stdin: true }) });
+		return shell.ok ? shell : fail(shell.error.code, `the run's box did not start the process: ${shell.error.message}`);
+	});
+	if (!started.ok) return started;
 	const id = started.value.id.replace(/^p/, "");
 	const { pid } = started.value;
 	return ok({
