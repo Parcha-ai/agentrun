@@ -425,7 +425,7 @@ for (const harness of ["codex", "claude-agent"]) {
     // The gate's resume is AgentRun's row (origin "server"), never the person's message, and it carries the call's result.
     const resumed = rows.find((row) => row.origin === "server" && /^AgentRun: learned_workflow /.test(row.summary ?? ""));
     assert.deepEqual([resumed?.kind, resumed?.origin], ["phase", "server"], JSON.stringify(resumed));
-    assert.match(resumed.summary, /^AgentRun: learned_workflow ran once you allowed it$/, resumed.summary);
+    assert.match(resumed.summary, /^AgentRun: learned_workflow ran once you allowed it; its result went to the agent$/, resumed.summary);
     // What a person reads: the outcome and the result, with no call id (the model's message keeps it).
     assert.match(resumed.text, /^learned_workflow ran once you allowed it\. Its result:\n\{\\?"answer\\?":42\}/, resumed.text);
     assert.ok(!resumed.text.includes(view.pending.call_id), "no call id in the row's text");

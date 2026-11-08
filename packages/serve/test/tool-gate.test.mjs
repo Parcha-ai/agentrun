@@ -98,6 +98,20 @@ function ownRowsSay(rows, callId, summary, at) {
   assert.ok(own.some(([kind]) => kind === "tool_result"), `${at}: its result's row`);
   assert.deepEqual(own, own.map(([kind]) => [kind, summary, null]), `${at}: the call's own rows`);
 }
+/** A parked call as a person reads it, in seq order (a client folds a call's result into its call's step, at the call's
+ *  place): the call's own rows, then its approval row, then (once answered) the resume row. Nothing that says what came
+ *  of it reads before the approval row: the call's rows say only that it was held, and the outcome is the resume row's. */
+function readsInOrder(rows, callId, at, { answered = true } = {}) {
+  const bySeq = [...rows].sort((a, b) => a.seq - b.seq);
+  const own = bySeq.flatMap((r, i) => ((r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === callId ? [i] : []));
+  const ask = bySeq.findIndex((r) => r.kind === "tool_approval_requested" && r.tool_use_id === callId);
+  const shown = bySeq.map((r) => `${r.kind}: ${r.summary}`);
+  assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
+  if (!answered) return;
+  const resume = bySeq.findIndex((r) => r.origin === "server" && /^AgentRun: \S+ (ran once you allowed it|was refused)/.test(r.summary ?? ""));
+  assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
+  assert.deepEqual(own.map((i) => bySeq[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held`);
+}
 
 test("the gate's settings: ask offered where the kernel runs the approved call itself and for catalog tools; the owner's defaults; settings it takes, an MCP server's wildcard among them; web_search under ask and deny", () => {
   for (const name of Object.keys(REPLAY)) assert.ok(permissionsOf(name).includes("ask"), `${name}: the kernel runs its approved call`);
@@ -239,6 +253,7 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     assert.deepEqual([row?.tool_name, row?.tool_use_id], ["web_fetch", result.tool_use_id], `${at}: its row`);
     // Nothing ran: the call's own rows say it waits, never "Fetched …: ok".
     ownRowsSay(rows, result.tool_use_id, "Not run yet: it waits for your approval", at);
+    readsInOrder(rows, result.tool_use_id, `${at} (waiting)`, { answered: false });
     Object.assign(run, { approval: view.pending.id, callId: result.tool_use_id });
   }
   assert.deepEqual(await dialled(), [], "nothing ran while they wait");
@@ -261,10 +276,12 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
   for (const run of runs) {
     const { message, resume, answer: final, view, rows } = await resumed(api, run.runId);
     const at = `${run.decision} on ${run.harness}`;
+    // Read in order first: the call held, your approval, then the outcome below it.
+    readsInOrder(rows, run.callId, at);
     // Its row is the server's (#1656's origin, as a raised cap's follow-up), and reads as the approval's outcome: what
     // ran, or what was refused.
     assert.equal(resume.origin, "server", `${at}: the server's row`);
-    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it" : `AgentRun: web_fetch was refused: you declined it: ${note}`, at);
+    assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it; its result went to the agent" : `AgentRun: web_fetch was refused: you declined it: ${note}`, at);
     // The model's message keeps the call's id (pi echoes its first line below); what a person reads on the row is the
     // outcome and the result or refusal, with no call id and no "[tool approval]" head.
     const head = `[tool approval] This answers your web_fetch call ${run.callId} (arguments {"url":"http://public.example/"}), which waited for a person's approval; it is not a new message from them.`;
@@ -278,7 +295,7 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     // The model's own words may quote what it read (pi's faux model echoes the message); every row the server writes may not.
     assert.deepEqual(rows.filter((r) => r.kind !== "final_answer" && r.kind !== "text_block" && String(r.summary ?? "").includes(run.callId)).map((r) => r.summary), [], `${at}: no summary of the server's names the call id`);
     assert.equal(resumeRows(rows).length, 1, `${at}: one message resumed it`);
-    ownRowsSay(rows, run.callId, run.decision === "allow" ? "Allowed: its result is in the message that resumed the run" : "Not run: you declined it", at);
+    ownRowsSay(rows, run.callId, "Held for your approval", at);
     assert.equal(view.pending, null);
     // pi asked its model twice: the person's message, then the resume (the parked call's waiting answer ends the turn,
     // asking nothing). A third request is a real extra one, whatever the faux model made of it.
@@ -759,7 +776,9 @@ test("a person's message while an approval waits declines the call, with the mes
     if (harness === "pi") assert.match(final, new RegExp(`Reason: ${said}$`), "the model read the refusal and the message together");
     const row = rows.find((r) => r.kind === "tool_approval_requested");
     assert.match(row.summary, /^Declined by your message: web_fetch /, harness);
-    ownRowsSay(rows, row.tool_use_id, "Not run: your message declined it", harness);
+    // The resume row says it (below the approval's row); the call's own rows say only that it was held.
+    ownRowsSay(rows, row.tool_use_id, "Held for your approval", harness);
+    readsInOrder(rows, row.tool_use_id, `${harness}, declined by a message`);
     const late = await answer(runId, approval, { decision: "allow" });
     assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "deny" }], harness);
   }

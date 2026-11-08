@@ -344,6 +344,11 @@ export type Run = {
   turns: Turns;
   /** Its tool calls that waited for a person's approval, read from its store's entries, by id. */
   approvals?: Map<string, Approval>;
+  /** Each resume row's approval, by the row's id (stable: rows upsert by id), noted the first time the row comes in with
+   *  the gate's head (withApprovals). A row already rewritten no longer starts with that head, so an answer's restate
+   *  reads the link from here, never from the row's text. Rebuilt from the store's rows, which keep the head, when a
+   *  run is opened. */
+  resumeRows?: Map<string, string>;
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
@@ -622,12 +627,31 @@ const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval
 const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
 /** The row after each tool call that waited for approval, beside its result's row. Its arguments are redacted whole
  *  (`redact`, the Timeline's own: no held key), before any cut. */
-function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">, redact: (text: string) => string): TimelineEvent[] {
-  if (!run.approvals?.size) return [...rows];
+function withApprovals(given: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta" | "resumeRows">, redact: (text: string) => string): TimelineEvent[] {
+  if (!run.approvals?.size) return [...given];
+  // The approval rows are this function's own, made again below from each call's result row: rows it gave before (an
+  // answer's restate) come in without them, so it gives the same rows run on its own output.
+  const rows = given.filter((row) => row.kind !== APPROVAL_ROW);
   const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
   const waiting = waitingApproval(run);
   // The result rows of the calls that waited for approval: the park answered each with the gate's waiting text.
   const parkedResults = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id && byCall.has(row.tool_use_id)).map((row) => row.id));
+  // A resume row's approval: from the gate's head the first time the row comes in (noted by its id), and by that id after,
+  // once the row's text is the rewritten one (`fresh` false: it is given as it is, never rewritten twice).
+  const links = (run.resumeRows ??= new Map());
+  const resumeOf = (row: TimelineEvent): { approval: Approval; fresh: boolean } | undefined => {
+    if (row.kind !== "phase") return undefined;
+    if (row.text?.startsWith(RESUME_PREFIX)) {
+      const approval = resumedBy(row.text, byCall);
+      if (approval) links.set(row.id, approval.id);
+      return approval ? { approval, fresh: true } : undefined;
+    }
+    const linked = links.get(row.id);
+    const approval = linked === undefined ? undefined : run.approvals!.get(linked);
+    return approval ? { approval, fresh: false } : undefined;
+  };
+  // The approvals whose resume row is on the timeline: that row, after the approval's, says what came of the call.
+  const resumedIds = new Set(rows.flatMap((row) => { const found = resumeOf(row); return found ? [found.approval.id] : []; }));
   return rows.flatMap((row) => {
     // A Saved row (pi-durable-agent's, read from a write's arguments) of a call that waited: the park wrote nothing, a
     // deny or a withdrawal never will, and what an allowed call wrote is its resume's, so the row would say a file was
@@ -635,11 +659,15 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     const savedBy = row.kind === "phase" ? /^(.*):saved:\d+$/.exec(row.id)?.[1] : undefined;
     if (savedBy !== undefined && parkedResults.has(savedBy)) return [];
     // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
-    const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
+    const found = resumeOf(row);
+    if (found && !found.fresh) return [row];
+    const resumed = found?.approval;
     if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!, redact), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!, redact) }];
     const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
-    // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
-    const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
+    // The call's own rows: what it answered at the park is not what it did. A client folds them into the call's step, at
+    // the call's place above the approval row, so once the resume row (below the approval's) says what came of it they
+    // say only that it was held; before that, they say what came of the approval.
+    const called = own ? { ...row, summary: resumedIds.has(own.id) && own !== waiting ? HELD : parkedCallSays(own, run, waiting), tool_status: null } : row;
     if (row.kind === "tool_use") return [called];
     const approval = own;
     if (!approval) return [row];
@@ -664,8 +692,10 @@ function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: App
   if (given.decision === "withdrawn" || given.decision === "canceled")
     return given.superseded?.decision === "allow" ? `Allowed, then the run was ${ended}: no result of it reached the model` : `Not run: the run was ${ended} while it waited`;
   if (given.decision === "deny") return given.by === "message" ? "Not run: your message declined it" : "Not run: you declined it";
-  return approval.resolved ? "Allowed: its result is in the message that resumed the run" : "Allowed: it runs now";
+  return approval.resolved ? "Ran once you allowed it; its result went to the agent" : "Allowed: it runs now";
 }
+/** A parked call's own rows once its resume row says what came of it. */
+const HELD = "Held for your approval";
 /** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
 const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
   [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
@@ -675,7 +705,10 @@ const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approva
  *  shows as the person's own row. */
 function resumeSays(approval: Approval, given: { decision: string; by?: string; note?: string } | undefined, text: string, redact: (text: string) => string): string {
   const note = given?.decision === "deny" && given.by !== "message" && given.note ? scrubUrls(redact(given.note)).split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
-  return `${resumeOutcome(approval, given, text)}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
+  const outcome = resumeOutcome(approval, given, text);
+  // An allowed call that ran: where its result went (the outcome its own rows said before this row carried it).
+  const went = given?.decision !== "deny" && !outcome.endsWith(", and failed") ? "; its result went to the agent" : "";
+  return `${outcome}${went}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
 }
 /** `text` cut to `max` code points, an ellipsis last when cut: a pair of surrogates is never halved. */
 const clipPoints = (text: string, max: number): string => {
@@ -1623,7 +1656,8 @@ export class Runs {
    *  shown at once: an answer takes no new rows. */
   private restate(run: Run): void {
     if (!run.approvals?.size) return;
-    run.rows = withApprovals(run.rows.filter((row) => row.kind !== APPROVAL_ROW), run, this.redactor(run));
+    // The rows as served, run through again: withApprovals gives the same rows run on its own output.
+    run.rows = withApprovals(run.rows, run, this.redactor(run));
     this.show(run);
   }
 

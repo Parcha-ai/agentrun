@@ -79,7 +79,7 @@ const allowFake = (api) => api("PUT", "/settings/tools", { "mcp:fake/*": { permi
 async function resumeRowIsAgentRuns(api, runId, callId, tool, at) {
   const { rows } = await follow(api, runId, ["completed", "failed"]);
   const resume = rows.find((row) => row.origin === "server" && (row.summary ?? "").startsWith(`AgentRun: ${tool} `));
-  assert.deepEqual([resume?.kind, resume?.origin, resume?.summary], ["phase", "server", `AgentRun: ${tool} ran once you allowed it`], `${at}: ${JSON.stringify(resume)}`);
+  assert.deepEqual([resume?.kind, resume?.origin, resume?.summary], ["phase", "server", `AgentRun: ${tool} ran once you allowed it; its result went to the agent`], `${at}: ${JSON.stringify(resume)}`);
   assert.ok(!`${resume.summary} ${resume.text ?? ""}`.includes(callId), `${at}: no call id: ${resume.text}`);
   assert.ok(!rows.some((row) => row.kind === "user_message" && `${row.text ?? ""} ${row.summary ?? ""}`.includes("[tool approval]")), `${at}: never a "You" row`);
 }
