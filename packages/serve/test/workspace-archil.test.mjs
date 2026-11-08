@@ -495,12 +495,12 @@ test("archil: grep maps to the disk's grep: sorted, its stop reasons, a file as 
   await refused(workspace.grep("needle"), "UNAVAILABLE");
 });
 
-test("archil: mountSpec and attach are refused in words until the computer's helper mounts an Archil folder; nothing is called", async () => {
+test("archil: a workspace made without a region and a disk token refuses mountSpec and attach in words; nothing is called", async () => {
   const { disk, workspace } = fresh();
   for (const call of [() => workspace.mountSpec(), () => workspace.attach({}, { readBackOf: () => ({}) })]) {
     await assert.rejects(call(), (error) => {
       assert.equal(error.code, "REFUSED");
-      assert.match(error.message, /mounted by the computer's helper \(module D6\), not yet/);
+      assert.match(error.message, /only when it is made with its disk's region and its disk token/);
       return true;
     });
   }

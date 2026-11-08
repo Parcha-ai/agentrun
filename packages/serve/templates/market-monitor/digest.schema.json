@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "digest.schema.json",
+  "title": "Market monitor digest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["window", "quiet", "items", "digest", "delivery"],
+  "properties": {
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "description": "the lookback window the run covered, both ends inclusive",
+      "properties": {
+        "from": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "to": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+      }
+    },
+    "quiet": {
+      "type": "boolean",
+      "description": "true when nothing notable changed: items is then empty and digest says so in one line"
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["competitor", "category", "date", "claim", "so_what", "source_url", "confidence"],
+        "properties": {
+          "competitor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "the company as the owner named it, or \"Market\" for a topic item"
+          },
+          "category": { "enum": ["launch", "pricing", "hiring", "funding", "news"] },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "when it happened or was published, inside the window; for a pricing change seen by comparing pages, the date it was first seen changed"
+          },
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "what changed, in one line; a pricing change names the old and the new price"
+          },
+          "so_what": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "why it matters to the owner, in one line"
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://",
+            "description": "the page that shows the change"
+          },
+          "baseline_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://",
+            "description": "for a change found by comparing two versions of a page: the older version (an archive snapshot)"
+          },
+          "confidence": {
+            "enum": ["high", "medium", "low"],
+            "description": "high: the company's own page or a filing says it; medium: one credible outlet; low: inferred or one weak source"
+          }
+        }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000,
+      "description": "the digest as posted: Slack mrkdwn, grouped by company"
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["via", "status"],
+      "properties": {
+        "via": { "enum": ["slack", "email", "none"] },
+        "to": { "type": "string", "description": "the channel id or email address posted to" },
+        "status": {
+          "enum": ["posted", "returned_only", "failed"],
+          "description": "returned_only: no channel was set or no server for it is saved"
+        },
+        "error": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "dropped_repeats": {
+      "type": "array",
+      "maxItems": 30,
+      "description": "changes found this run that the previous digest already reported, left out of items",
+      "items": { "type": "string", "maxLength": 300 }
+    },
+    "unreachable": {
+      "type": "array",
+      "maxItems": 30,
+      "description": "sources that could not be read this run, as URLs, so a silent week is told apart from a blind one",
+      "items": { "type": "string", "maxLength": 500 }
+    }
+  }
+}
