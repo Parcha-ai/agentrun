@@ -19,7 +19,7 @@ const label = 'reads argv[1] only as a label for the script being run, and never
 const realpathForm = 'compares realpathSync(argv[1]) with its URL, which is symlink-safe; the published package allows Node 23 and 24.0-24.1, which have no import.meta.main';
 const reviewed = new Map([
   ['scripts/is-main.mjs', 'compares realpathSync(argv[1]) with its URL, symlink-safe, only where Node has no import.meta.main, to refuse the command rather than exit 0'],
-  ['packages/computer/src/conformance/cli.ts', realpathForm],
+  ['packages/computer/src/entry.ts', realpathForm],
   ['packages/pi-durable-disk/src/cli.ts', realpathForm],
   ['packages/pi-durable-agent/test/agent-store.test.mjs', childScript],
   ['packages/serve/test/graph-lockfree.test.mjs', childScript],

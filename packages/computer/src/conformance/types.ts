@@ -11,8 +11,8 @@ export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
- * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, or a provider
- * method that is optional (extend, stream), declared by being there.
+ * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
+ * stops a computer and keeps it, or a provider method that is optional (extend, stream), declared by being there.
  */
 export type Capability =
 	| Group
@@ -22,6 +22,7 @@ export type Capability =
 	| "lifetime:janitor"
 	| "user:root"
 	| "user:uid"
+	| "release:stop"
 	| "extend"
 	| "stream";
 

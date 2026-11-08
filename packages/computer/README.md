@@ -8,7 +8,7 @@ full VM, a machine. The protocol has two layers:
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
-  inside. It never runs commands itself: the daemon does. This package has the first one, for Docker.
+  inside. It never runs commands itself: the daemon does. This package has two: Docker, and Modal's VM runtime.
 
 ## What it does today
 
@@ -42,7 +42,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 - The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then `env` over them. Nothing else of the
   daemon's environment is passed on.
 - `user` is a name or `uid[:gid]`. A daemon without CAP_SETUID and CAP_SETGID cannot switch users and answers `denied`.
-  A Docker computer drops every capability, so there a command runs as the daemon's own user.
+  Init leaves itself no capability (below), so a command runs as the daemon's own user.
 - Requests run at once; replies may come in any order. A line over 1 MiB gets an error reply and the connection goes
   on. When the input ends, what still runs on that connection is cancelled: an `exec.run`, never a process.
 - Errors are `{code, message, data: {kind}}`, with kind `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`,
@@ -57,6 +57,47 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   user's alone, or is not writable by it.
   Every connection is served by the same daemon with one process table, which is how a process outlives the call and
   the connection that started it. A socket left by an init that is gone is replaced; a live one is refused.
+- `computerd init --deadline <time> --user <uid:gid>` is for a vendor that runs every computer as root and has no user
+  of its own to give (Modal). Init starts as root, makes `$HOME` and the socket's directory that user's alone (0700,
+  never through a symbolic link), and becomes uid:gid with no supplementary groups, dropping its privileges on the way
+  as below: from there it is the daemon a Docker computer runs. `--user 0:0` is root with no capability. Without
+  root, init refuses `--user` in words; a Docker computer is given its user by `docker run --user` and never passes it.
+- **Init drops its privileges itself, as any user, root included,** before it listens, so the line holds on every
+  vendor and not only where the provider drops capabilities (Docker: `--cap-drop ALL`). On every thread it sets
+  `no_new_privs`; drops from the bounding set each capability up to the kernel's last
+  (`/proc/sys/kernel/cap_last_cap`) that is still there; makes the uid change, with `--user`; empties the ambient set
+  and, by `capset`, the effective, permitted and inheritable sets (a uid of 0 keeps them through any uid change); and
+  reads all of it back. So init, every program it starts and every program those start hold no capability in any set
+  (`CapInh`, `CapPrm`, `CapEff`, `CapBnd` and `CapAmb` all `0000000000000000`, `NoNewPrivs` 1), and with the bounding
+  set empty not even a program root starts gains one. Root without a capability is root to the file system's
+  permission bits only: it owns what uid 0 owns. Emptying the bounding set needs CAP_SETPCAP; a capability already
+  gone is not dropped again, so a process started with an empty bounding set needs none. When a capability cannot be
+  dropped (EPERM, such as a user with a bounding set and no CAP_SETPCAP, as `go test` runs on a host), or the binary
+  links cgo (one call cannot reach every thread), init refuses to start, in words, and exits 1.
+- **That refusal is policy: init fails closed.** A vendor that starts the daemon as a non-root user with a bounding
+  set it cannot empty (a Kubernetes `runAsUser` without `capabilities: drop: ["ALL"]`, say, or `docker run --user`
+  without `--cap-drop ALL`) gets no computer, not a computer that runs anyway. The line this package holds is that
+  every set reads back zero, so no program in a computer holds a capability or can gain one. `no_new_privs` already
+  stops a gain through `exec` (a setuid-root file, file capabilities); the empty bounding set is the second,
+  independent limit on the same gain, and init cannot prove from inside that a bounding set it was handed is harmless
+  on every kernel and vendor it runs on. So it does not run with capabilities it cannot prove gone. A refusal is said, in words naming the capability and EPERM, and is
+  fixed where it starts: drop every capability for the user, or start init as root holding CAP_SETPCAP so it drops
+  them itself. A start that went on would be silent, and every program in the computer would inherit it.
+- **The daemon's Go tests run without cgo, as computerd is built.** Go builds with cgo wherever it finds a C compiler,
+  so a plain `go test ./...` makes test binaries that link cgo, and in one of those init refuses to start for cgo
+  (ENOTSUP) alone. The test entry of `cmd/computerd` and `internal/daemon` (`internal/nocgo`, from `TestMain`) builds
+  such a package's test binary again with `CGO_ENABLED=0 go test -c` and the `-tags` and `-ldflags` the first was
+  built with (read from its build info), runs it with the same arguments and
+  environment, and exits with its code; a binary without cgo runs its tests itself, and a `-race` build (which needs
+  cgo) skips the tests of the drop. On a host as another user the refusal for EPERM and both deadline tests run (init
+  takes its deadline and refuses for the bounding set). The root path (`TestBecome...`, `TestUnprivilegedLeavesRoot...`)
+  needs root with capabilities and skips there; CI's `computer-docker` job covers it with the Modal commands matrix
+  (`test/docker/modal-commands.docker.test.mjs`: root containers with Docker's default capabilities and `--cap-add
+  ALL`, as 0:0 and 1000:1000, and the refusal without CAP_SETPCAP), and computerd's end at its deadline with the
+  Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run as root in a container by hand.
+- `computerd probe [--connect <host:port>]...` prints one JSON line: the uid and gid it runs as, the kernel's release,
+  and which addresses a TCP connection reached, each tried for at most 3 s. A provider whose vendor reads nothing back
+  runs it through `exec.run` (below, Modal).
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
@@ -390,7 +431,8 @@ await docker.release(made.value, "delete");
   (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
   `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
   network is fixed at create, since Docker cannot move a container with no network onto one.
-- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`. A computer already gone is ok.
+- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`; `capabilities().release`
+  declares both. A computer already gone is ok.
 - Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
   any other container is `not_found`.
 
@@ -504,6 +546,244 @@ const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
 ```
 
+### Waiting for a vendor: `waitUntil`
+
+`waitUntil(read, done, { boundMs, signal?, minMs?, maxMs?, what?, describe? })` (in `src/wait.ts`) is the one bounded
+wait a provider uses when the vendor reads a state back later than it acted, such as a computer ended by a release. It
+reads at once, then after pauses that double from `minMs` (250 ms) to `maxMs` (5 s), never past `boundMs`, and
+returns the first state `done` accepts. Each read gets a signal that aborts at the bound or on the caller's abort; a
+read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
+the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
+vendor's types: Modal's `untilFinished`, its one wait after a terminate, is built on it, and Modal's release, a create
+that refuses its sandbox, and the Modal sweep all wait through that.
+
+## Modal
+
+```ts
+import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
+import { ModalProvider } from "@parcha/agentrun-computer";
+
+const modal = new ModalProvider({
+	sdk: new ModalClient(),
+	app: "computers",
+	// daemonPath: the daemon to upload; default this package's dist/computerd-linux-amd64 (npm run build:daemon)
+});
+const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
+```
+
+`ModalProvider` makes Modal sandboxes on the VM runtime only, through the slice of Modal's JS SDK named by `ModalSdk`
+(apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
+of that slice, and the live conformance file waits for a key (below).
+
+- **Capabilities.** Kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs` the
+  instance's cap (24 hours, or less with the `maxLifetimeMs` option), and user `uid` only, never `root` (below). Daemon
+  `pid1` because init is the sandbox's main process and its exit ends the computer (next item); no `extend` or
+  `stream`.
+- **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
+  alike): it waits for `/opt/agentrun/computerd` to be there and executable, then `exec`s `computerd init --deadline
+  <iso> --user <uid:gid>` with `HOME=/work`. Modal runs the command as the sandbox's main process and finishes the
+  sandbox when it exits, so after the `exec`, init is that process and the sandbox lives as long as init does. Whether
+  that process is PID 1 is not documented; init reaps as a subreaper either way. The wait is bounded (`uploadMs` plus
+  one call, 360 s by default): if no daemon arrives by then, the entrypoint says so on stderr and exits 3, which ends
+  the sandbox.
+
+  Right after create the provider runs `sh -c '<upload>' sh /opt/agentrun/computerd <sha256>` through
+  `sandbox.exec([...], { mode: "binary" })` and streams `dist/computerd-linux-amd64` into its stdin, in the SDK's own
+  256 KiB stdin chunks, then closes it. The script `cat`s stdin to `/opt/agentrun/.computerd.part`, makes it 0755,
+  prints `sha256 <hex>` (`sha256sum`, BusyBox's is fine), and only when that is the sha256 it was given moves the part
+  into place with `mv -f`. The rename is what the entrypoint waits for, so it never starts a half-written daemon or the
+  wrong one. The provider compares the printed sha256 with its own, as the Daytona provider does. A failed, aborted,
+  nonzero or mismatched upload, or one past `uploadMs` (5 min), terminates the sandbox and refuses in words. Then the
+  drift check connects as below, trying the bridge again until init listens, within `helloMs`. Exec's stdin goes
+  through Modal's command router, not the sandbox's network, so network none still works. The binary cannot go as an
+  argument: the SDK refuses more than 64 KiB of argv. `modalCommands()` (in `dist/modal.js`) returns the entrypoint,
+  upload and bridge exactly as sent. A Docker-gated test runs them in a root container with no network.
+- **Or as an image layer**, with `daemonImage`: `create` gives the spec's image `COPY --from=<daemonImage> /computerd
+  /opt/agentrun/computerd`, and the command is `computerd init` itself. The JS SDK refuses a COPY from local files but
+  takes `COPY --from` an image, so `daemonImage` is a registry image holding this version's daemon for linux/amd64 at
+  `/computerd`, pinned by digest (the constructor refuses a tag, and `daemonImage` with `daemonPath`). One is two
+  lines:
+
+  ```dockerfile
+  FROM scratch
+  COPY dist/computerd-linux-amd64 /computerd
+  ```
+
+  Either way the image also gets `ENV HOME=/work` and `WORKDIR <workdir>`, and the computer needs no network to get
+  its daemon.
+- **The daemon becomes the computer's user.** Modal containers always run as root and ignore an image's `USER`, so
+  `--user` is how a Modal computer gets the non-root default the protocol asks for (`1000:1000`, or the `user` option),
+  or the uid its spec asks for. Init leaves itself and every program no capability in any set (see Init, above): Modal
+  starts the container with every one, and a live run read `CapEff` `000001ffffffffff` from a root computer before the
+  daemon dropped them itself.
+- **A Modal computer never runs as root.** `check()` and `create()` refuse a spec whose `user` is root (`"0"`,
+  `"0:<gid>"`, `"root"`, `"root:<gid>"`) in words, before any Modal call, and `connect`, `attach` and `network`
+  refuse a computer whose spec tag records root before they run anything in it. Every connection is Modal's own exec
+  of `/opt/agentrun/computerd stdio`, outside the daemon, with Modal's root capabilities. A computer's user without
+  root cannot touch that path: after the upload `/opt/agentrun/computerd` is `0:0 755` (the part file is `chmod
+  0755` by the root upload, then renamed into place), `/opt/agentrun` is made by the root upload's `mkdir -p`, `0:0
+  755`, and `/` and `/opt` are the image's, `0:0 755` in Debian and Alpine; with `daemonImage`, `COPY --from` makes
+  `/opt/agentrun` and the daemon owned by root (COPY's default; the daemon keeps its mode from the daemon image), not
+  yet read back on Modal. Root with no capability still owns every one of them, so it could rename another program over
+  the daemon and the next connection would run it with Modal's capabilities; no file mode closes that for the owner
+  of every directory above the path. The Docker-gated `modal-commands` test shows both sides: uid 1000 cannot write
+  the daemon, `/opt/agentrun`, `/opt` or `/`; uid 0 with `CapEff` 0 replaces the daemon, and the next exec of the
+  bridge runs the replacement with the container's capabilities.
+- **The stream** is `computerd stdio` through `sandbox.exec([...], { mode: "binary" })`: its stdin and stdout are the
+  `DaemonClient`'s stream. Modal has no kill for an exec, so `close()` ends the bridge's stdin and waits up to 5 s for
+  it to exit. One deadline, `helloMs`, covers the exec's start (at most `callMs` of it) and the hello after it, so a
+  connection fails at `helloMs` in all. An exec given up on (past its bound, or on the caller's abort) goes on at
+  Modal; a bridge that lands after that has its stdin closed as it lands, so it ends.
+- **Lifetime is Modal's.** Every sandbox's `timeoutMs` is its lifetime, rounded up to whole seconds, so Modal ends it
+  then whatever runs in it. The longest is 24 hours, or less with the `maxLifetimeMs` option, declared as
+  `capabilities().maxLifetimeMs`; `check` refuses a longer one with `checkLifetime`, the rule every provider shares. The daemon's deadline ends it first. `sweep` refuses a Modal provider.
+- **Network.** `none` is `blockNetwork: true`; `open` passes no network field. Modal has no read-back of a sandbox's
+  policy, so `networkReadBack` is false and the daemon's probe stands for one: `create`, `attach` and `network(ref)` run
+  `computerd probe` through `exec.run`, as the computer's user, against public addresses (`1.1.1.1:443`,
+  `8.8.8.8:443`, `[2606:4700:4700::1111]:443`, or the `probeTargets` option). A computer with network none that
+  reaches any of them is terminated at create, refused by attach, and reads back as another network in words. This
+  shows those addresses are blocked, not every one. An allowlist is refused: Modal's CIDR allowlist (any protocol,
+  every port) and its domain allowlist (beta, TLS on 443 by SNI only) cannot be read back, so per ruling 9 an
+  allowlist counts only once the live bypass cases pass. A change of network is refused: blockNetwork cannot be
+  updated, and an allowlist only if one was set at create.
+- **The drift check** after create: `poll()` is null (it runs), `getTags()` reads back exactly the tags given, hello's
+  version, os, arch (`amd64`), kind (`linux`) and exact groups match, and the probe's uid:gid is the computer's user, its kernel is
+  not gVisor's (`4.19.0-gvisor`), and with network none it reached nothing. A mismatch, an abort or a timeout
+  terminates the sandbox and refuses in words. The SDK reads back no runtime, image or size: the probe's kernel is the
+  only runtime read-back, and image and sizes are what create recorded in a tag only the host's token writes.
+- **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
+  `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` is
+  refused: Modal has no pids limit.
+- **Tags.** A sandbox carries `agentrun.computer`, `agentrun.computer.name`, `agentrun.computer.deadline` and
+  `agentrun.computer.spec` (what create recorded), so a computer takes at most 6 labels of its own. `list(labels)` is
+  `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, so every one is `running`, and its
+  network is the one create recorded (`network(ref)` probes it). Modal still lists a sandbox for a while after its
+  terminate, so each one listed is polled, and one `poll()` reads finished, or that Modal no longer knows, is left out.
+- **attach** by id or labels runs the same drift check on what it finds and refuses a drifted computer in words, left
+  running. Its `spec.user` is the probe's uid:gid and its `spec.kind` hello's; the rest is as recorded.
+- **release** `delete` is `terminate()`, idempotent: a sandbox that has finished, or that Modal no longer knows, is ok.
+  Modal ends a sandbox asynchronously, so after the terminate `release` polls (`untilFinished`, on `waitUntil` above) until `poll()` reads
+  an exit code or Modal no longer knows the sandbox, with pauses that double from `releasePollMs` (500 ms) to 5 s,
+  within `releaseMs` (120 s) and the caller's signal. Past the bound it is a `timeout` that says what `poll()` last
+  read; it never reports a delete done that it did not read back. A caller that bounds release (the conformance
+  runner's `cleanupTimeoutMs`) gives it more than 120 s: the live suite passes 150 s.
+  `capabilities().release` is `["delete"]`, so `stop` is refused as `unsupported`, in words, and the sandbox runs on:
+  terminate is a sandbox's only end, and Modal has no stopped state. `release`, `connect` and
+  `network` act only on a sandbox whose tags name it as this provider's, with the ref's name.
+- **Every call is bounded** (`timeouts`: create 10 min, which covers the layer's build and scheduling; the upload 5
+  min; other calls 60 s; a connection, from the bridge's exec to hello, and the probe 30 s; a whole list 120 s; release's wait 120 s) and takes the caller's
+  signal. A create that gives up has its
+  sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
+  terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
+  is sent whatever the caller's signal; the wait takes it, so an aborted create returns at once, and a wait past the
+  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read.
+- **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
+
+### What every Modal fact rests on
+
+SDK: `modal-labs/modal-client@64880502f2ac3d39750c028b7ccfe21e10adbb45` (npm `modal` 0.11.1): paths are under `js/src/`
+unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
+
+| Fact | Citation |
+| --- | --- |
+| `sandboxes.create(app, image, params)`; `runtime`, `command`, `timeoutMs` (default 5 min), `workdir`, `cpu`, `cpuLimit`, `memoryMiB`, `memoryLimitMiB`, `blockNetwork`, `tags` | `sandbox.ts:356-474`, `808-867` |
+| `timeoutMs` must be a whole number of seconds; `cpuLimit` needs `cpu` and is at least it; the same for memory | `sandbox.ts:534-542`, `654-698` |
+| `timeoutMs` is the sandbox's maximum lifetime, sent as `timeoutSecs` (300 when unset) | `sandbox.ts:375-376`, `730-733` |
+| Runtime `"gvisor" \| "vm"`; unset lets Modal choose, so it is always sent | `sandbox.ts:242-258`; [guide/sandboxes#runtimes](https://modal.com/docs/guide/sandboxes#runtimes) |
+| VM: its own Linux kernel under KVM | [guide/sandbox-networking#security-model](https://modal.com/docs/guide/sandbox-networking#security-model) |
+| GPU sandboxes only with `runtime="gvisor"` | [guide/sandboxes#runtimes](https://modal.com/docs/guide/sandboxes#runtimes); [guide/sandbox-resources#gpu-sandboxes](https://modal.com/docs/guide/sandbox-resources#gpu-sandboxes) |
+| gVisor reports kernel `4.19.0-gvisor`; a VM's `uname -srn` reads `Linux modal 7.2.6` | [guide/troubleshooting](https://modal.com/docs/guide/troubleshooting); [guide/sandboxes#runtimes](https://modal.com/docs/guide/sandboxes#runtimes) |
+| Lifetime: default 5 minutes, up to 24 hours | [guide/sandboxes#timeouts](https://modal.com/docs/guide/sandboxes#timeouts) |
+| A sandbox finishes when its entrypoint exits, on terminate, at its timeout or idle timeout, or out of memory; no command runs after | [guide/sandboxes#lifecycle](https://modal.com/docs/guide/sandboxes#lifecycle) |
+| The command is the sandbox's entrypoint, "the main process" (default `sleep 48h`), sent as `entrypointArgs` | `sandbox.ts:384-388`, `730`; [guide/sandboxes#running-a-sandbox-with-an-entrypoint](https://modal.com/docs/guide/sandboxes#running-a-sandbox-with-an-entrypoint) |
+| Whether the main process is PID 1 | not documented (searched `modal-docs`, `js/src`, `modal-libmodal`: none) |
+| Modal containers always run as root; `USER` is ignored | [guide/existing-images#user](https://modal.com/docs/guide/existing-images#user) |
+| Images must be `linux/amd64` | [guide/existing-images](https://modal.com/docs/guide/existing-images) |
+| `images.fromRegistry(tag)`; `dockerfileCommands(commands)` adds a layer; a COPY from local context is refused, `COPY --from=` is not | `image.ts:196-210`, `351-401` |
+| Modal's Dockerfile lacks only `EXPOSE`, `HEALTHCHECK`, `LABEL`, `ONBUILD`, `STOPSIGNAL`, `VOLUME` | [guide/existing-images](https://modal.com/docs/guide/existing-images) |
+| `sandbox.exec(argv, { mode: "binary" })` gives `stdin` (`writeBytes`, `close`), `stdout`, `stderr` and `wait()` | `sandbox.ts:1272-1290`, `1881-1949`, `2774-2914`; `streams.ts:13-39`, `114-140` |
+| exec starts through the task command router; each stdin write is one `TaskExecStdinWrite` at the running offset, and close sends EOF | `sandbox.ts:1915-1926`, `3126-3154`; `modal_proto/task_command_router.proto:420-421` |
+| The SDK's own stdin chunk when it streams: 256 KiB | `task_command_router_client.ts:187-193` |
+| exec refuses more than 2^16 bytes of argv (ARG_MAX) | `sandbox.ts:1440-1458` |
+| No kill or signal for an exec | `modal_proto/task_command_router.proto:397-448` (no kill or signal RPC; exit status fields only) |
+| exec on a finished sandbox throws `ConflictError` ("has already finished") | `sandbox.ts:2062-2064`, `2149-2154` |
+| `sandboxes.fromId(id)` makes a handle with no call | `sandbox.ts:960-962` |
+| `sandboxes.list({ appId, tags })`: running sandboxes only (`includeFinished: false`), with at least those tags | `sandbox.ts:1116-1159`, `1223-1230` |
+| `getTags()`, `poll()` (null while running, else the exit code), `terminate()` | `sandbox.ts:1813-1838`, `2761-2772`, `2238-2252` |
+| `terminate()` returns once the request is sent; it waits for the sandbox to finish only with `{ wait: true }` | `sandbox.ts:1292-1296`, `2238-2251` |
+| `poll()` is `SandboxWait` with timeout 0: null until the server reports a result, then its exit code (137 when terminated) | `sandbox.ts:1491-1511`, `1974-1980`, `2761-2771` |
+| `sandboxes.fromId(id)` makes a handle with no call | `sandbox.ts:960-962` |
+| terminate sends SIGKILL: a terminated sandbox's code is 137 | [guide/sandboxes#return-codes](https://modal.com/docs/guide/sandboxes#return-codes) |
+| A sandbox carries up to 10 tags | [guide/sandboxes#tagging](https://modal.com/docs/guide/sandboxes#tagging) |
+| `apps.fromName(name, { createIfMissing })` | `app.ts:32-61` |
+| SDK errors are named (`NotFoundError`, `InvalidError`, `ConflictError`) | `errors.ts:94-123` |
+| `cpu` is physical cores, 1 core = 2 vCPUs; default request 0.125 cores and 128 MiB; limits cap the burst | [guide/sandbox-resources](https://modal.com/docs/guide/sandbox-resources) |
+| No pids limit in the SDK's params | `sandbox.ts:356-474` (searched: none) |
+| `blockNetwork` drops all outbound traffic, DNS included | [guide/sandbox-networking#outbound-access-control](https://modal.com/docs/guide/sandbox-networking#outbound-access-control) |
+| CIDR allowlist: any protocol, every port; domain allowlist: beta, TLS on 443 only, matched by SNI; the two combine | [guide/sandbox-networking](https://modal.com/docs/guide/sandbox-networking); `sandbox.ts:416-420` |
+| No count limit on CIDR entries is documented | [guide/sandbox-networking](https://modal.com/docs/guide/sandbox-networking) (searched: none) |
+| No read-back of a sandbox's network policy | `modal_proto/task_command_router.proto:434-437`, `modal_proto/api.proto:5936-5937` (setters only; searched both for a getter: none) |
+| `updateNetworkPolicy` cannot change a sandbox made with `blockNetwork`, and updates only an allowlist set at create | [guide/sandbox-networking#dynamic-policy-limitations](https://modal.com/docs/guide/sandbox-networking#dynamic-policy-limitations); `sandbox.ts:2631` |
+| No stopped state: terminate is the only end, so `release` declares `["delete"]` and refuses `stop` | `sandbox.ts:2238-2262`; [guide/sandboxes#lifecycle](https://modal.com/docs/guide/sandboxes#lifecycle) |
+| The client reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, else the active `~/.modal.toml` profile, itself | `config.ts:125-145`; `client.ts:123` |
+| A `tokenId` and `tokenSecret` passed to `ModalClient` replace both, and clear any OAuth credentials | `client.ts:124-148` |
+| The server is `MODAL_SERVER_URL`, else the profile's `server_url`, else `https://api.modal.com:443`; the profile is `MODAL_PROFILE`'s or the active one in `MODAL_CONFIG_PATH` or `~/.modal.toml` | `config.ts:76-82`, `126-143` |
+| `ModalClient` declares `endpoint` and never reads it; `getProfile` runs once, at construction, and the control-plane client is made then | `client.ts:51`, `123`, `175`, `281` |
+| With a profile's `sandboxV2`, create and list go to the V2 backend, and list then covers both | `sandbox.ts:808-815`, `884-889`, `1116-1122`, `1161-1175` |
+
+### What waits for a live probe
+
+Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal
+-w @parcha/agentrun-computer` runs the conformance suite (`test/modal/`), and should settle:
+
+- that the image's `sh` runs the entrypoint as the main process, and the upload streams in through exec's stdin with
+  network none, within `uploadMs`, and its sha256 reads back;
+- with `COMPUTER_MODAL_DAEMON_IMAGE` only: that Modal's builder takes `COPY --from=<registry image>@sha256:...` and
+  keeps the file's mode 0755;
+- that `computerd init` starts as root and `--user` drops as it does under Docker; whether it is PID 1 on the VM runtime
+  (init says so on stderr when it is not, and still reaps as a subreaper);
+- that a workdir other than `/work` exists before the command starts, and `/run` is writable there;
+- the tag value's longest length (the spec tag is JSON) and whether `getTags` answers for a terminated sandbox;
+- that `terminate` of a finished sandbox does not throw; a live run saw `list` still yield a sandbox right after its
+  terminate, which `release` and `list` now wait out and leave out (above);
+- the probe's view of `blockNetwork`, and the bypass cases before any allowlist is declared.
+
+Core `provider.stop` expects Modal's refusal (it declares no stop), and the Full `provider.janitor` case is skipped
+(`lifetime:janitor`, `release:stop`).
+
+`createProvider()` in `dist/conformance/modal.js` builds a real client, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1`,
+`COMPUTER_MODAL_TOKEN_ID` and `COMPUTER_MODAL_TOKEN_SECRET` set. It passes that pair to `ModalClient` explicitly, and
+never uses `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under those names, and with
+only them set it refuses, naming the `COMPUTER_MODAL_` pair. The key goes only to `COMPUTER_MODAL_SERVER_URL`, else
+the SDK's default `https://api.modal.com:443`: since the client cannot take a server, the module refuses while
+`MODAL_SERVER_URL` is set, and sets it to its choice only while it constructs the client, so neither `MODAL_PROFILE`
+nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. It also reads `COMPUTER_MODAL_APP`,
+and, if set, `COMPUTER_MODAL_DAEMON_IMAGE`; without it the daemon is uploaded from `dist/computerd-linux-amd64`, so a run
+publishes nothing. `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift` into a
+temporary directory, so Go must be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes: Modal's timeout
+is its lifetime, and a longer one is refused in words. The modal package is the host's; it is imported only when a
+provider is made.
+
+A live run is wrapped in the sweep, `dist/conformance/modal-sweep.js`. It reads only `COMPUTER_MODAL_TOKEN_ID`,
+`COMPUTER_MODAL_TOKEN_SECRET`, `COMPUTER_MODAL_APP` and `COMPUTER_MODAL_SERVER_URL`, and makes its client the same
+pinned way (an ambient `MODAL_SERVER_URL` is refused; it needs no live switch, since it makes nothing):
+
+```sh
+node packages/computer/dist/conformance/modal-sweep.js --before /tmp/modal-before.json
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
+node packages/computer/dist/conformance/modal-sweep.js --after /tmp/modal-before.json
+```
+
+`--before` records the app, the server (`COMPUTER_MODAL_SERVER_URL`, else the SDK's default) and the id of every
+sandbox in the app carrying `agentrun.computer=1` (`sandboxes.list({ appId, tags })`, which lists running sandboxes
+only, so a finished one needs no sweep). `--after` refuses, exit 2, before it lists anything, a file whose app or
+server is not the one the environment names now, or that names none: every computer of another app would read as
+new. Otherwise it terminates every such sandbox not in that file, reads each back through `sandboxes.fromId` and `poll()` until it reports an exit code or Modal no
+longer knows it (up to 60 s each), and prints one line, `{"swept":n,"gone":m,"stillThere":[ids]}`. It exits 0 when
+every swept sandbox has finished, 1 when one still runs, and 2 on a usage error, an unreadable before file or one of
+another app or server, a missing token or app, or a listing Modal refused, having terminated nothing. A sandbox in the before file is never
+named by any call.
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
@@ -552,12 +832,15 @@ What a provider module implements:
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 
-- **Core** is what every computer of its kind does; for a linux computer: hello and ping, `exec.run` as a user other than root with no effective or
-  permitted capabilities (the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
+- **Core** is what every computer of its kind does; for a linux computer: hello and ping, `exec.run` as a user other than root with no capability in
+  any set and `no_new_privs` (`CapEff`, `CapPrm`, `CapInh`, `CapBnd` and `CapAmb` all zero and `NoNewPrivs` 1 in
+  `/proc/self/status`, a field not reported failing; the run's spec asks for no user), a HOME that user owns and writes while `/` refuses it, the
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
   that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
   (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
-  `network` read-back and `release`, a change to a network the provider does not declare refused with the
+  `network` read-back and `release`, `release(ref, "stop")` as declared (a provider whose `capabilities().release` holds
+  `"stop"` lists the computer stopped until it is deleted; one that does not refuses stop as `unsupported`, in words,
+  and the computer stays listed and running), a change to a network the provider does not declare refused with the
   network unchanged (Core asks for no network the provider could give), a computer that does not run past its deadline
   (after a sweep, for a janitor provider), and the drift checks. Core passes when every Core case passes and the run leaves no computer
   behind.
@@ -579,13 +862,14 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   the screenshot, with the fixture's button found by its id and text).
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
-  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` (`lifetime:janitor`), and a spec that
+  truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers
+  (`lifetime:janitor`, `release:stop`), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
-  capabilities; and from the extension `touch.pinch` (two fingers logged moving apart), `lifetime.extend` (`extend`:
-  made with 45 s and extended to 120 s, at 60 s it answers ping with a process started earlier still running and
-  `list()` shows the new deadline; three extends are refused with the deadline unchanged: to an earlier
-  deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s, within the cap on its own but past
-  create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
+  capability in any set and `no_new_privs`, read as in Core; and from the extension `touch.pinch` (two fingers logged
+  moving apart), `lifetime.extend` (`extend`: made with 45 s and extended to 120 s, at 60 s it answers ping with a
+  process started earlier still running and `list()` shows the new deadline; three extends are refused with the
+  deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
+  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it) and `screen.stream`
   (`stream`: an https URL that answers 200; only its origin is ever reported).
 
 A case needs groups (declared by both `capabilities().groups` and hello), networks, the janitor, a user, or an optional
@@ -641,6 +925,7 @@ npm run build:daemon -w @parcha/agentrun-computer   # dist/computerd-linux-amd64
 npm test -w @parcha/agentrun-computer               # unit tests: no Go, no Docker
 cd packages/computer/daemon && go vet ./... && go test ./...
 AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
 ```
 
 Where Xvfb is on PATH, the Go tests also run the X client, and screen and input against the fixture, on a real X
@@ -653,7 +938,13 @@ them check what only Docker shows (the user, sizes, tmpfs mounts and hardening f
 mount, the socket directory, hello's arch against Docker's, `/work` as the user's home, the daemon's exit 0 on `docker
 stop` and at its deadline, attach by a container's name). They need Docker, `debian:bookworm-slim`
 and `alpine:3.20` pulled, both builds, and Go on PATH (the drift case builds a daemon of another version). They use
-the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail.
+the daemon for Docker's own architecture, and remove every container they make by its exact name, pass or fail. One of
+them, `test/docker/modal-commands.docker.test.mjs`, runs the Modal provider's entrypoint and upload exactly as sent, in
+a Debian and an Alpine root container with no network, and checks that init comes up as uid 1000 with no capabilities
+and `no_new_privs`, and answers hello over `computerd stdio`. Those root containers keep Docker's default
+capabilities, or every one (`--cap-add ALL`), with no `--cap-drop`, as Modal runs them: with `--user 0:0` and
+`--user 1000:1000`, `exec.run` reads every thread of init and its own status with all five sets zero and
+`NoNewPrivs` 1, and a root container without CAP_SETPCAP has init refuse to start, in words.
 
 ## Acknowledgements
 

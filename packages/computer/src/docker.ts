@@ -148,12 +148,14 @@ export class DockerProvider implements ComputerProvider {
 			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
 			network: ["none", "open"],
+			networkReadBack: true,
 			isolation: "container",
 			os: "linux",
 			daemon: "pid1",
 			groups: ["exec", "files", "processes", ...(this.#desktop ? DESKTOP_GROUPS : [])],
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			user: ["root", "uid"],
+			release: ["stop", "delete"],
 		};
 	}
 
