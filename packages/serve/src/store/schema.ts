@@ -234,6 +234,14 @@ export const STORE_DDL: readonly string[] = [
     ${json("body")},
     pinned_at INTEGER NOT NULL
   ) STRICT`,
+
+  // A running run's live view (the tool it runs now, its partial text): one row, outside the journal, overwritten in place
+  // by its runner's tick and dropped at its end.
+  `CREATE TABLE IF NOT EXISTS run_live (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    ${json("state")},
+    updated_at INTEGER NOT NULL
+  ) STRICT`,
 ];
 
 /** pi-durable's journal tables (its SqliteStorage schema, version 2, the `sleeping` task status included; MIT, see NOTICE),

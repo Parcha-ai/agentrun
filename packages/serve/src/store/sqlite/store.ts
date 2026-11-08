@@ -11,7 +11,7 @@ import {
   CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -185,6 +185,7 @@ class SqliteStore implements Store {
   readonly triggers: Triggers;
   readonly runs: Runs;
   readonly mcp: Mcp;
+  readonly live: Live;
   readonly #db: Connection;
   readonly #now: () => number;
   /** Each claim's one journal, until it is closed. */
@@ -410,6 +411,37 @@ class SqliteStore implements Store {
         }),
       releaseRefresh: async (name, holder) => {
         await db.write([{ sql: "UPDATE mcp_servers SET refresh_holder = NULL, refresh_until = NULL WHERE name = ? AND refresh_holder = ?", params: [name, holder] }]);
+      },
+    };
+
+    this.live = {
+      // One transaction for the tick; each row written only under its run's current epoch (the SELECT finds no run row
+      // for a stale claim, so nothing is inserted or changed).
+      put: (rows) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const written: string[] = [];
+          const fenced: string[] = [];
+          for (const { claim, state } of rows) {
+            const changed = await tx.runCounted(
+              `INSERT INTO run_live (run_id, state, updated_at) SELECT id, ?, ? FROM runs WHERE id = ? AND epoch = ?
+                ON CONFLICT (run_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+              json(state), at, claim.runId, claim.epoch,
+            );
+            (changed > 0 ? written : fenced).push(claim.runId);
+          }
+          return { written, fenced };
+        }),
+      read: async (runIds) => {
+        if (runIds.length === 0) return [];
+        const rows = await db.all<{ run_id: string; state: string; updated_at: number }>(
+          `SELECT run_id, state, updated_at FROM run_live WHERE run_id IN (${runIds.map(() => "?").join(", ")}) ORDER BY run_id`,
+          ...runIds,
+        );
+        return rows.map((row): LiveRow => ({ runId: row.run_id, state: JSON.parse(row.state), updatedAt: row.updated_at }));
+      },
+      drop: async (runId) => {
+        await db.write([{ sql: "DELETE FROM run_live WHERE run_id = ?", params: [runId] }]);
       },
     };
   }

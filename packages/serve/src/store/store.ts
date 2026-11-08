@@ -288,6 +288,23 @@ export interface Mcp {
   releaseRefresh(name: string, holder: string): Promise<void>;
 }
 
+/** A running run's live view as the store keeps it: `state` is JSON (the tool it runs now, its partial text). */
+export interface LiveRow {
+  readonly runId: string;
+  readonly state: unknown;
+  readonly updatedAt: number;
+}
+
+export interface Live {
+  /** A runner's tick: every changed run's row, written in ONE transaction, each fenced by its claim's epoch. A row whose
+   *  claim is stale is skipped (never written); the rest are written, overwriting each run's last. */
+  put(rows: readonly { readonly claim: Claim; readonly state: unknown }[]): Promise<{ written: string[]; fenced: string[] }>;
+  /** The rows of `runIds` that have one, in one query: the server's read. */
+  read(runIds: readonly string[]): Promise<LiveRow[]>;
+  /** The run's row goes, at its end. */
+  drop(runId: string): Promise<void>;
+}
+
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
  *  store); a runner never sets anything up, and refuses a schema version it does not know. */
 export type StoreRole = "server" | "runner";
@@ -298,6 +315,7 @@ export interface Store {
   readonly triggers: Triggers;
   readonly runs: Runs;
   readonly mcp: Mcp;
+  readonly live: Live;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
