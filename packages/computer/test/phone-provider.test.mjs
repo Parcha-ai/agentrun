@@ -222,9 +222,10 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	// socket the server bound to the phone (the fake's record keeps the code out); every spawned adb names the phone by
 	// its transport id.
 	const endpoint = `${ADB_HOST}:${22220 + 1}`;
-	assert.deepEqual(fake.serverCalls().slice(0, 3), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:unlock [code]"]);
+	// connect asks first (shell:echo ph-ok), unlocks only a transport that answers locked, then probes.
+	assert.deepEqual(fake.serverCalls().slice(0, 4), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:echo ph-ok", "host:transport-id:1 shell:unlock [code]"]);
 	assert.deepEqual(fake.adbCalls()[0], ["-t", "1", "shell", "echo ph-ok"]);
-	assert.deepEqual(fake.shells().slice(0, 2), [`unlock ${ADB_CODE}`, "echo ph-ok"]);
+	assert.deepEqual(fake.shells().slice(0, 3), ["echo ph-ok", `unlock ${ADB_CODE}`, "echo ph-ok"]);
 	assert.deepEqual(connected.value.hello, { version: provider.version, os: "android", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });

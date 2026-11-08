@@ -323,6 +323,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #now: () => number;
 	readonly #sleep: (ms: number) => Promise<void>;
 	readonly #daemonVersion: string;
+	/** How many open connections hold each endpoint's adb transport: the last to let go disconnects it. */
+	readonly #holders = new Map<string, number>();
 
 	constructor(options: PhoneProviderOptions) {
 		const { apiKey, platform = "android" } = options ?? ({} as PhoneProviderOptions);
@@ -635,33 +637,59 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (typeof host !== "string" || !/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isSafeInteger(port) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(code)) {
 			return fail("phone", `the phone harness gave ${ref.id} no adb link this provider can use (a host, a port and an unlock code)`);
 		}
-		// The endpoint and the code never reach an argv: the endpoint goes to the adb server over its socket, the code to
-		// the phone's sh through stdin, and every spawned adb names the phone by its transport id.
+		// The endpoint and the code never reach an argv: the endpoint goes to the adb server over its socket, the unlock as
+		// a shell service on a socket the server bound to the phone, and every spawned adb names the phone by its transport id.
 		const endpoint = `${host}:${port}`;
 		const server = (service: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS });
+		const onPhone = (service: string, id: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS, transport: id });
 		const connected = await server(`host:connect:${endpoint}`);
-		// From the connect request on, every failure lets the adb server drop the phone's transport before it answers.
-		const letGo = async <T>(failed: Result<T>): Promise<Result<T>> => {
+		if (!connected.ok) {
+			// This connect holds nothing: it drops the transport only when no other connection of this provider holds it.
+			if (!this.#holders.get(endpoint)) await server(`host:disconnect:${endpoint}`).catch(() => undefined);
+			return connected;
+		}
+		// The adb server keeps one transport per endpoint, and a second connect reuses it ("already connected"): every
+		// connection to the phone holds it, and only the last to let go disconnects it (live run 4).
+		this.#holders.set(endpoint, (this.#holders.get(endpoint) ?? 0) + 1);
+		let held = true;
+		const release = async () => {
+			if (!held) return;
+			held = false;
+			const left = (this.#holders.get(endpoint) ?? 1) - 1;
+			if (left > 0) return void this.#holders.set(endpoint, left);
+			this.#holders.delete(endpoint);
 			await server(`host:disconnect:${endpoint}`).catch(() => undefined);
+		};
+		const letGo = async <T>(failed: Result<T>): Promise<Result<T>> => {
+			await release();
 			return failed;
 		};
-		if (!connected.ok) return letGo(connected);
 		const said = connected.value.trim();
 		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return letGo(fail("phone", `adb could not reach the phone of ${ref.id}: ${said.split("\n")[0]}`));
 		const transport = await this.#transportOf(endpoint);
 		if (!transport.ok) return letGo(transport);
 		const id = transport.value;
 		const adb: AdbRun = (args, timeoutMs = ADB_TIMEOUT_MS, input) => this.#adb.run(["-t", id, ...args], { timeoutMs, ...(input === undefined ? {} : { input }) });
-		// The vendor's unlock is the shell command `unlock <code>`, once per connection (docs, guides/connect-adb): the
-		// shell service's own string, sent over the adb server's socket bound to the phone, so no argv holds the code.
-		// Probe 1 (2026-11-08) showed it live: "unlocked", and getprop answered after it.
-		const unlocked = await this.#adb.server(`shell:unlock ${code}`, { timeoutMs: ADB_TIMEOUT_MS, transport: id });
-		if (!unlocked.ok) return letGo(unlocked);
-		if (!/\bunlocked\b/.test(unlocked.value)) return letGo(fail("phone", `the phone of ${ref.id} refused its unlock code: ${unlocked.value.trim().split("\n")[0].replace(code, "[code]")}`));
-		const probe = await adb(["shell", "echo ph-ok"]);
-		if (!probe.ok) return letGo(probe);
-		if (!probe.value.stdout.toString("utf8").includes("ph-ok")) return letGo(fail("phone", `the phone of ${ref.id} stayed locked after its unlock code`));
-		const client = new AdbClient(id, adb, () => server(`host:disconnect:${endpoint}`), this.#sleep);
+		// Ask first: the vendor's lock is per TCP connection, so a transport another connection unlocked answers at once,
+		// and an `unlock` on it would reach the phone's own sh ("unlock: inaccessible or not found", live run 4).
+		const asked = await onPhone("shell:echo ph-ok", id);
+		if (!asked.ok) return letGo(asked);
+		if (!asked.value.includes("ph-ok")) {
+			if (!/^locked\b/.test(asked.value.trim())) return letGo(fail("phone", `the phone of ${ref.id} answered neither ph-ok nor locked: ${asked.value.trim().split("\n")[0]}`));
+			// The vendor's unlock is the shell command `unlock <code>`, once per connection (docs, guides/connect-adb): the
+			// shell service's own string, sent over the adb server's socket bound to the phone, so no argv holds the code.
+			// Probe 1 (2026-11-08) showed it live: "unlocked", and getprop answered after it.
+			const unlocked = await onPhone(`shell:unlock ${code}`, id);
+			if (!unlocked.ok) return letGo(unlocked);
+			// Another connect may have unlocked the transport meanwhile: the probe below is the judge, the answer only words.
+			const probe = await adb(["shell", "echo ph-ok"]);
+			if (!probe.ok) return letGo(probe);
+			if (!probe.value.stdout.toString("utf8").includes("ph-ok")) {
+				const words = unlocked.value.trim().split("\n")[0].replace(code, "[code]");
+				return letGo(fail("phone", /\bunlocked\b/.test(unlocked.value) ? `the phone of ${ref.id} stayed locked after its unlock code` : `the phone of ${ref.id} refused its unlock code: ${words}`));
+			}
+		}
+		const client = new AdbClient(id, adb, release, this.#sleep);
 		const opened = await client.open(this.#daemonVersion);
 		if (!opened.ok) {
 			await client.closed();
