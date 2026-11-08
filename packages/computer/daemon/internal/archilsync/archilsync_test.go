@@ -53,11 +53,15 @@ func (b box) serve(t *testing.T, sync func(context.Context) int) <-chan error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- archilsync.Serve(ctx, l, b.config(), sync) }()
+	finished := make(chan struct{})
+	go func() {
+		done <- archilsync.Serve(ctx, l, b.config(), sync)
+		close(finished)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-done:
+		case <-finished:
 		case <-time.After(2 * time.Second):
 			t.Error("the server did not stop")
 		}
@@ -249,6 +253,38 @@ func TestListenReplacesAStaleSocketAndFindsALiveOne(t *testing.T) {
 		t.Errorf("Listen while one serves = %v, want ErrServing", err)
 	}
 	_ = l.Close()
+}
+
+// The server sync-serve leaves behind takes the listener as a file, and serves it as its own.
+func TestAnInheritedListenerServes(t *testing.T) {
+	b := newBox(t)
+	l, err := archilsync.Listen(b.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := l.File()
+	_ = l.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inherited, err := archilsync.Inherit(file, b.config())
+	_ = file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- archilsync.Serve(ctx, inherited, b.config(), func(context.Context) int { return 9 }) }()
+	if code, err := archilsync.Ask(context.Background(), b.socket); err != nil || code != 9 {
+		t.Fatalf("Ask = %d, %v; want 9", code, err)
+	}
+	b.mount(t, false)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the inherited server did not exit when the mount went")
+	}
 }
 
 func TestAskWithNoServerIsNotFoundInWords(t *testing.T) {
