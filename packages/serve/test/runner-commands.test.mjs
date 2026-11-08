@@ -88,7 +88,8 @@ test("a parked run is released; an approve row brings it back to a runner, and t
   const approve = await sendCommand(server, "run-1", { kind: "approve", body: { approval: "a-1" } });
   await until(async () => (await server.runs.get("run-1")).state === "ended", "the resumed run ends");
   assert.equal(record.claims.length, 2);
-  assert.equal(record.claims[1].epoch, 2);
+  // The park's release bumped the epoch to 2: the second claim is 3.
+  assert.equal(record.claims[1].epoch, 3);
   assert.deepEqual(faux.loops[1].received.map((command) => command.id), [approve.id], "the second loop received the approve");
   assert.ok((await commandRow(server, "run-1", approve.id)).takenAt !== null);
 });

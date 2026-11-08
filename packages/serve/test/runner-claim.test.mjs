@@ -76,9 +76,10 @@ test("a runner that closes stops its loop where it can resume and releases the r
   assert.equal(faux.loops[0].stopCalls[0]?.kind, "shutdown", "the loop is stopped for a shutdown");
   assert.match(record.ops.join(" | "), /flush \| release run-1/, "flushed, then released");
   const second = await until(() => record.claims[1], "the other runner's claim", LEASE_MS * 10);
-  assert.deepEqual([second.runner, second.epoch], [other.name, 2]);
+  // The close's release bumped the epoch to 2: the other runner's claim is 3.
+  assert.deepEqual([second.runner, second.epoch], [other.name, 3]);
   assert.ok(second.at < leaseEnd, `claimed ${second.at - closedAt} ms after the close, before the old lease would have run out`);
-  assert.equal(faux.loops[1].claim.epoch, 2, "a new loop resumes it");
+  assert.equal(faux.loops[1].claim.epoch, 3, "a new loop resumes it");
 });
 
 test("a run that ends is flushed and released, and never claimed again", async (t) => {

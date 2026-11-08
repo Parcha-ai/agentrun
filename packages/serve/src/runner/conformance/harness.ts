@@ -166,7 +166,8 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   await until(() => holder.crashed, `the crash at ${point}`);
   await w.start("runner-b", { script, tools, hooks: quiet });
   const row = await w.ended("ended");
-  assert.equal(row.epoch, 2, "the second runner resumed it under its own claim");
+  // The first claim is 1, the second runner's is 2, and the release at its end bumps it to 3.
+  assert.equal(row.epoch, 3, "the second runner resumed it under its own claim, then released it");
   return { ...(await w.read()), ran };
 }
 
@@ -195,7 +196,8 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   assert.equal(exit[1], "SIGKILL", `the runner process dies at ${point} (it ended ${JSON.stringify(exit)}): ${stderr}`);
   await w.start("runner-b", { script: [{ call: tool }, { say: "done" }], tools, hooks: quiet });
   const row = await w.ended("ended");
-  assert.equal(row.epoch, 2, "the second runner resumed it under its own claim");
+  // The first claim is 1, the second runner's is 2, and the release at its end bumps it to 3.
+  assert.equal(row.epoch, 3, "the second runner resumed it under its own claim, then released it");
   return { ...(await w.read()), ran };
 }
 

@@ -56,7 +56,8 @@ test("a raise written while no runner is up waits in the store; the next runner'
   const after = startRunner({ store: observed(second, record), createLoop: faux.createLoop, name: "runner-b", ...TIMING });
   t.after(() => after.close());
   await until(async () => (await server.runs.get("run-1")).state === "ended", "the next runner's loop completes the run");
-  assert.deepEqual([record.claims.at(-1).runner, record.claims.at(-1).epoch], ["runner-b", 2]);
+  // The park's release bumped the epoch: the next claim is 3.
+  assert.deepEqual([record.claims.at(-1).runner, record.claims.at(-1).epoch], ["runner-b", 3]);
   assert.deepEqual(faux.loops.flatMap((loop) => loop.received.map((command) => command.id)), [raise.id], "the raise reached one loop, once");
   assert.ok((await commandRow(server, "run-1", raise.id)).takenAt !== null, "taken");
   await assert.rejects(sendCommand(server, "run-1", RAISE), { name: "RunFinal" }, "the same raise again changes nothing: the run is final");
@@ -75,7 +76,8 @@ test("two raises of a parked run at once bring it back once: one claim, one loop
 
   const [one, two] = await Promise.all([sendCommand(server, "run-1", RAISE), sendCommand(server, "run-1", RAISE)]);
   await until(async () => (await server.runs.get("run-1")).state === "ended", "the run ends");
-  assert.deepEqual(record.claims.map((claim) => claim.epoch), [1, 2], "claimed once more, not twice");
+  // 2 is the park's release; one more claim makes 3.
+  assert.deepEqual(record.claims.map((claim) => claim.epoch), [1, 3], "claimed once more, not twice");
   assert.equal(faux.loops.length, 2, "one loop resumes it");
   assert.deepEqual(faux.loops[1].received.map((command) => command.id), [one.id, two.id], "both raises reach that loop, in order");
   for (const id of [one.id, two.id]) assert.ok((await commandRow(server, "run-1", id)).takenAt !== null, `raise ${id} taken once`);
