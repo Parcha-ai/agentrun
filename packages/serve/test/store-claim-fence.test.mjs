@@ -26,10 +26,12 @@ test("a released claim writes nothing more: after release, its journal commit, r
   await queued(store);
   const command = await store.command("run-1", { kind: "raise", body: { usd: 5 } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  // A journal opened before the release.
+  const journal = store.journal(claim);
   await store.release(claim, { state: "parked" });
   const parked = await store.runs.get("run-1");
-  const journal = store.journal(claim);
   await assert.rejects(commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT), Fenced, "its journal's commit");
+  assert.throws(() => store.journal(claim), Fenced, "and no new journal of it");
   await assert.rejects(store.runs.update(claim, { state: "ended" }), Fenced, "its run update");
   await assert.rejects(store.take(claim, command.id), Fenced, "its take");
   await assert.rejects(store.retry(claim, command.id), Fenced, "its retry");

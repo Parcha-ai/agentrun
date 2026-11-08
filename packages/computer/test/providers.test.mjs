@@ -129,6 +129,11 @@ test("providerFromEnv() reads COMPUTER_<VENDOR>_* only: a bare vendor variable i
 		assert.doesNotMatch(error.message, /prod-(id|token)-must-not-be-used/);
 		return true;
 	});
+	await assert.rejects(providerFromEnv("e2b", { E2B_API_KEY: "fake-test-key" }), (error) => {
+		assert.match(error.message, /COMPUTER_E2B_API_KEY/);
+		assert.doesNotMatch(error.message, /fake-test-key/);
+		return true;
+	});
 	const docker = await providerFromEnv("docker", { COMPUTER_DOCKER_DAEMON: DAEMON });
 	assert.equal(docker.id, "docker");
 });
@@ -175,7 +180,7 @@ test("the conformance CLI's usage names every registry id, and an unknown id is 
 test("the conformance CLI names no vendor: no registry id is a literal in its source, so a new computer needs no CLI edit", () => {
 	const source = readFileSync(new URL("../dist/conformance/cli.js", import.meta.url), "utf8");
 	for (const id of providerIds) assert.doesNotMatch(source, new RegExp(`["'\`]${id}["'\`]`), `cli.js special-cases ${id}`);
-	assert.doesNotMatch(source, /conformance\/(docker|modal|daytona)|\.\/(docker|modal|daytona)\.js/, "and imports no vendor's module");
+	assert.doesNotMatch(source, /conformance\/(docker|modal|daytona|e2b)|\.\/(docker|modal|daytona|e2b)\.js/, "and imports no vendor's module");
 });
 
 test("a provider file by path runs before its registry line exists: the CLI takes a module that exports fromEnv() as it takes a registry entry", async () => {
