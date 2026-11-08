@@ -48,6 +48,7 @@ describe("AgentEditor, an agent's tool settings", () => {
     expect(page.row("web_search")).toBeTruthy();
     expect(page.row("web_fetch")).toBeNull();
     // A tool with no provider choice has no provider to pick: its row holds only its permission.
+    expect(page.row("read")).not.toBeNull();
     expect(page.row("read")?.querySelector('button[aria-haspopup=listbox][aria-label="read provider"]') ?? null).toBeNull();
     expect((await optionsOf(page.select("web_search"))).map((o) => o.text)).toEqual(["auto", "native", "Exa keyless (default)", "Parallel", "off"]);
     expect(valueOf(page.select("web_search"))).toBe("exa-keyless");
