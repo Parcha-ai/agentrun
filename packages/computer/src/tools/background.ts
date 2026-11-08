@@ -318,9 +318,8 @@ export async function bashInput(client: ComputerClient, args: { id?: unknown; te
 	const data = Buffer.from(text + eof);
 	const wrote = await client.call("process.write", { id: info.value.id, ...(data.length > 0 ? { data: data.toString("base64") } : {}), ...(close && !info.value.pty ? { close } : {}) });
 	if (!wrote.ok) {
-		if (wrote.error.code === "timeout") return fail("timeout", `process ${id.value} did not take its input: ${wrote.error.message} (a process that does not read its stdin fills its pipe at 64 KiB)`);
 		if (/stdin is closed/.test(wrote.error.message)) return refuse(`background process ${id.value}'s stdin is closed: an earlier bash_input closed it`);
-		return fail(wrote.error.code, `process ${id.value} did not take its input: ${wrote.error.message}`);
+		return fail(wrote.error.code, `process ${id.value} did not take its input: ${wrote.error.message} (a process that does not read its stdin fills its pipe at 64 KiB)`);
 	}
 	return ok({
 		text: `Wrote ${n(bytes)} bytes to background process ${id.value}'s stdin${close ? ", then closed it" : ""}. Read what it answers with bash_output.`,
