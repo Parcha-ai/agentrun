@@ -135,6 +135,15 @@ test("killed mid-request with no room left: the reopened run refuses the next re
   await assert.rejects(reopened.admit(modelRequest(SONNET, 10_000, 2_000)), (error) => error instanceof CapRefused && !error.forGood);
 });
 
+test("a request the cap held nothing for (no cap) and a crash cut reopens as an unknown spend, never a known $0", async () => {
+  const marks = memoryMarks();
+  const cap = createCap({ capUsd: () => undefined, marks });
+  await cap.admit(modelRequest(SONNET, 10_000, 1_000));
+  assert.equal(marks.all()[0].heldUsd, null, "no figure on its start mark");
+  const reopened = await openCap({ capUsd: () => undefined, marks });
+  assert.equal(reopened.spentUsd(), null);
+});
+
 test("a paid call's marks: its start holds its price, its end its charge", async () => {
   const marks = memoryMarks();
   const cap = createCap({ capUsd: () => 1, marks });

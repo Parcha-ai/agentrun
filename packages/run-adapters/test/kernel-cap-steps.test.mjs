@@ -55,6 +55,23 @@ test("a wait whose mark is not written throws and counts no wait: a later pause 
   assert.equal(steps.allWaiting(), false, "node-1 is not counted as waiting");
 });
 
+test("a raise's resume, a step's end or its stop landing while its wait's mark is written leaves no waiting entry behind", async () => {
+  for (const during of ["resume", "done", "stop"]) {
+    let land;
+    const marks = { write: () => new Promise((resolve) => (land = resolve)), read: async () => [] };
+    const steps = createStepWaits({ marks });
+    steps.working("node-1");
+    const waiting = steps.wait("node-1", refusal());
+    if (during === "resume") steps.resume();
+    else if (during === "done") steps.done("node-1");
+    else steps.stop("node-1", new CapRefused("spend_cap_reached: Not sent", { forGood: true, spentUsd: 0 }));
+    land();
+    await waiting;
+    assert.deepEqual(steps.waitingFor(), [], `${during} during the write`);
+    if (during === "resume") assert.equal(steps.allWaiting(), false, "the resumed step is not parked again");
+  }
+});
+
 test("a refusal for good is kept by its step's path, and its failure is a CapStop no collecting map takes for an item's", () => {
   const steps = createStepWaits();
   steps.working("map/3");

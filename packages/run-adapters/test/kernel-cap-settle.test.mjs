@@ -173,6 +173,27 @@ test("a paid call answered FAILED with no cost, or whose answer is lost, counts 
   assert.equal(await cap.settle(call.id, { end: "charged", usd: Number.NaN }), 0.15);
 });
 
+test("a settle whose end mark fails, then retried, books the step exactly once, and a reopen reads the same total", async () => {
+  const { cap, marks } = marked(1);
+  const request = modelRequest(SONNET, 10_000, 1_000);
+  await cap.admit(request);
+  marks.failNext();
+  await assert.rejects(cap.settle(request.id, { end: "answered", usd: 0.02 }), /end could not be recorded/);
+  assert.equal(await cap.settle(request.id, { end: "answered", usd: 0.02 }), 0.02, "the retry answers the first booking");
+  assert.ok(Math.abs(cap.spentUsd() - 0.02) < 1e-12, `booked once: ${cap.spentUsd()}`);
+  const reopened = await openCap({ capUsd: () => 1, marks });
+  assert.ok(Math.abs(reopened.spentUsd() - 0.02) < 1e-12, `a reopen reads the same: ${reopened.spentUsd()}`);
+});
+
+test("a zero-dollar priced tool settles as a known $0, and the next paid step is admitted", async () => {
+  const { cap } = capOn(1);
+  const free = toolRequest("parallel_extract", 0, { basis: "a later part of the same page" });
+  await cap.admit(free);
+  assert.equal(await cap.settle(free.id, { end: "charged", usd: null }), 0);
+  assert.equal(cap.spentUsd(), 0, "the spend stays known");
+  await cap.admit(modelRequest(SONNET, 1_000, 500));
+});
+
 test("a refused request's start mark is written before its error; a mark that fails still ends it", async () => {
   const { cap, marks } = marked(0.01);
   await assert.rejects(cap.admit(modelRequest(SONNET, 10_000, 1_000, { id: "refused-1" })), CapRefused);
