@@ -88,7 +88,7 @@ export type ComputerErrorCode =
 export type ComputerResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: { readonly code: ComputerErrorCode; readonly message: string } };
 
 export type ComputerFileType = "file" | "dir" | "symlink" | "other";
-export type ComputerStat = { readonly type: ComputerFileType; readonly size: number; readonly mode: number };
+export type ComputerStat = { readonly type: ComputerFileType; readonly size: number; readonly mode: number; readonly mtimeMs: number };
 export type ProcessStream = "stdout" | "stderr" | "pty";
 export type ProcessSignal = "TERM" | "INT" | "KILL" | "HUP";
 export type ProcessExit = { readonly running: boolean; readonly exitCode: number | null; readonly signal: string | null };
@@ -150,6 +150,8 @@ export const noProcesses: Processes = {
 
 /** The most bytes one computer read or write call moves (computerd's chunk). */
 export const COMPUTER_CHUNK = 512 * 1024;
+/** How many times a read of more than one chunk starts again when the file changed under it. */
+const READ_ATTEMPTS = 3;
 
 const CODES: Record<string, WorkspaceErrorCode> = {
   not_found: "NOT_FOUND", exists: "EXISTS", limit: "TOO_LARGE", timeout: "TIMEOUT",
@@ -175,9 +177,10 @@ const chunks = (bytes: Uint8Array): Uint8Array[] => {
  * and exec go to the computer at /workspace/<path>; grep goes to `base`; `process` is the computer's, with start's
  * cwd taken relative to the run's folder. attach() checks the mount before it makes one of these. `synced(path)`, when
  * given, runs after each file call that changed `path` (write, append, mkdir, remove): a bind mount's backend makes the
- * change durable on the host there, since nothing in the computer syncs a bind.
+ * change durable on the host there, since nothing in the computer syncs a bind. With "file" it syncs only that file's
+ * bytes (a write's temporary file, before the move).
  */
-export function attachedWorkspace(base: Workspace, computer: Computer, options: { readonly synced?: (path: string) => Promise<void> } = {}): Workspace {
+export function attachedWorkspace(base: Workspace, computer: Computer, options: { readonly synced?: (path: string, only?: "file") => Promise<void> } = {}): Workspace {
   const synced = options.synced ?? (async () => undefined);
   const at = (path: string): { rel: string; abs: string; segments: string[] } => {
     const segments = relativeSegments(path);
@@ -190,7 +193,7 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
     return where;
   };
   /** What is at `abs`, never following a link there; undefined when nothing is. */
-  const statOf = async (abs: string, rel: string): Promise<{ type: ComputerFileType; mode: number } | undefined> => {
+  const statOf = async (abs: string, rel: string): Promise<ComputerStat | undefined> => {
     const result = await computer.files.stat({ path: abs, follow: false });
     if (result.ok) return result.value;
     if (result.error.code === "not_found") return undefined;
@@ -219,20 +222,30 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
         throw new WorkspaceError("REFUSED", "a read's offset and length are whole numbers, 0 or more", { path: rel });
       }
       if (length !== undefined && length > READ_MAX) throw new WorkspaceError("TOO_LARGE", `a read returns at most ${READ_MAX} bytes`, { path: rel });
-      noLink(await statOf(abs, rel), rel);
-      const parts: Uint8Array[] = [];
-      let got = 0;
-      for (let next = offset; ;) {
-        const want = length === undefined ? COMPUTER_CHUNK : Math.min(COMPUTER_CHUNK, length - got);
-        if (want === 0) break;
-        const chunk = await value(computer.files.read({ path: abs, offset: next, length: want }), rel);
-        if (length === undefined && chunk.size - offset > READ_MAX) throw new WorkspaceError("TOO_LARGE", `${JSON.stringify(rel)} is ${chunk.size} bytes; a read returns at most ${READ_MAX} (read it in ranges)`, { path: rel });
-        parts.push(chunk.data);
-        got += chunk.data.length;
-        next += chunk.data.length;
-        if (chunk.eof || chunk.data.length === 0) break;
+      // One computer read is one version of the file. A read of more chunks than one checks the file's size and time
+      // before and after, and starts again when a write replaced it in between, so it never joins two versions.
+      for (let attempt = 1; ; attempt++) {
+        const before = await statOf(abs, rel);
+        noLink(before, rel);
+        const parts: Uint8Array[] = [];
+        let got = 0;
+        let calls = 0;
+        for (let next = offset; ;) {
+          const want = length === undefined ? COMPUTER_CHUNK : Math.min(COMPUTER_CHUNK, length - got);
+          if (want === 0) break;
+          const chunk = await value(computer.files.read({ path: abs, offset: next, length: want }), rel);
+          calls++;
+          if (length === undefined && chunk.size - offset > READ_MAX) throw new WorkspaceError("TOO_LARGE", `${JSON.stringify(rel)} is ${chunk.size} bytes; a read returns at most ${READ_MAX} (read it in ranges)`, { path: rel });
+          parts.push(chunk.data);
+          got += chunk.data.length;
+          next += chunk.data.length;
+          if (chunk.eof || chunk.data.length === 0) break;
+        }
+        if (calls <= 1) return Buffer.concat(parts);
+        const after = await statOf(abs, rel);
+        if (after !== undefined && before !== undefined && after.size === before.size && after.mtimeMs === before.mtimeMs) return Buffer.concat(parts);
+        if (attempt === READ_ATTEMPTS) throw new WorkspaceError("UNAVAILABLE", `${JSON.stringify(rel)} kept changing while it was read (${READ_ATTEMPTS} tries)`, { path: rel });
       }
-      return Buffer.concat(parts);
     },
 
     async write(path, data) {
@@ -242,15 +255,25 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
       noLink(existing, rel);
       if (existing !== undefined && existing.type !== "file") throw new WorkspaceError("REFUSED", `${JSON.stringify(rel)} is not a file`, { path: rel });
       // computerd replaces a file in place: the bytes go to a temporary file beside it, which a move puts in its place.
-      const temp = `${MOUNT_AT}/${[...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/")}`;
+      // The temporary file stays writable until its last chunk, which also sets the target's mode (a read-only file
+      // replaced in many chunks would refuse the next one). On a bind, its bytes are synced before the move, so the
+      // name never points at bytes a crash could lose.
+      const tempRel = [...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/");
+      const temp = `${MOUNT_AT}/${tempRel}`;
+      const mode = existing === undefined ? {} : { mode: existing.mode & 0o777 };
       try {
-        let first = true;
-        for (const part of chunks(bytes)) {
-          await value(first
-            ? computer.files.write({ path: temp, data: part, parents: true, ...(existing === undefined ? {} : { mode: existing.mode & 0o777 }) })
-            : computer.files.append({ path: temp, data: part }), rel);
-          first = false;
+        const parts = chunks(bytes);
+        let written = 0;
+        for (const [i, part] of parts.entries()) {
+          const last = i === parts.length - 1;
+          await value(i === 0
+            ? computer.files.write({ path: temp, data: part, parents: true, ...(last ? mode : {}) })
+            : last && existing !== undefined
+              ? computer.files.write({ path: temp, data: part, offset: written, ...mode })
+              : computer.files.append({ path: temp, data: part }), rel);
+          written += part.length;
         }
+        await synced(tempRel, "file");
         await value(computer.files.move({ from: temp, to: abs, overwrite: true }), rel);
       } catch (error) {
         await computer.files.remove({ path: temp }).catch(() => undefined);

@@ -497,12 +497,12 @@ class LocalWorkspace implements Workspace {
 
   async attach(computer: Computer): Promise<Workspace> {
     await checkMount(computer, await this.mountSpec());
-    return attachedWorkspace(this, computer, { synced: (path) => this.#syncUp(path) });
+    return attachedWorkspace(this, computer, { synced: (path, only) => this.#syncUp(path, only) });
   }
 
   /** What a computer changed at `path` in this folder made durable on the host: the entry itself when it is there (a
-   *  file or a folder, never through a link), then every folder from its own up to the root. */
-  async #syncUp(path: string): Promise<void> {
+   *  file or a folder, never through a link), then, unless `only` is "file", every folder from its own up to the root. */
+  async #syncUp(path: string, only?: "file"): Promise<void> {
     const segments = relativeSegments(path);
     await this.#in(path, segments, segments.length - 1, async (dir) => {
       let handle: FileHandle;
@@ -514,6 +514,7 @@ class LocalWorkspace implements Workspace {
       }
       try { await handle.sync(); } finally { await handle.close(); }
     });
+    if (only === "file") return;
     for (let count = segments.length - 1; count >= 0; count--) await this.#in(path, segments, count, (dir) => dir.handle.sync());
   }
 }

@@ -2,11 +2,11 @@
 // records every call (workspace-fake-computer.mjs), so the delegation is shown without module D. Also: the mount a
 // local Workspace asks for, the read-back attach checks, and the background surface with no computer.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { BACKGROUND_REFUSAL, checkMount, COMPUTER_CHUNK, localWorkspace } from "../dist/workspace/index.js";
+import { attachedWorkspace, BACKGROUND_REFUSAL, checkMount, COMPUTER_CHUNK, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 const dirs = [];
@@ -83,8 +83,9 @@ test("attached: a write goes to a temporary file beside the target, then a move;
   chmodSync(join(root, "notes/a.md"), 0o640);
   const big = Buffer.alloc(COMPUTER_CHUNK * 2 + 5, 7);
   await workspace.write("notes/a.md", big);
-  assert.deepEqual(computer.methods(), ["files.stat", "files.write", "files.append", "files.append", "files.move"]);
-  assert.equal(computer.calls[1][1].mode, 0o640, "an existing file's mode is kept");
+  assert.deepEqual(computer.methods(), ["files.stat", "files.write", "files.append", "files.write", "files.move"]);
+  assert.deepEqual([computer.calls[1][1].mode, computer.calls[3][1].offset, computer.calls[3][1].mode], [undefined, COMPUTER_CHUNK * 2, 0o640], "the last chunk, at its offset, sets the kept mode");
+  assert.equal(statSync(join(root, "notes/a.md")).mode & 0o777, 0o640, "an existing file's mode is kept");
   assert.ok(Buffer.from(await workspace.read("notes/a.md")).equals(big), "it reads back whole, across chunks");
 });
 
@@ -179,4 +180,47 @@ test("attached: a computer's error comes back as the Workspace's code, in its wo
     computer.exec.run = async () => ({ ok: false, error: { code: given, message: `said ${given}` } });
     await refused(workspace.exec(["true"], { env: {}, timeoutMs: 1000 }), code, new RegExp(`said ${given}`));
   }
+});
+
+test("attached: a read of many chunks never joins two versions: a file replaced between chunks is read again, whole", async () => {
+  const root = scratch();
+  const size = COMPUTER_CHUNK * 2 + 5;
+  writeFileSync(join(root, "big"), Buffer.alloc(size, "a"));
+  let replaced = false;
+  const computer = fakeComputer(root, {
+    onRead: () => {
+      if (replaced) return;
+      replaced = true;
+      // Another call replaces the file after the first chunk: same size, another time, other bytes.
+      writeFileSync(join(root, "big.new"), Buffer.alloc(size, "b"));
+      utimesSync(join(root, "big.new"), new Date(2020, 0, 1), new Date(2020, 0, 1));
+      renameSync(join(root, "big.new"), join(root, "big"));
+    },
+  });
+  const workspace = await localWorkspace(root).attach(computer);
+  const got = Buffer.from(await workspace.read("big"));
+  assert.equal(got.length, size);
+  assert.ok(got.every((byte) => byte === got[0]), "one version, never the start of one and the end of another");
+  assert.equal(String.fromCharCode(got[0]), "b", "the read started again on the new version");
+});
+
+test("attached: a read-only file replaced in many chunks keeps its mode, and every chunk lands", { skip: process.getuid?.() === 0 && "root writes a read-only file anyway" }, async () => {
+  const { root, computer, workspace } = await attached();
+  writeFileSync(join(root, "ro.bin"), "old");
+  chmodSync(join(root, "ro.bin"), 0o444);
+  const big = Buffer.alloc(COMPUTER_CHUNK * 2 + 7, 9);
+  await workspace.write("ro.bin", big);
+  assert.ok(readFileSync(join(root, "ro.bin")).equals(big), "every chunk landed");
+  assert.equal(statSync(join(root, "ro.bin")).mode & 0o777, 0o444, "the target's mode is kept");
+  const writes = computer.calls.filter(([method]) => method === "files.write" || method === "files.append");
+  assert.deepEqual(writes.map(([method, params]) => [method, params.mode]), [["files.write", undefined], ["files.append", undefined], ["files.write", 0o444]], "the mode comes with the last chunk");
+});
+
+test("attached on a bind: a write's temporary file is synced on the host before the move, then the target and its folders", async () => {
+  const root = scratch();
+  const computer = fakeComputer(root);
+  const workspace = attachedWorkspace(localWorkspace(root), computer, { synced: async (path, only) => { computer.calls.push(["synced", { path, only }]); } });
+  await workspace.write("notes/a.md", "hello");
+  const order = computer.calls.map(([method, params]) => (method === "synced" ? `synced ${params.path.replace(/\.workspace-[0-9a-f]+\.tmp$/, "<temp>")} ${params.only ?? "up"}` : method));
+  assert.deepEqual(order, ["files.stat", "files.write", "synced notes/<temp> file", "files.move", "synced notes/a.md up"]);
 });

@@ -2,7 +2,7 @@
 // written with plain node:fs and never fsynced (as computerd writes into a bind), an exec that answers what the test
 // scripts, and process calls that answer ok. It records every call, in order, as [method, params], so a test can show
 // what an attached Workspace asked the computer for, without module D.
-import { appendFileSync, chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const ok = (value) => ({ ok: true, value });
@@ -14,6 +14,7 @@ const CODES = { ENOENT: "not_found", EISDIR: "is_dir", ENOTDIR: "not_dir", EEXIS
  * options.readBack: what readBack() answers (a value, or a ComputerResult to answer as is); default the bind of root.
  * options.page: the most entries one files.list returns. options.chunk: the most bytes one files.read returns.
  * options.exec: (params) => the exec.run value, default an exit 0 with no output.
+ * options.onRead: called after each files.read (a test replaces the file between chunks there).
  */
 export function fakeComputer(root, options = {}) {
   const calls = [];
@@ -30,7 +31,7 @@ export function fakeComputer(root, options = {}) {
       return fail(CODES[error.code] ?? "invalid", error.message);
     }
   };
-  const statOf = (stats) => ({ type: stats.isSymbolicLink() ? "symlink" : stats.isFile() ? "file" : stats.isDirectory() ? "dir" : "other", size: stats.size, mode: stats.mode & 0o7777 });
+  const statOf = (stats) => ({ type: stats.isSymbolicLink() ? "symlink" : stats.isFile() ? "file" : stats.isDirectory() ? "dir" : "other", size: stats.size, mode: stats.mode & 0o7777, mtimeMs: stats.mtimeMs });
   const computer = {
     id: "fake-1",
     calls,
@@ -44,13 +45,20 @@ export function fakeComputer(root, options = {}) {
           return { data: buffer.subarray(0, got), eof: offset + got >= size, size };
         } finally {
           closeSync(fd);
+          options.onRead?.({ path, offset, length });
         }
       }),
-      write: call("files.write", ({ path, data, mode, parents }) => {
+      // As computerd's: opened (truncated, unless at an offset), then the mode set, then the bytes written.
+      write: call("files.write", ({ path, data, mode, parents, offset }) => {
         if (parents) mkdirSync(dirname(host(path)), { recursive: true });
-        writeFileSync(host(path), data);
-        if (mode !== undefined) chmodSync(host(path), mode);
-        return { size: data.length };
+        const fd = openSync(host(path), offset === undefined ? "w" : "r+");
+        try {
+          if (mode !== undefined) fchmodSync(fd, mode);
+          writeSync(fd, data, 0, data.length, offset ?? 0);
+        } finally {
+          closeSync(fd);
+        }
+        return { size: lstatSync(host(path)).size };
       }),
       append: call("files.append", ({ path, data, parents }) => {
         if (parents) mkdirSync(dirname(host(path)), { recursive: true });
