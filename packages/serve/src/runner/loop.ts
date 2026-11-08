@@ -29,6 +29,7 @@ import {
   defineExtension,
   defineTool,
   type EntryRecord,
+  GenerationTask,
   Harness,
   hook,
   LiveDoc,
@@ -348,6 +349,17 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
               const decision = spec.gate?.(call) ?? "allow";
               if (decision === "deny") return { block: `Permission denied: ${call.tool} is set to deny.` };
               if (decision === "ask" && !(await answer(call, hookContext)).approved) return { block: `Permission denied: a person denied ${call.tool}.` };
+              return undefined;
+            },
+          }),
+          // The rule before a side effect for the model too: a paid request leaves only after a flush made every record
+          // before it durable (the attempt's request checkpoint among them), so a machine lost after the send never loses
+          // that it was asked and sends it again. Once per attempt, recovery and the generation's retries included, for
+          // every provider: within an attempt pi writes nothing durable before the send, and pi-ai's resends of it
+          // (the same body, or one rebuilt after a refusal) carry no new record.
+          hook(GenerationTask, {
+            beforeRequest: async () => {
+              await deps.flush();
               return undefined;
             },
           }),
