@@ -157,13 +157,28 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, server, start, run, read, ended, commandRow, askedCall };
+  return { dir, server, start, run, read, ended, commandRow, askedCall, events };
 }
 
 interface Case {
   readonly id: ConformanceCase;
   readonly title: string;
   body(subject: ConformanceSubject, t: { after(fn: () => unknown): void }): Promise<void>;
+}
+
+/**
+ * The resume after a crash, as runner-b's own events tell it: runner-b claimed the run once and released it once, with the
+ * run ended, and nothing touched the row after that release (its epoch is runner-b's claim + 1). Not an absolute epoch:
+ * on a slow box the crashed runner may lose its own claim (a renew that missed) and retake the run before it dies, so the
+ * epoch runner-b claims at counts the box's speed, not the resume.
+ */
+function resumedOnceByB(events: readonly unknown[], row: RunRow): void {
+  const ofB = events.filter((event) => (event as { runner?: string }).runner === "runner-b") as { type: string; claim?: { epoch: number }; epoch?: number; end?: string }[];
+  const claims = ofB.filter((event) => event.type === "claimed");
+  const releases = ofB.filter((event) => event.type === "released");
+  assert.equal(claims.length, 1, `runner-b claimed the run once: ${JSON.stringify(ofB)}`);
+  assert.deepEqual(releases.map((event) => [event.epoch, event.end]), [[claims[0].claim!.epoch, "ended"]], `runner-b released it once, ended, under its claim: ${JSON.stringify(ofB)}`);
+  assert.equal(row.epoch, claims[0].claim!.epoch + 1, `nothing touched the run after runner-b's release: ${JSON.stringify(ofB)}`);
 }
 
 /** A crash at `point` during a call of `tool`, then a second runner's resume: the run ends. */
@@ -176,8 +191,7 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   await until(() => holder.crashed, `the crash at ${point}`);
   await w.start("runner-b", { script, tools, hooks: quiet });
   const row = await w.ended("ended");
-  // The first claim is 1, the second runner's is 2, and the release at its end bumps it to 3.
-  assert.equal(row.epoch, 3, "the second runner resumed it under its own claim, then released it");
+  resumedOnceByB(w.events, row);
   return { ...(await w.read()), ran };
 }
 
@@ -206,8 +220,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   assert.equal(exit[1], "SIGKILL", `the runner process dies at ${point} (it ended ${JSON.stringify(exit)}): ${stderr}`);
   await w.start("runner-b", { script: [{ call: tool }, { say: "done" }], tools, hooks: quiet });
   const row = await w.ended("ended");
-  // The first claim is 1, the second runner's is 2, and the release at its end bumps it to 3.
-  assert.equal(row.epoch, 3, "the second runner resumed it under its own claim, then released it");
+  resumedOnceByB(w.events, row);
   return { ...(await w.read()), ran };
 }
 
