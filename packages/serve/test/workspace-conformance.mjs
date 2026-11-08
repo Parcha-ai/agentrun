@@ -28,7 +28,7 @@ async function refused(promise, code, label) {
 const text = (bytes) => Buffer.from(bytes).toString("utf8");
 
 /** `options.skip` names cases a backend cannot have, each with the reason: `symlinks` (no symbolic link can be made
- *  where the suite plants them). */
+ *  where the suite plants them), `linksListed` (the backend cannot tell a link from a file, so list shows it as one). */
 export function suite(name, make, options = {}) {
   /** A fresh workspace, with a sentinel file outside its root. */
   async function fresh() {
@@ -269,6 +269,15 @@ export function suite(name, make, options = {}) {
       await sleep(2_500);
       await refused(workspace.read("late"), "NOT_FOUND", "the grandchild of a timed-out exec was killed");
       await refused(workspace.read("left"), "NOT_FOUND", "the grandchild of an exec that exited was killed");
+    });
+
+    test("a symbolic link an exec makes is left out of list", { skip: options.skip?.linksListed }, async () => {
+      const { workspace } = await fresh();
+      await workspace.write("f", "x");
+      await workspace.mkdir("d");
+      await workspace.exec(["ln", "-s", "f", "lf"], { env: ENV, timeoutMs: 10_000 });
+      await workspace.exec(["ln", "-s", "d", "ld"], { env: ENV, timeoutMs: 10_000 });
+      assert.deepEqual((await workspace.list("")).map((e) => [e.name, e.kind]), [["d", "dir"], ["f", "file"]]);
     });
 
     test("exec: output past the cap is cut and flagged", async () => {

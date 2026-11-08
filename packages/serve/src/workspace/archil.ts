@@ -1,43 +1,59 @@
 // ArchilWorkspace: a Workspace on a folder of the owner's Archil disk, through the disk's file API and its serverless
 // exec (archil-disk.ts, archil-exec.ts). Nothing is mounted on the server or a runner, and no program runs here.
 //
-// Keys. The workspace's root is a folder of the disk ("agents/<agent>/runs/<run>/work"); every key, prefix, directory
-// and checkout it sends is the root or under it, built from paths paths.ts has checked.
+// Keys. The workspace's root is a folder of the disk (paths.ts runKey or learningKey); every key, prefix, directory
+// and exec mount it sends is the root or under it, built from paths paths.ts has checked. An exec mounts the root
+// folder alone (the mount's subdirectory): the rest of the owner's disk is not in its container.
 //
 // Durability. Archil commits a put, an append or a delete before it answers 200, so each call returns once the API
-// has answered. A write is one put: Archil's S3 gateway publishes the object when the put completes (a multipart one,
-// above 16 MiB, when it is assembled), so a reader sees the old file or the new one. The API has no rename, so there is
-// no temporary key: that guarantee is the gateway's. An append is cut into calls of at most 1 MiB, made in order; a
-// reader during it can see part of it (the port allows that), and once it returns all of it is there.
+// has answered. A write is one put. The API has no rename, so there is no temporary key; that a reader sees the old
+// file or the new one, never a mix, rests on Archil's S3 gateway publishing an object when its put completes (a
+// multipart one, above 16 MiB, when it is assembled). It was observed live (no read during a put over an 8 MiB file
+// saw a mix) but Archil's docs do not promise it: a known limit. An append is cut into calls of at most 1 MiB, made in
+// order; a reader during it can see part of it (the port allows that), and once it returns all of it is there. One
+// that fails partway says how many bytes landed, so a retry appends only the rest.
 //
-// Links. The file API cannot make a symbolic link. An exec can (the folder is a filesystem in the container), and exec
-// refuses one on the way to its cwd. Whether the file API follows a link an exec made is not documented.
+// Modes. The port says an existing file keeps its mode on a write. The file API shows no mode, so this backend cannot
+// read one to keep it; whether Archil keeps it across a put is not documented, and the next live check measures it.
 //
-// The queue. While an exec runs it holds the root checked out, and Archil refuses a write under it (409). So this
-// workspace runs its execs one at a time and makes its writes wait for them; a 409 from another client's checkout is
-// tried again for up to queueMs. Reads do not wait.
+// Links, as a live run on a dev disk showed. The file API cannot make a symbolic link, but an exec can, and the API
+// never follows one: it lists a link as a file (it cannot tell them apart, so this backend lists it as one, and the
+// port says so), a read of it answers 501 (UNAVAILABLE here), a read through a linked folder 404, a write through one
+// 409 "an existing object blocks the path" (EXISTS here), and nothing is listed under one. A remove takes the link
+// itself, never what it points at, and a recursive remove never walks into one. exec refuses a link on the way to its
+// cwd (ESCAPE).
+//
+// The queue. While an exec runs it holds the folder, and Archil refuses a write under it (409). So this workspace runs
+// its execs one at a time and makes its writes wait for them; a 409 from another client's hold is tried again for up
+// to queueMs. Reads do not wait.
 //
 // Not yet: mountSpec and attach (an Archil folder in a computer is mounted by the computer's helper, module D6, with a
 // disk mount token this workspace has no way to make), and background programs, which need a computer (`process`
 // refuses every call, cause no-computer, as with any workspace that has none).
 import { randomBytes } from "node:crypto";
 import type { MountSpec } from "@parcha/agentrun-computer";
-import type { ArchilDisk, ArchilListPage } from "./archil-disk.js";
-import { archilExec, DEFAULT_QUEUE_MS, MAX_EXEC_MS, STDIN_PREFIX } from "./archil-exec.js";
+import type { ArchilDisk, ArchilImage, ArchilListPage } from "./archil-disk.js";
+import { archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, MAX_EXEC_MS, STDIN_PREFIX } from "./archil-exec.js";
 import { type AttachableComputer, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
 import {
-  EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS, type GrepMatch,
-  type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError,
+  EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
+  type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError,
 } from "./workspace.js";
 
 /** The most bytes one append call takes. */
 export const APPEND_MAX = 1024 * 1024;
+/** How much longer than its deadline grep waits for the disk's answer before it stops waiting ("time"). */
+const GREP_CALL_GRACE_MS = 2_000;
 
 export type ArchilWorkspaceOptions = {
-  /** How long a call waits for another client's checkout of the folder (default 60 s). */
+  /** How long a call waits for another client's hold on the folder (default 60 s). */
   readonly queueMs?: number;
+  /** The image every exec runs in, the same for every workspace serve makes (a run's or a learning folder's): a public
+   *  image pinned by digest, or one built through Archil's images API. With none, Archil's default exec image, whose git
+   *  (2.34.1, measured) is older than learning's floor. */
+  readonly image?: ArchilImage;
 };
 
 /** Why an Archil workspace is not yet put in a computer. */
@@ -82,15 +98,24 @@ class ArchilWorkspace implements Workspace {
   readonly #disk: ArchilDisk;
   readonly #root: string;
   readonly #queueMs: number;
+  readonly #image: ArchilImage | undefined;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
   #execs: Promise<unknown> = Promise.resolve();
   #rooted = false;
 
   constructor(disk: ArchilDisk, root: string, options: ArchilWorkspaceOptions = {}) {
     if (relativeSegments(root).length === 0) throw new WorkspaceError("REFUSED", "an Archil workspace's root is a folder of the disk, not its root");
+    const image = options.image;
+    if (image !== undefined) {
+      const [field, value] = Object.entries(image)[0] ?? [];
+      if (Object.keys(image).length !== 1 || (field !== "baseImage" && field !== "imageId") || typeof value !== "string" || value === "") {
+        throw new WorkspaceError("REFUSED", "an Archil workspace's image is { baseImage } or { imageId }, a non-empty string");
+      }
+    }
     this.#disk = disk;
     this.#root = root;
     this.#queueMs = options.queueMs ?? DEFAULT_QUEUE_MS;
+    this.#image = image;
   }
 
   /** The key of relative path `rel` ("" for the root). */
@@ -194,6 +219,9 @@ class ArchilWorkspace implements Workspace {
       if (statusOf(error) === 404 && (await this.#kind(rel).catch(() => undefined)) === "dir") {
         throw new WorkspaceError("REFUSED", `${show(rel)} is a directory`, { path: rel, cause: error });
       }
+      if (statusOf(error) === 501) {
+        throw new WorkspaceError("UNAVAILABLE", `${show(rel)} is a symbolic link (an exec made it): Archil's file API does not read one`, { path: rel, cause: error });
+      }
       throw failed(error, rel, "read");
     }
     if (answer.status === 416) return new Uint8Array(0);
@@ -219,14 +247,20 @@ class ArchilWorkspace implements Workspace {
   async append(path: string, data: Uint8Array | string): Promise<void> {
     const bytes = bytesOf(data);
     const rel = ArchilWorkspace.#below(path, "a file").join("/");
+    let landed = 0;
     try {
+      await this.#execs;
       // An empty append still makes the file. Each call is acknowledged before the next is made, so they land in order.
       for (let at = 0; at === 0 || at < bytes.length; at += APPEND_MAX) {
         const part = bytes.subarray(at, at + APPEND_MAX);
-        await this.#write(rel, () => this.#disk.appendObject(this.#key(rel), part));
+        await this.#settle(rel, () => this.#disk.appendObject(this.#key(rel), part));
+        landed += part.length;
       }
     } catch (error) {
-      throw await this.#writeFailed(error, rel, "file", "append");
+      const why = await this.#writeFailed(error, rel, "file", "append");
+      if (landed === 0) throw why;
+      // Part of it is on the disk: say how much, so a retry appends only the rest (never the whole again).
+      throw new WorkspaceError(why.code, `${landed} of ${bytes.length} bytes were appended to ${show(rel)} before it failed (append only the rest): ${why.message}`, { path: rel, cause: error });
     }
   }
 
@@ -308,28 +342,46 @@ class ArchilWorkspace implements Workspace {
         only = (path) => regex.test(path);
       }
     }
+    // The disk's deadline is in whole seconds; this side stops waiting a little after it, whatever the disk does.
+    const seconds = Math.max(1, Math.ceil(Math.min(timeMs, GREP_TIME_MS) / 1000));
     let answer;
+    let timer: NodeJS.Timeout | undefined;
     try {
-      answer = await this.#disk.grep({
+      const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), seconds * 1000 + GREP_CALL_GRACE_MS); });
+      answer = await Promise.race([this.#disk.grep({
         directory, pattern, recursive,
         maxResults: only === undefined || kind === "file" ? limit : GREP_MAX,
-        maxDurationSeconds: Math.max(1, Math.ceil(Math.min(timeMs, GREP_TIME_MS) / 1000)),
+        maxDurationSeconds: seconds,
         ...(globs === undefined ? {} : { globs }),
-      });
+      }), late]);
     } catch (error) {
       if (statusOf(error) === 400) throw new WorkspaceError("REFUSED", `the disk's grep refused ${JSON.stringify(pattern)}: ${describe(error)}`, { path: from, cause: error });
       throw failed(error, from, "grep");
+    } finally {
+      clearTimeout(timer);
     }
+    if (answer === "late") return { matches: [], truncated: "time" };
     const truncatedBy = answer.stoppedReason === "completed" ? false : answer.stoppedReason === "max_results" ? "max" : answer.stoppedReason === "deadline" ? "time" : undefined;
     if (truncatedBy === undefined) {
       throw new WorkspaceError("UNAVAILABLE", `the disk's grep stopped "${answer.stoppedReason}": part of it failed (a pattern ripgrep cannot run, or a file it could not read)`, { path: from });
     }
     const base = `${this.#root}/`;
+    const found = answer.matches.filter(({ file }) => file.startsWith(base));
+    // A file over GREP_FILE_MAX is skipped, as Local skips it: the disk's grep has no size option, so the sizes of the
+    // files it matched in are read from their folders' listings (one listing per folder that matched).
+    const tooBig = new Set<string>();
+    const folders = new Set(found.map(({ file }) => file.slice(0, file.lastIndexOf("/") + 1)));
+    try {
+      for (const folder of folders) {
+        for await (const page of this.#pages(folder, false)) for (const { key, size } of page.objects) if (size > GREP_FILE_MAX) tooBig.add(key);
+      }
+    } catch (error) {
+      throw failed(error, from, "grep");
+    }
     const matches: GrepMatch[] = [];
-    for (const { file, line, text } of answer.matches) {
-      if (!file.startsWith(base)) continue;
+    for (const { file, line, text } of found) {
       const path = file.slice(base.length);
-      if (only !== undefined && !only(path)) continue;
+      if (tooBig.has(file) || (only !== undefined && !only(path))) continue;
       matches.push({ path, line, text: text.replace(/\r?\n$/, "").slice(0, GREP_LINE_MAX) });
     }
     matches.sort((a, b) => byName(a.path, b.path) || a.line - b.line);
@@ -353,16 +405,24 @@ class ArchilWorkspace implements Workspace {
         await this.#settle(rel, () => this.#disk.deleteObject(key));
         return;
       }
+      // The tree, one folder's listing at a time: a flat listing is files only, so a folder holding nothing would not be
+      // seen. A link is listed as a file (Archil cannot tell them apart), so it is removed as one and never walked into.
       const files: string[] = [];
-      const folders = new Set<string>([`${key}/`]);
-      for await (const page of this.#pages(`${key}/`, true)) {
-        for (const { key: found } of page.objects) {
-          if (found.endsWith("/")) folders.add(found);
-          else files.push(found);
-          // Every folder between the directory and what is in it, whether or not the listing names it.
-          for (let cut = found.indexOf("/", key.length + 1); cut !== -1 && cut < found.length - 1; cut = found.indexOf("/", cut + 1)) folders.add(found.slice(0, cut + 1));
+      const folders: string[] = [];
+      const queue = [`${key}/`];
+      const seen = new Set(queue);
+      while (queue.length > 0) {
+        const folder = queue.shift()!;
+        folders.push(folder);
+        for await (const page of this.#pages(folder, false)) {
+          for (const common of page.commonPrefixes) if (!seen.has(common)) { seen.add(common); queue.push(common); }
+          for (const { key: found } of page.objects) {
+            if (found === folder) continue;
+            if (!found.endsWith("/")) files.push(found);
+            else if (!seen.has(found)) { seen.add(found); queue.push(found); }
+          }
         }
-        if (!options.recursive && (files.length > 0 || folders.size > 1)) {
+        if (!options.recursive && (files.length > 0 || queue.length > 0)) {
           throw new WorkspaceError("REFUSED", `${show(rel)} is a directory that is not empty (remove it with recursive)`, { path: rel });
         }
       }
@@ -370,10 +430,9 @@ class ArchilWorkspace implements Workspace {
         const errors = await this.#settle(rel, () => this.#disk.deleteObjects(files));
         if (errors.length > 0) throw new WorkspaceError("UNAVAILABLE", `${errors.length} of ${files.length} files under ${show(rel)} were not removed: ${errors[0]!.key}: ${errors[0]!.code ?? ""} ${errors[0]!.message ?? ""}`.trim(), { path: rel });
       }
-      // Folders deepest first, so each is empty when it goes.
-      for (const folder of [...folders].sort((a, b) => b.split("/").length - a.split("/").length || byName(b, a))) {
-        await this.#settle(rel, () => this.#disk.deleteObject(folder));
-      }
+      // Folders in the reverse of the order they were found (every folder after its parent), so each is empty when it goes.
+      for (const folder of folders.reverse()) await this.#settle(rel, () => this.#disk.deleteObject(folder));
+      if ((await this.#kind(rel)) !== undefined) throw new WorkspaceError("UNAVAILABLE", `${show(rel)} is still there after its remove`, { path: rel });
     } catch (error) {
       throw failed(error, rel, "remove");
     }
@@ -390,7 +449,9 @@ class ArchilWorkspace implements Workspace {
     }
     const { timeoutMs } = options;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new WorkspaceError("REFUSED", "exec's timeoutMs is a number above 0");
-    if (timeoutMs > MAX_EXEC_MS) throw new WorkspaceError("REFUSED", `an Archil exec is cut at ${MAX_EXEC_MS / 1000} s: ${timeoutMs} ms is more than a call may run`);
+    if (timeoutMs > COMMAND_MAX_MS) {
+      throw new WorkspaceError("REFUSED", `an Archil exec is cut at ${MAX_EXEC_MS / 1000} s, and a command may have ${COMMAND_MAX_MS / 1000} s of it: ${timeoutMs} ms is more`);
+    }
     const maxOutput = options.maxOutput ?? EXEC_OUTPUT_MAX;
     if (!Number.isSafeInteger(maxOutput) || maxOutput < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
     const cwd = relativeSegments(options.cwd ?? "");
@@ -402,7 +463,10 @@ class ArchilWorkspace implements Workspace {
           const stdin = options.stdin!;
           await this.#settle("", () => this.#disk.putObject(this.#key(stdinName), stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
         }
-        const result = await archilExec(this.#disk, { root: this.#root, cwd, argv, env, timeoutMs, maxOutput, queueMs: this.#queueMs, ...(stdinName === undefined ? {} : { stdinName }) });
+        const result = await archilExec(this.#disk, {
+          root: this.#root, cwd, argv, env, timeoutMs, maxOutput, queueMs: this.#queueMs,
+          ...(stdinName === undefined ? {} : { stdinName }), ...(this.#image === undefined ? {} : { image: this.#image }),
+        });
         // Archil answers once the command has ended: each stream once, whole (and capped). An error the caller's
         // callback throws is not the call's.
         for (const chunk of [{ stream: "stdout", data: result.stdout }, { stream: "stderr", data: Buffer.from(result.stderr, "utf8") }] as const) {

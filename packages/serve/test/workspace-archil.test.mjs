@@ -1,8 +1,8 @@
 // ArchilWorkspace (serve/src/workspace/archil.ts): the conformance suite over a fake Archil disk (fixtures/archil-fake.mjs),
 // and what only Archil has: every key under the run's folder, nothing mounted and no archil program run on this
-// machine, exec's checkout of the run's folder and its 300 s cap, appends cut at 1 MiB, ranged reads as a Range
-// header, writes that return only once acknowledged, and the real SDK seam (archil-disk.ts) talking to a loopback
-// server, never to Archil.
+// machine, exec mounting only the run's folder with its 295 s cap and its image, appends cut at 1 MiB, ranged reads as a
+// Range header, writes that return only once acknowledged, links as Archil's file API showed them live, and the real
+// SDK seam (archil-disk.ts) talking to a loopback server, never to Archil.
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { after, before, test } from "node:test";
-import { archilDisk, archilWorkspace, READ_MAX } from "../dist/workspace/index.js";
+import { archilDisk, archilWorkspace, learningKey, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { PATH, suite } from "./workspace-conformance.mjs";
 
@@ -46,7 +46,12 @@ before(() => {
 suite("ArchilWorkspace over a fake disk", async () => {
   const { root, outside } = scratch();
   return { workspace: archilWorkspace(new FakeArchilDisk(), ROOT), root, outside };
-}, { skip: { symlinks: "Archil's file API cannot make a symbolic link, so the suite cannot plant one through it; exec can, and a link made by exec is refused as exec's cwd (tested below)" } });
+}, {
+  skip: {
+    symlinks: "the suite plants links with this machine's filesystem, which is not the disk; links an exec makes are tested below as Archil's file API showed them live: never followed (get 501, 404 through a linked folder, a put through one 409), exec's cwd through one ESCAPE",
+    linksListed: "Archil's file API cannot tell a link from a file: it lists a link an exec made as a file, and reading it fails UNAVAILABLE (tested below)",
+  },
+});
 
 async function refused(promise, code) {
   await assert.rejects(promise, (error) => {
@@ -78,7 +83,7 @@ test("archil: every key, prefix, directory and checkout the disk API is given is
   await refused(workspace.write("a/b.txt/under", "x"), "EXISTS");
   await workspace.remove("a", { recursive: true });
   await workspace.remove("m", { recursive: true });
-  const named = disk.calls.flatMap((call) => [call.key, call.prefix, call.directory, ...(call.checkoutPaths ?? [])]).filter((k) => k !== undefined);
+  const named = disk.calls.flatMap((call) => [call.key, call.prefix, call.directory, call.subdirectory, ...(call.checkoutPaths ?? [])]).filter((k) => k !== undefined);
   assert.ok(named.length > 20, `the calls were recorded (${named.length})`);
   for (const key of named) assert.ok(key === ROOT || key.startsWith(`${ROOT}/`), `${JSON.stringify(key)} is under the run's folder`);
   assert.equal(text(disk.files.get("agents/other/runs/r9/work/secret")), "another run's file", "another run's file is untouched");
@@ -102,21 +107,66 @@ test("archil: nothing is mounted and no archil program runs on this machine; exe
   }
 });
 
-test("archil: exec checks out exactly the run's folder, on the disk mounted at work, with the queue's wait", async () => {
+test("archil: exec mounts ONLY the run's folder (its subdirectory, held with the queue's wait): another run's file is invisible to it", async () => {
   const { disk, workspace } = fresh();
-  await workspace.exec(["true"], { env: ENV, timeoutMs: 300_000 });
+  disk.files.set("agents/other/runs/r9/work/secret", Buffer.from("another run's secret\n"));
+  disk.dirs.add("agents/other/runs/r9/work");
+  await workspace.write("mine.txt", "mine\n");
+  const look = await workspace.exec(["bash", "-c", "pwd; find . -type f | sort; cat ../../../../agents/other/runs/r9/work/secret 2>/dev/null || echo unreachable"], { env: ENV, timeoutMs: 10_000 });
+  const lines = text(look.stdout).trim().split("\n");
+  assert.deepEqual(lines.slice(1), ["./mine.txt", "unreachable"], "the exec sees the run's folder and nothing above it");
   const execs = disk.calls.filter((call) => call.op === "exec");
-  assert.equal(execs.length, 1);
-  assert.deepEqual(execs[0].checkoutPaths, [ROOT]);
-  assert.equal(execs[0].mount, "work");
-  assert.equal(execs[0].queueMs, 60_000);
+  assert.deepEqual(execs.map(({ mount, subdirectory, checkoutPaths, queueMs }) => ({ mount, subdirectory, checkoutPaths, queueMs })), [
+    { mount: "work", subdirectory: ROOT, checkoutPaths: undefined, queueMs: 60_000 },
+  ]);
+  assert.deepEqual(disk.materialized, [["mine.txt"]], "the container got the run's folder only");
+  assert.equal(text(disk.files.get("agents/other/runs/r9/work/secret")), "another run's secret\n");
 });
 
-test("archil: a timeout over 300 s is refused, and no call is made", async () => {
+test("archil: the exec image is the workspace's, set when it is made, and goes with every exec", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT, { image: { imageId: "img-pinned-1" } });
+  await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
+  await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, cwd: "" });
+  assert.deepEqual(disk.calls.filter((call) => call.op === "exec").map((call) => call.image), [{ imageId: "img-pinned-1" }, { imageId: "img-pinned-1" }]);
+  const plain = new FakeArchilDisk();
+  await archilWorkspace(plain, ROOT).exec(["true"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual(plain.calls.filter((call) => call.op === "exec").map((call) => call.image), [undefined], "no image: the SDK's default");
+  assert.throws(() => archilWorkspace(plain, ROOT, { image: { baseImage: "" } }), /image/);
+});
+
+test("archil: a timeout over 295 s is refused (Archil cuts a call at 300 s), and no call is made", async () => {
   const { disk, workspace } = fresh();
-  await refused(workspace.exec(["true"], { env: ENV, timeoutMs: 300_001 }), "REFUSED");
+  await refused(workspace.exec(["true"], { env: ENV, timeoutMs: 295_001 }), "REFUSED");
+  await refused(workspace.exec(["true"], { env: ENV, timeoutMs: 300_000 }), "REFUSED");
   await refused(workspace.exec(["true"], { env: ENV, timeoutMs: 3_600_000 }), "REFUSED");
   assert.deepEqual(disk.calls.filter((call) => call.op === "exec"), []);
+  await workspace.exec(["true"], { env: ENV, timeoutMs: 295_000 });
+});
+
+test("archil: the run's and the learning folder's keys come from the one layout owner (paths.ts)", () => {
+  assert.match(runKey("acme", "r1"), /^agents\/acme-[0-9a-f]{16}\/runs\/r1\/work$/);
+  assert.match(learningKey("acme"), /^agents\/acme-[0-9a-f]{16}\/learning$/);
+  assert.equal(join("/data", "disk", runKey("Acme", "r1")), runFolder("/data", "Acme", "r1"), "the same layout as a run's local folder");
+  assert.throws(() => runKey("a/b", "r1"), /agent id/);
+  assert.throws(() => runKey("acme", ".."), /run id/);
+});
+
+test("archil: an append that fails partway says how many bytes landed, so a retry appends only the rest", async () => {
+  const { disk, workspace } = fresh();
+  const appendObject = disk.appendObject.bind(disk);
+  let calls = 0;
+  disk.appendObject = async (key, body) => {
+    if (++calls === 2) throw Object.assign(new Error("connection reset"), { status: 503 });
+    return appendObject(key, body);
+  };
+  await assert.rejects(workspace.append("log", Buffer.alloc(3 * MiB, "x")), (error) => {
+    assert.equal(error.code, "UNAVAILABLE");
+    assert.match(error.message, /1048576 of 3145728 bytes were appended/);
+    assert.ok(error.cause, "the disk's error is its cause");
+    return true;
+  });
+  assert.equal((await workspace.read("log")).length, MiB, "what landed is there, once");
 });
 
 test("archil: a 3 MiB append is three appends of 1 MiB, in order", async () => {
@@ -173,7 +223,7 @@ test("archil: exec calls onOutput once per stream, with everything, when the com
 test("archil: exec maps a signal to code null and an exit of 139 to 139, keeps a deadline under a millisecond, and drains output past the cap", async () => {
   const { workspace } = fresh();
   const crashed = await workspace.exec(["bash", "-c", "kill -SEGV $$"], { env: ENV, timeoutMs: 10_000 });
-  assert.deepEqual([crashed.code, crashed.timedOut], [null, false], "a program a signal ended has no exit code");
+  assert.deepEqual([crashed.code, crashed.signal, crashed.timedOut], [null, "SIGSEGV", false], "a program a signal ended has no exit code, and the signal is said");
   const exited = await workspace.exec(["bash", "-c", "exit 139"], { env: ENV, timeoutMs: 10_000 });
   assert.deepEqual([exited.code, exited.timedOut], [139, false], "a program that exits 139 by itself keeps it");
   const started = Date.now();
@@ -246,6 +296,73 @@ test("archil: mountSpec and attach are refused in words until the computer's hel
   assert.deepEqual(disk.calls, []);
 });
 
+test("archil: links an exec makes, as Archil's file API showed them live: listed as files, a read UNAVAILABLE (501), a write through a linked folder EXISTS (409), never followed", async () => {
+  const { disk, workspace } = fresh();
+  await workspace.write("a/data.bin", "the target\n");
+  await workspace.exec(["bash", "-c", "ln -s data.bin a/lf && ln -s a ld"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual((await workspace.list("a")).map((e) => [e.name, e.kind]), [["data.bin", "file"], ["lf", "file"]], "a link lists as a file");
+  assert.deepEqual((await workspace.list("")).map((e) => [e.name, e.kind]), [["a", "dir"], ["ld", "file"]]);
+  await assert.rejects(workspace.read("a/lf"), (error) => {
+    assert.equal(error.code, "UNAVAILABLE");
+    assert.match(error.message, /symbolic link/);
+    return true;
+  });
+  await refused(workspace.read("ld/data.bin"), "NOT_FOUND");
+  await refused(workspace.write("ld/new.txt", "x"), "EXISTS");
+  assert.equal(disk.calls.filter((call) => call.op === "putObject" && call.key === `${ROOT}/ld/new.txt`).length, 1, "the 409 for a link in the way is not waited on as a checkout");
+  await refused(workspace.list("ld"), "REFUSED");
+  await workspace.mkdir("t");
+  await workspace.exec(["bash", "-c", "ln -s ../a t/up"], { env: ENV, timeoutMs: 10_000 });
+  await workspace.remove("t", { recursive: true });
+  await workspace.remove("ld");
+  assert.equal(text(await workspace.read("a/data.bin")), "the target\n", "removing a link, or a tree that holds one, never reaches through it");
+  assert.deepEqual((await workspace.list("")).map((e) => e.name), ["a"]);
+});
+
+test("archil: a recursive remove takes folders a flat listing does not show (empty ones an exec made)", async () => {
+  const { workspace } = fresh();
+  await workspace.write("e/file", "x");
+  await workspace.exec(["bash", "-c", "mkdir -p e/x/y e/z"], { env: ENV, timeoutMs: 10_000 });
+  await workspace.remove("e", { recursive: true });
+  assert.deepEqual(await workspace.list(""), []);
+  await workspace.exec(["bash", "-c", "mkdir -p only/empty"], { env: ENV, timeoutMs: 10_000 });
+  await refused(workspace.remove("only"), "REFUSED");
+  await workspace.remove("only", { recursive: true });
+  assert.deepEqual(await workspace.list(""), []);
+});
+
+test("archil: exec finds its own answer in stdout whatever else Archil prints around it", async () => {
+  const { disk, workspace } = fresh();
+  disk.banner = "Archil exec: container ready\n";
+  const result = await workspace.exec(["bash", "-c", "echo out; echo err >&2; exit 4"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual([text(result.stdout), result.stderr, result.code], ["out\n", "err\n", 4]);
+});
+
+test("archil: grep skips a file over 8 MiB, as Local does, and stops waiting at its own deadline", async () => {
+  const { disk, workspace } = fresh();
+  await workspace.write("big.txt", Buffer.concat([Buffer.from("needle in a big file\n"), Buffer.alloc(8 * MiB, "x")]));
+  await workspace.write("small.txt", "needle\n");
+  assert.deepEqual((await workspace.grep("needle")).matches.map((m) => m.path), ["small.txt"]);
+  disk.grep = () => new Promise(() => {});
+  const started = Date.now();
+  const stuck = await workspace.grep("needle", { timeMs: 300 });
+  assert.deepEqual(stuck, { matches: [], truncated: "time" });
+  assert.ok(Date.now() - started < 5_000, `it returned near its deadline (${Date.now() - started} ms)`);
+});
+
+test("archil-disk: the S3 endpoint is https on Archil's host for the disk's region; plain http only to this machine's loopback in tests", () => {
+  const key = () => "fake-test-key";
+  const make = (s3BaseUrl, extra = {}) => archilDisk({ disk: "dsk-0000000000000001", region: "aws-us-east-1", key, s3BaseUrl, ...extra });
+  make("https://s3.green.us-east-1.aws.prod.archil.com");
+  make("https://s3.green.us-east-1.aws.prod.archil.com/");
+  for (const bad of ["http://s3.green.us-east-1.aws.prod.archil.com", "https://s3.example.com", "https://s3.green.us-west-2.aws.prod.archil.com", "https://archil.com.example.org", "https://s3.green.us-east-1.aws.prod.archil.com.evil.example", "http://127.0.0.1:9"]) {
+    assert.throws(() => make(bad), /S3 endpoint/, bad);
+  }
+  make("http://127.0.0.1:9", { baseUrl: "http://127.0.0.1:9" });
+  assert.throws(() => archilDisk({ disk: "dsk-0000000000000001", region: "gcp-us-central1", key, s3BaseUrl: "https://s3.green.us-east-1.aws.prod.archil.com" }), /S3 endpoint/);
+  archilDisk({ disk: "dsk-0000000000000001", region: "gcp-us-central1", key, s3BaseUrl: "https://s3.blue.us-central1.gcp.prod.archil.com" });
+});
+
 test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no environment), sends a ranged read as a Range header and exec with the checkout, to a loopback server only", async () => {
   const seen = [];
   const server = createServer((request, response) => {
@@ -265,6 +382,11 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
       if (request.method === "POST" && request.url === "/api/exec") {
         return json(200, { success: true, data: { exitCode: 0, stdout: "ok", stderr: "", timing: { totalMs: 1 } } });
       }
+      if (request.url === "/dsk-0000000000000001/agents/a/runs/r/work/moved.txt") {
+        response.writeHead(302, { location: "/dsk-0000000000000001/agents/a/runs/r/work/x.txt" });
+        return response.end();
+      }
+      if (request.url === "/dsk-0000000000000001/agents/a/runs/r/work/stalls.txt") return undefined;
       json(404, { success: false, error: "not here" });
     });
   });
@@ -291,9 +413,17 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     await disk.ready();
     const got = await disk.getRange("agents/a/runs/r/work/x.txt", "bytes=2-5");
     assert.deepEqual([got.status, text(got.body)], [206, "2345"]);
-    const ran = await disk.exec({ mount: "work", checkoutPaths: ["agents/a/runs/r/work"], queueMs: 1_000, command: "true" });
+    const ran = await disk.exec({ mount: "work", subdirectory: "agents/a/runs/r/work", queueMs: 1_000, command: "true", image: { imageId: "img-1" } });
     assert.deepEqual(ran, { exitCode: 0, stdout: "ok", stderr: "" });
     assert.equal(keyCalls, 3, "the key is asked for on every call, never kept from an earlier one");
+    // A redirect is not followed (the key would go with it), and a read that never answers gives up.
+    const before = seen.length;
+    await assert.rejects(disk.getRange("agents/a/runs/r/work/moved.txt", "bytes=0-1"));
+    assert.deepEqual(seen.slice(before).map((r) => r.url), ["/dsk-0000000000000001/agents/a/runs/r/work/moved.txt"], "the redirect was not followed");
+    const started = Date.now();
+    await assert.rejects(archilDisk({ ...options, readTimeoutMs: 200 }).getRange("agents/a/runs/r/work/stalls.txt", "bytes=0-1"));
+    assert.ok(Date.now() - started < 5_000, `a stalled read gave up (${Date.now() - started} ms)`);
+    seen.splice(before);
     assert.deepEqual(readNames.filter((name) => /ARCHIL|AGENTRUN/i.test(name)), [], "the seam reads no Archil setting from the environment");
     assert.deepEqual(seen.map((r) => [r.method, r.url, r.range ?? null]), [
       ["GET", "/api/disks/dsk-0000000000000001", null],
@@ -309,8 +439,9 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
       assert.doesNotMatch(readFileSync(new URL(`../dist/workspace/${file}`, import.meta.url), "utf8"), /process\.env/, `${file} reads no environment`);
     }
     assert.deepEqual(JSON.parse(seen[2].body), {
-      disks: { work: { disk: "dsk-0000000000000001", readOnly: false, conditional: false, queueMs: 1_000, checkoutPaths: ["agents/a/runs/r/work"] } },
+      disks: { work: { disk: "dsk-0000000000000001", readOnly: false, conditional: false, subdirectory: "agents/a/runs/r/work", queueMs: 1_000 } },
       command: "true",
+      imageId: "img-1",
     });
   } finally {
     process.env = realEnv;

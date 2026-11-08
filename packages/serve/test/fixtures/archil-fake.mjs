@@ -1,21 +1,28 @@
 // A fake Archil disk behind ArchilDisk (serve/src/workspace/archil-disk.ts), in memory, for ArchilWorkspace's tests.
-// It answers the way the disk's file API and serverless exec do, as far as the SDK and Archil's docs say:
+// It answers the way the disk's file API and serverless exec do, as far as the SDK, Archil's docs and one live run on
+// a dev disk showed:
 // - a disk is a filesystem: a file where a directory has to be, or a directory where a file is put, is refused (a 400;
 //   the real code is not documented, and the workspace does not read it);
 // - a put or an append is invisible until it is acknowledged: the bytes are staged, the call waits on `hold` (a promise
 //   a test can keep pending), and only then are they committed, at once, and the call resolves;
 // - a ranged read takes the Range header itself ("bytes=a-b"): 206 with the slice, 416 past the end;
 // - an append takes at most 1 MiB a call (400 EntityTooLarge above it);
-// - a listing comes in pages of `pageSize` entries (ListObjectsV2 with delimiter "/" unless recursive);
+// - a listing comes in pages of `pageSize` entries: one level under a "/" delimiter, or, recursive, every FILE key
+//   flat, with no directory in it (so a folder holding nothing is not seen that way);
+// - symbolic links (only an exec can make one), as the live run showed: a link lists as an object (a file), a GET of
+//   it answers 501 NotImplemented, a GET through a linked folder 404, a put or an append through one 409 ("an existing
+//   object blocks the path"), and nothing is listed under one; a DELETE of a link removes the link only;
 // - grep runs the pattern (JavaScript's regex standing in for ripgrep's) in a worker, stops at maxResults
-//   ("max_results") or at maxDurationSeconds ("deadline"), skips binary files, and returns its matches in no useful
-//   order (reversed here), as the real one returns a sample;
-// - exec runs the command line with /bin/sh as a local child, in its own process group, killed when the line ends (the
-//   container's end), on a temporary mirror of the whole disk at the place /mnt/archil/<mount> names; what the mirror
-//   holds afterwards becomes the disk (files, directories and symbolic links). checkoutPaths must be directories, and
-//   while an exec holds one, a put, an append or a delete under it is refused with 409, as the service refuses a write
-//   to a path another client has checked out.
-// Every call is recorded in `calls`: { op, key | prefix | directory, ... }.
+//   ("max_results") or at maxDurationSeconds ("deadline"), skips binary files and links, reads globs as ripgrep does,
+//   and returns its matches in no useful order (reversed here), as the real one returns a sample;
+// - exec mounts ONLY its subdirectory: it runs the command line with /bin/sh as a local child, in its own process group,
+//   killed when the line ends (the container's end), on a temporary folder holding just the subdirectory's keys at the
+//   place /mnt/archil/<mount> names; what that folder holds afterwards replaces the subdirectory (files, folders and
+//   links), and nothing else on the disk changes. The subdirectory must be a folder; while an exec holds it, a put, an
+//   append or a delete under it is refused with 409, as the service refuses a write to a path another client holds.
+//   `banner` (a test's) is printed before the command's own stdout, as a platform's message would be.
+// Every call is recorded in `calls`: { op, key | prefix | directory | subdirectory, ... }; every exec's materialized
+// file keys (relative to its subdirectory) in `materialized`.
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,26 +95,37 @@ export class FakeArchilDisk {
   pageSize = 2;
   /** While set, a put or an append waits on it before it is committed. */
   hold = undefined;
-  /** The paths each running exec has checked out. */
-  #checkedOut = new Set();
+  /** Printed before every exec's own stdout, when set. */
+  banner = undefined;
+  /** The paths each running exec holds. */
+  #held = new Set();
   /** What exec spawned: [file, args]. */
   spawned = [];
+  /** Each exec's materialized file keys, relative to its subdirectory. */
+  materialized = [];
 
   #record(call) { this.calls.push(call); }
 
-  #held(key) {
-    for (const path of this.#checkedOut) if (key === path || key.startsWith(`${path}/`)) return true;
+  #isHeld(key) {
+    for (const path of this.#held) if (key === path || key.startsWith(`${path}/`)) return true;
     return false;
   }
 
   #refuseHeld(key) {
-    if (this.#held(key)) throw new FakeDiskError(409, "Conflict", `${key} is checked out by another client`);
+    if (this.#isHeld(key)) throw new FakeDiskError(409, "Conflict", `${key} is checked out by another client`);
   }
 
-  /** `key` may be a file: no directory there, and no file on the way to it. */
+  /** A link on the way to `key` (not `key` itself): Archil answers a write through it 409. */
+  #linkOnTheWay(key) {
+    return parentsOf(key).find((parent) => this.links.has(parent));
+  }
+
+  /** `key` may be a file: no directory there, and no file or link on the way to it. */
   #checkFile(key) {
+    const link = this.#linkOnTheWay(key);
+    if (link !== undefined) throw new FakeDiskError(409, "OperationAborted", `Cannot create the object: an existing object at /${link} blocks the path. Delete or rename it first.`);
     if (this.dirs.has(key)) throw new FakeDiskError(400, "InvalidRequest", `${key} is a directory`);
-    for (const parent of parentsOf(key)) if (this.files.has(parent) || this.links.has(parent)) throw new FakeDiskError(400, "InvalidRequest", `${parent} is not a directory`);
+    for (const parent of parentsOf(key)) if (this.files.has(parent)) throw new FakeDiskError(400, "InvalidRequest", `${parent} is not a directory`);
   }
 
   #makeParents(key) {
@@ -120,6 +138,7 @@ export class FakeArchilDisk {
 
   async getRange(key, range) {
     this.#record({ op: "getRange", key, range });
+    if (this.links.has(key)) throw new FakeDiskError(501, "NotImplemented", "Not Implemented");
     const bytes = this.files.get(key);
     if (bytes === undefined) throw new FakeDiskError(404, "NoSuchKey", `${key} is not there`);
     const match = /^bytes=(\d+)-(\d+)?$/.exec(range);
@@ -136,18 +155,20 @@ export class FakeArchilDisk {
     const staged = Uint8Array.from(body);
     if (key.endsWith("/")) {
       const dir = key.slice(0, -1);
-      if (this.files.has(dir) || this.links.has(dir)) throw new FakeDiskError(400, "InvalidRequest", `${dir} is a file`);
-      for (const parent of parentsOf(dir)) if (this.files.has(parent) || this.links.has(parent)) throw new FakeDiskError(400, "InvalidRequest", `${parent} is not a directory`);
+      const link = this.#linkOnTheWay(dir) ?? (this.links.has(dir) ? dir : undefined);
+      if (link !== undefined) throw new FakeDiskError(409, "OperationAborted", `Cannot create the object: an existing object at /${link} blocks the path. Delete or rename it first.`);
+      if (this.files.has(dir)) throw new FakeDiskError(400, "InvalidRequest", `${dir} is a file`);
+      for (const parent of parentsOf(dir)) if (this.files.has(parent)) throw new FakeDiskError(400, "InvalidRequest", `${parent} is not a directory`);
       await this.#ack();
       this.#makeParents(dir);
       this.dirs.add(dir);
       return;
     }
+    if (this.links.has(key)) throw new FakeDiskError(409, "OperationAborted", `Cannot create the object: an existing object at /${key} blocks the path. Delete or rename it first.`);
     this.#checkFile(key);
     await this.#ack();
     this.#checkFile(key);
     this.#makeParents(key);
-    this.links.delete(key);
     this.files.set(key, staged);
   }
 
@@ -155,6 +176,7 @@ export class FakeArchilDisk {
     this.#record({ op: "appendObject", key, size: body.length, head: Buffer.from(body.subarray(0, 8)).toString("latin1") });
     if (body.length > APPEND_MAX) throw new FakeDiskError(400, "EntityTooLarge", `an append takes at most ${APPEND_MAX} bytes`);
     this.#refuseHeld(key);
+    if (this.links.has(key)) throw new FakeDiskError(409, "OperationAborted", `Cannot create the object: an existing object at /${key} blocks the path. Delete or rename it first.`);
     this.#checkFile(key);
     const staged = Uint8Array.from(body);
     await this.#ack();
@@ -176,6 +198,7 @@ export class FakeArchilDisk {
       return;
     }
     this.#refuseHeld(key);
+    // A link is removed, never what it points at.
     this.files.delete(key);
     this.links.delete(key);
   }
@@ -192,25 +215,24 @@ export class FakeArchilDisk {
     return errors;
   }
 
-  /** Every entry, as ListObjectsV2 would list it: files by key, directories as "<key>/" markers. Links are not listed. */
-  #keys() {
-    return [...this.files.keys(), ...[...this.dirs].map((d) => `${d}/`)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-  }
-
   async listPage(prefix, { recursive = false, token } = {}) {
     this.#record({ op: "listPage", prefix, recursive, token });
+    const byBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+    // A link is an object; a folder is a "<key>/" entry one level down. A recursive listing is every file key, flat.
+    const keys = recursive
+      ? [...this.files.keys(), ...this.links.keys()].sort(byBytes)
+      : [...this.files.keys(), ...this.links.keys(), ...[...this.dirs].map((d) => `${d}/`)].sort(byBytes);
     const entries = [];
     const seen = new Set();
-    for (const key of this.#keys()) {
+    for (const key of keys) {
       if (!key.startsWith(prefix)) continue;
       const cut = key.indexOf("/", prefix.length);
       if (!recursive && cut !== -1) {
-        // Everything below the next "/" (a directory's marker included) rolls up into one common prefix.
         const common = key.slice(0, cut + 1);
         if (!seen.has(common)) { seen.add(common); entries.push({ prefix: common }); }
         continue;
       }
-      entries.push({ key, size: this.files.get(key)?.length ?? 0 });
+      entries.push({ key, size: this.files.get(key)?.length ?? this.links.get(key)?.length ?? 0 });
     }
     const start = token === undefined ? 0 : Number(token);
     const page = entries.slice(start, start + this.pageSize);
@@ -253,50 +275,55 @@ export class FakeArchilDisk {
     });
   }
 
-  /** The whole disk written out under `mirror`. */
-  #materialize(mirror) {
-    for (const dir of [...this.dirs].sort()) mkdirSync(join(mirror, dir), { recursive: true });
+  /** The subdirectory's keys written out under `mount`; the file keys written, relative to the subdirectory. */
+  #materialize(mount, sub) {
+    const base = `${sub}/`;
+    const written = [];
+    for (const dir of [...this.dirs].sort()) if (dir.startsWith(base)) mkdirSync(join(mount, dir.slice(base.length)), { recursive: true });
     for (const [key, bytes] of this.files) {
-      mkdirSync(dirname(join(mirror, key)), { recursive: true });
-      writeFileSync(join(mirror, key), bytes);
+      if (!key.startsWith(base)) continue;
+      const rel = key.slice(base.length);
+      mkdirSync(dirname(join(mount, rel)), { recursive: true });
+      writeFileSync(join(mount, rel), bytes);
+      written.push(rel);
     }
     for (const [key, target] of this.links) {
-      mkdirSync(dirname(join(mirror, key)), { recursive: true });
-      symlinkSync(target, join(mirror, key));
+      if (!key.startsWith(base)) continue;
+      const rel = key.slice(base.length);
+      mkdirSync(dirname(join(mount, rel)), { recursive: true });
+      symlinkSync(target, join(mount, rel));
     }
+    return written.sort();
   }
 
-  /** The disk replaced by what `mirror` holds: links are kept as links, never followed. */
-  #absorb(mirror) {
-    const files = new Map();
-    const dirs = new Set();
-    const links = new Map();
+  /** The subdirectory replaced by what `mount` holds: links kept as links, never followed; the rest of the disk kept. */
+  #absorb(mount, sub) {
+    const base = `${sub}/`;
+    for (const map of [this.files, this.links]) for (const key of [...map.keys()]) if (key.startsWith(base)) map.delete(key);
+    for (const dir of [...this.dirs]) if (dir.startsWith(base)) this.dirs.delete(dir);
     const walk = (abs, rel) => {
       for (const name of readdirSync(abs)) {
-        const key = rel === "" ? name : `${rel}/${name}`;
+        const key = `${rel}/${name}`;
         const stats = lstatSync(join(abs, name));
-        if (stats.isSymbolicLink()) links.set(key, readlinkSync(join(abs, name)));
-        else if (stats.isDirectory()) { dirs.add(key); walk(join(abs, name), key); }
-        else if (stats.isFile()) files.set(key, readFileSync(join(abs, name)));
+        if (stats.isSymbolicLink()) this.links.set(key, readlinkSync(join(abs, name)));
+        else if (stats.isDirectory()) { this.dirs.add(key); walk(join(abs, name), key); }
+        else if (stats.isFile()) this.files.set(key, readFileSync(join(abs, name)));
       }
     };
-    walk(mirror, "");
-    this.files = files;
-    this.dirs = dirs;
-    this.links = links;
+    walk(mount, sub);
   }
 
   async exec(request) {
-    this.#record({ op: "exec", mount: request.mount, checkoutPaths: [...request.checkoutPaths], queueMs: request.queueMs, command: request.command });
-    for (const path of request.checkoutPaths) {
-      if (!this.dirs.has(path)) throw new FakeDiskError(400, "ValidationError", `checkout of ${path}: no such directory`);
-      if (this.#held(path)) throw new FakeDiskError(400, "ValidationError", `checkout of ${path}: delegation queue expired`);
-    }
-    for (const path of request.checkoutPaths) this.#checkedOut.add(path);
-    const mirror = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "archil-fake-mnt-"));
+    this.#record({ op: "exec", mount: request.mount, subdirectory: request.subdirectory, checkoutPaths: request.checkoutPaths, queueMs: request.queueMs, image: request.image, command: request.command });
+    const sub = request.subdirectory;
+    if (typeof sub !== "string" || sub === "") throw new FakeDiskError(400, "ValidationError", "this fake mounts a subdirectory only");
+    if (!this.dirs.has(sub)) throw new FakeDiskError(400, "ValidationError", `mount of ${sub}: no such directory`);
+    if (this.#isHeld(sub)) throw new FakeDiskError(400, "ValidationError", `mount of ${sub}: delegation queue expired`);
+    this.#held.add(sub);
+    const mount = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "archil-fake-mnt-"));
     try {
-      this.#materialize(mirror);
-      const line = request.command.replaceAll(`/mnt/archil/${request.mount}/`, `${mirror}/`);
+      this.materialized.push(this.#materialize(mount, sub));
+      const line = request.command.replaceAll(`/mnt/archil/${request.mount}`, mount);
       const args = ["-c", line];
       this.spawned.push(["/bin/sh", args]);
       const answer = await new Promise((resolve, reject) => {
@@ -308,14 +335,14 @@ export class FakeArchilDisk {
         child.on("error", reject);
         child.on("close", (code) => {
           try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ }
-          resolve({ exitCode: code ?? 137, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+          resolve({ exitCode: code ?? 137, stdout: (this.banner ?? "") + Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
         });
       });
-      this.#absorb(mirror);
+      this.#absorb(mount, sub);
       return answer;
     } finally {
-      for (const path of request.checkoutPaths) this.#checkedOut.delete(path);
-      rmSync(mirror, { recursive: true, force: true });
+      this.#held.delete(sub);
+      rmSync(mount, { recursive: true, force: true });
     }
   }
 }

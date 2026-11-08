@@ -1,57 +1,67 @@
-// Workspace exec on an Archil disk: one serverless exec call (archil-disk.ts), scoped to the workspace's folder. Taken
-// from pi-transport's box/archil-exec.ts, which has no caller: the call, its 300 s cut, the checkout of the folder with
-// a queue, and the mapping of the exit and of the deadline. The rest (boxes, records, sweeps) is not.
+// Workspace exec on an Archil disk: one serverless exec call (archil-disk.ts) that mounts the workspace's folder and
+// nothing else of the disk. Taken from pi-transport's box/archil-exec.ts, which has no caller: the call, its 300 s cut,
+// the hold on the folder with a queue, and the mapping of the exit and of the deadline. The rest (boxes, records,
+// sweeps) is not.
 //
-// Archil runs one shell line in a fresh container, the disk mounted at /mnt/archil/work, after checking out the
-// workspace's folder (checkoutPaths = [root]: no other client writes in it while the line runs; a second one waits
-// up to queueMs). It answers once the line ended, stdout and stderr as text. The Workspace port wants argv, the whole
-// environment, binary stdin and stdout, a deadline that kills everything the program started, and capped output, so
-// the line this module writes:
-// - walks to the cwd one folder at a time from the root, refusing a symbolic link on the way (a link made by an earlier
-//   exec is the only kind the disk can hold; the file API makes none);
-// - takes stdin from a file the caller put in the root (.agentrun-stdin-<hex>), moved into the container's /tmp first,
+// Archil runs one shell line in a fresh container with the workspace's folder (the mount's `subdirectory`) at
+// /mnt/archil/work, held for the line (no other client writes in it meanwhile; a second one waits up to queueMs). The
+// rest of the owner's disk (other runs, the learning folders) is not in the container at all. It answers once the line
+// ended, stdout and stderr as text. The Workspace port wants argv, the whole environment, binary stdin and stdout, a
+// deadline that kills everything the program started, and capped output, so the line this module writes:
+// - walks to the cwd one folder at a time from the mount, refusing a symbolic link on the way (only an exec can make
+//   one; the file API makes none);
+// - takes stdin from a file the caller put in the folder (.agentrun-stdin-<hex>), moved into the container's /tmp first,
 //   because a call's command line has a length limit and stdin has none;
 // - runs the program as `env -i -- NAME=value… argv…` under GNU timeout, so nothing of the container's environment
 //   leaks in, in timeout's process group, which is killed when the program ends or at its deadline;
 // - drains stdout and stderr through FIFOs, keeping one byte past the cap of each (so a cut is seen) and discarding
 //   the rest as it comes, so a noisy program never fills the container's temporary disk;
-// - runs the program from a few lines of perl (perl-base is in every Debian and Ubuntu image) that write its raw wait
+// - runs the program from a few lines of perl (perl-base is in every Debian-family image) that write its raw wait
 //   status, because through timeout a program killed by a signal and one that exits 128+n look the same;
-// - answers a status line, then stdout as base64, and the program's stderr as the call's stderr.
+// - answers, in stdout, a status line carrying a marker made for this call, then the program's stdout and stderr, each
+//   as one line of base64. Whatever else is in the call's stdout or stderr (a platform's message) is not read.
 // A backend without streaming: onOutput gets each stream once, whole, when the line has ended.
-import type { ArchilDisk } from "./archil-disk.js";
+//
+// Limits, stated (not measured yet): the call's whole answer is JSON, so EXEC_OUTPUT_MAX of output is about 4/3 of
+// that again in base64 on the wire, and Archil's own limit on an answer is not documented; whether the wait for the
+// folder's hold counts toward Archil's 300 s is not documented either.
+import { constants } from "node:os";
+import { randomBytes } from "node:crypto";
+import type { ArchilDisk, ArchilImage } from "./archil-disk.js";
 import { type ExecResult, WorkspaceError } from "./workspace.js";
 
-/** Archil cuts an exec call at 300 s: a longer deadline is refused. */
+/** Archil cuts an exec call at 300 s. */
 export const MAX_EXEC_MS = 300_000;
-/** The program's own deadline at most, leaving the line 5 s to answer before the cut. */
+/** The longest deadline a command may ask for: 5 s of the 300 are the line's own (its walk, its drains, its answer).
+ *  Anything longer is refused, not cut. */
 export const COMMAND_MAX_MS = 295_000;
-/** Where the disk is mounted in the container: /mnt/archil/<EXEC_MOUNT>. */
+/** Where the folder is mounted in the container: /mnt/archil/<EXEC_MOUNT>. */
 export const EXEC_MOUNT = "work";
-/** How long an exec waits for another client's checkout of the folder. */
+/** How long an exec waits for another client's hold on the folder. */
 export const DEFAULT_QUEUE_MS = 60_000;
 /** How long after the program's deadline this side stops waiting for a call that never answers (boot and mount
  *  included). */
 const CALL_GRACE_MS = 60_000;
-/** The name, in the root, of a call's stdin while it is on its way. */
+/** The name, in the folder, of a call's stdin while it is on its way. */
 export const STDIN_PREFIX = ".agentrun-stdin-";
-const MARK = "agentrun-exec";
+const MOUNT_DIR = `/mnt/archil/${EXEC_MOUNT}`;
 
 /** `text` in single quotes, for the shell. */
 export const quote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
 
 export type ExecJob = {
-  /** The workspace's folder on the disk. */
+  /** The workspace's folder on the disk: the mount's subdirectory. */
   readonly root: string;
   /** The cwd's segments, below the root, already checked by relativeSegments. */
   readonly cwd: readonly string[];
   readonly argv: readonly string[];
   readonly env: Readonly<Record<string, string>>;
-  /** The stdin file's name in the root, when there is stdin. */
+  /** The stdin file's name in the folder, when there is stdin. */
   readonly stdinName?: string;
   readonly timeoutMs: number;
   readonly maxOutput: number;
   readonly queueMs: number;
+  readonly image?: ArchilImage;
 };
 
 /** The program's runner: stderr to the file in its first argument, the program run, its raw wait status written to the
@@ -65,17 +75,17 @@ const RUNNER = [
   `exit($w & 127 ? 128 + ($w & 127) : $w >> 8);`,
 ].join(" ");
 
-/** The shell line one exec call runs (POSIX sh; GNU timeout, perl, mkfifo, base64, head and mktemp in the image). */
-export function execLine(job: ExecJob): string {
-  const dir = `/mnt/archil/${EXEC_MOUNT}/${job.root}`;
+/** The shell line one exec call runs (POSIX sh; GNU timeout, perl, mkfifo, base64, head and mktemp in the image).
+ *  `mark` is this call's marker: the line's answer is found by it, whatever else the call's stdout holds. */
+export function execLine(job: ExecJob, mark: string): string {
   const cap = job.maxOutput + 1;
   // At least a millisecond: timeout reads 0 as no deadline at all.
   const seconds = (Math.max(1, Math.ceil(Math.min(job.timeoutMs, COMMAND_MAX_MS))) / 1000).toFixed(3);
   const lines = [
-    `d=$(mktemp -d 2>/dev/null) || { echo '${MARK} notmp'; exit 0; }`,
-    `s() { echo "${MARK} $1"; rm -rf -- "$d"; exit 0; }`,
+    `d=$(mktemp -d 2>/dev/null) || { echo '${mark} notmp'; exit 0; }`,
+    `s() { echo "${mark} $1"; rm -rf -- "$d"; exit 0; }`,
     `{ command -v timeout && command -v perl && command -v mkfifo && command -v base64 && command -v head; } >/dev/null 2>&1 || s notools`,
-    `cd -- ${quote(dir)} 2>/dev/null || s noroot`,
+    `cd -- ${quote(MOUNT_DIR)} 2>/dev/null || s noroot`,
   ];
   for (const segment of job.cwd) {
     const name = quote(segment);
@@ -83,7 +93,7 @@ export function execLine(job: ExecJob): string {
   }
   let input = "/dev/null";
   if (job.stdinName !== undefined) {
-    lines.push(`mv -- ${quote(`${dir}/${job.stdinName}`)} "$d/in" 2>/dev/null || s nostdin`);
+    lines.push(`mv -- ${quote(`${MOUNT_DIR}/${job.stdinName}`)} "$d/in" 2>/dev/null || s nostdin`);
     input = `"$d/in"`;
   }
   const path = job.env.PATH;
@@ -105,31 +115,38 @@ export function execLine(job: ExecJob): string {
     `wait $r1 $r2 2>/dev/null; kill -s KILL $k 2>/dev/null`,
     `t=0; grep -q 'sending signal' "$d/why" 2>/dev/null && t=1`,
     `w=-; [ -s "$d/status" ] && w=$(cat "$d/status")`,
-    `echo "${MARK} ran $c $t $w"`,
-    `base64 <"$d/out" | tr -d '\\n'`,
-    `echo`,
-    `cat "$d/err" >&2`,
+    `echo "${mark} ran $c $t $w"`,
+    `base64 <"$d/out" | tr -d '\\n'; echo`,
+    `base64 <"$d/err" | tr -d '\\n'; echo`,
     `rm -rf -- "$d"`,
   );
   return lines.join("\n");
 }
 
 type Status = "ran" | "noroot" | "link" | "notdir" | "nocwd" | "nostdin" | "noprog" | "notmp" | "notools";
-const STATUS = new RegExp(`^${MARK} (ran|noroot|link|notdir|nocwd|nostdin|noprog|notmp|notools)(?: (\\d+) ([01]) (-|\\d+))?$`);
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
-/** What the line answered, or undefined when it is not one of its answers. `signaled`: a signal ended the program
- *  (its raw wait status says so; with no status, the runner itself was killed, which only the deadline does). */
-export function parseExec(stdout: string): { readonly status: Exclude<Status, "ran"> } | { readonly status: "ran"; readonly code: number; readonly timedOut: boolean; readonly signaled: boolean; readonly out: Uint8Array } | undefined {
-  const newline = stdout.indexOf("\n");
-  const head = STATUS.exec(newline === -1 ? stdout : stdout.slice(0, newline));
+/** The signal's name, for a raw wait status a signal ended (Linux numbering, which the container's is). */
+const signalName = (number: number): string =>
+  Object.entries(constants.signals).find(([, value]) => value === number)?.[0] ?? `signal ${number}`;
+
+/** What the line answered, found by `mark` anywhere in the call's stdout, or undefined when it is not there whole. */
+export function parseExec(stdout: string, mark: string): { readonly status: Exclude<Status, "ran"> } | {
+  readonly status: "ran"; readonly code: number; readonly timedOut: boolean; readonly signal: string | undefined;
+  readonly out: Uint8Array; readonly err: Uint8Array;
+} | undefined {
+  const lines = stdout.split("\n");
+  const at = lines.findIndex((line) => line.startsWith(`${mark} `));
+  if (at === -1) return undefined;
+  const head = new RegExp(`^${mark} (ran|noroot|link|notdir|nocwd|nostdin|noprog|notmp|notools)(?: (\\d+) ([01]) (-|\\d+))?$`).exec(lines[at]!);
   if (head === null) return undefined;
   const status = head[1] as Status;
   if (status !== "ran") return { status };
-  if (head[2] === undefined || newline === -1) return undefined;
-  const encoded = stdout.slice(newline + 1).replace(/\n$/, "");
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return undefined;
+  const [out, err] = [lines[at + 1], lines[at + 2]];
+  if (head[2] === undefined || out === undefined || err === undefined || !BASE64.test(out) || !BASE64.test(err)) return undefined;
   const raw = head[4] === "-" ? undefined : Number(head[4]);
-  return { status, code: Number(head[2]), timedOut: head[3] === "1", signaled: raw !== undefined && (raw & 127) !== 0, out: Buffer.from(encoded, "base64") };
+  const signal = raw !== undefined && (raw & 127) !== 0 ? signalName(raw & 127) : undefined;
+  return { status, code: Number(head[2]), timedOut: head[3] === "1", signal, out: Buffer.from(out, "base64"), err: Buffer.from(err, "base64") };
 }
 
 const show = (segments: readonly string[]): string => JSON.stringify(segments.length === 0 ? "." : segments.join("/"));
@@ -138,6 +155,7 @@ const describe = (error: unknown): string => String((error as Error)?.message ??
 /** `job` run by one exec call on `disk`. A nonzero exit is a result; what kept the program from running is an error. */
 export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecResult> {
   const path = job.cwd.join("/");
+  const mark = `agentrun-exec-${randomBytes(6).toString("hex")}`;
   let timer: NodeJS.Timeout | undefined;
   const deadline = Math.min(job.timeoutMs, COMMAND_MAX_MS) + CALL_GRACE_MS;
   const gaveUp = new Promise<never>((_, reject) => {
@@ -145,7 +163,8 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
   });
   let answer;
   try {
-    answer = await Promise.race([disk.exec({ mount: EXEC_MOUNT, checkoutPaths: [job.root], queueMs: job.queueMs, command: execLine(job) }), gaveUp]);
+    const request = { mount: EXEC_MOUNT, subdirectory: job.root, queueMs: job.queueMs, command: execLine(job, mark), ...(job.image === undefined ? {} : { image: job.image }) };
+    answer = await Promise.race([disk.exec(request), gaveUp]);
   } catch (error) {
     if (error instanceof WorkspaceError) throw error;
     const status = (error as { status?: unknown })?.status;
@@ -156,19 +175,19 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
   } finally {
     clearTimeout(timer);
   }
-  const parsed = parseExec(answer.stdout);
+  const parsed = parseExec(answer.stdout, mark);
   if (parsed === undefined) {
-    throw new WorkspaceError("UNAVAILABLE", `the Archil exec answered something else than its line's (exit ${answer.exitCode}): ${describe(answer.stderr || answer.stdout)}`, { path });
+    throw new WorkspaceError("UNAVAILABLE", `the Archil exec's answer does not hold its line's (exit ${answer.exitCode}): ${describe(answer.stderr || answer.stdout)}`, { path });
   }
   switch (parsed.status) {
     case "ran": {
-      const err = Buffer.from(answer.stderr, "utf8");
-      const truncated = parsed.out.length > job.maxOutput || err.length > job.maxOutput;
+      const truncated = parsed.out.length > job.maxOutput || parsed.err.length > job.maxOutput;
       return {
         stdout: parsed.out.subarray(0, job.maxOutput),
-        stderr: err.subarray(0, job.maxOutput).toString("utf8"),
-        // null whenever a signal ended it: its own crash, or the deadline's kill.
-        code: parsed.timedOut || parsed.signaled ? null : parsed.code,
+        stderr: Buffer.from(parsed.err.subarray(0, job.maxOutput)).toString("utf8"),
+        // null whenever a signal ended it: its own (named), or the deadline's kill.
+        code: parsed.timedOut || parsed.signal !== undefined ? null : parsed.code,
+        ...(parsed.signal === undefined || parsed.timedOut ? {} : { signal: parsed.signal }),
         timedOut: parsed.timedOut,
         truncated,
       };
@@ -177,9 +196,9 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
     case "nocwd": throw new WorkspaceError("NOT_FOUND", `${show(job.cwd)} is not there`, { path });
     case "notdir": throw new WorkspaceError("REFUSED", `${show(job.cwd)} is not a directory`, { path });
     case "noprog": throw new WorkspaceError("NOT_FOUND", `${JSON.stringify(job.argv[0])} is not a program here (PATH ${JSON.stringify(job.env.PATH ?? "")})`, { path });
-    case "noroot": throw new WorkspaceError("UNAVAILABLE", `the workspace's folder ${job.root} is not on the disk`, { path });
+    case "noroot": throw new WorkspaceError("UNAVAILABLE", `the workspace's folder ${job.root} was not mounted`, { path });
     case "nostdin": throw new WorkspaceError("UNAVAILABLE", "the exec's stdin did not reach the container", { path });
     case "notmp": throw new WorkspaceError("UNAVAILABLE", "the exec's container has no temporary folder", { path });
-    case "notools": throw new WorkspaceError("UNAVAILABLE", "the exec's image lacks timeout, base64 or head", { path });
+    case "notools": throw new WorkspaceError("UNAVAILABLE", "the exec's image lacks timeout, perl, mkfifo, base64 or head", { path });
   }
 }

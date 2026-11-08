@@ -6,21 +6,25 @@
 //   (serve keeps keys in its sealed store); nothing here reads the environment, and every setting is passed to the SDK
 //   so it reads none of its own either. The key is never logged, returned or put in an error.
 // - Endpoints: the region names the control plane. The S3 endpoint is given here explicitly (the setting
-//   AGENTRUN_ARCHIL_S3_URL), because no public part of the SDK says which it is: the same URL goes to the SDK's public
-//   `s3BaseUrl` option and to the ranged read below, so both talk to one endpoint.
+//   AGENTRUN_ARCHIL_S3_URL): the SDK derives it from the region internally, and no exported part of it says which it
+//   is. The same URL goes to the SDK's public `s3BaseUrl` option and to the ranged read below, so both talk to one
+//   endpoint. Since the account key goes to it, it must be https on an Archil host for the disk's region (the live one:
+//   s3.green.us-east-1.aws.prod.archil.com for aws-us-east-1); plain http only to this machine's loopback, in tests.
 // - Objects: putObject is one PUT up to 16 MiB, above it a multipart upload that appears whole when it completes;
 //   appendObject takes at most 1 MiB a call and the SDK never retries it (a retry could append twice); deleteObject is
 //   idempotent; listObjects is ListObjectsV2, one level under a "/" delimiter unless recursive, in pages. The disk is a
 //   filesystem, so "a/" is a directory: putting an empty "a/" makes one. There is no rename, copy or link call.
 // - A ranged read is the S3 Range header, which the SDK has no option for: it is a plain GET of
 //   <S3 endpoint>/<disk>/<key> with the same Bearer key and a Range header, tried again on a 429, a 5xx or a failed
-//   connection, as the SDK does its own reads.
+//   connection, as the SDK does its own reads. A redirect is never followed (the key would go with it), and each try
+//   gives up after readTimeoutMs.
 // - grep: ripgrep's regex, a directory, recursive or not, a deadline of at most 30 s, 1,000 results by default; when it
 //   stops early its matches are a sample, not the first ones.
-// - exec: Archil.exec({ disks, command }) runs one shell line in a fresh container with each disk mounted at
-//   /mnt/archil/<name>, after checking out `checkoutPaths` (waiting up to `queueMs` for another client's), and answers
-//   once the line ended, with stdout and stderr as text and the exit code. The SDK retries it only when the connection
-//   failed, so a line never runs twice.
+// - exec: Archil.exec({ disks, command, baseImage | imageId }) runs one shell line in a fresh container with each disk
+//   mounted at /mnt/archil/<name>. A mount with `subdirectory` exposes that folder only, and with `queueMs` (and no
+//   checkoutPaths) it holds that folder for the line, waiting up to queueMs for another client's hold. It answers once
+//   the line ended, with stdout and stderr as text and the exit code. The SDK retries it only when the connection failed,
+//   so a line never runs twice. With no image, Archil's default exec image (measured live: git 2.34.1).
 import type { Archil as ArchilClient, Disk as SdkDisk } from "disk";
 
 /** One object of a listing: its whole key, and its size in bytes. */
@@ -39,8 +43,17 @@ export type ArchilGrepAnswer = {
   readonly matches: readonly { readonly file: string; readonly line: number; readonly text: string }[];
   readonly stoppedReason: string;
 };
-/** One exec: `command` runs with the disk at /mnt/archil/<mount>, `checkoutPaths` checked out first. */
-export type ArchilExecRequest = { readonly mount: string; readonly checkoutPaths: readonly string[]; readonly queueMs: number; readonly command: string };
+/** The image an exec runs in: a public OCI reference (pin it by digest), or an image built through Archil's images API. */
+export type ArchilImage = { readonly baseImage: string } | { readonly imageId: string };
+/** One exec: `command` runs with folder `subdirectory` of the disk (and nothing else of it) at /mnt/archil/<mount>,
+ *  held for the line (waiting up to queueMs for another client's hold), in `image` or Archil's default. */
+export type ArchilExecRequest = {
+  readonly mount: string;
+  readonly subdirectory: string;
+  readonly queueMs: number;
+  readonly command: string;
+  readonly image?: ArchilImage;
+};
 export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
 /**
@@ -72,11 +85,41 @@ export type ArchilDiskOptions = {
   /** The account API key, asked for on every call (serve gives it from its sealed store; nothing here reads the
    *  environment). A new key is taken up by the next call. */
   readonly key: () => string | Promise<string>;
-  /** The disk's S3-compatible endpoint (the setting AGENTRUN_ARCHIL_S3_URL), e.g. https://s3.<…>.archil.com. */
+  /** The disk's S3-compatible endpoint (the setting AGENTRUN_ARCHIL_S3_URL): https, on an Archil host for `region`. */
   readonly s3BaseUrl: string;
-  /** Another control plane than the region's (a test's loopback server). */
+  /** Another control plane than the region's: a test's loopback server, which also lets s3BaseUrl be a loopback one. */
   readonly baseUrl?: string;
+  /** How long one try of a ranged read may take (default 60 s). */
+  readonly readTimeoutMs?: number;
 };
+
+const LOOPBACK = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule names loopback hosts to allow plain http only to them, in tests
+
+/** The S3 endpoint, checked: https on an Archil host whose name carries the region ("aws-us-east-1" → "…​.us-east-1.aws.
+ *  …archil.com"), or, when the control plane is a loopback one too (a test), http(s) to this machine's loopback. */
+function checkS3Url(s3BaseUrl: unknown, region: string, baseUrl: string | undefined): URL {
+  const refuse = (why: string): never => { throw new Error(`the Archil S3 endpoint (AGENTRUN_ARCHIL_S3_URL) ${why}`); };
+  if (typeof s3BaseUrl !== "string") return refuse("is not given");
+  let url: URL;
+  try {
+    url = new URL(s3BaseUrl);
+  } catch {
+    return refuse("is not a URL");
+  }
+  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") refuse("carries more than a scheme, a host and a path");
+  if (baseUrl !== undefined && LOOPBACK.test(url.hostname)) {
+    let control: URL | undefined;
+    try { control = new URL(baseUrl); } catch { control = undefined; }
+    if (control !== undefined && LOOPBACK.test(control.hostname) && (url.protocol === "http:" || url.protocol === "https:")) return url;
+  }
+  if (url.protocol !== "https:") refuse("must be https: the account key goes to it");
+  const parts = /^([a-z]+)-(.+)$/.exec(region);
+  if (parts === null) refuse(`cannot be checked against region ${JSON.stringify(region)}`);
+  const [, provider, location] = parts!;
+  const host = url.hostname.toLowerCase();
+  if (!host.endsWith(".archil.com") || !host.includes(`.${location}.${provider}.`)) refuse(`must be an Archil host for region ${region}, not ${host}`);
+  return url;
+}
 
 /** A failed ranged read: the status, and the gateway's code. */
 class RangeReadError extends Error {
@@ -92,6 +135,7 @@ class RangeReadError extends Error {
 }
 
 const RANGE_TRIES = 3;
+const READ_TIMEOUT_MS = 60_000;
 const transient = (status: number): boolean => status === 429 || status >= 500;
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -104,12 +148,10 @@ class SdkArchilDisk implements ArchilDisk {
   #readyKey: string | undefined;
 
   constructor(options: ArchilDiskOptions) {
-    if (typeof options.s3BaseUrl !== "string" || !/^https?:\/\/[^/]+/.test(options.s3BaseUrl)) {
-      throw new Error("an Archil disk needs its S3 endpoint (AGENTRUN_ARCHIL_S3_URL), an http(s) URL");
-    }
+    const url = checkS3Url(options.s3BaseUrl, options.region, options.baseUrl);
     if (typeof options.key !== "function") throw new Error("the Archil API key is given as a function that returns it");
     this.#options = options;
-    this.#s3 = options.s3BaseUrl.replace(/\/+$/, "");
+    this.#s3 = `${url.origin}${url.pathname}`.replace(/\/+$/, "");
     this.id = options.disk;
   }
 
@@ -149,8 +191,11 @@ class SdkArchilDisk implements ArchilDisk {
     for (let attempt = 1; ; attempt++) {
       let response: Response;
       try {
-        response = await fetch(url, { method: "GET", headers });
+        // No redirect is followed: the key would go with it.
+        response = await fetch(url, { method: "GET", headers, redirect: "error", signal: AbortSignal.timeout(this.#options.readTimeoutMs ?? READ_TIMEOUT_MS) });
       } catch (error) {
+        const why = String((error as { cause?: { message?: unknown } })?.cause?.message ?? (error as Error)?.message ?? error);
+        if (/redirect/i.test(why)) throw new Error(`the Archil S3 endpoint answered a ranged read with a redirect, which is not followed: ${why}`);
         if (attempt >= RANGE_TRIES) throw error;
         await pause(100 * 2 ** attempt);
         continue;
@@ -198,12 +243,13 @@ class SdkArchilDisk implements ArchilDisk {
   async exec(request: ArchilExecRequest): Promise<ArchilExecAnswer> {
     const { client } = await this.#sdk();
     const answer = await client.exec({
-      disks: { [request.mount]: { disk: this.id, checkoutPaths: [...request.checkoutPaths], queueMs: request.queueMs } },
+      disks: { [request.mount]: { disk: this.id, subdirectory: request.subdirectory, queueMs: request.queueMs } },
       command: request.command,
+      ...request.image,
     });
     return { exitCode: answer.exitCode, stdout: answer.stdout, stderr: answer.stderr };
   }
 }
 
-/** Disk `options.disk` through Archil's SDK, its key read from the variable named `options.keyEnv` at the first call. */
+/** Disk `options.disk` through Archil's SDK, its key asked of `options.key` on every call. */
 export const archilDisk = (options: ArchilDiskOptions): ArchilDisk & { ready(): Promise<void> } => new SdkArchilDisk(options);

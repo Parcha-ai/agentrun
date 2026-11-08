@@ -6,8 +6,10 @@ export {
   type AttachableComputer, attachedWorkspace, checkReadBack, COMPUTER_CHUNK, type MountCheck, NO_COMPUTER, noProcesses,
   type Processes,
 } from "./attach.js";
-export { agentDirName, agentFolder, agentLearningFolder, DISK_DIR, relativePath, relativeSegments, runFolder } from "./paths.js";
+export {
+  agentDirName, agentFolder, agentLearningFolder, DISK_DIR, learningKey, relativePath, relativeSegments, runFolder, runKey,
+} from "./paths.js";
 export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
 export { localWorkspace } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
-export { archilDisk, type ArchilDisk, type ArchilDiskOptions } from "./archil-disk.js";
+export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
