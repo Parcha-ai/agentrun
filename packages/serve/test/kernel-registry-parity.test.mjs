@@ -1,12 +1,8 @@
 // The kernel's tool registry holds main's tools as main shows them today: the same names in the same order, the same
-// words, schemas and replay, the same limits, the same shell-family gate mapping, and the same background tools' answers.
-// The one ruled change, named below: with no computer, bash runs in the run's folder (asked first) and the background
-// tools are refused.
+// words, schemas and replay, the same limits, and the same shell-family gate mapping. The one ruled change, named below:
+// with no computer, bash runs in the run's folder (asked first) and the background tools are refused. (The background
+// tools' answers follow the computer module's reference on the computer's processes; the kernel's own tests hold them.)
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
-import { spawn } from "node:child_process";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import * as kernel from "@parcha/agentrun-kernel/kernel";
 import * as background from "../dist/background.js";
@@ -57,50 +53,4 @@ test("ruled change, named: main has no bash with no computer; the registry's loc
   assert.deepEqual(mainRunner().map((tool) => tool.name), ["read", "write", "edit"]);
   assert.deepEqual(kernel.hostToolDefs({ maxExecS: BASH_MAX_TIMEOUT_S, shell: "local" }).map((tool) => tool.name), ["read", "write", "edit", "bash"]);
   assert.equal(kernel.defaultPermissionOf("bash", { computer: false }), "ask");
-});
-
-/** A command runner on a local folder, for both sides: main's background tools get it as an ExecutionEnv, the registry's
- *  as hands. Each side has its own folder and TMPDIR, so their processes never meet. */
-function local() {
-  const root = mkdtempSync(join(tmpdir(), "registry-parity-"));
-  const tmp = join(root, ".tmp");
-  mkdirSync(tmp);
-  const run = (argv, timeoutS, onOutput) => new Promise((done) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd: root, env: { ...process.env, TMPDIR: tmp }, stdio: ["ignore", "pipe", "pipe"] });
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutS * 1000);
-    child.stdout.on("data", (data) => onOutput("stdout", data.toString("utf8")));
-    child.stderr.on("data", (data) => onOutput("stderr", data.toString("utf8")));
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      done(code ?? 137);
-    });
-  });
-  const env = { cwd: root, exec: async (argv, options) => ({ ok: true, value: { exitCode: await run(argv, options.timeout ?? 30, (stream, text) => options.onOutput?.(text, undefined, { stream })) } }) };
-  const hands = { maxExecS: 600, exec: async (command, options) => ({ exitCode: await run(["bash", "-c", command], options.timeoutS, (stream, data) => options.onOutput?.({ stream, data })), signal: null, timedOut: false }) };
-  return { env, hands };
-}
-
-const textOf = (result) => (result.output ?? []).map((block) => block.text ?? "").join("");
-const normal = (text) => text.replace(/process group \d+/g, "process group N").replace(/started \d{4}-\d\d-\d\dT[\d:]+Z/g, "started T");
-
-test("the background tools answer as main's do, call for call, on the same commands", async () => {
-  const main = local();
-  const ours = local();
-  const theirs = Object.fromEntries(background.backgroundTools().map((tool) => [tool.name, tool]));
-  const registry = kernel.createRegistry({ maxExecS: 600, shell: "computer", executors: { read: async () => ({ text: "" }), write: async () => ({ text: "" }), edit: async () => ({ text: "" }), bash: async () => ({ text: "" }) } });
-  const both = async (name, args) => {
-    const a = await theirs[name].execute(args, { env: main.env }, {}).then(textOf, (error) => `error: ${error.message}`);
-    const b = await registry.invoke(name, args, { hands: ours.hands }).then((answer) => answer.text, (error) => `error: ${error.message}`);
-    assert.equal(normal(b), normal(a), `${name} ${JSON.stringify(args)}`);
-  };
-  await both("bash_background", { command: "printf 'one\\ntwo\\n'" });
-  await new Promise((resolve) => setTimeout(resolve, 800));
-  await both("bash_output", { id: "1" });
-  await both("bash_output", { id: "1", offset: 4, max_bytes: 2 });
-  await both("bash_list", {});
-  await both("bash_input", { id: "1", text: "x" });
-  await both("bash_signal", { id: "1", signal: "TERM" });
-  await both("bash_output", { id: "7" });
-  await both("bash_signal", { id: "x", signal: "TERM" });
-  await both("bash_background", { command: "  " });
 });
