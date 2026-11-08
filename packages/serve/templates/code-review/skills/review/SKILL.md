@@ -81,7 +81,8 @@ every later turn.
    - `fingerprint`: `path` (whitespace replaced with `_`) + the enclosing symbol + a short kind (`null-deref`,
      `missing-await`, `authz`, ...), lowercased, joined with `:`. It must stay the same when lines move.
    - `confidence`: your probability, 0 to 1, that a maintainer agrees it's a real problem.
-7. **Return** exactly one fenced `json` block, and nothing after it:
+7. **Return** exactly one fenced `json` block that meets `findings.schema.json` (beside this SKILL.md), and nothing after
+   it:
 
 ```json
 {

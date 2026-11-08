@@ -90,7 +90,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
 | `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`). Required when the package has triggers. |
 | `learning` | `true` or `false`: whether the agent's runs learn. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. |
-| `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. |
+| `output` | `{schema: <file>}`: the JSON Schema of the agent's answer, a file in the package. It ships beside each SKILL.md, as a rule does, so the agent reads it there: the skill names it. |
 | `checks` | Names of structural checks of a run's answer; none runs yet. |
 
 The check is whole: the package is compiled with a sample of each parameter, and the agent body and each trigger body are

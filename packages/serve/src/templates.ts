@@ -302,6 +302,13 @@ export function readPackage(dir: string): Package {
       else skills[path] = text(`rules/${entry.name}`);
     }
   }
+  // The answer's schema ships beside each SKILL.md too, as a rule does: the agent reads it there, and the skill names it.
+  const schemaFile = isObject(f.output) && inside(f.output.schema) ? (f.output.schema as string) : undefined;
+  for (const skill of schemaFile ? skillDirs.filter((d) => d.isDirectory()) : []) {
+    const path = `${skill.name}/${basename(schemaFile!)}`;
+    if (Object.hasOwn(skills, path)) bad(schemaFile!, `skills/${path} has the same name, and the answer's schema ships beside each SKILL.md`);
+    else skills[path] = text(schemaFile!);
+  }
 
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
   // fixtures/ if it has them. The layout only: no eval runs here.
