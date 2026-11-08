@@ -8,9 +8,9 @@ import { DatabaseSync } from "node:sqlite";
 import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
-  CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
-  type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
-  type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
+  CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion, TriggerFull,
+  type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
@@ -39,12 +39,44 @@ export type SqliteStoreOptions = (
 type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null };
 type RevisionRecord = { id: string; agent_id: string; kind: string; body: string; package: string | null; created_at: number };
 type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null; tries: number };
-type TriggerRecord = { id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null };
+type TriggerRecord = {
+  id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null;
+  catchup_window_s: number | null; failures_in_a_row: number; disabled: string | null; max_active_runs: number | null; created_at: number; updated_at: number;
+};
+type FiringRecord = {
+  trigger_id: string; key: string; by: string | null; nominal_at: number | null; status: FiringStatus; at: number; run_id: string | null; reason: string | null;
+  error: string | null; count: number | null; attempts: number; retry_at: number | null; payload: string | null; attrs: string | null; notified: number | null;
+  catch_up: number | null; paused: number | null; shown: number | null; waits_on: string | null;
+};
+const FIRING_COLUMNS = "trigger_id, key, by, nominal_at, status, at, run_id, reason, error, count, attempts, retry_at, payload, attrs, notified, catch_up, paused, shown, waits_on";
+const firingOf = (r: FiringRecord): FiringRow => ({
+  triggerId: r.trigger_id, key: r.key, by: r.by ?? "manual", nominalAt: r.nominal_at ?? r.at, status: r.status, at: r.at, runId: r.run_id, reason: r.reason,
+  error: r.error === null ? null : JSON.parse(r.error), count: r.count, attempts: r.attempts, retryAt: r.retry_at, payload: r.payload,
+  attrs: r.attrs === null ? null : JSON.parse(r.attrs), notified: r.notified === 1, catchUp: r.catch_up === 1, paused: r.paused === 1, shown: r.shown !== 0, waitsOn: r.waits_on,
+});
+/** The trigger's patch as columns: name -> [column, value]. */
+const TRIGGER_PATCH: { [K in keyof TriggerPatch]-?: (value: NonNullable<TriggerPatch[K]> | null) => [string, SqliteValue] } = {
+  name: (v) => ["name", v],
+  enabled: (v) => ["enabled", v ? 1 : 0],
+  source: (v) => ["source", json(v)],
+  target: (v) => ["target", json(v)],
+  nextAt: (v) => ["next_at", v],
+  catchupWindowS: (v) => ["catchup_window_s", v],
+  failuresInARow: (v) => ["failures_in_a_row", v ?? 0],
+  disabled: (v) => ["disabled", v === null ? null : json(v)],
+  maxActiveRuns: (v) => ["max_active_runs", v],
+};
+/** `patch`'s columns, `updated_at` with them: the SET clause and its values. */
+function triggerSet(patch: TriggerPatch, at: number): { set: string; params: SqliteValue[] } {
+  const pairs = (Object.keys(patch) as (keyof TriggerPatch)[]).filter((k) => patch[k] !== undefined).map((k) => (TRIGGER_PATCH[k] as (v: unknown) => [string, SqliteValue])(patch[k] as unknown));
+  pairs.push(["updated_at", at]);
+  return { set: pairs.map(([column]) => `${column} = ?`).join(", "), params: pairs.map(([, value]) => value) };
+}
 
 const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at";
 const REVISION_COLUMNS = "id, agent_id, kind, body, package, created_at";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
-const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id";
+const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
 /** The runs a runner may claim, at a time bound three times (CLAIMABLE_AT): queued; running with no runner (released) or
  *  its claim run out; parked with its wake_at passed, an untaken stop, or an untaken command once its backoff (a failed
@@ -66,6 +98,8 @@ const revisionOf = (r: RevisionRecord): RevisionRow => ({
 const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused, tries: r.tries });
 const triggerOf = (r: TriggerRecord): TriggerRow => ({
   id: r.id, agentId: r.agent_id, name: r.name, enabled: r.enabled === 1, source: JSON.parse(r.source), target: JSON.parse(r.target), nextAt: r.next_at, lastRunId: r.last_run_id,
+  catchupWindowS: r.catchup_window_s, failuresInARow: r.failures_in_a_row, disabled: r.disabled === null ? null : JSON.parse(r.disabled), maxActiveRuns: r.max_active_runs,
+  createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 
@@ -282,6 +316,131 @@ class SqliteStore implements Store {
         return row && triggerOf(row);
       },
       list: async (agentId) => (await db.all<TriggerRecord>(`SELECT ${TRIGGER_COLUMNS} FROM triggers WHERE agent_id = ? ORDER BY name`, agentId)).map(triggerOf),
+      all: async () => (await db.all<TriggerRecord>(`SELECT ${TRIGGER_COLUMNS} FROM triggers ORDER BY created_at, id`)).map(triggerOf),
+      create: async (t) => {
+        const at = now();
+        const row = await db.transaction((tx) =>
+          tx.get<TriggerRecord>(
+            `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
+            t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at,
+          ),
+        );
+        return triggerOf(row!);
+      },
+      update: async (id, patch) => {
+        const { set, params } = triggerSet(patch, now());
+        const row = await db.transaction((tx) => tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id));
+        return row && triggerOf(row);
+      },
+      remove: async (id) => {
+        await db.write([{ sql: "DELETE FROM triggers WHERE id = ?", params: [id] }]);
+      },
+      record: async (triggerId, firings, { patch, room } = {}) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          if (!(await tx.get<{ id: string }>("SELECT id FROM triggers WHERE id = ?", triggerId))) return undefined;
+          if (room !== undefined && firings.some((f) => f.status === "due")) {
+            const due = (await tx.get<{ n: number }>("SELECT COUNT(*) AS n FROM trigger_firings WHERE trigger_id = ? AND status = 'due'", triggerId))!.n;
+            if (due >= room) throw new TriggerFull(triggerId, due);
+          }
+          const created: boolean[] = [];
+          for (const f of firings) {
+            const n = await tx.runCounted(
+              `INSERT INTO trigger_firings (trigger_id, key, by, nominal_at, status, at, reason, count, catch_up, payload, attrs, shown) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (trigger_id, key) DO NOTHING`,
+              triggerId, f.key, f.by, f.nominalAt, f.status, at, f.reason ?? null, f.count ?? null, f.catchUp ? 1 : null, f.status === "due" ? (f.payload ?? null) : null,
+              f.attrs === undefined ? null : json(f.attrs), f.shown === false ? 0 : 1,
+            );
+            created.push(n === 1);
+          }
+          if (patch) {
+            const { set, params } = triggerSet(patch, at);
+            await tx.run(`UPDATE triggers SET ${set} WHERE id = ?`, ...params, triggerId);
+          }
+          return { created };
+        }),
+      firing: async (triggerId, key) => {
+        const row = await db.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
+        return row && firingOf(row);
+      },
+      firings: async (triggerId) =>
+        (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, rowid DESC`, triggerId)).map(firingOf),
+      settle: async (triggerId, key, change, streak) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const was = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
+          if (!was) return undefined;
+          const settled = change.status !== undefined && change.status !== "due";
+          // Out of due, a firing keeps no retry, wait or payload, nor the reason its last try gave (unless it gives one).
+          const set: [string, SqliteValue][] = [];
+          if (change.status !== undefined) set.push(["status", change.status]);
+          if (settled) set.push(["retry_at", null], ["waits_on", null], ["payload", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
+          else if (change.reason !== undefined) set.push(["reason", change.reason]);
+          if (change.runId !== undefined) set.push(["run_id", change.runId]);
+          if (change.error !== undefined) set.push(["error", json(change.error)]);
+          if (!settled && change.attempts !== undefined) set.push(["attempts", change.attempts]);
+          if (!settled && change.retryAt !== undefined) set.push(["retry_at", change.retryAt]);
+          if (!settled && change.waitsOn !== undefined) set.push(["waits_on", change.waitsOn]);
+          if (change.notified !== undefined) set.push(["notified", change.notified ? 1 : 0]);
+          let paused = false;
+          const trigger = await tx.get<{ failures_in_a_row: number; enabled: number; last_run_id: string | null; target: string }>(
+            "SELECT failures_in_a_row, enabled, last_run_id, target FROM triggers WHERE id = ?", triggerId,
+          );
+          const triggerSets: [string, SqliteValue][] = [];
+          // Run ids are UUIDv7s, which sort by when the run started: a firing that finds an older run never takes a later
+          // one's place as the trigger's last run.
+          if (change.runId !== undefined && trigger && (JSON.parse(trigger.target) as { kind?: string }).kind === "start_run" && !(trigger.last_run_id && trigger.last_run_id > change.runId)) {
+            triggerSets.push(["last_run_id", change.runId]);
+          }
+          if (streak && "reset" in streak) triggerSets.push(["failures_in_a_row", 0]);
+          if (streak && "failure" in streak && trigger) {
+            const failures = trigger.failures_in_a_row + 1;
+            triggerSets.push(["failures_in_a_row", failures]);
+            if (failures >= streak.pauseAt && trigger.enabled === 1) {
+              paused = true;
+              triggerSets.push(["enabled", 0], ["next_at", null], ["disabled", json({ at: new Date(at).toISOString(), reason: "auto_paused" })]);
+              set.push(["paused", 1]);
+            }
+          }
+          if (set.length) await tx.run(`UPDATE trigger_firings SET ${set.map(([c]) => `${c} = ?`).join(", ")} WHERE trigger_id = ? AND key = ?`, ...set.map(([, v]) => v), triggerId, key);
+          if (triggerSets.length) {
+            triggerSets.push(["updated_at", at]);
+            await tx.run(`UPDATE triggers SET ${triggerSets.map(([c]) => `${c} = ?`).join(", ")} WHERE id = ?`, ...triggerSets.map(([, v]) => v), triggerId);
+          }
+          if (paused) await writeScopes(tx, triggerId, []);
+          const row = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
+          return { firing: firingOf(row!), paused };
+        }),
+      pending: async () =>
+        (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE status = 'due' OR (status = 'failed' AND (notified IS NULL OR notified = 0)) ORDER BY at, rowid`)).map(firingOf),
+      soonest: async () => (await db.get<{ at: number | null }>("SELECT MIN(next_at) AS at FROM triggers WHERE enabled = 1 AND next_at IS NOT NULL"))?.at ?? null,
+      activeRuns: async (triggerId) =>
+        (await db.get<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM trigger_firings f JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND f.status = 'started' AND r.state NOT IN (${FINAL})`, triggerId,
+        ))!.n,
+      prune: async (triggerId, { history, dayMs, keepByKey }) => {
+        await db.transaction(async (tx) => {
+          const at = now();
+          // Past the newest `history` shown firings: never a due one, a failure not yet told, or a started one whose run
+          // has not ended. The rest leave the history: kept for their key's day when a sender's key names them, else gone.
+          const old = await tx.all<{ key: string; by: string | null }>(
+            `SELECT f.key, f.by FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id
+             WHERE f.trigger_id = ? AND f.shown = 1 AND f.status != 'due' AND NOT (f.status = 'failed' AND (f.notified IS NULL OR f.notified = 0))
+               AND NOT (f.status = 'started' AND r.id IS NOT NULL AND r.state NOT IN (${FINAL}))
+               AND f.key NOT IN (SELECT key FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, rowid DESC LIMIT ?)`,
+            triggerId, triggerId, history,
+          );
+          for (const { key, by } of old) {
+            if (keepByKey(by ?? "manual")) await tx.run("UPDATE trigger_firings SET shown = 0, payload = NULL WHERE trigger_id = ? AND key = ?", triggerId, key);
+            else await tx.run("DELETE FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
+          }
+          await tx.run(
+            `DELETE FROM trigger_firings WHERE trigger_id = ? AND shown = 0 AND at < ? AND status != 'due'
+               AND NOT (status = 'started' AND run_id IN (SELECT id FROM runs WHERE state NOT IN (${FINAL})))`,
+            triggerId, at - dayMs,
+          );
+        });
+      },
       enable: async (triggerId, scopes) => {
         await db.transaction(async (tx) => {
           if ((await tx.runCounted("UPDATE triggers SET enabled = 1, disabled = NULL, updated_at = ? WHERE id = ?", now(), triggerId)) === 0) throw new StoreConstraint(`no trigger ${triggerId}`);
@@ -296,15 +455,23 @@ class SqliteStore implements Store {
           await writeScopes(tx, triggerId, []);
         });
       },
-      fire: async (firing, run) =>
+      fire: async (firing, run, _options = {}) =>
         db.transaction(async (tx) => {
           const at = now();
           const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, at);
-          await tx.run(
-            "INSERT INTO trigger_firings (trigger_id, key, by, nominal_at, status, at, run_id, catch_up, payload) VALUES (?, ?, ?, ?, 'started', ?, ?, ?, ?)",
-            firing.triggerId, firing.key, firing.by ?? null, firing.nominalAt ?? null, at, run.id, firing.catchUp === undefined ? null : firing.catchUp ? 1 : 0, firing.payload ?? null,
+          // The due firing the engine recorded becomes started; one not recorded yet is recorded started. A firing already
+          // past due (started, or settled otherwise) is refused, and its run with it.
+          const moved = await tx.runCounted(
+            "UPDATE trigger_firings SET status = 'started', run_id = ?, retry_at = NULL, waits_on = NULL, payload = NULL, reason = NULL, attempts = 0 WHERE trigger_id = ? AND key = ? AND status = 'due'",
+            run.id, firing.triggerId, firing.key,
           );
-          if ((await tx.runCounted("UPDATE triggers SET last_run_id = ?, updated_at = ? WHERE id = ?", run.id, at, firing.triggerId)) === 0) throw new StoreConstraint(`no trigger ${firing.triggerId}`);
+          if (moved === 0) {
+            await tx.run(
+              "INSERT INTO trigger_firings (trigger_id, key, by, nominal_at, status, at, run_id, catch_up) VALUES (?, ?, ?, ?, 'started', ?, ?, ?)",
+              firing.triggerId, firing.key, firing.by ?? null, firing.nominalAt ?? null, at, run.id, firing.catchUp === undefined ? null : firing.catchUp ? 1 : 0,
+            );
+          }
+          if ((await tx.runCounted("UPDATE triggers SET last_run_id = ?, failures_in_a_row = 0, updated_at = ? WHERE id = ?", run.id, at, firing.triggerId)) === 0) throw new StoreConstraint(`no trigger ${firing.triggerId}`);
           return runOf(row!);
         }),
     };
