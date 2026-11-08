@@ -1,4 +1,5 @@
-export { createHarnessRunner, modelPortFor, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
+export { createHarnessRunner, modelPortFor, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS } from "./runner.js";
+export { runBooking, type RunSessions } from "./run-booking.js";
 export type { Admission, BeforeRequest, HarnessRunner, HarnessRunnerOptions, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions } from "./runner.js";
 export { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool } from "./delegate.js";
 export type { DelegateAgent, DelegateEvent, DelegateOptions } from "./delegate.js";

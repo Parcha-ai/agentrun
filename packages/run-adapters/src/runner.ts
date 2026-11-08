@@ -173,45 +173,56 @@ export async function modelPortFor(writer: SessionWriter, options: ModelPortOpti
   return bookingFor(writer, { ...options, records: options.records ?? (await writer.read()) });
 }
 
-function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records: readonly SessionRecord[] }): ModelBooking {
-  const node = { key: options.key, label: options.label ?? options.key, ...(options.executionPath === undefined ? {} : { executionPath: options.executionPath }) };
-  const limit = options.maxTurns ?? null;
-  const append = options.append ?? ((records: SessionRecord[]) => writer.append(records));
-  const emit = (event: ModelPortEvent) => options.onEvent?.({ ...event, ...node });
-  // A turn is a paid request that left: counted from the records written before each one left, so a request a crash cut
-  // off still counts against the turn cap. What it cost is unknown: the session's spend counts it at the figure its
-  // host held for it, on its record, and is unknown from then on when there is none.
-  const requests = options.records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; host?: unknown });
-  const inherited = requests.map((data, i) => data.turn ?? i + 1);
-  /** Each request the host sent beside the harness's own, by turn: its label (ModelRequest.host), on its record. */
+/** What a session's runner records say: the turn of each paid request that left, in order (`turns`), what its host held
+ *  for each (`held`), the label of each the host sent beside the harness's own (`hosts`), which were answered, and the
+ *  session's spend (null: unknown). A turn is a paid request that left: counted from the records written before each one
+ *  left, so a request a crash cut off (or one still in flight, read from another process or session) counts at the
+ *  figure its host held for it, and leaves the spend unknown when there is none. */
+export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; spentUsd: number | null } {
+  const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; host?: unknown });
+  const turns = requests.map((data, i) => data.turn ?? i + 1);
   const hosts = new Map<number, string>();
-  requests.forEach((data, i) => { if (typeof data.host === "string") hosts.set(inherited[i]!, data.host); });
-  let turns = inherited.length;
-  /** What the host held for each request, by turn: what it counts at when its own cost never comes in. */
+  requests.forEach((data, i) => { if (typeof data.host === "string") hosts.set(turns[i]!, data.host); });
   const held = new Map<number, number>();
-  /** What the host counts each request of this process at if its client stops it part way (Admission.stoppedUsd). */
-  const stoppedAt = new Map<number, (streamedTokens: number) => number>();
-  /** The host's record of a note each request of this process carries (Admission.note), for its runner.turn. */
-  const notes = new Map<number, { [key: string]: JsonValue }>();
   requests.forEach((data, i) => {
     const figure = heldFigure(data.heldUsd);
-    if (figure !== undefined) held.set(inherited[i]!, figure);
+    if (figure !== undefined) held.set(turns[i]!, figure);
   });
   // Which of them were answered: each runner.turn names its own turn (one written before turns were named answers the
   // earliest still open, as answers then came in order).
   const answered = new Set<number>();
   let spentUsd: number | null = 0;
-  for (const r of options.records) {
+  for (const r of records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
     const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown };
-    const turn = data.turn ?? inherited.find((t) => !answered.has(t)) ?? 0;
+    const turn = data.turn ?? turns.find((t) => !answered.has(t)) ?? 0;
     answered.add(turn);
     // The figure it was booked at (bookRequest), as written. A record from before that has none: a cost that never came
     // in at the figure its answer was booked at (a stopped request's), else what was held for it.
     const booked = data.bookedUsd === null ? null : heldFigure(data.bookedUsd);
     spentUsd = spent(spentUsd, booked !== undefined ? (booked ?? undefined) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0));
   }
-  for (const turn of inherited) if (!answered.has(turn)) spentUsd = spent(spentUsd, held.get(turn));
+  for (const turn of turns) if (!answered.has(turn)) spentUsd = spent(spentUsd, held.get(turn));
+  return { turns, held, hosts, answered, spentUsd };
+}
+
+function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records: readonly SessionRecord[] }): ModelBooking {
+  const node = { key: options.key, label: options.label ?? options.key, ...(options.executionPath === undefined ? {} : { executionPath: options.executionPath }) };
+  const limit = options.maxTurns ?? null;
+  const append = options.append ?? ((records: SessionRecord[]) => writer.append(records));
+  const emit = (event: ModelPortEvent) => options.onEvent?.({ ...event, ...node });
+  // What this session's records say when it opens (sessionSpendOf).
+  const read = sessionSpendOf(options.records);
+  const inherited = read.turns;
+  const hosts = read.hosts;
+  let turns = inherited.length;
+  const held = read.held;
+  /** What the host counts each request of this process at if its client stops it part way (Admission.stoppedUsd). */
+  const stoppedAt = new Map<number, (streamedTokens: number) => number>();
+  /** The host's record of a note each request of this process carries (Admission.note), for its runner.turn. */
+  const notes = new Map<number, { [key: string]: JsonValue }>();
+  const answered = read.answered;
+  let spentUsd: number | null = read.spentUsd;
   // The ids each request's response gave it, kept as its headers arrived: a request cut off after them reached the provider.
   const responses = new Map<number, Record<string, string>>();
   for (const r of options.records) {
