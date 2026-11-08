@@ -34,6 +34,13 @@ const SHAPES = [
   ["a run's run.sqlite on the disk", (dir) => sqlite(join(dir, "disk", "agents", "agent-1", "runs", "run-1", "run.sqlite")), join("disk", "agents", "agent-1", "runs", "run-1", "run.sqlite")],
   ["mcp-servers.json", (dir) => file(join(dir, "mcp-servers.json")), "mcp-servers.json"],
   ["triggers.json", (dir) => file(join(dir, "triggers.json")), "triggers.json"],
+  ["tool-keys.json", (dir) => file(join(dir, "tool-keys.json")), "tool-keys.json"],
+  ["trigger-secrets.json", (dir) => file(join(dir, "trigger-secrets.json")), "trigger-secrets.json"],
+  ["webhook.json", (dir) => file(join(dir, "webhook.json")), "webhook.json"],
+  ["webhook-outbox.json", (dir) => file(join(dir, "webhook-outbox.json")), "webhook-outbox.json"],
+  [".idempotency.json", (dir) => file(join(dir, ".idempotency.json")), ".idempotency.json"],
+  ["learning-usage.jsonl", (dir) => file(join(dir, "learning-usage.jsonl"), ""), "learning-usage.jsonl"],
+  ["a home's sign-ins.json", (dir) => file(join(dir, "homes", "home-1", "sign-ins", "sign-ins.json")), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
 for (const [what, make, named] of SHAPES) {
