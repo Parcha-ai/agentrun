@@ -6,12 +6,14 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSubject } from "./conformance-pi-adapter.mjs";
-import { observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A lease no missed renew lets lapse within the case: its property is the failed end and no claim after it, and a claim
+// lost before the end (a starved box) would hand the run to a second claim for a reason that is not the end's.
+const TIMING = { leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 
@@ -48,7 +50,7 @@ test("pi through the adapter: a loop that fails while its journal still takes a 
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return now.state === "failed" && now.runner === null && now;
-  }, "the run failed and released", 5_000).catch(async (error) => {
+  }, "the run failed and released", 30_000).catch(async (error) => {
     throw new Error(`${error.message}: the run is ${JSON.stringify(await opened.server.runs.get("run-1"))}, claimed ${record.claims.length} times`);
   });
   assert.match(row.summary ?? "", /busy timeout/, "the run's row says why");
@@ -57,6 +59,8 @@ test("pi through the adapter: a loop that fails while its journal still takes a 
   assert.ok(end, `the journal holds the run's end: ${JSON.stringify(entries.map((entry) => entry.kind))}`);
   assert.equal(end.data?.state, "failed", "its end says failed");
   assert.match(String(end.data?.summary ?? ""), /busy timeout/, "its end says why");
-  await sleep(TIMING.pollMs * 10);
-  assert.equal(record.claims.filter((claim) => claim.runId === "run-1").length, 1, "claimed once, never again");
+  // Never claimed again: the failed end made the run final (its end is its release), so it is not claimable; and it was
+  // claimed once to get there.
+  assert.ok(!(await opened.server.runs.claimable({ limit: 100 })).includes("run-1"), "a final run is not claimable");
+  assert.equal(record.claims.filter((claim) => claim.runId === "run-1").length, 1, "claimed once");
 });
