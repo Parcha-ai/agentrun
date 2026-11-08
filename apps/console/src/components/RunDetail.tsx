@@ -83,7 +83,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
-  const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
+  const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
+  const [tab, setTab] = useState<Tab>(initial ?? defaultTab);
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
   // the newest waiting row, and is no question now.
@@ -119,6 +120,14 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // failed, cancelled): an ended run has nothing to watch.
   const browserOpens = view.live || (run.status === "input_required" && run.state === "waiting") || run.status === "paused";
   const browser = useRunBrowser(readBrowser, !view.final, browserEvery);
+  // The Browser tab, selected, goes away (a read says off, or the route refuses): the run's default tab is selected, not
+  // none. A tab opened on Browser before the first read is left until there is one to go away.
+  const hadBrowser = useRef(false);
+  useEffect(() => {
+    if (browser) { hadBrowser.current = true; return; }
+    if (hadBrowser.current && tab === "browser") setTab(defaultTab);
+    hadBrowser.current = false;
+  }, [browser, tab, defaultTab]);
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 

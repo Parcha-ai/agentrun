@@ -13,7 +13,10 @@ import type { RunBrowser } from "@/lib/v2";
  *  a page being watched isn't torn down by one bad poll. Nothing about the answer is logged. */
 export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, going: boolean, every = 3000): RunBrowser | null {
   const [now, setNow] = useState<RunBrowser | null>(null);
-  const [gone, setGone] = useState(false);
+  // A caller the route refuses (401, 403) is read no more, whatever the run does.
+  const [refused, setRefused] = useState(false);
+  // An ended run that said off: read no more until it goes again (a follow-up, its browser key restored).
+  const [offEnded, setOffEnded] = useState(false);
   // The newest reader, so a page that passes a new function each render doesn't restart the reads.
   const reader = useRef(read);
   reader.current = read;
@@ -21,7 +24,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
   const answered = useRef(false);
   const has = !!read;
   useEffect(() => {
-    if (!has || gone) return;
+    if (!has || refused || (offEnded && !going)) return;
     if (!going && answered.current) { setNow((prev) => (prev ? { state: "none" } : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -32,7 +35,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
         answered.current = true;
         if (next.state === "off") {
           setNow(null);
-          if (!going) { setGone(true); return; }
+          if (!going) { setOffEnded(true); return; }
         }
         // An ended run's browser is closed, whatever it last said.
         else if (!going) setNow({ state: "none" });
@@ -40,13 +43,13 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
         else setNow((prev) => (prev && prev.state === next.state && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer)) ? prev : next));
       } catch (e) {
         if (!alive) return;
-        if (e instanceof ClientError && [401, 403].includes(e.status)) { setGone(true); setNow(null); return; }
+        if (e instanceof ClientError && [401, 403].includes(e.status)) { setRefused(true); setNow(null); return; }
       }
       if (alive && going) timer = setTimeout(() => void once(), every);
     };
     void once();
     return () => { alive = false; clearTimeout(timer); };
-  }, [has, going, every, gone]);
+  }, [has, going, every, refused, offEnded]);
   return now;
 }
 

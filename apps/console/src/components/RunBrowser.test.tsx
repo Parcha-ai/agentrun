@@ -196,7 +196,9 @@ describe("the run page's Browser tab", () => {
     await show(first);
     await settle();
     const section = () => host.querySelector('section[aria-label="Browser"]')?.textContent ?? "";
-    return { host, show, section, reads: () => reads, frame: () => host.querySelector("iframe") };
+    const tabButton = () => [...host.querySelectorAll('[role="tab"]')].find((b) => /^(Browser|Watch live)$/.test(b.textContent ?? "")) as HTMLElement | undefined;
+    const selected = () => (host.querySelector('[role="tab"][aria-selected="true"]') as HTMLElement | null)?.textContent ?? null;
+    return { host, show, section, tabButton, selected, reads: () => reads, frame: () => host.querySelector("iframe") };
   }
   const ended = { ...working, status: "completed", state: "idle", ended_at: "2026-11-05T09:12:00Z" } as Run;
 
@@ -245,6 +247,44 @@ describe("the run page's Browser tab", () => {
     await settle(80);
     expect(p.section()).toContain("Waiting for the browser");
     expect(p.section()).not.toContain("closed when the run ended");
+  });
+
+  it("an ended run that answered off is read again once a follow-up makes it go: its new browser shows under Watch live", async () => {
+    let restored = false;
+    const p = await moving(async () => (restored ? { state: "live", viewer: VIEWER } : { state: "off", reason: "no browser key" }), ended);
+    await settle(80);
+    const stoppedAt = p.reads();
+    expect(stoppedAt, "an ended run that says off is read once").toBe(1);
+    expect(p.tabButton()).toBeUndefined();
+    // The owner restores the browser key and sends a follow-up: the same page, the run going again.
+    restored = true;
+    await p.show({ ...ended, status: "working", state: "working", ended_at: null } as Run);
+    await settle(120);
+    expect(p.reads()).toBeGreaterThan(stoppedAt);
+    expect(p.tabButton()?.textContent).toBe("Watch live");
+  });
+
+  it("a Browser tab that goes away while selected (the next read says off) leaves the run's default tab selected, with its content", async () => {
+    let off = false;
+    const p = await moving(async () => (off ? { state: "off", reason: "no browser key" } : { state: "live", viewer: VIEWER }));
+    expect(p.selected()).toBe("Watch live");
+    off = true;
+    await settle(120);
+    expect(p.tabButton()).toBeUndefined();
+    expect(p.selected(), "a tab is selected").toBe("Timeline");
+    expect(p.host.querySelector('[role="tab"][aria-selected="true"]')).not.toBeNull();
+    expect(p.host.textContent).not.toContain("Waiting for the browser");
+  });
+
+  it("a refusal (403) stays final: a run going again is not read", async () => {
+    let n = 0;
+    const p = await moving(async () => { n += 1; throw new ClientError(403, "forbidden", "no", false); }, ended);
+    await settle(60);
+    const once = n;
+    await p.show({ ...ended, status: "working", state: "working", ended_at: null } as Run);
+    await settle(120);
+    expect(n).toBe(once);
+    expect(p.tabButton()).toBeUndefined();
   });
 
   it("off while the run is going hides the tab, and the next read still comes: the run's process may still open a browser with the key it launched with", async () => {
