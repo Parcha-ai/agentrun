@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
 import { BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
-import { paidCall, paidHolds, useSpend } from "../dist/cap.js";
+import { paidCall, paidHolds, takePaidRefusal, useSpend } from "../dist/cap.js";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const START = "https://example.test/start";
@@ -224,6 +224,115 @@ test("a charge joins the run's spend and moves its holds only once the commit th
   assert.deepEqual([spent, paidHolds()], [0.0001, spend.stretch], "booked: its spend counted, and its session's reserve held");
   await harness.commit((tx) => spend.onCharge({ ...charge, seconds: 57, usd: 0.0019, final: true }, tx), ctx);
   assert.deepEqual([Math.round(spent * 1e12) / 1e12, paidHolds()], [0.002, 0]);
+});
+
+test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  spend.watch(harness);
+  const base = paidHolds();
+  spend.carry("ar-run-2", 600);
+  assert.ok(Math.abs(paidHolds() - base - 0.02) < 1e-12, "10 minutes at $0.12 an hour, held");
+  spend.carry("ar-run-3", 300);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-2", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.01) < 1e-12, "booked: that session's carried time goes, another's stays");
+  assert.equal(Math.round(spent * 1e12) / 1e12, 0.02);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-3", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 300, usd: 0.01, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-12, "and the other's goes with its own charge: nothing is left held");
+});
+
+test("a person's minutes are held once: the next browser call's hold leaves out the carried time it would cover, so under a $0.05 cap it fits; a charge books carried time only up to its own through", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 0.05, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const releases = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
+  spend.watch(harness);
+  const base = paidHolds();
+  const tag = "ar-run-4";
+  const charge = (seconds, usd, final = false) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge: its $0.009 reserve held from here.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0), tx), ctx);
+  // Ten minutes the person had, given back: $0.02 carried.
+  t.mock.timers.tick(600_000);
+  spend.carry(tag, 600);
+  assert.ok(Math.abs(paidHolds() - base - 0.029) < 1e-9, `the reserve and the carried time: ${paidHolds() - base}`);
+  // Greptile's numbers: the next call needs the ten minutes once ($0.02, carried) and its two stretches ($0.018) beside the
+  // reserve: $0.047 under the $0.05 cap.
+  let ran = 0;
+  const tool = spend.capped({ name: "snapshot", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ran" }] }; } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  const out = await tool.execute({}, api, ctx);
+  assert.deepEqual([ran, releases, out.content[0].text], [1, [], "ran"], "it fits: the minutes are held once");
+  // Five more minutes the person had (T0+10 to T0+15 min, $0.01 carried), then a charge computed through T0+12.5 min that
+  // lands after: it books the first ten minutes and half of these, and the rest ($0.005) stays held.
+  t.mock.timers.tick(300_000);
+  spend.carry(tag, 300);
+  assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `the reserve and both carried stretches: ${paidHolds() - base}`);
+  await harness.commit((tx) => spend.onCharge({ ...charge(750, 0.025), at: new Date(T0 + 750_000).toISOString() }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.014) < 1e-9, `the reserve, and the carried time after the charge's own through: ${paidHolds() - base}`);
+  await harness.commit((tx) => spend.onCharge(charge(150, 0.005, true), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge books the rest: nothing left held");
+});
+
+test("a person's minutes are held once while they still have the browser: ten minutes into a take-over, the call's hold leaves out what the take-over holds, so under a $0.06 cap it fits; a charge books those minutes off the take-over's hold", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let spent = 0;
+  useSpend({ cap: 0.06, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const releases = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async (conversation) => void releases.push(conversation.id));
+  spend.watch(harness);
+  const base = paidHolds();
+  const tag = "ar-run-5";
+  const charge = (seconds, usd, final = false) => ({ conversationId: 1, tag, provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd, final, state: "priced" });
+  // The session's first charge: its $0.009 reserve held from here. Then the owner takes over: fifteen minutes, $0.03, held up front.
+  await harness.commit((tx) => spend.onCharge(charge(0, 0), tx), ctx);
+  const take = await spend.personTime("taking over the browser", 900, { pauses: false, tag, from: Date.now() });
+  assert.equal(take.refused, undefined);
+  t.mock.timers.tick(600_000);
+  // Greptile's numbers: ten minutes in, the call needs its two stretches ($0.018) beside the take-over's $0.03 and the
+  // reserve's $0.009: $0.057 under the $0.06 cap. The ten minutes are inside the take-over's hold already.
+  let ran = 0;
+  const tool = spend.capped({ name: "snapshot", execute: async () => { ran += 1; return { content: [{ type: "text", text: "ran" }] }; } });
+  const api = { conversationId: 1, callId: "c1", commit: async (change) => harness.commit(change, ctx) };
+  const out = await tool.execute({}, api, ctx);
+  assert.deepEqual([ran, releases, out.content[0].text], [1, [], "ran"], "it fits: the person's minutes are held once");
+  // A charge through T0+10 min books those ten minutes ($0.02): the take-over's hold keeps only the five minutes after it.
+  await harness.commit((tx) => spend.onCharge(charge(600, 0.02), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.019) < 1e-9, `the reserve and the take-over's five minutes left: ${paidHolds() - base}`);
+  take.drop();
+  assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, "handed back: the reserve alone");
+  await harness.commit((tx) => spend.onCharge(charge(0, 0, true), tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-9, "the release's charge: nothing left held");
+});
+
+test("a person's time the cap refuses pauses the run only when it is the agent's own step: an ask's does, the owner's take-over's does not", async (t) => {
+  const spend = { cap: 0.01, spent: () => 0, add: () => {} };
+  useSpend(spend);
+  t.after(() => useSpend(undefined));
+  const browser = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  const take = await browser.personTime("taking over the browser", 900, { pauses: false });
+  assert.match(take.refused ?? "", /taking over the browser/);
+  assert.equal(takePaidRefusal(spend), undefined, "the owner's refused take-over leaves the run's next request alone");
+  const ask = await browser.personTime("handing the browser to you", 900);
+  assert.match(ask.refused ?? "", /handing the browser to you/);
+  assert.match(takePaidRefusal(spend)?.words ?? "", /handing the browser to you/, "the agent's refused ask pauses the run at its next request");
 });
 
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {

@@ -73,6 +73,8 @@ test("hands: stat, read, write, append and list are the port's; a link is a link
   assert.equal(await hands.stat("nope"), undefined);
   symlinkSync("/etc", join(root, "link"));
   assert.equal((await hands.stat("link")).kind, "link");
-  assert.deepEqual(await hands.list(""), [{ name: "a", kind: "dir", size: 0 }]);
+  const listed = await hands.list("");
+  assert.ok(listed.every((entry) => typeof entry.mtimeMs === "number"), "each entry carries its modified time");
+  assert.deepEqual(listed.map(({ mtimeMs, ...entry }) => entry), [{ name: "a", kind: "dir", size: 0 }]);
   assert.equal(await hands.grep("two", "a"), "a/b.txt:1:onetwo");
 });

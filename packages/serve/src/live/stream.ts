@@ -5,7 +5,7 @@
 // run_live row: a running tool, a partial answer), in the same vocabulary.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { HeldState } from "../runner/loop-contract.js";
-import { FINAL_STATES, type Store } from "../store/store.js";
+import { FINAL_STATES, type RunState, type Store } from "../store/store.js";
 import { emptyState, type LiveEvent, type LiveState, snapshotOf, translate } from "./translate.js";
 
 export type { LiveEvent } from "./translate.js";
@@ -30,7 +30,37 @@ export interface WatchRunOptions {
 }
 
 type LiveStore = Pick<Store, "runs" | "journal" | "live">;
+type Journal = ReturnType<Store["journal"]>;
 const PAGE = 500;
+
+/** The journals each store's watches read, by (run, epoch), with how many watches hold each. store.journal hands out one
+ *  journal per (run, epoch) and keeps it until it is closed: two watches of one run share it, and the last one to end
+ *  closes it, so the store keeps no journal of a watch that ended. */
+const watched = new WeakMap<LiveStore, Map<string, { journal: Journal; watches: number }>>();
+
+/** `runId`'s journal at `epoch` for one watch, and its release: the last watch's closes the journal. */
+function watchJournal(store: LiveStore, runId: string, epoch: number, from: RunState): { journal: Journal; release(): Promise<void> } {
+  let byRun = watched.get(store);
+  if (!byRun) watched.set(store, (byRun = new Map()));
+  const key = `${runId}\u0000${epoch}`;
+  let held = byRun.get(key);
+  // A reader's view of the journal: reads only, so its claim fences nothing.
+  if (!held) byRun.set(key, (held = { journal: store.journal({ runId, runner: "live-view", epoch, until: 0, from }), watches: 0 }));
+  held.watches += 1;
+  const it = held;
+  let released = false;
+  return {
+    journal: it.journal,
+    async release() {
+      if (released) return;
+      released = true;
+      it.watches -= 1;
+      if (it.watches > 0) return;
+      if (byRun!.get(key) === it) byRun!.delete(key);
+      await it.journal.close(BACKGROUND_CONTEXT);
+    },
+  };
+}
 
 /** Opens `runId`'s live view on `store`. */
 export async function watchRun(store: LiveStore, runId: string, options: WatchRunOptions = {}): Promise<LiveStream> {
@@ -38,21 +68,25 @@ export async function watchRun(store: LiveStore, runId: string, options: WatchRu
   const context = BACKGROUND_CONTEXT;
   const row = await store.runs.get(runId);
   if (!row) throw new Error(`run ${runId} does not exist`);
-  // A reader's view of the journal: reads only, so its claim fences nothing.
-  const journal = store.journal({ runId, runner: "live-view", epoch: row.epoch, until: 0, from: row.state });
+  const { journal, release } = watchJournal(store, runId, row.epoch, row.state);
   const state: LiveState = emptyState();
   let seq = 0;
   // The snapshot: every commit up to `fromSeq` (all of them when it is not given) folded into the state; their events
   // are the snapshot's, not sent.
   const upTo = options.fromSeq;
-  fold: for (;;) {
-    const page = await journal.commitsAfter(seq, PAGE, context);
-    for (const commit of page.commits) {
-      if (upTo !== undefined && commit.seq > upTo) break fold;
-      translate(state, commit);
-      seq = commit.seq;
+  try {
+    fold: for (;;) {
+      const page = await journal.commitsAfter(seq, PAGE, context);
+      for (const commit of page.commits) {
+        if (upTo !== undefined && commit.seq > upTo) break fold;
+        translate(state, commit);
+        seq = commit.seq;
+      }
+      if (page.next === undefined || page.commits.length === 0) break;
     }
-    if (page.next === undefined || page.commits.length === 0) break;
+  } catch (error) {
+    await release();
+    throw error;
   }
   if (upTo !== undefined) seq = upTo;
 
@@ -62,6 +96,8 @@ export async function watchRun(store: LiveStore, runId: string, options: WatchRu
   const closed = new Promise<LiveEnd>((resolve) => (endIt = (end) => { if (!ended) { ended = end; resolve(end); } }));
   let timer: NodeJS.Timeout | undefined;
   let polling: Promise<void> = Promise.resolve();
+  // However the watch ends (stopped, its run ended, a failed read), its journal is let go once its last poll settled.
+  const released = closed.then(() => polling.catch(() => undefined)).then(release);
 
   /** The held state's events the stored ones have not said yet: a running tool's start, a partial's update. */
   const heldEvents = (held: HeldState | undefined): LiveEvent[] => {
@@ -127,6 +163,7 @@ export async function watchRun(store: LiveStore, runId: string, options: WatchRu
       endIt({ reason: "stopped" });
       clearTimeout(timer);
       await polling.catch(() => undefined);
+      await released;
       return ended!;
     },
     closed,

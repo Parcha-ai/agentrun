@@ -1,9 +1,6 @@
 // A path in an agent's home as its routes take it: decoded, checked as a run's file path is, made of plain segments, and
-// never at or under a path only the host writes, by its name in any spelling a disk could take for it or, where both are
-// on disk, by being the same entry.
-import type { BigIntStats } from "node:fs";
-import { lstat } from "node:fs/promises";
-import { join, posix } from "node:path";
+// never at or under a path only the host writes, by its name in any spelling a disk could take for it.
+import { posix } from "node:path";
 import { ApiError } from "./errors.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { WALK_DEPTH } from "./workspace.js";
@@ -69,19 +66,4 @@ export function homePath(raw: string, agentId: string, write: boolean, readAt?: 
   if (rel.length > 1024 || rel.split("/").some((p) => Buffer.byteLength(p) > 255)) throw new ApiError("invalid_file_path", "the path is over 1024 characters, or a segment of it over 255 bytes");
   if (write && rel.split("/").length - 1 > WALK_DEPTH) throw new ApiError("invalid_file_path", `a file is written at most ${WALK_DEPTH} directories deep, as deep as the list goes`);
   return rel;
-}
-
-/** Whether two stats are of one entry on disk: the same device and inode. */
-const sameEntry = (a: Pick<BigIntStats, "dev" | "ino">, b: Pick<BigIntStats, "dev" | "ino">): boolean => a.dev === b.dev && a.ino === b.ino;
-
-/** The host-owned path of `home` that the first segment of `rel` (a path homePath took) is on this disk, if any: both
- *  there, and one entry. A disk that takes another spelling for a host-owned name answers so, whatever the spelling. */
-export async function ownedByIdentity(home: string, rel: string, owned: readonly string[] = HOME_HOST_OWNED, stat: (path: string) => Promise<Pick<BigIntStats, "dev" | "ino"> | null> = (path) => lstat(path, { bigint: true }).catch(() => null)): Promise<string | undefined> {
-  const first = await stat(join(home, rel.split("/")[0]!));
-  if (!first) return undefined;
-  for (const name of owned) {
-    const entry = await stat(join(home, name));
-    if (entry && sameEntry(first, entry)) return name;
-  }
-  return undefined;
 }

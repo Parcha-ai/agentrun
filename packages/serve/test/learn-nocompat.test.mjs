@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as learning from "../dist/learning.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 
 test("the learning reasons are this server's own: no older server's no_write_tool, tool_denied, screen or screen_down", () => {
   for (const old of ["no_write_tool", "tool_denied", "screen", "screen_down"]) assert.ok(!learning.LEARNING_REASONS.includes(old), old);
@@ -16,7 +17,7 @@ test("a pin with only an older server's index-only `learned` field gives the run
   t.after(() => rmSync(runDir, { recursive: true, force: true }));
   mkdirSync(join(runDir, "work"), { recursive: true });
   writeFileSync(join(runDir, learning.LEARNING_PIN ?? "learning.json"), JSON.stringify({ seed: "a".repeat(40), learned: "- check-units.md: Check units" }));
-  const { instructions } = await learning.withLearned(runDir, join(runDir, "work"), "Answer.");
+  const { instructions } = await learning.withLearned(runDir, localWorkspace(join(runDir, "work")), "Answer.");
   // The heading and its one line that the run learns stay; the older pin's index text is not given.
   assert.ok(!instructions.includes("check-units"), instructions);
   assert.ok(!instructions.includes("What you learned in earlier runs"), instructions);

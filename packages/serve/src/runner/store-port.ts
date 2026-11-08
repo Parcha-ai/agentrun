@@ -2,7 +2,7 @@
 // file reaches runner/. A's SqliteStore is one.
 import { Fenced, type Store } from "../store/store.js";
 
-export type RunnerStore = Pick<Store, "claim" | "renew" | "release" | "journal" | "flush" | "commands" | "take" | "retry"> & {
+export type RunnerStore = Pick<Store, "claim" | "renew" | "renewMany" | "release" | "journal" | "flush" | "commands" | "commandsOf" | "take" | "retry"> & {
   readonly runs: Pick<Store["runs"], "claimMany" | "update">;
 };
 
