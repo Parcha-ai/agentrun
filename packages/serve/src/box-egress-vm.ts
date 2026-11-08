@@ -1,6 +1,6 @@
 // A Docker box's way out on a Mac, where Docker runs in a VM: the Linux path (box-egress.ts) binds a socket of this
 // machine into the box, and a Mac's file-sharing layer carries files, not sockets, so the box sees it and is refused. Here
-// the kernel's egress proxy runs instead in ONE container per server, inside the VM: the pinned EGRESS_IMAGE, the proxy's
+// serve's egress proxy runs instead in ONE container per server, inside the VM: the pinned EGRESS_IMAGE, the proxy's
 // two dependency-free files and an entry (MAIN) bound read-only from the data root, the host list as its one variable, and
 // a Unix socket in a tmpfs named volume owned by the server's uid. The box mounts that volume read-only at EGRESS_MOUNT
 // and keeps `--network none`, its socat and its proxy variables, as on Linux. The proxy container is the only container
@@ -137,11 +137,11 @@ for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => void prox
 /** The kernel's two proxy files, as built: they import only `node:` modules and each other. */
 export const PROXY_FILES = ["egress-proxy.js", "egress-table.js"] as const;
 
-/** The code the proxy container binds read-only: PROXY_FILES from the kernel this server runs, and MAIN, written into
+/** The code the proxy container binds read-only: PROXY_FILES of this server's own build, and MAIN, written into
  *  `<data>/egress/<12 hex of their hash>/` once (a directory per version, so a running container's code never changes
  *  under it). Its path, real (Docker binds it by that). */
 export async function egressCode(data: string): Promise<string> {
-  const host = dirname(fileURLToPath(import.meta.resolve("@parcha/agentrun-kernel/host")));
+  const host = dirname(fileURLToPath(import.meta.url));
   const files: [string, string][] = [...(await Promise.all(PROXY_FILES.map(async (name) => [name, await readFile(join(host, name), "utf8")] as [string, string]))), ["main.js", MAIN]];
   const hash = createHash("sha256");
   for (const [name, text] of files) hash.update(`${name}\0${text}\0`);

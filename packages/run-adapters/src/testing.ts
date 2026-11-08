@@ -9,6 +9,9 @@ import { type ModelProxy, type ModelProxyOptions, startModelProxy } from "./host
 import { randomBytes } from "node:crypto";
 
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
+/** The model proxy's own parts, for tests of a provider policy and of the proxy: the host API (./host) keeps only what a
+ *  harness runs. */
+export { inputTokensMaxOf, matchRoute, parseStrict, reportedCostOf } from "./host/proxy.js";
 
 /** A session store in memory: what one run's store holds, across the processes a test plays. Each `open` of a key
  *  counts one more holder at once, and a writer appends only while its count is the newest. */
@@ -89,12 +92,16 @@ export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. */
   script: (spec: SessionSpec) => FauxAction[];
-  /** Whether the faux harness can fork (default false). */
-  fork?: boolean;
   /** Problems `check` reports for a spec. */
   refuse?: (spec: SessionSpec) => string[];
   /** How long `open` takes, ignoring the session's signal, as a slow harness start does (default 0). */
   openDelayMs?: number;
+  /** Told each session closed, by its key. */
+  onClose?: (key: string) => void;
+  /** How long a session's close takes before it is told closed, as a slow harness stop does (default 0). */
+  closeDelayMs?: number;
+  /** A close that fails, after its delay, with these words (default none). */
+  closeError?: string;
   /** A real model proxy for each session, as a real adapter's machine starts one (its hooks the session's booking,
    *  io.models), whose side keys the session's `port` hands the host: the host's own requests then go through the same
    *  policy, origin and credential as a real harness's. The faux harness's own scripted requests stay booked directly.
@@ -117,14 +124,13 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
   const stats = { requests: 0, calls: [] as string[], opened: [] as { key: string; state: SessionState }[], closed: [] as string[] };
   const adapter: FauxAdapter = {
     id: "faux",
-    version: "0.0.0",
     get requests() { return stats.requests; },
     get calls() { return stats.calls; },
     get opened() { return stats.opened; },
     get closed() { return stats.closed; },
-    capabilities: () => ({ fork: options.fork ?? false }),
+    capabilities: () => ({}),
     check: (spec) => [
-      ...(spec.context === "fork" && !options.fork ? ["the faux harness cannot fork a session"] : []),
+      ...(spec.context === "fork" ? ["the faux harness cannot fork a session"] : []),
       ...(options.refuse?.(spec) ?? []),
     ],
     async open(spec, io) {
@@ -304,7 +310,16 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
-        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); await proxy?.close(); },
+        async close() {
+          turnSignal?.abort(new SessionHalt("closed"));
+          // A slow harness stop: told closed only once it has taken its time.
+          if (options.closeDelayMs) await new Promise((resolve) => setTimeout(resolve, options.closeDelayMs));
+          await proxy?.close();
+          // A harness whose stop fails: the close rejects, saying so, and is never told closed.
+          if (options.closeError) throw new Error(options.closeError);
+          stats.closed.push(spec.key);
+          options.onClose?.(spec.key);
+        },
         port: (label) => (proxy && options.proxy ? { url: proxy.url, key: proxy.sideKey(label), model: options.proxy.options.model, api: options.proxy.api } : undefined),
       };
       return session;
