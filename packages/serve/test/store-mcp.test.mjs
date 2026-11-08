@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { queued, storeOn } from "./store-helpers.mjs";
 
-const { Fenced, StoreConstraint } = await import("../dist/store/index.js");
+const { Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, StoreConstraint } = await import("../dist/store/index.js");
 
 const SEALED = Uint8Array.from([1, 2, 3, 4, 250]);
 const SERVER = { name: "github", url: "https://mcp.example.com/github", auth: "oauth", protocol: "2025-06-18", tools: [{ name: "create_issue", grantable: true }], prices: { create_issue: 0.01 }, sealed: SEALED };
@@ -71,7 +71,7 @@ function rotatingProvider() {
 /** A claim's refresh as the runner does it: lease, the network call outside any transaction, then the write; without the
  *  lease, wait for the holder's set by re-reading. */
 async function refresh(store, provider, holder, seen) {
-  const lease = await store.mcp.leaseRefresh("github", { seen, holder, ms: 4_000 });
+  const lease = await store.mcp.leaseRefresh("github", { seen, holder });
   if (!lease.leased) {
     for (;;) {
       const row = await store.mcp.server("github");
@@ -98,7 +98,7 @@ test("a refresh lease is refused once the credential changed since it was read (
   const { store } = await storeOn(t);
   const saved = await store.mcp.put(SERVER);
   await store.mcp.put({ ...SERVER, sealed: Uint8Array.from([5, 5]) });
-  const lease = await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1", ms: 4_000 });
+  const lease = await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1" });
   assert.equal(lease.leased, false, "the credential it read is not the one saved now");
   assert.deepEqual([...lease.row.sealed], [5, 5], "and the current row comes back");
 });
@@ -106,13 +106,35 @@ test("a refresh lease is refused once the credential changed since it was read (
 test("a lease that runs out lets the next claim take it, and the lapsed holder's write is refused; a released one is free at once", async (t) => {
   const { store, clock } = await storeOn(t);
   const saved = await store.mcp.put(SERVER);
-  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1", ms: 4_000 })).leased, true);
-  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-2@1", ms: 4_000 })).leased, false, "a live lease holds");
-  clock.now += 4_001;
-  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-2@1", ms: 4_000 })).leased, true, "run out: taken");
+  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1" })).leased, true);
+  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-2@1" })).leased, false, "a live lease holds");
+  clock.now += MCP_REFRESH_LEASE_MS + 1;
+  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-2@1" })).leased, true, "run out: taken");
   await assert.rejects(store.mcp.refreshToken("github", { holder: "run-1@1", sealed: Uint8Array.from([1]) }), { name: "RefreshLeaseLost" });
   assert.deepEqual([...(await store.mcp.server("github")).sealed], [...SEALED], "nothing written by the lapsed holder");
   await store.mcp.releaseRefresh("github", "run-2@1");
-  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-3@1", ms: 4_000 })).leased, true, "released: free at once");
-  await assert.rejects(store.mcp.leaseRefresh("gone", { seen: null, holder: "run-3@1", ms: 4_000 }), StoreConstraint, "a server no longer saved");
+  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-3@1" })).leased, true, "released: free at once");
+  await assert.rejects(store.mcp.leaseRefresh("gone", { seen: null, holder: "run-3@1" }), StoreConstraint, "a server no longer saved");
+});
+
+test("a refresh in flight when the owner saves a new credential never overwrites it: the holder's write is refused, the owner's stands", async (t) => {
+  const { store } = await storeOn(t);
+  const saved = await store.mcp.put(SERVER);
+  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1" })).leased, true);
+  const owners = Uint8Array.from([42, 42]);
+  const put = await store.mcp.put({ ...SERVER, sealed: owners });
+  assert.deepEqual([put.refreshHolder, put.refreshUntil], [null, null], "the owner's save clears the lease");
+  await assert.rejects(store.mcp.refreshToken("github", { holder: "run-1@1", sealed: Uint8Array.from([9, 9]) }), { name: "RefreshLeaseLost" });
+  assert.deepEqual([...(await store.mcp.server("github")).sealed], [42, 42], "the owner's credential stands");
+});
+
+test("a lease cannot lapse while its holder's refresh may still run: shorter than the call's own deadline is refused, and the default outlives it", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const saved = await store.mcp.put(SERVER);
+  assert.ok(MCP_REFRESH_LEASE_MS > MCP_REFRESH_CALL_MS, "the lease is longer than the refresh call's deadline");
+  await assert.rejects(store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1", ms: MCP_REFRESH_CALL_MS }), /longer than/);
+  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-1@1" })).leased, true);
+  // The holder's call may run to its deadline: no other claim takes the lease before then.
+  clock.now += MCP_REFRESH_CALL_MS;
+  assert.equal((await store.mcp.leaseRefresh("github", { seen: saved.sealed, holder: "run-2@1" })).leased, false, "still the holder's at its call's deadline");
 });
