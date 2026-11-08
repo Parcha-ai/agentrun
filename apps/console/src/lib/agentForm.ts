@@ -1,7 +1,7 @@
 import type { Place, Places } from "./place";
 import type { ClientError } from "./client";
 import type { NoteProblem } from "./learning";
-import type { AgentTool, ToolSettings } from "./v2";
+import type { AgentTool, Approvals, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
@@ -9,14 +9,14 @@ export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
 /** `learning`: whether the agent's runs learn (an agentic revision's switch; absent is off). */
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
  *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
-export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
+export type Definition = { version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
 export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd">> & { workflowText?: string; maxCostText?: string; place?: Place };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
@@ -79,7 +79,7 @@ export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place; max_cost_usd?: number }): { definition: Definition } {
   if (isStarter(f.harness)) {
     return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
   }
@@ -88,6 +88,8 @@ export function createBody(f: { name: string; description: string; instructions:
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
       ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
+      // Approvals: sent only when it never asks (ask is the server's default).
+      ...(f.approvals === "never" ? { approvals: "never" as const } : {}),
     },
   };
 }

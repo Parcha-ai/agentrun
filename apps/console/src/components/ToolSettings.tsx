@@ -29,8 +29,10 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  (`fallbackOf` for a provider, `permissionFallbackOf` for a permission: the built-in default for the server's, the
  *  server's for an agent's) is marked; a provider's row can be reset, a permission goes back by choosing its default.
  *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, onEdit }: {
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, unattended = false, onEdit }: {
   label: string;
+  /** The agent never asks (its approvals): a tool whose permission is ask runs without asking, and says so. */
+  unattended?: boolean;
   rows: ToolRow[];
   settings: ToolSettings;
   fallbackOf: (row: ToolChoice) => string;
@@ -78,6 +80,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                           {gate.permissions.map((p) => <option key={p} value={p} disabled={p === "ask" && gate.ask_needs === "password"}>{p}{p === gateFallback ? " (default)" : ""}</option>)}
                         </select>
                         {permissionSet && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
+                        {permission === "ask" && unattended && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Runs without asking: Never ask is on.</span>}
                         {permission === "ask" && gate.ask_needs === "password" && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Each call is refused: no one can approve it here.</span>}
                       </> : none}
                     </td>}
@@ -121,8 +124,10 @@ export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORD
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, focus, callTools, value, issues, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, focus, callTools, value, issues, unattended = false, onChange }: {
   agent: Agent | null;
+  /** The agent never asks, as the form has it: its tools set to ask run without asking. */
+  unattended?: boolean;
   /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
   model?: string;
@@ -188,7 +193,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
       {/* What ask means here: an agentic run waits for the owner's approval at each call; a workflow's call node can't
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
       <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
-      <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
+      <ToolTable label="This agent's tool settings" unattended={unattended} rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
         // The agent's own setting for every tool of its MCP server when the form has one; else the server's permission for
         // this agent when its read says it (GET /agents/{id}), else capabilities' or the MCP server read's.
         permissionFallbackOf={(g) => ownWildcard(g.name) ?? read(g.name)?.default_permission ?? g.permission}

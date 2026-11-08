@@ -109,6 +109,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
           <h1 className="min-w-0 truncate font-mono text-xl font-semibold">{d.name}</h1>
           <Chip>{agent.kind}</Chip>
           {agent.archived_at && <Chip tone="muted">Archived</Chip>}
+          {d.approvals === "never" && <Chip tone="warning" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template's pins, still hold.">Unattended</Chip>}
           <span className="flex-1" />
           <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit</Button>
         </div>
