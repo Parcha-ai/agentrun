@@ -37,11 +37,13 @@ test("renews that fail: the loop is stopped before claimed_until, and nothing it
   assert.equal(loop.deps.signal.aborted, true, "the loop's signal is aborted at the stop");
   // The stubborn loop keeps trying: every commit from the stop on is refused by the runner, never reaching the store.
   await sleep(TIMING.leaseMs);
-  assert.deepEqual(record.commits.filter((commit) => commit.startedAt >= stop.at), [], "no commit started after the stop lands");
+  // Once the claim has run out the run may be claimed again (by this runner too: its claims go through, only its renews
+  // fail), at epoch 2 with a loop of its own; epoch 1's loop is the one that must write nothing.
+  assert.deepEqual(record.commits.filter((commit) => commit.epoch === 1 && commit.startedAt >= stop.at), [], "no commit of epoch 1 started after the stop lands");
   const late = loop.commitErrors.filter((error) => error.at >= stop.at);
   assert.ok(late.length > 0, "the loop did try to commit after the stop");
   assert.ok(late.every((error) => error.name === "ClaimLost"), `refused by the runner's fence, not the store's: ${JSON.stringify(late.slice(0, 3))}`);
-  assert.deepEqual(runner.held(), [], "the runner no longer holds the run");
+  assert.deepEqual(runner.held().filter((claim) => claim.epoch === 1), [], "the runner no longer holds epoch 1's claim");
   // pi chains on commit's promise: the refusal is a rejected promise, never a throw out of the call itself.
   let pending;
   assert.doesNotThrow(() => (pending = loop.journal.commit([[]], () => {}, undefined)), "commit does not throw where it is called");
