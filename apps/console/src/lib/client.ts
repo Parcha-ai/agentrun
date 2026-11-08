@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnection, GitHubConnectStart, GitHubDisconnected, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerInput, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, GitHubConnection, GitHubConnectStart, GitHubDisconnected, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -230,10 +230,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A `webhook.test` message, tried once now: its attempt. */
     testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
     /** The last attempts, newest first. */
-    /** Schedules (serve's trigger/1): each starts an agent's capped runs. */
+    /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs. */
     listTriggers: () => call<{ triggers: Trigger[] }>("GET", "/triggers"),
     getTrigger: (id: string) => call<Trigger>("GET", trigger(id)),
-    createTrigger: (body: TriggerInput) => call<Trigger>("POST", "/triggers", { body }),
+    /** A trigger made: under `key` (Idempotency-Key), so a retry answers the same trigger, a webhook's with `note` in place
+     *  of its secret, which the first answer showed once. */
+    createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
+    /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
+    rotateTriggerSecret: (id: string) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body: {} }),
     updateTrigger: (id: string, body: TriggerInput) => call<Trigger>("PATCH", trigger(id), { body }),
     deleteTrigger: (id: string) => call<unknown>("DELETE", trigger(id)),
     /** Runs a schedule now: `key` is the click's own Idempotency-Key, so the same click sent again fires once. */

@@ -11,16 +11,21 @@
 //   shares                                                   it can run against a server already running (run.mjs --url)
 //   signedIn                                                 the page starts signed in (the owner set first if it has none)
 //   pending                                                  what the flow waits on; it doesn't run until then
-import setupOpen from "./setup-open.mjs";
 import connectGitHub from "./connect-github.mjs";
+import setupOpen from "./setup-open.mjs";
 import signIn from "./sign-in.mjs";
+import runToEnd from "./run-to-end.mjs";
+import takeOver from "./take-over.mjs";
+import templateApply from "./template-apply.mjs";
+import watchLive from "./watch-live.mjs";
 
 export const flows = [
   setupOpen,
   { name: "setup-public", pending: "waits on #1995 (setup at a public URL asks for the setup code)" },
   signIn,
   connectGitHub,
-  { name: "template-apply", pending: "waits on #1975 (the Templates page and its Apply screen)" },
-  { name: "run-to-end", pending: "to come: a run with the faux model, followed to its end" },
-  { name: "take-over", pending: "to come: the browser ask and take-over with pi-browser's fakes" },
+  templateApply,
+  runToEnd,
+  watchLive,
+  takeOver,
 ];

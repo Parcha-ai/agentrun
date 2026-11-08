@@ -34,28 +34,40 @@ const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>")
 
 /** Starts the built server from `checkout` on loopback (LOOPBACK), port chosen by the system, with a data dir and home of its own.
  *  Its environment holds only PATH, HOME, TMPDIR and `env` (e.g. AGENTRUN_PUBLIC_URL), so nothing of this machine reaches
- *  it. `faux`: the model fixture (the faux model by default). Resolves once its banner names its URL. Its output stays in
+ *  it. `faux`: the model fixture (the faux model by default); `fauxBrowser`: the browser tool's fake (a fixture, e.g.
+ *  faux-browser.mjs), with `faux` only. Resolves once its banner names its URL. Its output stays in
  *  memory: `log()` gives it with keys redacted, `line(re)` waits for a line. With a public URL, `setupCode()` reads the
  *  code setup asks for from that output. */
-export async function startServer({ env = {}, faux = "faux-model.mjs", args = [], port = 0, checkout = ROOT, timeoutMs = 30_000 } = {}) {
+export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrowser, args = [], port = 0, checkout = ROOT, timeoutMs = 30_000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-e2e-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
-  const child = spawn(process.execPath, [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", LOOPBACK, ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...args], {
+  const command = [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", LOOPBACK, ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...(fauxBrowser ? ["--faux-browser", fixture(fauxBrowser, checkout)] : []), ...args];
+  const child = spawn(process.execPath, command, {
     env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const lines = [];
   const waiters = new Set();
-  const take = (chunk) => {
-    for (const line of String(chunk).split(/\r?\n/)) {
-      if (!line) continue;
-      lines.push(line);
-      for (const w of [...waiters]) { const m = w.re.exec(line); if (m) { waiters.delete(w); w.resolve(m); } }
-    }
+  const add = (line) => {
+    if (!line) return;
+    lines.push(line);
+    for (const w of [...waiters]) { const m = w.re.exec(line); if (m) { waiters.delete(w); w.resolve(m); } }
   };
-  child.stdout.on("data", take);
-  child.stderr.on("data", take);
+  // Each stream's lines, whole: a line split across two chunks waits for its end, and a last line with none is taken at
+  // the stream's end.
+  const reader = (stream) => {
+    let rest = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk) => {
+      const parts = (rest + chunk).split(/\r?\n/);
+      rest = parts.pop() ?? "";
+      parts.forEach(add);
+    });
+    stream.on("end", () => { add(rest); rest = ""; });
+  };
+  reader(child.stdout);
+  reader(child.stderr);
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
 
   /** The first line, already printed or to come, that `re` matches; refused when the server exits first or `ms` pass. */

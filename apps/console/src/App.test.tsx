@@ -19,11 +19,12 @@ describe("route", () => {
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
   });
-  it("opens the schedules list, a new schedule, one schedule, and its editor at their own addresses", () => {
-    expect(route("#/schedules")).toEqual({ section: "schedules" });
-    expect(route("#/schedules/new")).toEqual({ section: "schedules", schedule: null });
-    expect(route("#/schedules/trg_1")).toEqual({ section: "schedules", schedule: "trg_1" });
-    expect(route("#/schedules/trg_1/edit")).toEqual({ section: "schedules", schedule: "trg_1", edit: true });
+  it("opens the triggers list, a new schedule, a new webhook, one trigger, and a schedule's editor at their own addresses", () => {
+    expect(route("#/triggers")).toEqual({ section: "triggers" });
+    expect(route("#/triggers/new")).toEqual({ section: "triggers", trigger: null, kind: "schedule" });
+    expect(route("#/triggers/new-webhook")).toEqual({ section: "triggers", trigger: null, kind: "webhook" });
+    expect(route("#/triggers/trg_1")).toEqual({ section: "triggers", trigger: "trg_1" });
+    expect(route("#/triggers/trg_1/edit")).toEqual({ section: "triggers", trigger: "trg_1", edit: true });
   });
   it("opens Settings → Tool keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
