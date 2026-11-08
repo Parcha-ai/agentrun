@@ -113,6 +113,12 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			const uploaded = execFileSync("docker", ["exec", "-i", owned.name, ...upload], { input: bytes, encoding: "utf8" });
 			assert.equal(uploaded, `sha256 ${sha}\n`);
 			assert.equal(docker("exec", owned.name, "stat", "-c", "%u:%g %a", "/opt/agentrun").trim(), "0:0 755", "the daemon's directory is root's alone");
+			// A daemon whose sha256 is not the one named is never moved where the entrypoint looks.
+			const mismatch = sandbox(image);
+			const bad = spawnSync("docker", ["exec", "-i", mismatch.name, ...modalCommands({ sha256: "f".repeat(64) }).upload], { input: bytes, encoding: "utf8" });
+			assert.equal(bad.status, 5, bad.stdout);
+			assert.match(bad.stdout, new RegExp(`^sha256 ${sha}\\n.*not moved into place`, "s"));
+			assert.equal(docker("exec", mismatch.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
 		});
 
 		it(`${image}: the entrypoint waits, the upload streams the daemon in and checks its sha256, init runs as 1000 with no capabilities, and hello answers`, async () => {

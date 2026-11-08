@@ -692,22 +692,17 @@ test("the entrypoint execs the daemon once it is moved into place: same process,
 	}
 });
 
-test("the upload script writes stdin to a part file, prints its sha256, and moves it into place, 0755, only when it matches", async () => {
+test("the upload script refuses a daemon path that is not root's alone, and writes nothing there", async () => {
+	// Run here as the test's own user under a temp directory that user owns: the path is not root's, so the upload must
+	// refuse before it reads the daemon. The success and sha256-mismatch paths run as root in the Docker commands test.
 	const dir = mkdtempSync(join(tmpdir(), "computer-modal-upload-sh-"));
 	try {
 		const daemon = join(dir, "opt", "agentrun", "computerd");
-		const ok = await runLocally(modalCommands({ sha256: BINARY_SHA, daemon }).upload, { input: BINARY });
-		assert.equal(ok.code, 0, JSON.stringify({ ...ok, stdout: ok.stdout.slice(0, 300) }));
-		assert.equal(ok.stdout, `sha256 ${BINARY_SHA}\n`);
-		assert.ok(readFileSync(daemon).equals(BINARY));
-		assert.equal(statSync(daemon).mode & 0o777, 0o755);
-		assert.equal(existsSync(join(dir, "opt", "agentrun", ".computerd.part")), false, "the part file was moved, not copied");
-
-		const other = join(dir, "other", "computerd");
-		const bad = await runLocally(modalCommands({ sha256: "f".repeat(64), daemon: other }).upload, { input: BINARY });
-		assert.equal(bad.code, 5);
-		assert.match(bad.stdout, new RegExp(`^sha256 ${BINARY_SHA}\\n.*not moved into place`, "s"));
-		assert.equal(existsSync(other), false, "a daemon whose sha256 does not match is never where the entrypoint looks");
+		const refused = await runLocally(modalCommands({ sha256: BINARY_SHA, daemon }).upload, { input: Buffer.alloc(0) });
+		assert.equal(refused.code, 7, JSON.stringify({ ...refused, stdout: refused.stdout.slice(0, 300) }));
+		assert.match(refused.stdout, /the daemon at .*computerd is not root's alone: /);
+		assert.equal(existsSync(daemon), false, "nothing is installed at a path another user can change");
+		assert.equal(existsSync(join(dir, "opt", "agentrun", ".computerd.part")), false, "no part file either");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
