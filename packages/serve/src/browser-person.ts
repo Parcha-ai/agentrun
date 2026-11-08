@@ -402,13 +402,14 @@ export function personHands(options: {
   };
 
   /** Session `tag`'s newest ask still waiting (unanswered, unexpired), answered done: the person handed that session's
-   *  browser back. Its hold goes with it (settle), and another session's ask is never touched. */
-  const givenDone = (tag: string): void => {
+   *  browser back. Its hold goes with it (settle), and another session's ask is never touched. True when an ask was
+   *  settled here, whose row (settle's) says the hand-back. */
+  const givenDone = (tag: string): boolean => {
     const dir = askDir(options.root);
     const waiting = dir ? asksIn(options.root).find(({ ask, answer }) => !answer && ask.tag === tag && Date.parse(ask.expires_at) > Date.now())?.ask : undefined;
-    if (!dir || !waiting || settled.has(waiting.id)) return;
+    if (!dir || !waiting || settled.has(waiting.id)) return false;
     answerOnce(dir, waiting.id, "done");
-    settle(waiting.id);
+    return settle(waiting.id) !== undefined;
   };
 
   /** Ask `id` as its record on disk has it, taken up by this process: one an earlier process of the run made, whose wait
@@ -508,12 +509,13 @@ export function personHands(options: {
           // Ended before it went live (the agent's call still running): the person never had the browser, and no row says
           // they took it, so none says how it came back. An answered ask writes its own row.
           if (!live) return;
-          if (why === "cap") void note(HOST_PHASE, { summary: `${CAPPED}${words ? `: ${words}` : ""}` });
-          else if (why !== "answered") void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
           // Handed back by the person (the viewer's Hand back): their word that they are done, so the agent's open ask on
           // this session is answered done, as the hand-back route would answer it (first answer wins). Never on any other
-          // end (cap, idle, away, released, answered): the person did not say they were done.
-          if (why === "given") givenDone(tag);
+          // end (cap, idle, away, released, answered): the person did not say they were done. The answer's own row
+          // ("You handed the browser back", settle's) is then the hand-back's one row: none is written here as well.
+          const answeredAsk = why === "given" && givenDone(tag);
+          if (why === "cap") void note(HOST_PHASE, { summary: `${CAPPED}${words ? `: ${words}` : ""}` });
+          else if (why !== "answered" && !answeredAsk) void note(HOST_PHASE, { summary: TAKE_ENDED[why] });
         },
       };
     },

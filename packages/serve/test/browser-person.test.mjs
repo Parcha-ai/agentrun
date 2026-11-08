@@ -623,3 +623,31 @@ test("a take-over the person hands back (given) answers the open ask on its sess
   assert.equal(await person.handoff.outcome(b.interactionId), "done");
   assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "done", first: false }, "nothing waiting: the newest's answer, written no more");
 });
+
+test("one hand-back, one row: a give that answers the session's open ask writes one 'You handed the browser back', as a give with no ask and the console's Done each do", async (t) => {
+  const rows = (held) => held.notes.filter((said) => said === "You handed the browser back").length;
+  // A give while an ask is open on the session: it answers the ask, and the timeline says so once.
+  const withAsk = hands(await scratch(t));
+  t.after(() => withAsk.person.close());
+  const asked = await withAsk.person.handoff.request(ask(41, "ar-run-41-1"));
+  const take = await withAsk.person.take("ar-run-41-1");
+  take.started();
+  take.end("given");
+  assert.equal(await withAsk.person.handoff.outcome(asked.interactionId), "done");
+  assert.equal(rows(withAsk.held), 1, JSON.stringify(withAsk.held.notes));
+  // A give with no ask open.
+  const bare = hands(await scratch(t));
+  t.after(() => bare.person.close());
+  const alone = await bare.person.take("ar-run-42-1");
+  alone.started();
+  alone.end("given");
+  assert.equal(rows(bare.held), 1, JSON.stringify(bare.held.notes));
+  // The console's Done, no take-over.
+  const root = await scratch(t);
+  const routed = hands(root);
+  t.after(() => routed.person.close());
+  const other = await routed.person.handoff.request(ask(43, "ar-run-43-1"));
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await routed.person.handoff.outcome(other.interactionId), "done");
+  assert.equal(rows(routed.held), 1, JSON.stringify(routed.held.notes));
+});
