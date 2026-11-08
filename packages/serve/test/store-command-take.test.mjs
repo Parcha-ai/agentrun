@@ -29,7 +29,7 @@ test("a staged take marks the command taken in the commit that carries its effec
   const { db, storage } = await setUp(t, "run-take");
   await commandRow(db, 7, "run-take");
   const effect = await storage.mintId();
-  storage.stage({ take: [7] });
+  storage.stage({ take: [{ command: 7, effect }] });
   await commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context);
   assert.ok((await storage.entry(effect, context)) !== undefined, "the effect's journal row");
   assert.equal(await takenAt(db, 7), NOW, "and the command taken, in that commit, on the store's clock (epoch ms)");
@@ -42,7 +42,7 @@ test("a take of a command already taken refuses the whole commit with CommandTak
   await commandRow(db, 8, "run-twice");
   await commandRow(db, 9, "run-twice", TAKEN_BEFORE);
   const effect = await storage.mintId();
-  storage.stage({ run: { state: "ended" }, also: [postOf("run-twice")], take: [8, 9] });
+  storage.stage({ run: { state: "ended" }, also: [postOf("run-twice")], take: [{ command: 8, effect }, { command: 9, effect }] });
   await assert.rejects(
     commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context),
     (error) => error instanceof CommandTaken && error.runId === "run-twice" && error.commandId === 9,
@@ -59,12 +59,64 @@ test("a take of another run's command refuses the commit with CommandTaken and l
   const { db, storage } = await setUp(t, "run-mine");
   await runRow(db, "run-other", 1);
   await commandRow(db, 10, "run-other");
-  storage.stage({ take: [10] });
+  const effect = await storage.mintId();
+  storage.stage({ take: [{ command: 10, effect }] });
   await assert.rejects(
-    commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context),
+    commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context),
     (error) => error instanceof CommandTaken && error.runId === "run-mine" && error.commandId === 10,
   );
   assert.equal(await takenAt(db, 10), null, "the other run's command untaken");
+});
+
+test("a take lands only in the commit that stores its effect: a commit without the effect, a refused one and a failed one leave the command untaken; the effect's commit takes it in its own transaction", async (t) => {
+  const db = await scratchConnection(t);
+  const claim = await runRow(db, "run-keyed", 1);
+  // A crash, once armed, after the commit's writes and before its end (at the take's own update).
+  const crash = { on: false };
+  const check = (sql) => {
+    if (crash.on && /^UPDATE commands SET taken_at/.test(sql)) throw new Error("injected crash at the take");
+  };
+  const wrap = (tx) => ({
+    exec: async (sql) => (check(sql), tx.exec(sql)),
+    run: async (sql, ...params) => (check(sql), tx.run(sql, ...params)),
+    runCounted: async (sql, ...params) => (check(sql), tx.runCounted(sql, ...params)),
+    get: async (sql, ...params) => (check(sql), tx.get(sql, ...params)),
+    all: async (sql, ...params) => (check(sql), tx.all(sql, ...params)),
+    step: async (statement) => (check(statement.sql), tx.step(statement)),
+  });
+  const connection = { get: (...args) => db.connection.get(...args), all: (...args) => db.connection.all(...args), transaction: (work, options) => db.connection.transaction((tx) => work(wrap(tx)), options) };
+  const storage = await RunStorage.open(connection, claim, () => NOW);
+  await commitWrites(storage, [{ type: "conversation", value: { id: ROOT } }], context);
+  await commandRow(db, 12, "run-keyed");
+  const effect = await storage.mintId();
+  storage.stage({ take: [{ command: 12, effect }] });
+  // 1. A commit that stores something else: the take waits for its effect.
+  await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message", mark: "other" } }], context);
+  assert.equal(await takenAt(db, 12), null, "not taken by a commit without its effect");
+  // 2. The effect's commit refused by pi's own check (the id is taken already): untaken.
+  const taken = await storage.commit([[{ type: "entry", value: { id: 1, conversationId: ROOT, kind: "message", mark: "dup" } }]], () => {}, context);
+  assert.equal(taken.stored, 0, "refused");
+  assert.equal(await takenAt(db, 12), null, "not taken by a refused commit");
+  // 3. The effect's commit fails: nothing of it, the command untaken.
+  crash.on = true;
+  await assert.rejects(commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message", mark: "effect" } }], context), /injected crash/);
+  assert.equal(await db.get("SELECT 1 AS found FROM pi_entries WHERE run_id = ? AND id = ?", "run-keyed", effect), undefined, "no effect");
+  assert.equal(await takenAt(db, 12), null, "not taken by a failed commit");
+  // 4. The effect's commit lands: the effect and the take, in one transaction.
+  crash.on = false;
+  await commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message", mark: "effect" } }], context);
+  assert.ok(await db.get("SELECT 1 AS found FROM pi_entries WHERE run_id = ? AND id = ?", "run-keyed", effect), "the effect");
+  assert.equal(await takenAt(db, 12), NOW, "and the take with it");
+});
+
+test("a later stage keeps the takes still waiting for their effects", async (t) => {
+  const { db, storage } = await setUp(t, "run-restage");
+  await commandRow(db, 13, "run-restage");
+  const effect = await storage.mintId();
+  storage.stage({ take: [{ command: 13, effect }] });
+  storage.stage({ run: { state: "running" } });
+  await commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context);
+  assert.equal(await takenAt(db, 13), NOW, "the take staged first still lands with its effect");
 });
 
 test("two loops that apply the same command at once: exactly one commit lands, the other is refused with CommandTaken", async (t) => {
@@ -74,8 +126,8 @@ test("two loops that apply the same command at once: exactly one commit lands, t
   // Each loop's effect has an id of its own (the two journals share the run's namespace), so only the take decides.
   const one = await first.mintId();
   const two = (await second.mintId()) + 1;
-  first.stage({ take: [11] });
-  second.stage({ take: [11] });
+  first.stage({ take: [{ command: 11, effect: one }] });
+  second.stage({ take: [{ command: 11, effect: two }] });
   const results = await Promise.allSettled([
     commitWrites(first, [{ type: "entry", value: { id: one, conversationId: ROOT, kind: "message", loop: 1 } }], context),
     commitWrites(second, [{ type: "entry", value: { id: two, conversationId: ROOT, kind: "message", loop: 2 } }], context),
