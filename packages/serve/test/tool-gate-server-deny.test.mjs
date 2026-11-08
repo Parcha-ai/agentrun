@@ -35,6 +35,9 @@ test("permissionFrom with no server deny is as before: the agent's own deny name
   assert.deepEqual(permissionFrom("web_fetch", { web_fetch: { permission: "allow" } }, { web_fetch: { permission: "ask" } }), { permission: "ask", from: "agent" });
   assert.deepEqual(permissionFrom("web_fetch", {}, { web_fetch: { permission: "ask" } }), { permission: "ask", from: "agent" });
   assert.deepEqual(permissionFrom("web_fetch", { web_fetch: { permission: "ask" } }, { web_fetch: { permission: "allow" } }), { permission: "allow", from: "agent" });
+  // The server's own exact allow under its own wildcard deny is the server's answer for that tool: no deny to hold.
+  assert.deepEqual(permissionFrom("mcp:fake/add", { "mcp:fake/*": DENY, "mcp:fake/add": { permission: "allow" } }, { "mcp:fake/add": { permission: "ask" } }), { permission: "ask", from: "agent" });
+  assert.deepEqual(permissionFrom("mcp:fake/other", { "mcp:fake/*": DENY, "mcp:fake/add": { permission: "allow" } }, { "mcp:fake/other": { permission: "allow" } }), { permission: "deny", from: "server" });
 });
 
 /** One call of `name` through a pi run's gate, with the server's `settings` file and the agent's own `overrides`. */
