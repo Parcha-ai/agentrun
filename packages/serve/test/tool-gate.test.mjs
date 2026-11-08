@@ -767,7 +767,9 @@ test("a person's message while an approval waits declines the call, with the mes
     if (harness === "pi") assert.match(final, new RegExp(`Reason: ${said}$`), "the model read the refusal and the message together");
     const row = rows.find((r) => r.kind === "tool_approval_requested");
     assert.match(row.summary, /^Declined by your message: web_fetch /, harness);
-    ownRowsSay(rows, row.tool_use_id, "Not run: your message declined it", harness);
+    // The resume row says it (below the approval's row); the call's own rows say only that it was held.
+    ownRowsSay(rows, row.tool_use_id, "Held for your approval", harness);
+    readsInOrder(rows, row.tool_use_id, `${harness}, declined by a message`);
     const late = await answer(runId, approval, { decision: "allow" });
     assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "deny" }], harness);
   }
