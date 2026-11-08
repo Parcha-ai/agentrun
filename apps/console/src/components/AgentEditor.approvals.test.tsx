@@ -72,3 +72,29 @@ describe("AgentEditor, the agent's approvals", () => {
     expect(editBody(agentWith(), { approvals: "never" }, "").definition.approvals).toBe("never");
   });
 });
+
+describe("AgentEditor, the agent's approvals while a save is under way and with ask off", () => {
+  it("takes no change of approvals while a save is under way, so what shows is what was sent", async () => {
+    let answer: (p: null) => void = () => {};
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditor, { agent: agentWith("ask"), caps, permissionGates: gates, step: "tools", onSave: () => new Promise((r) => { answer = r; }) } as never)));
+    const radios = () => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')];
+    act(() => { radios().find((r) => /^Never ask/.test(r.closest("label")?.textContent ?? ""))!.click(); });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save revision$/.test(b.textContent?.trim() ?? ""))!.click(); });
+    for (const r of radios()) expect(r.disabled).toBe(true);
+    await act(async () => { answer(null); });
+    for (const r of radios()) expect(r.disabled).toBe(false);
+  });
+
+  it("with ask off on this server, a tool set to ask under Never ask says it runs, not that it is refused", () => {
+    const off = toolGates([{ name: "bash", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"], ask_needs: "password" }]);
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditor, { agent: agentWith("never"), caps, permissionGates: off, step: "tools", onSave: async () => null } as never)));
+    const row = host.querySelector('tr[data-tool="bash"]')!;
+    expect(row.textContent).toContain("Runs without asking: Never ask is on.");
+    expect(row.textContent).not.toContain("Each call is refused");
+    expect(row.querySelector<HTMLOptionElement>('select[aria-label="bash permission"] option[value="ask"]')!.disabled).toBe(false);
+  });
+});
