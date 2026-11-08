@@ -68,7 +68,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  * or is named in the cleanup, and a computer that arrives after its case ended is deleted when it arrives.
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
-	const { image, only, signal, cases = conformanceCases, drifted, onResult, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
+	const { image, only, signal, cases = conformanceCases, drifted, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture } = options;
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
 	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
@@ -91,6 +91,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		core: "fail",
 		undeclared: [],
 		cleanup: { deleted: [], left: [], errors: [], late: [] },
+		...(notes !== undefined && notes.length > 0 ? { notes: [...notes] } : {}),
 	};
 	const deleted = new Set<string>();
 	/**

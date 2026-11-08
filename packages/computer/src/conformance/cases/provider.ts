@@ -181,6 +181,15 @@ export const providerCases: Case[] = [
 			return;
 		}
 		t.ok(await t.provider.release(ref, "stop"), "release stop");
+		// A provider that declares stopDeletes ends a stopped computer: once release returns, it is neither listed nor
+		// attachable, and a delete after it is the idempotent delete of a computer already gone.
+		if (t.provider.capabilities().stopDeletes === true) {
+			const words = "a stop on a provider whose stop ends in deletion (stopDeletes)";
+			t.deepEqual(await names(t, labels), [], `${words}: listed after it`);
+			t.refused(await t.provider.attach({ id: ref.id }), `${words}: attach to it`, ["not_found"]);
+			t.ok(await t.provider.release(ref, "delete"), `${words}: a delete after it`);
+			return;
+		}
 		const listed = t.ok(await t.provider.list(labels), "list");
 		t.deepEqual(
 			listed.map((info) => [info.ref.name, info.state]),
@@ -256,6 +265,7 @@ export const providerCases: Case[] = [
 	provider(
 		"janitor",
 		async (t) => {
+			if (t.provider.capabilities().stopDeletes === true) t.skip("the provider declares stopDeletes: a stop ends in deletion, so it keeps no stopped computer for the janitor to sweep");
 			const labels = own(t, "janitor");
 			const stopped = await t.create({ lifetimeMs: 60_000, labels: { ...labels, role: "stopped" } });
 			const running = await t.create({ lifetimeMs: 5 * 60_000, labels: { ...labels, role: "running" } });

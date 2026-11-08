@@ -18,6 +18,21 @@ export interface ComputerSpec {
 	user?: string;
 }
 
+/** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
+export interface AllowRule {
+	max: number;
+	/** The ports an entry opens: these, or "any". */
+	ports: number[] | "any";
+}
+
+/** What a network allowlist may hold, for a provider that declares network "allow". */
+export interface AllowCapability {
+	domains?: AllowRule;
+	cidrs?: AllowRule;
+	/** Whether one allowlist may hold domains and CIDRs together. */
+	mixed: boolean;
+}
+
 /**
  * Who answers a computer's methods. pid1: computerd init is the computer's main process, so its exit ends the computer.
  * child: the vendor's own agent is the main process and starts init at boot; init's exit does not end the computer.
@@ -31,6 +46,8 @@ export interface ComputerCapabilities {
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
 	network: Array<"none" | "open" | "allow">;
+	/** With network "allow": what an allowlist may hold and which ports it opens. */
+	allow?: AllowCapability;
 	/**
 	 * Whether network() reads the policy back from outside the computer, from the vendor's own report of it. false: the
 	 * vendor has no read-back, so only a probe from inside the computer stands for one, and an allowlist counts only
@@ -39,6 +56,11 @@ export interface ComputerCapabilities {
 	networkReadBack?: boolean;
 	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine";
 	os: ComputerOs;
+	/**
+	 * With release "stop": true when a stop ends in deletion (Daytona with autoDeleteMinutes 0), so release(ref, "stop")
+	 * leaves no computer, listed or attachable. Absent or false: a stopped computer is kept, listed stopped, until deleted.
+	 */
+	stopDeletes?: boolean;
 	daemon: DaemonMode;
 	/** What each computer offers, as hello repeats it. */
 	groups: Group[];
@@ -106,7 +128,10 @@ export type NetworkPolicy = NetworkSpec | { other: string };
 
 /** The spec a computer runs with, read back from the computer itself, not from what was asked. */
 export interface ReadBackSpec {
+	/** The image as create was asked for it, read back from the computer (Docker's config, Daytona's label). */
 	image: string;
+	/** What the vendor resolved the image to, by its own name, when it reports one (a Daytona snapshot). */
+	snapshot?: string;
 	/** uid:gid in numbers: "0:0" is root. */
 	user: string;
 	network: NetworkPolicy;

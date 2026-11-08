@@ -6,8 +6,9 @@
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
 //	                    set, the screen and input methods drive that X display.
 //	                    With --user, init starts as root, gives HOME and the socket's directory to uid:gid and becomes
-//	                    it: for a vendor that runs every computer as root (Modal). As any user, root included, init
-//	                    first leaves every thread no capability in any set and no_new_privs set, or refuses to start
+//	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
+//	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
+//	                    capability in any set and no_new_privs set, or refuses to start
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--connect <host:port>]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, and the addresses a TCP
