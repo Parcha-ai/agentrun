@@ -1,43 +1,13 @@
-// A stand-in for the computer package's kind registry (kinds.ts: SETTING_KINDS, PROVIDERS, servingRefusals), by its own
-// names and shapes, and the kernel registry's capabilityToolDefs, for serve's Settings → Computers tests. The rows copy
-// kinds.ts's, except daytona and e2b, which mount the owner's disk here so Mode 2 offers a sandbox (kinds.ts gives them
-// archil mounts once D6 lands). Nothing here calls a provider.
-const SANDBOX = { kind: "linux", groups: ["exec", "files", "processes"] };
-const LINUX_DESKTOP = { kind: "desktop", groups: ["screen", "input.pointer", "input.keys", "exec", "files", "processes"] };
+// Settings → Computers' test data: the kind registry is the one stand-in the claim's resolver tests use
+// (workspace-kinds-fixture.mjs: SETTING_KINDS, servingRefusals, PROVIDERS, copied from the computer package's kinds.ts),
+// with ARCHIL_KINDS for a Mode 2 whose remote sandboxes mount the owner's disk; plus the kernel registry's tools per kind
+// and fake provider modules. Nothing here calls a provider.
+import { ARCHIL_KINDS, KINDS, PROVIDERS, SETTING_KINDS, servingRefusals } from "../workspace-kinds-fixture.mjs";
 
-export const SETTING_KINDS = {
-  none: { machineKinds: [], required: [], optional: [] },
-  sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
-  browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
-};
-
-/** Why capabilities do not serve a setting kind, in words (kinds.ts's servingRefusals). */
-export function servingRefusals(capabilities, kind) {
-  const spec = SETTING_KINDS[kind];
-  const refusals = [];
-  if (!spec.machineKinds.includes(capabilities.kind)) refusals.push(`kind ${kind} is a ${spec.machineKinds.join(" or ")} machine, not a ${capabilities.kind} one`);
-  for (const group of spec.required) if (!capabilities.groups.includes(group)) refusals.push(`kind ${kind} needs the group ${group}`);
-  return refusals;
-}
-
-const entry = (fields) => ({ ...fields, kinds: Object.keys(SETTING_KINDS).filter((kind) => kind !== "none" && fields.capabilities.some((one) => servingRefusals(one, kind).length === 0)) });
-
-export const PROVIDERS = [
-  entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
-  entry({ id: "daytona", label: "Daytona", keys: [{ name: "DAYTONA_API_KEY", required: true }, { name: "DAYTONA_API_URL", required: false }, { name: "DAYTONA_TARGET", required: false }], mounts: ["archil"], metered: true, capabilities: [SANDBOX] }),
-  entry({ id: "modal", label: "Modal", keys: [{ name: "MODAL_TOKEN_ID", required: true }, { name: "MODAL_TOKEN_SECRET", required: true }], mounts: [], metered: true, capabilities: [SANDBOX] }),
-  entry({ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], mounts: ["archil"], metered: true, capabilities: [SANDBOX, LINUX_DESKTOP] }),
-  entry({ id: "phone-harness", label: "Phone harness", keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "android", groups: ["screen", "input.touch", "apps"] }] }),
-  entry({ id: "browserbase", label: "Browserbase", keys: [{ name: "BROWSERBASE_API_KEY", required: true }, { name: "BROWSERBASE_PROJECT_ID", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp"] }] }),
-];
+export { ARCHIL_KINDS, KINDS, PROVIDERS, SETTING_KINDS, servingRefusals };
 
 const TOOLS = { none: [], sandbox: ["bash_background"], desktop: ["screenshot", "computer_input"], phone: ["phone_screenshot", "phone_tap"], browser: ["browser"] };
 export const tools = (kind) => TOOLS[kind];
-
-/** The kind registry as createComputerRoutes takes it. */
-export const KINDS = { SETTING_KINDS, PROVIDERS, servingRefusals };
 
 /**
  * Fake provider modules' create(), by provider id (the factories computer-keys.ts's testConnection takes), each

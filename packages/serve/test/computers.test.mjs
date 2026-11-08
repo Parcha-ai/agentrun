@@ -9,14 +9,14 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { createComputerRoutes, KeysRefused } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
-import { fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
+import { ARCHIL_KINDS, fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
-async function setup(t, { mode = "local", settings, ...given } = {}) {
+async function setup(t, { mode = "local", settings, kinds = KINDS, ...given } = {}) {
   const sealKey = "sealKey" in given ? given.sealKey : randomBytes(32);
   const { store } = await storeOn(t);
   const fake = fakeFactories();
-  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: fake.factories, ...(settings ? { settings } : {}), tools, mode });
+  const routes = createComputerRoutes({ store, sealKey, kinds, factories: fake.factories, ...(settings ? { settings } : {}), tools, mode });
   return { store, sealKey, routes, ...fake };
 }
 
@@ -39,14 +39,22 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.equal(kindOf(view, "sandbox").offered, true);
 });
 
-test("Mode 2 (run folders on the owner's disk): Docker's sandbox is refused, a sandbox that mounts the disk is offered", async (t) => {
+test("Mode 2 today (no remote sandbox mounts the owner's disk yet): no sandbox is offered, and each says why; a desktop, phone or browser is", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
   assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
-  assert.match(providerOf(view, "sandbox", "modal").why, /Modal can't mount the owner's disk/);
+  assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount the owner's disk/);
+  assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
+  assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
+  assert.equal(kindOf(view, "phone").offered, true);
+});
+
+test("Mode 2 once the remote sandboxes mount the owner's disk: Docker's sandbox is refused, one that mounts the disk is offered", async (t) => {
+  const { routes } = await setup(t, { mode: "disk", kinds: ARCHIL_KINDS });
+  const view = await routes.view();
+  assert.match(providerOf(view, "sandbox", "docker").why, /Docker can't mount the owner's disk/);
   assert.equal(providerOf(view, "sandbox", "daytona").why, "Daytona needs DAYTONA_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/daytona/keys)");
   assert.equal(kindOf(view, "sandbox").offered, true);
-  assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
 });
 
 test("a kind no provider can serve here is not offered, and says why", async (t) => {
@@ -119,8 +127,9 @@ test("at the claim: a computer this server cannot give is refused in words that 
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined);
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona" }), /can't mount this server's run folders.*Settings → Computers/);
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
-  assert.equal(await routes.claimRefusal({ kind: "browser", provider: "e2b" }), "E2B does not serve a browser computer (kind browser is a browser machine, not a linux one; kind browser needs the group cdp; kind browser is a browser machine, not a desktop one): set this agent's computer to one it serves (Settings → Computers)", "servingRefusals' words");
-  assert.match(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), /names the provider orgo, which this server does not have/);
+  assert.equal(await routes.claimRefusal({ kind: "browser", provider: "e2b" }), "E2B does not serve a browser computer (kind browser is a browser machine, not a linux one; kind browser needs groups cdp, which the provider does not declare; kind browser is a browser machine, not a desktop one): set this agent's computer to one it serves (Settings → Computers)", "servingRefusals' words");
+  assert.match(await routes.claimRefusal({ kind: "desktop", provider: "nobody" }), /names the provider nobody, which this server does not have/);
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
   await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), undefined);
 });
