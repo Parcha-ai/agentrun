@@ -155,7 +155,9 @@ func TestWaitGroupRunsUntilTheGroupIsEmpty(t *testing.T) {
 		t.Fatalf("the program's own exit, once TERM ended its job: %+v", res)
 	}
 	gone(t, pids[0])
-	tty := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "sleep 1 & echo started"}, WaitGroup: true, Pty: &process.Size{Cols: 80, Rows: 24}})
+	// On a terminal the session leader's exit hangs up its foreground group, as a terminal does: a job that ignores HUP
+	// runs on, and keeps the process running.
+	tty := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "trap '' HUP; sleep 1 & echo started"}, WaitGroup: true, Pty: &process.Size{Cols: 80, Rows: 24}})
 	still(t, tbl, tty.ID, 300*time.Millisecond)
 	if res := wait(t, tbl, tty.ID); res.ExitCode == nil || *res.ExitCode != 0 {
 		t.Fatalf("on a terminal: %+v", res)

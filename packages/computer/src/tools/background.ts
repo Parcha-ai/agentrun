@@ -1,29 +1,36 @@
 // The background tools on computerd: `bash_background` starts a command in a fresh shell (process.start) and answers at
-// once with its id; `bash_output` reads its output in pages, from a byte offset (process.read); `bash_input` writes its
-// stdin (process.write); `bash_signal` sends its process group TERM, INT or KILL (process.signal: INT on a terminal is
-// Ctrl-C to its foreground job); `bash_list` lists them (process.list). computerd holds each process, its output (the
-// last 8 MiB, read by offset) and how it ended, so nothing of theirs is kept in files and no call runs a script in the
-// computer. A process's id is computerd's number for it ("p7" is 7); every call reaches only a process bash_background
-// started (its shell's $0 says so), never one bash or anything else started in the computer.
+// once with its id; `bash_output` reads its output in pages, from a byte offset (process.read of its log); `bash_input`
+// writes its stdin (process.write); `bash_signal` sends its process group TERM, INT or KILL (process.signal: INT on a
+// terminal is Ctrl-C to its foreground job); `bash_list` lists them (process.list). No call runs a script of its own in
+// the computer.
 //
-// The shell waits for the jobs its command leaves running (a server started with &), so the process runs until they
-// end too; when the shell exits, computerd's guard ends anything else it left. The run's end ends every one still
-// running (endBackground: TERM, then KILL 3 s later), before the computer is released.
+// A process's id is the run's own: the first number with no folder of its name in work/background/ and no background
+// process of this computer's. Its shell's argv carries it, after the shell's $0, which marks the process as a background
+// one: every call reaches only those, never one bash or anything else started in the computer. computerd writes the
+// first 16 MiB of its stdout and stderr to work/background/<id>/output.log, a file it makes itself and never through a
+// link (process.start's log), and bash_output reads them from computerd's own open file, never by the path. computerd
+// runs the process until it and every process left in its group (on a terminal, its session) have ended, with the
+// shell's own exit (waitGroup), and keeps what left the group running to the computer's end (orphans keep). The run's
+// end ends every one still running (endBackground: TERM, then KILL 3 s later), before the computer is released.
+//
+// On a mounted run's folder the log is a write like any other, synced by the mount's own rule.
 import { listProcesses } from "../processes.js";
-import { type ComputerClient, PROCESS_RING_BYTES, type ProcessExit, type ProcessInfo } from "../protocol.js";
+import { type ComputerClient, PROCESS_LOG_BYTES, type ProcessExit, type ProcessInfo } from "../protocol.js";
 import { type ComputerError, fail, ok, type Result } from "../result.js";
 import { SIGNAL_NAMES, SIGNAL_NUMBERS, type ShellToolDefinition, startShell, type ToolAnswer, WORKSPACE } from "./shell.js";
 
 /** The most background processes that run at once in one run's computer. */
 export const BACKGROUND_MAX = 8;
-/** How much of a background process's output is kept: its last bytes, computerd's ring. */
-export const BACKGROUND_LOG_BYTES = PROCESS_RING_BYTES;
+/** The most bytes of output one background process's log keeps: later output is dropped, and the process runs on. */
+export const BACKGROUND_LOG_BYTES = PROCESS_LOG_BYTES;
 /** The most bytes of output one `bash_output` call answers, and its default. */
 export const BACKGROUND_PAGE_BYTES = 48 * 1024;
 /** The most bytes one `bash_input` call writes. */
 export const BACKGROUND_INPUT_BYTES = 64 * 1024;
 /** The most processes `bash_list` names: every running one, then the newest that ended. */
 export const BACKGROUND_LIST_MAX = 40;
+/** Where a background process's log lives, under the run's folder. */
+export const BACKGROUND_DIR = "background";
 /** The signals `bash_signal` sends. */
 export const BACKGROUND_SIGNALS = ["TERM", "INT", "KILL"] as const;
 /** The terminal a `tty: true` process runs on. */
@@ -33,9 +40,8 @@ const SIGNAL_WAIT_MS = 2_000;
 /** How long the run's end waits after TERM before KILL. */
 const END_GRACE_MS = 3_000;
 
-/** The shell's script: stderr into stdout (one log, in order), the command, then the jobs it left running, then the
- *  command's own exit code. */
-const SCRIPT = 'exec 2>&1; eval "$1"; c=$?; wait; exit $c';
+/** The shell's script: stderr into stdout (one stream, in order), then the command. $1 is the id, $2 the command. */
+const SCRIPT = 'exec 2>&1; eval "$2"';
 /** $0 of a background process's shell: what tells one from any other process in the computer. */
 export const BACKGROUND_MARKER = "agentrun-background";
 
@@ -49,11 +55,11 @@ const schema = (properties: Record<string, Record<string, unknown>>, required: s
 export const BACKGROUND_TOOL_DEFINITIONS: readonly ShellToolDefinition[] = [
 	{
 		name: "bash_background",
-		description: `Start a shell command in the background in the run's box, from the run's folder (${WORKSPACE}), and answer at once with its id. Each call is a fresh shell (bash, else sh). The command runs until it and every job it started with & (a server) have exited, bash_signal ends it, or the run ends, which ends it. Its stdout and stderr go together to its log, which bash_output reads: the last ${MIB} MiB of them, earlier output dropped while it runs on. Its stdin is a pipe that bash_input writes; tty: true gives it a terminal instead. At most ${BACKGROUND_MAX} run at once in a run's box. Read its output with bash_output, list them with bash_list.`,
+		description: `Start a shell command in the background in the run's box, from its work/, and answer at once with its id. Each call is a fresh shell (bash, else sh). The command runs until it and every child it left in its process group (a server started with &) have exited, bash_signal ends it, or the run ends, which ends it. Its stdout and stderr go together to work/${BACKGROUND_DIR}/<id>/output.log, which the run's files keep: the first ${MIB} MiB of them, later output dropped while it runs on. Its stdin is a pipe that bash_input writes; tty: true gives it a terminal instead. At most ${BACKGROUND_MAX} run at once in a run's box. Read its output with bash_output, list them with bash_list.`,
 		parameters: schema(
 			{
 				command: { type: "string", minLength: 1, description: "The command, as you would give bash." },
-				tty: { type: "boolean", description: "Run it on a terminal (a pty), for a program that needs one: a prompt, a REPL, a progress display. Its log then holds what the terminal shows (your input echoed, lines ending in \\r\\n); bash_input types into the terminal, close: true types Ctrl-D, and bash_signal INT is Ctrl-C to its foreground job." },
+				tty: { type: "boolean", description: "Run it on a terminal (a pty, through script in the box), for a program that needs one: a prompt, a REPL, a progress display. Its log then holds what the terminal shows (your input echoed, lines ending in \\r\\n); bash_input types into the terminal, and bash_signal INT is Ctrl-C to its foreground job." },
 			},
 			["command"],
 		),
@@ -117,8 +123,9 @@ const noSuch = (id: string) => fail("not_found", `there is no background process
 /** A refusal of the computer's that no word of a call's explains. */
 const unanswered = (error: ComputerError): Result<never> => fail(error.code, `the run's box did not answer: ${error.message}`);
 const refuse = (message: string): Result<never> => fail("invalid", message);
+const linkDir = () => refuse(`work/${BACKGROUND_DIR} is a link, so no background process starts: remove it, and its logs go in a directory of their own again`);
 
-/** A process's id as a call gives it: digits only. Its computerd id is "p" and the digits. */
+/** A process's id as a call gives it: digits only, so no call names a path. */
 function idOf(value: unknown): Result<string> {
 	const id = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : typeof value === "string" ? value.trim() : "";
 	if (!/^[1-9][0-9]{0,8}$/.test(id)) return refuse(`${JSON.stringify(value)} is no background process id: an id is the number bash_background answered, such as "1" (bash_list shows them)`);
@@ -131,24 +138,32 @@ const intArg = (value: unknown, name: string, min: number, max: number, fallback
 	return ok(value);
 };
 
-const isBackground = (info: ProcessInfo) => info.argv[3] === BACKGROUND_MARKER;
-const streamOf = (info: ProcessInfo) => (info.pty ? "pty" : "stdout");
+const isBackground = (info: ProcessInfo) => info.argv[3] === BACKGROUND_MARKER && /^[1-9][0-9]*$/.test(info.argv[4] ?? "");
+/** A background process's id, as its argv holds it. */
+const idIn = (info: ProcessInfo) => info.argv[4]!;
 /** The command a background process runs, as its argv holds it (empty when a listing clipped it). */
-const commandOf = (info: ProcessInfo) => info.argv[4] ?? "";
-
-/** Background process `id` as computerd lists it, or not_found when computerd has none by that number or it is no
- *  background process. */
-async function find(client: ComputerClient, id: string): Promise<Result<ProcessInfo>> {
-	const page = await client.call("process.list", { from: Number(id) });
-	if (!page.ok) return unanswered(page.error);
-	const info = page.value.processes[0];
-	return info !== undefined && info.id === `p${id}` && isBackground(info) ? ok(info) : noSuch(id);
-}
+const commandOf = (info: ProcessInfo) => info.argv[5] ?? "";
+/** The log of background process `id`, under the run's folder, as the answers name it. */
+const logOf = (id: string) => `${BACKGROUND_DIR}/${id}/output.log`;
 
 /** Every background process of the computer, in start order. */
 async function backgrounds(client: ComputerClient): Promise<Result<ProcessInfo[]>> {
 	const listed = await listProcesses(client);
 	return listed.ok ? ok(listed.value.filter(isBackground)) : unanswered(listed.error);
+}
+
+/** Background process `id`, the newest by that id, or not_found when there is none. */
+async function find(client: ComputerClient, id: string): Promise<Result<ProcessInfo>> {
+	const listed = await backgrounds(client);
+	if (!listed.ok) return listed;
+	const info = listed.value.findLast((one) => idIn(one) === id);
+	return info ? ok(info) : noSuch(id);
+}
+
+/** The bytes the log of `info` holds so far, and whether output past them was dropped; undefined when it cannot be read. */
+async function logSize(client: ComputerClient, info: ProcessInfo): Promise<{ size: number; capped: boolean } | undefined> {
+	const read = await client.call("process.read", { id: info.id, stream: "log", offset: 0, maxBytes: 1 });
+	return read.ok ? { size: read.value.size, capped: read.value.capped === true } : undefined;
 }
 
 /** The end of `bytes` that ends inside a UTF-8 character, left for the next page: how many bytes to keep (none, when the
@@ -164,13 +179,13 @@ function wholeChars(bytes: Uint8Array): number {
 }
 
 export interface BackgroundOptions {
-	/** Where the command starts. Default the run's folder, /workspace. */
+	/** The run's folder: where the command starts, and its log goes under. Default /workspace. */
 	cwd?: string;
 }
 
-/** The last start in flight on each client: a start waits for it, so the cap's count and the start it allows are one
- *  step, and nine starts at once on one client start eight. Starts on another client (another process attached to
- *  the same computer) are not held by this. */
+/** The last start in flight on each client: a start waits for it, so the cap's count, the id it picks and the start
+ *  are one step, and nine starts at once on one client start eight. Starts on another client (another process attached
+ *  to the same computer) are not held by this. */
 const starting = new WeakMap<ComputerClient, Promise<unknown>>();
 
 /** Runs `step` once every start before it on `client` has settled. */
@@ -180,72 +195,108 @@ function inTurn<T>(client: ComputerClient, step: () => Promise<T>): Promise<T> {
 	return turn;
 }
 
+/** The numbers taken in the run's work/background/ (any entry named by digits, a link or a file too), or a link
+ *  refusal when the folder itself is a link. */
+async function takenIn(client: ComputerClient, dir: string): Promise<Result<Set<string>>> {
+	const taken = new Set<string>();
+	const stat = await client.call("files.stat", { path: dir });
+	if (!stat.ok) return stat.error.code === "not_found" ? ok(taken) : unanswered(stat.error);
+	if (stat.value.type === "symlink") return linkDir();
+	if (stat.value.type !== "dir") return ok(taken);
+	for (let offset = 0; ; ) {
+		const page = await client.call("files.list", { path: dir, offset });
+		if (!page.ok) return unanswered(page.error);
+		for (const entry of page.value.entries) {
+			const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+			if (/^[1-9][0-9]*$/.test(name)) taken.add(name);
+		}
+		if (!page.value.truncated || page.value.entries.length === 0) return ok(taken);
+		offset += page.value.entries.length;
+	}
+}
+
 /** bash_background: starts `command` (on a terminal with `tty: true`) and answers at once with its id. */
 export async function bashBackground(client: ComputerClient, args: { command?: unknown; tty?: unknown }, options: BackgroundOptions = {}): Promise<Result<ToolAnswer>> {
 	const command = typeof args.command === "string" ? args.command : "";
 	const tty = args.tty === true;
 	if (!command.trim()) return refuse("command is the shell command to start");
+	const folder = options.cwd ?? WORKSPACE;
+	const dir = `${folder}/${BACKGROUND_DIR}`;
 	const started = await inTurn(client, async () => {
 		const listed = await backgrounds(client);
 		if (!listed.ok) return listed;
 		const running = listed.value.filter((info) => info.running).length;
 		if (running >= BACKGROUND_MAX) return fail("limit", `${running} background processes already run in this run's box, the most at once (${BACKGROUND_MAX}): end one with bash_signal (bash_list shows them), or wait for one to exit, then start this again.`);
-		const shell = await startShell(client, { script: SCRIPT, marker: BACKGROUND_MARKER, command, cwd: options.cwd ?? WORKSPACE, ...(tty ? { pty: { ...BACKGROUND_TTY_SIZE } } : { stdin: true }) });
-		return shell.ok ? shell : fail(shell.error.code, `the run's box did not start the process: ${shell.error.message}`);
+		const taken = await takenIn(client, dir);
+		if (!taken.ok) return taken;
+		for (const info of listed.value) taken.value.add(idIn(info));
+		let id = 1;
+		while (taken.value.has(String(id))) id++;
+		const shell = await startShell(client, {
+			script: SCRIPT,
+			marker: BACKGROUND_MARKER,
+			args: [String(id), command],
+			cwd: folder,
+			log: `${dir}/${id}/output.log`,
+			waitGroup: true,
+			orphans: "keep",
+			...(tty ? { pty: { ...BACKGROUND_TTY_SIZE } } : { stdin: true }),
+		});
+		if (shell.ok) return ok({ id: String(id), pid: shell.value.pid });
+		if (shell.error.code === "denied" && shell.error.message.startsWith(`${dir} is a link`)) return linkDir();
+		return fail(shell.error.code, `the run's box did not start the process: ${shell.error.message}`);
 	});
 	if (!started.ok) return started;
-	const id = started.value.id.replace(/^p/, "");
-	const { pid } = started.value;
+	const { id, pid } = started.value;
+	const log = logOf(id);
 	return ok({
-		text: `Started background process ${id} (process group ${pid})${tty ? " on a terminal" : ""}. Read its output with bash_output {"id": "${id}"}, write its stdin with bash_input, end it with bash_signal.`,
-		details: { id, pid, ...(tty ? { tty } : {}) },
+		text: `Started background process ${id} (process group ${pid})${tty ? " on a terminal" : ""}. Its output goes to ${log} in work/: read it with bash_output {"id": "${id}"}, write its stdin with bash_input, end it with bash_signal.`,
+		details: { id, log, pid, ...(tty ? { tty } : {}) },
 	});
 }
 
-/** bash_output: at most `max_bytes` of a background process's output from byte `offset`, with its state. */
+/** bash_output: at most `max_bytes` of a background process's log from byte `offset`, with its state. */
 export async function bashOutput(client: ComputerClient, args: { id?: unknown; offset?: unknown; max_bytes?: unknown }): Promise<Result<ToolAnswer>> {
 	const id = idOf(args.id);
 	if (!id.ok) return id;
-	const offset = intArg(args.offset, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
+	const offset = intArg(args.offset, "offset", 0, BACKGROUND_LOG_BYTES, 0);
 	if (!offset.ok) return offset;
 	const max = intArg(args.max_bytes, "max_bytes", 1, BACKGROUND_PAGE_BYTES, BACKGROUND_PAGE_BYTES);
 	if (!max.ok) return max;
 	const info = await find(client, id.value);
 	if (!info.ok) return info;
 	const state = stateOf(info.value);
-	const stream = streamOf(info.value);
 	const at = offset.value;
-	const read = await client.call("process.read", { id: info.value.id, stream, offset: at, maxBytes: max.value });
+	const read = await client.call("process.read", { id: info.value.id, stream: "log", offset: at, maxBytes: max.value });
 	let size: number;
-	let from = at;
+	let capped: boolean;
 	let page = new Uint8Array();
 	if (read.ok) {
 		size = read.value.size;
-		from = at + read.value.dropped;
+		capped = read.value.capped === true;
 		page = new Uint8Array(Buffer.from(read.value.data, "base64"));
 	} else {
-		// computerd refuses a read past the end: its size, read from the start, says how far the log goes.
-		const start = read.error.code === "invalid" ? await client.call("process.read", { id: info.value.id, stream, offset: 0, maxBytes: 1 }) : undefined;
-		if (!start?.ok || start.value.size >= at) return unanswered(read.error);
-		size = start.value.size;
+		// computerd refuses a read past the log's end: its size says how far the log goes.
+		const whole = read.error.code === "invalid" ? await logSize(client, info.value) : undefined;
+		if (!whole || whole.size >= at) return unanswered(read.error);
+		({ size, capped } = whole);
 	}
 	// A character the page would split is left for the next one, unless the process has ended and nothing follows.
-	const keep = state.state === "running" || from + page.length < size ? wholeChars(page) : page.length;
+	const keep = state.state === "running" || at + page.length < size ? wholeChars(page) : page.length;
 	// A page too small for the one character it starts with reads nothing, and says what to ask instead.
-	if (keep === 0 && page.length > 0) return refuse(`the character at byte ${from} of background process ${id.value}'s output is longer than max_bytes ${max.value}: ask again with max_bytes 4 or more`);
+	if (keep === 0 && page.length > 0) return refuse(`the character at byte ${at} of background process ${id.value}'s output is longer than max_bytes ${max.value}: ask again with max_bytes 4 or more`);
 	const bytes = page.subarray(0, keep);
-	const next = from + bytes.length;
+	const next = at + bytes.length;
 	const more = next < size;
 	const where =
-		from >= size && bytes.length === 0
-			? `No output past byte ${n(from)} (the log has ${n(size)} bytes)${state.state === "running" ? "; call again later with the same offset for what comes next" : ""}.`
-			: `Output bytes ${n(from)} to ${n(next)} of ${n(size)}${more ? `; call again with offset ${next} for the next part` : state.state === "running" ? `, all of it so far; call again with offset ${next} for what comes next` : ", the end"}.`;
-	const dropped = from - at;
-	const lost = dropped > 0 ? ` The log keeps the last ${MIB} MiB of output: bytes ${n(at)} to ${n(from)} were dropped before they were read.` : "";
+		at >= size && bytes.length === 0
+			? `No output past byte ${n(at)} (the log has ${n(size)} bytes)${state.state === "running" ? "; call again later with the same offset for what comes next" : ""}.`
+			: `Output bytes ${n(at)} to ${n(next)} of ${n(size)}${more ? `; call again with offset ${next} for the next part` : state.state === "running" ? `, all of it so far; call again with offset ${next} for what comes next` : ", the end"}.`;
+	const cap = capped ? ` Its log reached the ${MIB} MiB cap, so later output was dropped.` : "";
 	const text = new TextDecoder().decode(bytes);
 	return ok({
-		text: `Background process ${id.value} ${stateWords(state)}. ${where}${lost}${text ? `\n\n${text}` : ""}`,
-		details: { id: id.value, ...state, offset: at, next_offset: next, size, ...(dropped > 0 ? { dropped } : {}) },
+		text: `Background process ${id.value} ${stateWords(state)}. ${where}${cap}${text ? `\n\n${text}` : ""}`,
+		details: { id: id.value, ...state, offset: at, next_offset: next, size, ...(capped ? { capped } : {}) },
 	});
 }
 
@@ -302,17 +353,14 @@ export async function bashSignal(client: ComputerClient, args: { id?: unknown; s
 export async function bashList(client: ComputerClient): Promise<Result<ToolAnswer>> {
 	const listed = await backgrounds(client);
 	if (!listed.ok) return listed;
-	const all = [...listed.value].sort((a, b) => Number(b.id.slice(1)) - Number(a.id.slice(1)));
+	const all = [...listed.value].sort((a, b) => Number(idIn(b)) - Number(idIn(a)));
 	const shown = [...all.filter((info) => info.running), ...all.filter((info) => !info.running)].slice(0, BACKGROUND_LIST_MAX);
 	if (shown.length === 0) return ok({ text: "No background processes in this run's box: bash_background starts one.", details: { processes: [] } });
-	const sizes = await Promise.all(shown.map(async (info) => {
-		const read = await client.call("process.read", { id: info.id, stream: streamOf(info), offset: 0, maxBytes: 1 });
-		return read.ok ? read.value.size : 0;
-	}));
+	const sizes = await Promise.all(shown.map((info) => logSize(client, info)));
 	const processes = shown.map((info, i) => ({
-		id: info.id.slice(1),
+		id: idIn(info),
 		...stateOf(info),
-		size: sizes[i]!,
+		size: sizes[i]?.size ?? 0,
 		started: new Date(info.startedAt).toISOString().replace(/\.\d{3}Z$/, "Z"),
 		...(info.pty ? { tty: true } : {}),
 		command: commandOf(info),

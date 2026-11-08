@@ -33,6 +33,7 @@ export {
 	type BashResult,
 } from "./tools/bash.js";
 export {
+	BACKGROUND_DIR,
 	BACKGROUND_INPUT_BYTES,
 	BACKGROUND_LIST_MAX,
 	BACKGROUND_LOG_BYTES,

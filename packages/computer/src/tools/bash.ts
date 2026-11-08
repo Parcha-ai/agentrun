@@ -187,7 +187,7 @@ export async function bash(client: ComputerClient, options: BashOptions): Promis
 	const capped = asked !== undefined && asked > BASH_MAX_TIMEOUT_S * 1000;
 	const timeoutMs = asked === undefined ? BASH_DEFAULT_TIMEOUT_S * 1000 : Math.min(asked, BASH_MAX_TIMEOUT_S * 1000);
 	if (abort?.aborted) return fail("aborted", "Command aborted");
-	const started = await startShell(client, { script: SCRIPT, marker: MARKER, command, cwd: options.cwd ?? WORKSPACE });
+	const started = await startShell(client, { script: SCRIPT, marker: MARKER, args: [command], cwd: options.cwd ?? WORKSPACE });
 	if (!started.ok) return started;
 	const { id } = started.value;
 	const output = new Output(client, id);

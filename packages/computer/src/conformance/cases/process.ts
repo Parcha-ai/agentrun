@@ -253,7 +253,7 @@ export const processCases: Case[] = [
 				await delay(500);
 				t.assert((await t.exec(["sh", "-c", alive([pid])])).out !== "", `the daemon ${pid} runs on after the process ended`);
 			} finally {
-				await t.exec(["kill", "-KILL", String(pid)]);
+				await t.exec(["sh", "-c", `kill -KILL ${pid}`]);
 			}
 		},
 		["processes", "exec"],

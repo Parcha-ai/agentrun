@@ -49,25 +49,30 @@ export interface ToolAnswer {
 	details: Record<string, unknown>;
 }
 
-/** How a shell starts: the script its `-c` runs, with $0 the marker that names what started it and $1 the command. */
+/** How a shell starts: the script its `-c` runs, with $0 the marker that names what started it and $1... the args; and
+ *  what computerd keeps of it (process.start's log, waitGroup and orphans). */
 export interface ShellStart {
 	script: string;
 	marker: string;
-	command: string;
+	args: string[];
 	cwd: string;
 	pty?: PtySize;
 	stdin?: boolean;
+	log?: string;
+	waitGroup?: boolean;
+	orphans?: "keep";
 }
 
-/** The argv of a shell started by `start`: [shell, "-c", script, marker, command]. */
-export const shellArgv = (shell: string, start: Pick<ShellStart, "script" | "marker" | "command">): string[] => [shell, "-c", start.script, start.marker, start.command];
+/** The argv of a shell started by `start`: [shell, "-c", script, marker, ...args]. */
+export const shellArgv = (shell: string, start: Pick<ShellStart, "script" | "marker" | "args">): string[] => [shell, "-c", start.script, start.marker, ...start.args];
 
 /**
- * Starts a fresh shell: bash, else sh where the computer has none (computerd answers not_found). Every other refusal is
- * bash's; a folder that does not exist is refused for both, as sh's.
+ * Starts a fresh shell: bash, else sh where the computer has none (computerd answers not_found, and makes no log for a
+ * start that fails). Every other refusal is bash's; a folder that does not exist is refused for both, as sh's.
  */
 export async function startShell(client: ComputerClient, start: ShellStart): Promise<Result<ProcessStartResult>> {
-	const params = (shell: string) => ({ argv: shellArgv(shell, start), cwd: start.cwd, ...(start.pty ? { pty: start.pty } : {}), ...(start.stdin ? { stdin: true } : {}) });
+	const { pty, stdin, log, waitGroup, orphans } = start;
+	const params = (shell: string) => ({ argv: shellArgv(shell, start), cwd: start.cwd, ...(pty ? { pty } : {}), ...(stdin ? { stdin } : {}), ...(log ? { log } : {}), ...(waitGroup ? { waitGroup } : {}), ...(orphans ? { orphans } : {}) });
 	const bash = await client.call("process.start", params("bash"));
 	if (bash.ok || bash.error.code !== "not_found") return bash;
 	return client.call("process.start", params("sh"));

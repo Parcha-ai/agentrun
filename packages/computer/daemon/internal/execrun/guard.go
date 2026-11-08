@@ -49,6 +49,9 @@ type guardSpec struct {
 	Credential *syscall.Credential `json:"credential,omitempty"`
 	// Terminal: fds 0 to 2 are a terminal, made the controlling terminal of the program's own session.
 	Terminal bool `json:"terminal,omitempty"`
+	// WaitGroup and KeepOrphans are Program's.
+	WaitGroup   bool `json:"waitGroup,omitempty"`
+	KeepOrphans bool `json:"keepOrphans,omitempty"`
 }
 
 // guardCommand is a control line after the spec: a signal, to the program's group or, when Group is set, to that group,
@@ -129,21 +132,69 @@ func Guard() int {
 		}
 	}()
 	answer := func(a groupSignalled) { report(guardStatus{Signalled: &a}) }
-	ws := supervise(pid, childEnded, stop, commands, answer)
-	if ws.Signaled() {
-		report(guardStatus{Signal: int(ws.Signal())})
-		return 128 + int(ws.Signal())
-	}
+	run := run{pid: pid, terminal: spec.Terminal, waitGroup: spec.WaitGroup, keep: spec.KeepOrphans}
+	ws, linger := run.supervise(childEnded, stop, commands, answer)
 	code := ws.ExitStatus()
-	report(guardStatus{ExitCode: &code})
+	if ws.Signaled() {
+		code = 128 + int(ws.Signal())
+		report(guardStatus{Signal: int(ws.Signal())})
+	} else {
+		report(guardStatus{ExitCode: &code})
+	}
+	if linger {
+		run.linger(childEnded, stop, commands, answer)
+	}
 	return code
 }
 
-// supervise reaps every child of the guard until none is left, and returns the program's own wait status. The program
-// ending, or the grace after a SIGTERM running out, sends SIGKILL to every descendant, again on each pass, so one that
-// forks while it is being killed is caught on the next. A command's signal goes to the program's group while the program
-// runs; one that names a group goes as signalGroup says, and is answered.
-func supervise(pid int, childEnded, stop <-chan os.Signal, commands <-chan guardCommand, answer func(groupSignalled)) syscall.WaitStatus {
+// run is what a guard supervises: the program, by pid, and how its end is told.
+type run struct {
+	pid      int
+	terminal bool
+	// waitGroup: the run ends once the program and every live process of its group (on a terminal, its session) have
+	// ended. keep: when it ends, whatever else is left runs on (linger) instead of being killed.
+	waitGroup, keep bool
+}
+
+// members is every live descendant of the guard in the program's group, or on a terminal in its session too.
+func (r run) members() []int {
+	var in []int
+	for _, d := range proctree.Descendants(os.Getpid()) {
+		if proctree.Zombie(d) {
+			continue
+		}
+		if pgid, err := syscall.Getpgid(d); err == nil && pgid == r.pid {
+			in = append(in, d)
+			continue
+		}
+		if sid, err := getsid(d); r.terminal && err == nil && sid == r.pid {
+			in = append(in, d)
+		}
+	}
+	return in
+}
+
+// signal sends a command's signal to the run: the program's group while its leader is unreaped (so the group id is
+// still the program's), and with waitGroup every member by pid too (the group's id may be gone with its leader, and on
+// a terminal the session's other groups are the run's).
+func (r run) signal(exited bool, sig syscall.Signal) {
+	if !exited {
+		_ = syscall.Kill(-r.pid, sig)
+	}
+	if r.waitGroup {
+		for _, m := range r.members() {
+			_ = syscall.Kill(m, sig)
+		}
+	}
+}
+
+// supervise reaps every child of the guard until the run has ended, and returns the program's own wait status, and
+// whether the guard lingers for what the run left (keep). The run ends when the program does, or with waitGroup once
+// no member is left either. Then every descendant is sent SIGKILL, again on each pass, so one that forks while it is
+// being killed is caught on the next, unless keep has it run on. The grace after a SIGTERM running out kills all. A
+// command's signal goes to the run as signal says; one that names a group goes as signalGroup says, and is answered.
+func (r run) supervise(childEnded, stop <-chan os.Signal, commands <-chan guardCommand, answer func(groupSignalled)) (syscall.WaitStatus, bool) {
+	pid := r.pid
 	var status syscall.WaitStatus
 	exited, ending, graceOver := false, false, false
 	var grace <-chan time.Time
@@ -168,9 +219,13 @@ func supervise(pid int, childEnded, stop <-chan os.Signal, commands <-chan guard
 			}
 		}
 		if exited && !remaining {
-			return status
+			return status, false
 		}
-		if (exited && !ending) || graceOver {
+		over := exited && (!r.waitGroup || len(r.members()) == 0)
+		if over && r.keep && !ending {
+			return status, true
+		}
+		if (over && !ending) || graceOver {
 			signalRun(pid, exited, syscall.SIGKILL)
 		}
 		select {
@@ -184,9 +239,52 @@ func supervise(pid int, childEnded, stop <-chan os.Signal, commands <-chan guard
 		case c := <-commands:
 			switch {
 			case c.Group != 0:
-				answer(signalGroup(pid, exited, c))
-			case !exited:
-				_ = syscall.Kill(-pid, syscall.Signal(c.Signal))
+				answer(signalGroup(pid, over, c))
+			case !over:
+				r.signal(exited, syscall.Signal(c.Signal))
+			}
+		case <-grace:
+			graceOver, grace = true, nil
+		case <-tick.C:
+		}
+	}
+}
+
+// linger reaps what a run with keep left running, once its end is reported, until none is left or the guard is told to
+// end (the computer's end, or the daemon letting go): then SIGTERM to all of it, and SIGKILL KillGrace later. A
+// command's signal reaches none of it: the run has ended.
+func (r run) linger(childEnded, stop <-chan os.Signal, commands <-chan guardCommand, answer func(groupSignalled)) {
+	ending, graceOver := false, false
+	var grace <-chan time.Time
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		for {
+			got, err := syscall.Wait4(-1, nil, syscall.WNOHANG, nil)
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			if errors.Is(err, syscall.ECHILD) {
+				return
+			}
+			if err != nil || got <= 0 {
+				break
+			}
+		}
+		if graceOver {
+			signalRun(r.pid, true, syscall.SIGKILL)
+		}
+		select {
+		case <-childEnded:
+		case <-stop:
+			if !ending {
+				ending = true
+				signalRun(r.pid, true, syscall.SIGTERM)
+				grace = time.After(KillGrace)
+			}
+		case c := <-commands:
+			if c.Group != 0 {
+				answer(groupSignalled{Seq: c.Seq, Group: c.Group, Reason: programEnded(syscall.Signal(c.Signal), c.Group)})
 			}
 		case <-grace:
 			graceOver, grace = true, nil

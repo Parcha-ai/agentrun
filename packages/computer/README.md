@@ -83,8 +83,8 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
-| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited, size}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`); `size` is the stream's bytes so far, kept or dropped |
+| `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?, log?, waitGroup?, orphans?: "keep"` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null. `log`, `waitGroup` and `orphans` are below |
+| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited, size, capped?}`: `stream` is `stdout` or `stderr`, or `pty`, or `log`; at most 512 KiB a call (more is `limit`); `size` is the stream's bytes so far, kept or dropped |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
@@ -126,6 +126,19 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   no data, `dropped` counts every byte from `offset` on, and `exited` is true. When no ended ring is left and running
   processes still hold more, each running process's ring stops growing and keeps at most an equal share of the budget
   (never under 64 KiB), dropping its oldest bytes; a read from an offset it dropped reports them in `dropped`.
+- `log` is an absolute path for a new file the daemon makes and writes the first 16 MiB of the output to, stdout and
+  stderr (or the terminal's) as they come; later output is dropped there while the process runs on. The daemon makes
+  the missing directories and the file itself, never through a link: each directory is entered from the one above it
+  with `O_NOFOLLOW|O_DIRECTORY`, and the file is made with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0644, the daemon's. A
+  link at the path or at any directory on its way is refused as `denied`, a file already there as `exists`, and the
+  program never starts; a start that fails after the file was made removes it. The `log` stream reads it through the
+  daemon's own open file, never by the path, so a rename or removal under it changes nothing read: `size` is the bytes
+  the log holds, `capped` says output past them was dropped, and `dropped` is 0.
+- `waitGroup`: the process runs until its program and every live process left in its process group (with a pty, its
+  session) have ended, and reports the program's own exit. A signal goes to what is left of them once the program is
+  gone. On a pty, the program's exit hangs up the terminal's foreground group, as a terminal does.
+- `orphans: "keep"`: when the process ends, what it started that still runs (a daemon in its own session) is not ended:
+  it runs on under the guard, unsignalled, until it ends or the computer does. Without it, it is ended with the process.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
@@ -146,12 +159,15 @@ the run's folder, `/workspace`, unless the call names another.
   what it dropped (`truncated`). `BASH_TOOL` is its name, description and parameters (`timeout` in seconds).
 - `bashBackground`, `bashOutput`, `bashInput`, `bashSignal` and `bashList` are `bash_background`, `bash_output`,
   `bash_input`, `bash_signal` and `bash_list` (`BACKGROUND_TOOL_DEFINITIONS`), each `(client, args)` answering
-  `{text, details}` or a refusal in words. A background process's id is computerd's number for it; a call reaches only
-  a process `bash_background` started. Its shell waits for the jobs its command leaves running, so a server started
-  with `&` keeps the process running. Its log is its process's ring: stdout and stderr together, the last 8 MiB, paged
-  by byte offset (48 KiB a call), a page never ending inside a character. At most 8 run at once. `tty: true` starts it
-  on an 80 by 24 terminal: `close: true` types Ctrl-D, and `INT` is Ctrl-C to the foreground job.
-  `endBackground(client)` sends `TERM` to every one still running, and `KILL` 3 s later.
+  `{text, details}` or a refusal in words, today's words. A background process's id is the run's own: the first number
+  with no entry of its name in the run's `background/` and no background process of the computer's; its shell's argv
+  carries it, and a call reaches only a process `bash_background` started. The start names `log`
+  (`background/<id>/output.log`, the first 16 MiB of stdout and stderr together, in the run's files), `waitGroup` (a
+  server started with `&` keeps the process running) and `orphans: "keep"` (a daemon runs on to the computer's end).
+  `bash_output` reads the `log` stream, by byte offset (48 KiB a call), a page never ending inside a character. At most
+  8 run at once: the count and the start take turns on each client. A link at the run's `background` starts nothing.
+  `tty: true` starts it on an 80 by 24 terminal: `close: true` types Ctrl-D, and `INT` is Ctrl-C to the foreground
+  job. `endBackground(client)` sends `TERM` to every one still running, and `KILL` 3 s later.
 - `SHELL_UNDER_ASK` and `shellPermission(tool, bash)` are the tool gate's mapping: every one of the six takes bash's
   setting, except that under `ask` the watchers (`bash_output`, `bash_list`, `bash_signal`) run unasked.
 
