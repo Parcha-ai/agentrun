@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { codexAdapter } = await import("@parcha/agentrun-harness-codex");
+const { resolveHarness } = await import("../dist/runner/adapters/index.js");
 const { facts } = await import("@parcha/agentrun-harness-codex/facts");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
@@ -84,24 +84,29 @@ function tracked(adapter) {
   };
 }
 
-/** The adapter loop's spec for the suite's setup: Codex through its adapter, its model through the session's proxy to the
- *  script. One sessions folder per loop: a resume on another runner opens the session from the run's journal. */
+/** The adapter loop's spec for the suite's setup: Codex as the runner's harnesses give it, its model through the
+ *  session's proxy to the script, on the stand-in app-server. One sessions folder per loop: a resume on another runner
+ *  opens the session from the run's journal. */
 export function codexSpec({ script, tools, hooks }, options = {}) {
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-codex-conformance-"));
   dirs.push(sessionsDir);
-  return () => ({
-    adapter: tracked(codexAdapter({
-      model: MODEL,
-      provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` },
-      price: () => 0,
-      sessionsDir,
-      standIn: { command: process.execPath, args: [STAND_IN], env: { FAKE_CODEX_MODEL: "responses" } },
-      fetch: options.fetch ?? scriptedResponses(script, options.requests),
-    })),
+  const harness = resolveHarness("codex");
+  return async (_claim, run) => ({
+    adapter: tracked(await harness.adapter(
+      {
+        run,
+        model: MODEL,
+        provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` },
+        price: () => 0,
+        sessionsDir,
+        fetch: options.fetch ?? scriptedResponses(script, options.requests),
+      },
+      { standIn: { command: process.execPath, args: [STAND_IN], env: { FAKE_CODEX_MODEL: "responses" } } },
+    )),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     // Codex's own records are its resume log only: the loop keeps the run's visible record (its calls and messages).
-    record: "loop",
+    record: harness.record,
     hooks,
     gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
   });
@@ -109,7 +114,7 @@ export function codexSpec({ script, tools, hooks }, options = {}) {
 
 /** The subject the suite runs: Codex through the adapter loop. What its adapter declares (steer false, rerunsStarted
  *  false): the suite derives the cases those rule out. The runner process the process cases start is no test runner, and
- *  the Codex stand-in runs only under one (its guard), so those two cases cannot run on the stand-in. */
+ *  the Codex stand-in runs only under one (its guard), so those cases cannot run on the stand-in. */
 export const codexSubject = {
   name: "codex through the adapter loop",
   createLoop: (setup) => createAdapterLoop(codexSpec(setup), { restartLimit: MAX_RESTARTS }),
@@ -117,5 +122,6 @@ export const codexSubject = {
   unsupported: {
     "crash-before-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
+    "stalled-past-lease-process": "the Codex stand-in runs only under a test runner, and the suite's runner child runs outside it",
   },
 };
