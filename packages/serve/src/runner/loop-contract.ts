@@ -27,7 +27,10 @@ export type StopReason =
   | { readonly kind: "shutdown" };
 
 /** A command handed to a loop: "taken" means its take is staged in the journal commit that applies it. */
-export type CommandOutcome = { readonly taken: true } | { readonly refused: string };
+/** A command's outcome: `taken` (the loop's own commit took it, with its effect), `refused` (the runner takes it as
+ *  refused, saying why), or `later` (neither: the row stays untaken for the run's next claim, which hands it on again;
+ *  a steer that comes as the run parks is its resume's, never refused). */
+export type CommandOutcome = { readonly taken: true } | { readonly refused: string } | { readonly later: string };
 
 export interface Loop {
   /** Runs the claimed run until it ends, parks or is stopped. A run's own failure resolves as `failed`; a throw is a
@@ -47,6 +50,10 @@ export interface LoopDeps {
   flush(): Promise<void>;
   /** Aborted on claim loss, self-stop or shutdown: in-flight model and tool calls are cut at once. */
   signal: AbortSignal;
+  /** Resolves once the claim's first delivery has handed every untaken row it read to command() (each call returned),
+   *  or at once when there were none: a resumed ask with no answer row waits for it before it parks again, so an
+   *  approve already on its way is never raced. Never rejects. */
+  delivered?: Promise<void>;
   /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes: a
    *  reader of the newest held state (`undefined` once there is nothing held), called once per tick by the runner's live
    *  ticker (runner/live-ticker.ts), never on every change, so a change costs the same however long the answer has grown.

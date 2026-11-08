@@ -220,6 +220,7 @@ export function startRunner(options: RunnerOptions): Runner {
           }
           const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
           if (held.sealed || killed) return;
+          // `taken`: the loop's commit took it. `later`: left untaken for the run's next claim. Only a refusal is written here.
           if ("refused" in outcome) {
             await store.take(held.claim, row.id, "refused", outcome.refused);
             emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: outcome.refused });
@@ -389,10 +390,13 @@ export function startRunner(options: RunnerOptions): Runner {
   const hold = (claim: Claim, sentAt: number) => {
     const fence = { lost: false };
     const abort = new AbortController();
+    let firstDelivered!: () => void;
+    const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     const loop = createLoop({
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId),
       flush: () => store.flush(),
       signal: abort.signal,
+      delivered,
     });
     const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false };
     runs.set(claim.runId, held);
@@ -409,7 +413,8 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       await finish(held, end, threw);
     })();
-    void deliver(held);
+    // The claim's first delivery: deps.delivered resolves once it has handed on every untaken row it read.
+    void deliver(held).finally(firstDelivered);
   };
 
   const claimMore = async () => {
