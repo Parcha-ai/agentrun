@@ -95,7 +95,7 @@ export function suite(name, make, options = {}) {
       assert.deepEqual(await workspace.list("z/y"), []);
     });
 
-    test("list gives each entry's last change (mtimeMs, ms since the epoch): a later write moves it on", async () => {
+    test("list gives each file's last change (mtimeMs, ms since the epoch): a later write moves it on", async () => {
       const { workspace } = await fresh();
       // A backend's clock (a disk's servers) may be a little off this machine's: two seconds either way.
       const before = Date.now() - 2000;
@@ -104,9 +104,12 @@ export function suite(name, make, options = {}) {
       const first = await workspace.list("");
       for (const entry of first) {
         assert.ok(Number.isFinite(entry.mtimeMs), `${entry.name}: a number, not ${entry.mtimeMs}`);
-        assert.ok(entry.mtimeMs >= before && entry.mtimeMs <= Date.now() + 2000, `${entry.name}: ${new Date(entry.mtimeMs).toISOString()} is about now`);
         assert.equal(entry.unreadable, undefined, `${entry.name}: a file the workspace wrote reads`);
       }
+      // A folder's time is the backend's own (a disk's file API keeps none for a folder: 0, as its stat says); a file's is
+      // when it was written.
+      const file = first.find((e) => e.name === "a.txt");
+      assert.ok(file.mtimeMs >= before && file.mtimeMs <= Date.now() + 2000, `a.txt: ${new Date(file.mtimeMs).toISOString()} is about now`);
       await sleep(1100);
       await workspace.write("a.txt", "two");
       const again = (await workspace.list("")).find((e) => e.name === "a.txt");
