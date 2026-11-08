@@ -514,6 +514,23 @@ test("list() finds this provider's sandboxes by labels, reads each one's network
 	assert.equal(byName["computer-aaaaaaaaaaaa"].ref.id, a.ref.id);
 });
 
+test("list() keeps every page and every read-back inside listMs, however slow each getInfo is", async () => {
+	const onStep = async (step) => {
+		if (step === "Sandbox.getInfo") await sleep(200);
+	};
+	const { provider, fake } = setup({ timeouts: { ...TIMEOUTS, listMs: 500 } }, { onStep });
+	for (let i = 0; i < 6; i++) seeded(fake, { name: `computer-${String(i).padStart(12, "0")}` });
+	const started = Date.now();
+	const listed = await provider.list({});
+	const took = Date.now() - started;
+	assert.equal(listed.ok, false, "six reads of 200 ms each do not fit in 500 ms");
+	assert.equal(listed.error.code, "timeout");
+	assert.match(listed.error.message, /list did not finish within 0\.5 s/);
+	assert.ok(took < 900, `list() took ${took} ms with a listMs of 500`);
+	const reads = fake.calls.filter(([name]) => name === "Sandbox.getInfo").map(([, , opts]) => opts.requestTimeoutMs);
+	assert.ok(reads.every((ms) => ms <= 500), `every read-back's own request bound fits the listing's: ${reads.join(", ")}`);
+});
+
 test("attach() by id or by labels reads the spec back and checks the daemon; one that drifted is refused and left running", async () => {
 	const { provider, fake } = setup();
 	const { ref, sb } = seeded(fake, { labels: { run: "r1" } });
