@@ -103,6 +103,9 @@ export interface ModalSandbox {
 	poll(): Promise<number | null>;
 	getTags(): Promise<Record<string, string>>;
 	terminate(): Promise<void>;
+	/** The sandbox's own command's output (the SDK's ModalReadStream): read only to say why a create's sandbox ended. */
+	readonly stdout?: { readText(): Promise<string> };
+	readonly stderr?: { readText(): Promise<string> };
 }
 
 /** The part of the SDK's ModalClient this provider calls. The host passes its own client. */
@@ -937,9 +940,29 @@ export class ModalProvider implements ComputerProvider {
 			return fail("aborted", `create was aborted after Modal made the sandbox; the computer ${name} ${after}`);
 		}
 		if (checked.ok) return ok(checked.value.length > 0 ? { ...ref, notes: checked.value } : ref);
+		// Read before the terminate, which would end it with its own code: whether the sandbox's command had already ended.
+		const why = await this.#endedWords(sandbox, archil?.mount.token, signal);
 		await letGo();
 		const after = await this.#terminate(sandbox, name, signal);
-		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
+		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}${why}`);
+	}
+
+	/**
+	 * When a create's sandbox has already finished, its command's exit code and the tail of its output (stdout, then
+	 * stderr; the token, if any, cut), in words to append; nothing while it runs or when that cannot be read.
+	 */
+	async #endedWords(sandbox: ModalSandbox, token: string | undefined, signal?: AbortSignal): Promise<string> {
+		const { callMs } = this.#timeouts;
+		const polled = await call("poll of the sandbox", () => sandbox.poll(), callMs, signal);
+		if (!polled.ok || polled.value === null) return "";
+		const read = async (stream: ModalSandbox["stdout"]) => {
+			if (typeof stream?.readText !== "function") return "";
+			const text = await call("the sandbox's output", () => stream.readText(), callMs, signal);
+			return text.ok ? text.value : "";
+		};
+		let output = `${await read(sandbox.stdout)} ${await read(sandbox.stderr)}`.replace(/\s+/g, " ").trim();
+		if (token) output = output.replaceAll(token, "[token]");
+		return `; its command exited ${polled.value}${output === "" ? ", with no output" : `: ${output.length > 500 ? `…${output.slice(-500)}` : output}`}`;
 	}
 
 	/**
