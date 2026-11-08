@@ -17,6 +17,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
+import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
@@ -79,6 +80,9 @@ export interface OpenCodeHarnessOptions {
   fetch?: typeof fetch;
   /** For tests: the environment the child's allowlist reads. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** The host's gate (SessionIO.gate), which the kernel's tool bridge asks about each call before anything of it is
+   *  written: allow, a deny in the host's words, or a park. Absent: every call runs. */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
 }
 
 /** What the adapter holds of the drive in flight, to stop its turn. */
@@ -260,7 +264,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       await journal.flush();
     };
 
-    const bridge = toolBridge(ctx, options.tools, { beforeNever: () => barrier() });
+    const bridge = toolBridge(ctx, options.tools, { ...(options.gate ? { gate: options.gate } : {}), beforeNever: () => barrier() });
     const hooks: ModelProxyHooks = {
       ...options.hooks,
       // No paid request runs ahead of the log: what OpenCode recorded before it is mirrored first.
