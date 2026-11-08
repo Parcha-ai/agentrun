@@ -1,16 +1,17 @@
-import { Bot, CalendarClock, History, LayoutDashboard, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
+import { Bot, CalendarClock, History, LayoutDashboard, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "schedules" | "settings";
+export type Section = "mission" | "playground" | "agents" | "templates" | "runs" | "schedules" | "settings";
 
 // v1's navigation only. Deployments, runners, swarms, teams and billing are not part of this console.
 const NAV: { id: Section; label: string; Icon: typeof Bot }[] = [
   { id: "mission", label: "Mission Control", Icon: LayoutDashboard },
   { id: "playground", label: "Playground", Icon: Terminal },
   { id: "agents", label: "Agents", Icon: Bot },
+  { id: "templates", label: "Templates", Icon: LayoutTemplate },
   { id: "runs", label: "Runs", Icon: History },
   { id: "schedules", label: "Schedules", Icon: CalendarClock },
   { id: "settings", label: "Settings", Icon: Settings },
