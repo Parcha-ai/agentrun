@@ -7,8 +7,9 @@
 // of a write through the file API while it holds it, are not yet known either way. So for Archil, a file written outside
 // before the computer is made is read inside (the Mode 2 flow), and the two directions while it is held are recorded as
 // seen (observe), not asserted. What is asserted is what the contract promises: a write the computer answered is on the
-// disk once the computer lets the folder go; a new claim takes the folder from a lower epoch, whose computer is gone; and
-// the token is nowhere a tool can read it.
+// disk once the computer lets the folder go; a new claim takes the folder from a lower epoch, whose computer is gone;
+// the token is nowhere a tool can read it; and, on one computer, a tool reaches no network while its writes reach the
+// disk as each call returns.
 import { randomBytes } from "node:crypto";
 import { EPOCH_LABEL, RUN_LABEL, runLabels as claimLabels } from "../../labels.js";
 import { MOUNT_KINDS, type MountKind, type MountSpec, readBackOf, WORKSPACE } from "../../mount.js";
@@ -173,11 +174,44 @@ const archilToken = mount(
 		t.assert(!seen.out.includes(asked.token) && !seen.err.includes(asked.token), "a tool reads the Archil token in some process's environment or arguments");
 		const sudo = await t.exec(["sh", "-c", "sudo -n true"], {}, connected.client);
 		t.assert(sudo.exitCode !== 0, "the tool user ran sudo");
-		const loopback = await t.exec(["sh", "-c", "exec 3<>/dev/tcp/127.0.0.1/2280 && echo connected"], {}, connected.client);
-		t.observe(`the tool user's connection to 127.0.0.1:2280 (a vendor's loopback agent): ${loopback.out.includes("connected") ? "connected" : `refused (exit ${loopback.exitCode})`}`);
-		t.assert(!loopback.out.includes("connected"), "the tool user reached a loopback port: netlock drops every packet of the tool user");
 	},
 	{ needs: ["mount:archil", "exec"], timeoutMs: 600_000 },
+);
+
+/** Where a vendor's own agent listens in its computers: Daytona's toolbox, E2B's envd. */
+const VENDOR_AGENTS = ["127.0.0.1:2280", "127.0.0.1:49983"];
+
+/**
+ * "isolated, and durable through the root side", on one Archil computer: a tool sees loopback alone and reaches neither a
+ * vendor's agent nor any address; and a tool's write in /workspace, by a program (exec.run) and by files.write, is read
+ * through the disk's file API right after the call returns, with no checkin. So the per-call sync goes out from the
+ * archil client and serve, which run as root outside the tools' namespace.
+ */
+const archilIsolatedDurable = mount(
+	"archil-isolated-durable",
+	async (t) => {
+		const folder = await t.runFolder("archil");
+		const { ref } = await mounted(t, folder, EPOCH, "mount-archil-isolated-durable");
+		const connected = await t.connect(ref);
+		const links = await t.exec(["ls", "/sys/class/net"], {}, connected.client);
+		t.equal(links.exitCode, 0, `ls /sys/class/net: its exit code (${links.err.trim()})`);
+		t.deepEqual(links.out.split(/\s+/).filter(Boolean), ["lo"], "the network links a tool sees");
+		const bash = await t.exec(["sh", "-c", "command -v bash"], {}, connected.client);
+		t.equal(bash.exitCode, 0, "the image has bash, which the connection probes use");
+		for (const target of [...VENDOR_AGENTS, "1.1.1.1:443", "8.8.8.8:53"]) {
+			const [host, port] = target.split(":");
+			const tried = await t.exec(["bash", "-c", `exec 3<>/dev/tcp/${host}/${port} && echo connected`], { timeoutMs: 15_000 }, connected.client);
+			t.assert(!tried.out.includes("connected"), `a tool connected to ${target}`);
+		}
+		const nonce = randomBytes(6).toString("hex");
+		const ran = await t.exec(["sh", "-c", `printf '%s\\n' ${nonce} > exec-${nonce}.txt`], { cwd: WORKSPACE }, connected.client);
+		t.equal(ran.exitCode, 0, `a program's write at ${WORKSPACE}: its exit code (${ran.err.trim()})`);
+		t.equal(text(await folder.read(`exec-${nonce}.txt`)), `${nonce}\n`, `exec-${nonce}.txt, written by a program, read through the file API right after exec.run returned`);
+		const body = `written by files.write ${nonce}\n`;
+		t.ok(await connected.client.call("files.write", { path: `${WORKSPACE}/write-${nonce}.txt`, data: b64(body) }), "files.write");
+		t.equal(text(await folder.read(`write-${nonce}.txt`)), body, `write-${nonce}.txt, written by files.write, read through the file API right after it returned`);
+	},
+	{ needs: ["mount:archil", "exec", "files"], timeoutMs: 600_000 },
 );
 
 /** A mount of each kind the provider does not declare, with a token this case alone knows. */
@@ -191,6 +225,7 @@ export const mountCases: Case[] = [
 	archilDurable,
 	archilTakeover,
 	archilToken,
+	archilIsolatedDurable,
 	mount("undeclared-kind", async (t) => {
 		const declared = t.provider.capabilities().mount ?? [];
 		const undeclared = MOUNT_KINDS.filter((kind) => !declared.includes(kind));

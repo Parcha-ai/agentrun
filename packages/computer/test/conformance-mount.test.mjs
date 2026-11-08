@@ -22,7 +22,7 @@ async function run(options = {}, { mountFor = folders.mountFor, ids = MOUNT_CASE
 	return runConformance(provider, { image: IMAGE, cases: conformanceCases.filter((c) => ids.includes(c.id)), ...(mountFor ? { mountFor } : {}) });
 }
 
-test("the mount group: one case per mount kind, the Archil contract's three, and one for the kinds a provider does not declare, every one Full", () => {
+test("the mount group: one case per mount kind, the Archil contract's four, and one for the kinds a provider does not declare, every one Full", () => {
 	const mount = conformanceCases.filter((c) => c.group === "mount");
 	assert.deepEqual(
 		mount.map((c) => [c.id, c.level, c.needs]),
@@ -32,6 +32,7 @@ test("the mount group: one case per mount kind, the Archil contract's three, and
 			["mount.archil-durable", "full", ["mount:archil", "exec", "files"]],
 			["mount.archil-takeover", "full", ["mount:archil", "exec", "files"]],
 			["mount.archil-token", "full", ["mount:archil", "exec"]],
+			["mount.archil-isolated-durable", "full", ["mount:archil", "exec", "files"]],
 			["mount.undeclared-kind", "full", []],
 		],
 	);
@@ -142,7 +143,7 @@ test("the CLI passes a provider module's mountFor to the run: --only mount runs 
 	const report = JSON.parse(text);
 	assert.deepEqual(
 		statuses(report),
-		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.undeclared-kind": "pass" },
+		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.archil-isolated-durable": "skip", "mount.undeclared-kind": "pass" },
 		JSON.stringify(reasons(report)),
 	);
 	assert.equal(code, 3, "a run of the mount group alone leaves Core out: partial");
