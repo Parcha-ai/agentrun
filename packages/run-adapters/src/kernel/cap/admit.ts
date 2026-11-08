@@ -84,8 +84,11 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
       // Read before every check: a raise holds from the next paid step.
       const capUsd = options.capUsd();
       let admission: Admission;
-      if (capUsd === undefined) admission = NO_HOLD(request.id);
-      else {
+      if (capUsd === undefined) {
+        admission = NO_HOLD(request.id);
+        // Nothing held with no cap: a figure its end never says is unknown.
+        ledger.hold(request.id, { usd: null });
+      } else {
         try {
           const judged = capRule.judge(request, { capUsd, spentUsd: ledger.spent(), heldUsd: ledger.held(), mode, now: now() });
           admission = { id: request.id, ...judged };
@@ -96,6 +99,8 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
         // Every step holds, a $0 one too: its settle then books a known figure (its charge, else its $0 hold).
         ledger.hold(request.id, { usd: admission.heldUsd, stoppedPrice: admission.stoppedUsd });
       }
+      // A new step under an id whose last step settled: it settles on its own.
+      settlements.delete(request.id);
       // With no cap nothing was held: its start mark holds no figure, so a crash before its end reopens as unknown.
       const sent = await started(admission, extra, capUsd === undefined ? null : admission.heldUsd);
       if (request.kind === "model") steps.set(request.id, { model: request.model.id, side: request.side === true, noted: request.noted === true });
@@ -103,7 +108,9 @@ export function createCap(options: CapOptions, seed: { costs?: { model: string; 
     },
     async settle(id: string, ended: Settled): Promise<number | null> {
       // Booked once: a settle retried after its marks failed reuses the first booking, its costs and its note.
-      let settled = settlements.get(id);
+      // A step under way under `id` settles afresh; with none, a retry answers the last settle, and an id never held is
+      // refused (StepNotHeld), nothing booked.
+      let settled = ledger.holds(id) ? undefined : settlements.get(id);
       if (!settled) {
         const { usd, rule } = ledger.settle(id, ended);
         const step = steps.get(id);

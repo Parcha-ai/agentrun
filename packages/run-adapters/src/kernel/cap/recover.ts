@@ -9,12 +9,6 @@ import type { CapMark, StartMark } from "./marks.js";
 export type Spend = { spentUsd: number | null; reportedUsd: number | null; boundUsd: number; requests: number };
 
 export function spendOf(marks: readonly CapMark[]): Spend {
-  const starts = new Map<string, StartMark>();
-  const ends = new Map<string, number | null>();
-  for (const mark of marks) {
-    if (mark.kind === "start") starts.set(mark.id, mark);
-    else if (mark.kind === "end" && !ends.has(mark.id)) ends.set(mark.id, mark.usd);
-  }
   let spent: number | null = 0;
   let reported: number | null = 0;
   let bound = 0;
@@ -23,19 +17,41 @@ export function spendOf(marks: readonly CapMark[]): Spend {
     spent = spent === null || usd === null ? null : spent + usd;
     reported = reported === null || usd === null || !known ? null : reported + usd;
   };
-  for (const [id, start] of starts) {
-    if (start.refused) continue;
-    if (!start.tool) requests++;
-    if (ends.has(id)) {
-      add(ends.get(id)!, true);
-    } else {
-      // Open: a crash cut it. It counts at what it was held at, and no one knows what it cost.
-      add(start.heldUsd, false);
-      bound += start.boundUsd ?? 0;
+  /** Each id's step under way (its start, no end yet), and the ids whose last step has its end: read in order, so an id
+   *  used again after its step ended is a step of its own, and an end with no step under way is not counted twice. */
+  const open = new Map<string, StartMark>();
+  const ended = new Set<string>();
+  /** Ends read before any start of their id (marks that fall out of order): each closes the start that comes after it. */
+  const early = new Set<string>();
+  const cut = (start: StartMark) => {
+    // A crash cut it: it counts at what it was held at, and no one knows what it cost.
+    add(start.heldUsd, false);
+    bound += start.boundUsd ?? 0;
+  };
+  for (const mark of marks) {
+    if (mark.kind === "start") {
+      if (mark.refused) continue;
+      if (!mark.tool) requests++;
+      if (early.delete(mark.id)) continue;
+      const before = open.get(mark.id);
+      if (before) cut(before);
+      open.set(mark.id, mark);
+      ended.delete(mark.id);
+    } else if (mark.kind === "end") {
+      if (open.has(mark.id)) {
+        open.delete(mark.id);
+        ended.add(mark.id);
+        add(mark.usd, true);
+      } else if (!ended.has(mark.id)) {
+        // An end with no start yet (out of order, or a step whose start mark is gone) counts its figure, once, and closes
+        // the start of its id that comes after it.
+        ended.add(mark.id);
+        early.add(mark.id);
+        add(mark.usd, true);
+      }
     }
   }
-  // An end with no start (written by a step whose start mark is gone) still counts its figure.
-  for (const [id, usd] of ends) if (!starts.has(id)) add(usd, true);
+  for (const start of open.values()) cut(start);
   return { spentUsd: spent, reportedUsd: reported, boundUsd: bound, requests };
 }
 

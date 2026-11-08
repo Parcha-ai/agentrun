@@ -6,7 +6,7 @@
 import { CapRefused } from "./errors.js";
 import { FIT_TOLERANCE, inputBound, mostOutput, outputAsked, outputLeast, pricingOf, requestPrice, STOP_ALLOWANCE_TOKENS, thinkingWithin } from "./price.js";
 import { typicalCost, WRAP_UP_STEP0_ANSWER_TOKENS, wrapUpDue, wrapUpWords } from "./wrap-up.js";
-import { noCeiling, noPrice, paidRefusal, roomRefusal, unknownSpend, unmeasured } from "./words.js";
+import { noCeiling, noPrice, noToolPrice, paidRefusal, roomRefusal, unknownSpend, unmeasured } from "./words.js";
 import type { CapMode, ModelCapRequest, ToolCapRequest } from "./types.js";
 
 /** What a judgement reads: the cap (read before this check), the run's spend (null: unknown) and its holds. */
@@ -52,7 +52,11 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
 }
 
 function judgeTool(request: ToolCapRequest, { capUsd, spentUsd: spent, heldUsd: held }: JudgeState & { spentUsd: number }): Judged {
-  if (spent + held + request.holdUsd > capUsd + FIT_TOLERANCE) {
+  // A hold that is not a finite figure of 0 or more cannot be kept within a cap (a NaN would fail every check open; a
+  // negative one would free room): refused for good.
+  if (typeof request.holdUsd !== "number" || !Number.isFinite(request.holdUsd) || request.holdUsd < 0) throw new CapRefused(noToolPrice(capUsd, request.name), { forGood: true, spentUsd: spent });
+  // Written so that a figure that is not a number refuses.
+  if (!(spent + held + request.holdUsd <= capUsd + FIT_TOLERANCE)) {
     const { text, figures } = paidRefusal(capUsd, spent, held, request.name, request.holdUsd, request.basis);
     throw new CapRefused(text, { forGood: false, spentUsd: spent, figures });
   }

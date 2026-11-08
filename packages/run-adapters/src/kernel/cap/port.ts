@@ -6,6 +6,7 @@ import type { BeforeRequest } from "../../runner.js";
 import { CapRefused } from "./errors.js";
 import { inputBound, pricingOf } from "./price.js";
 import { capRule } from "./rule.js";
+import { unmeasured } from "./words.js";
 import type { CapMode, CapModel, ModelCapRequest, Previous } from "./types.js";
 
 export interface BeforeRequestOptions {
@@ -15,6 +16,11 @@ export interface BeforeRequestOptions {
   modelOf(id: string): CapModel | undefined;
   /** The session's previous request on a model, as its usage reported it: none prices the input uncached. */
   previousOf?(model: string): Previous | undefined;
+  /** What the run spent beside the session's model requests, which the runner's booking does not hold: its priced tools'
+   *  charges (null: unknown). The run's spend is the runner's plus this. */
+  spentUsd?(): number | null;
+  /** What the run's priced tools under way hold, beside the session's requests in flight. */
+  heldUsd?(): number;
   mode?: CapMode;
   now?: () => number;
 }
@@ -41,10 +47,20 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
       ...(previous ? { previous } : {}),
       ...(request.side ? { side: true } : {}),
     };
-    // Each request in flight at what the host held for it, else its worst case at the limit it was admitted with.
-    const heldUsd = request.inFlight.reduce((sum, flight) => sum + (flight.holdUsd ?? worstOf(options.modelOf(flight.model), flight.inputTokensMax, flight.outputTokensMax)), 0);
+    // Each request in flight at what the host held for it, else its worst case at the limit it was admitted with; one with
+    // neither (no hold, no price or no measure) cannot be kept within the cap: refused for good, as an unmeasured input.
+    let inFlight = 0;
+    for (const flight of request.inFlight) {
+      const figure = typeof flight.holdUsd === "number" && Number.isFinite(flight.holdUsd) ? flight.holdUsd : worstOf(options.modelOf(flight.model), flight.inputTokensMax, flight.outputTokensMax);
+      if (figure === undefined) return { refuse: unmeasured(capUsd) };
+      inFlight += figure;
+    }
+    // The run's spend and holds: the runner's (its model requests) and the host's (its priced tools).
+    const toolSpent = options.spentUsd?.() ?? 0;
+    const spentUsd = request.spentUsd === null || toolSpent === null ? null : request.spentUsd + toolSpent;
+    const heldUsd = inFlight + (options.heldUsd?.() ?? 0);
     try {
-      const judged = capRule.judge(asked, { capUsd, spentUsd: request.spentUsd, heldUsd, mode, now: now() });
+      const judged = capRule.judge(asked, { capUsd, spentUsd, heldUsd, mode, now: now() });
       return { holdUsd: judged.heldUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
     } catch (error) {
       if (error instanceof CapRefused) return { refuse: error.message };
@@ -54,9 +70,9 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
 }
 
 /** A request in flight with no figure held for it: its input uncached and its output limit at its model's price; no price
- *  or no measure is no room (Infinity), never 0. */
-function worstOf(model: CapModel | undefined, inputTokens: number | undefined, outputTokens: number | undefined): number {
-  if (!model?.price || inputTokens === undefined) return Number.POSITIVE_INFINITY;
+ *  or no measure: undefined (it cannot be counted), never 0 and never Infinity. */
+function worstOf(model: CapModel | undefined, inputTokens: number | undefined, outputTokens: number | undefined): number | undefined {
+  if (!model?.price || inputTokens === undefined) return undefined;
   const bound = inputBound({ kind: "model", id: "", model, inputTokens });
   return pricingOf(model.price)({ cached: 0, fresh: bound ?? inputTokens }, outputTokens ?? model.outputCeiling ?? 0);
 }
