@@ -1,28 +1,34 @@
 package execrun
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
 )
 
-// The guard is the one process between the daemon and a run's program. It makes itself a child subreaper, so every
-// process the program starts stays its descendant, even one that calls setsid, double-forks and is orphaned: the kernel
-// hands an orphan to its nearest subreaper ancestor, not to PID 1. When the program ends, the guard SIGKILLs every
-// descendant left and reaps it, until it has no child at all, then reports the program's status and exits. So nothing
-// a run starts outlives its guard.
+// The guard is the one process between the daemon and a program. It makes itself a child subreaper, so every process
+// the program starts stays its descendant, even one that calls setsid, double-forks and is orphaned: the kernel hands an
+// orphan to its nearest subreaper ancestor, not to PID 1. When the program ends, the guard SIGKILLs every descendant
+// left and reaps it, until it has no child at all, then reports the program's status and exits. So nothing a program
+// starts outlives its guard.
 //
 // The daemon starts it as `computerd guard` from /proc/self/exe, in a process group of its own, with an empty
-// environment, /dev/null as stdin and the run's two output pipes as stdout and stderr, which the program inherits. The
-// spec comes as one JSON object on fd 3; the status leaves as one JSON line on fd 4, written after the last descendant
-// is reaped. Both fds are closed on exec, so the program never holds them. SIGTERM or SIGINT asks the guard to end the
-// run: it sends SIGTERM to the program's group and to every descendant, and SIGKILLs whatever is left KillGrace later.
+// environment, and stdin, stdout and stderr that the program inherits: /dev/null or a pipe and two output pipes, or one
+// terminal. Once the program runs, the guard lets go of its copies of the pipes; a terminal it keeps. The spec comes as
+// one JSON line on fd 3, the control pipe; later lines there ask for a signal to the program's group, or to another group
+// the daemon named (a terminal's foreground job, which it checked is in the program's session), and its end (the
+// daemon let go, or died) ends the program. The guard checks a named group again right before it signals it, since the
+// group may have ended since the daemon's check and its id gone to a group in another session, and answers each such
+// line with whether it sent the signal. Status leaves on fd 4 as JSON lines: the program's pid once it has started, an
+// answer for each signal to a named group, then how the program ended, after the last descendant is reaped. Both fds
+// are closed on exec, so the program never holds them. SIGTERM or SIGINT asks the guard to end the program: it sends
+// SIGTERM to the program's group and to every descendant, and SIGKILLs whatever is left KillGrace later.
 
 // GuardCommand is the daemon's hidden subcommand that runs a guard. A program that hosts execrun (computerd, or a test
 // binary) must call Guard when it is started with this one argument.
@@ -41,14 +47,38 @@ type guardSpec struct {
 	Env        []string            `json:"env"`
 	Dir        string              `json:"dir"`
 	Credential *syscall.Credential `json:"credential,omitempty"`
+	// Terminal: fds 0 to 2 are a terminal, made the controlling terminal of the program's own session.
+	Terminal bool `json:"terminal,omitempty"`
+	// WaitGroup and KeepOrphans are Program's.
+	WaitGroup   bool `json:"waitGroup,omitempty"`
+	KeepOrphans bool `json:"keepOrphans,omitempty"`
 }
 
-// guardStatus is how the program ended: an exit code, a signal number, or the errno of a start that failed.
+// guardCommand is a control line after the spec: a signal, to the program's group or, when Group is set, to that group,
+// which the guard answers, quoting Seq.
+type guardCommand struct {
+	Signal int    `json:"signal"`
+	Group  int    `json:"group,omitempty"`
+	Seq    uint64 `json:"seq,omitempty"`
+}
+
+// groupSignalled answers a command that named a group: whether its signal was sent and, when not, why.
+type groupSignalled struct {
+	Seq    uint64 `json:"seq"`
+	Group  int    `json:"group"`
+	Sent   bool   `json:"sent"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// guardStatus is the program's pid once it started, an answer for each signal to a named group, then how the program
+// ended: an exit code, a signal number, or the errno of a start that failed.
 type guardStatus struct {
-	ExitCode   *int   `json:"exitCode,omitempty"`
-	Signal     int    `json:"signal,omitempty"`
-	StartErrno int    `json:"startErrno,omitempty"`
-	StartError string `json:"startError,omitempty"`
+	Pid        int             `json:"pid,omitempty"`
+	Signalled  *groupSignalled `json:"signalled,omitempty"`
+	ExitCode   *int            `json:"exitCode,omitempty"`
+	Signal     int             `json:"signal,omitempty"`
+	StartErrno int             `json:"startErrno,omitempty"`
+	StartError string          `json:"startError,omitempty"`
 }
 
 // Guard runs one guard and returns its exit code: the program's, 128 plus its signal, or 125 when the guard itself
@@ -70,45 +100,108 @@ func Guard() int {
 		return 125
 	}
 	var spec guardSpec
-	specFile := os.NewFile(guardSpecFD, "spec")
-	err := json.NewDecoder(specFile).Decode(&spec)
-	_ = specFile.Close()
-	if err != nil {
+	control := json.NewDecoder(os.NewFile(guardSpecFD, "control"))
+	if err := control.Decode(&spec); err != nil {
 		report(guardStatus{StartError: "the guard cannot read its spec: " + err.Error()})
 		return 125
 	}
-	devNull, err := os.Open(os.DevNull)
-	if err != nil {
-		report(guardStatus{StartError: "the guard cannot open " + os.DevNull + ": " + err.Error()})
-		return 125
+	attr := &syscall.SysProcAttr{Setpgid: true, Credential: spec.Credential}
+	if spec.Terminal {
+		attr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0, Credential: spec.Credential}
 	}
-	pid, err := syscall.ForkExec(spec.Path, spec.Argv, &syscall.ProcAttr{
-		Dir:   spec.Dir,
-		Env:   spec.Env,
-		Files: []uintptr{devNull.Fd(), 1, 2},
-		Sys:   &syscall.SysProcAttr{Setpgid: true, Credential: spec.Credential},
-	})
-	_ = devNull.Close()
+	pid, err := syscall.ForkExec(spec.Path, spec.Argv, &syscall.ProcAttr{Dir: spec.Dir, Env: spec.Env, Files: []uintptr{0, 1, 2}, Sys: attr})
 	if err != nil {
 		var errno syscall.Errno
 		errors.As(err, &errno)
 		report(guardStatus{StartErrno: int(errno), StartError: err.Error()})
 		return 127
 	}
-	ws := supervise(pid, childEnded, stop)
-	if ws.Signaled() {
-		report(guardStatus{Signal: int(ws.Signal())})
-		return 128 + int(ws.Signal())
+	if !spec.Terminal {
+		releaseStdio()
 	}
+	report(guardStatus{Pid: pid})
+	commands := make(chan guardCommand, 8)
+	go func() {
+		for {
+			var c guardCommand
+			if control.Decode(&c) != nil {
+				stop <- syscall.SIGTERM
+				return
+			}
+			commands <- c
+		}
+	}()
+	answer := func(a groupSignalled) { report(guardStatus{Signalled: &a}) }
+	run := run{pid: pid, terminal: spec.Terminal, waitGroup: spec.WaitGroup, keep: spec.KeepOrphans}
+	ws, linger := run.supervise(childEnded, stop, commands, answer)
 	code := ws.ExitStatus()
-	report(guardStatus{ExitCode: &code})
+	if ws.Signaled() {
+		code = 128 + int(ws.Signal())
+		report(guardStatus{Signal: int(ws.Signal())})
+	} else {
+		report(guardStatus{ExitCode: &code})
+	}
+	if linger {
+		run.linger(childEnded, stop, commands, answer)
+	}
 	return code
 }
 
-// supervise reaps every child of the guard until none is left, and returns the program's own wait status. The program
-// ending, or the grace after a SIGTERM running out, sends SIGKILL to every descendant, again on each pass, so one that
-// forks while it is being killed is caught on the next.
-func supervise(pid int, childEnded, stop <-chan os.Signal) syscall.WaitStatus {
+// run is what a guard supervises: the program, by pid, and how its end is told.
+type run struct {
+	pid      int
+	terminal bool
+	// waitGroup: the run ends once the program and every live process of its group (on a terminal, its session) have
+	// ended. keep: when it ends, whatever else is left runs on (linger) instead of being killed.
+	waitGroup, keep bool
+}
+
+// members is every live descendant of the guard in the program's group, or on a terminal in its session too.
+func (r run) members() []int {
+	var in []int
+	for _, d := range proctree.Descendants(os.Getpid()) {
+		if proctree.Zombie(d) {
+			continue
+		}
+		if pgid, err := syscall.Getpgid(d); err == nil && pgid == r.pid {
+			in = append(in, d)
+			continue
+		}
+		if sid, err := getsid(d); r.terminal && err == nil && sid == r.pid {
+			in = append(in, d)
+		}
+	}
+	return in
+}
+
+// signal sends a command's signal to the run, once to each process group: the program's while its leader is unreaped
+// (so the group id is still the program's), and with waitGroup the group of every member, each once (the program's
+// group too once its leader is gone, while a member keeps its id; on a terminal, the session's other groups). A group
+// is signalled by its id, never its processes one by one, so no process gets one signal twice.
+func (r run) signal(exited bool, sig syscall.Signal) {
+	groups := map[int]bool{}
+	if !exited {
+		groups[r.pid] = true
+	}
+	if r.waitGroup {
+		for _, m := range r.members() {
+			if pgid, err := syscall.Getpgid(m); err == nil {
+				groups[pgid] = true
+			}
+		}
+	}
+	for group := range groups {
+		_ = syscall.Kill(-group, sig)
+	}
+}
+
+// supervise reaps every child of the guard until the run has ended, and returns the program's own wait status, and
+// whether the guard lingers for what the run left (keep). The run ends when the program does, or with waitGroup once
+// no member is left either. Then every descendant is sent SIGKILL, again on each pass, so one that forks while it is
+// being killed is caught on the next, unless keep has it run on. The grace after a SIGTERM running out kills all. A
+// command's signal goes to the run as signal says; one that names a group goes as signalGroup says, and is answered.
+func (r run) supervise(childEnded, stop <-chan os.Signal, commands <-chan guardCommand, answer func(groupSignalled)) (syscall.WaitStatus, bool) {
+	pid := r.pid
 	var status syscall.WaitStatus
 	exited, ending, graceOver := false, false, false
 	var grace <-chan time.Time
@@ -133,9 +226,13 @@ func supervise(pid int, childEnded, stop <-chan os.Signal) syscall.WaitStatus {
 			}
 		}
 		if exited && !remaining {
-			return status
+			return status, false
 		}
-		if (exited && !ending) || graceOver {
+		over := exited && (!r.waitGroup || len(r.members()) == 0)
+		if over && r.keep && !ending {
+			return status, true
+		}
+		if (over && !ending) || graceOver {
 			signalRun(pid, exited, syscall.SIGKILL)
 		}
 		select {
@@ -146,10 +243,143 @@ func supervise(pid int, childEnded, stop <-chan os.Signal) syscall.WaitStatus {
 				signalRun(pid, exited, syscall.SIGTERM)
 				grace = time.After(KillGrace)
 			}
+		case c := <-commands:
+			switch {
+			case c.Group != 0:
+				answer(signalGroup(pid, over, c))
+			case !over:
+				r.signal(exited, syscall.Signal(c.Signal))
+			}
 		case <-grace:
 			graceOver, grace = true, nil
 		case <-tick.C:
 		}
+	}
+}
+
+// linger reaps what a run with keep left running, once its end is reported, until none is left or the guard is told to
+// end (the computer's end, or the daemon letting go): then SIGTERM to all of it, and SIGKILL KillGrace later. A
+// command's signal reaches none of it: the run has ended.
+func (r run) linger(childEnded, stop <-chan os.Signal, commands <-chan guardCommand, answer func(groupSignalled)) {
+	ending, graceOver := false, false
+	var grace <-chan time.Time
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		for {
+			got, err := syscall.Wait4(-1, nil, syscall.WNOHANG, nil)
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			if errors.Is(err, syscall.ECHILD) {
+				return
+			}
+			if err != nil || got <= 0 {
+				break
+			}
+		}
+		if graceOver {
+			signalRun(r.pid, true, syscall.SIGKILL)
+		}
+		select {
+		case <-childEnded:
+		case <-stop:
+			if !ending {
+				ending = true
+				signalRun(r.pid, true, syscall.SIGTERM)
+				grace = time.After(KillGrace)
+			}
+		case c := <-commands:
+			if c.Group != 0 {
+				answer(groupSignalled{Seq: c.Seq, Group: c.Group, Reason: programEnded(syscall.Signal(c.Signal), c.Group)})
+			}
+		case <-grace:
+			graceOver, grace = true, nil
+		case <-tick.C:
+		}
+	}
+}
+
+// signalGroup sends c's signal to the group it names while the program runs, and only when that group is the program's
+// or has a process in the program's session. The daemon checked that before it asked, but the group may have ended
+// since, and its id gone to a group in another session: kill(2) on a group id names whatever group holds it when the
+// call is made. The check here narrows that window to the two system calls below; the program leads its session (it
+// was started with setsid), so the program's session is its pid.
+func signalGroup(pid int, exited bool, c guardCommand) groupSignalled {
+	a := groupSignalled{Seq: c.Seq, Group: c.Group}
+	sig := syscall.Signal(c.Signal)
+	switch {
+	case exited:
+		a.Reason = programEnded(sig, c.Group)
+	case c.Group != pid && !inSession(c.Group, pid):
+		a.Reason = fmt.Sprintf("group %d has no process left in the program's session (it ended, and its id may now name a group in another session)", c.Group)
+	default:
+		err := syscall.Kill(-c.Group, sig)
+		switch {
+		case err == nil:
+			a.Sent = true
+		case errors.Is(err, syscall.ESRCH):
+			a.Reason = fmt.Sprintf("group %d ended before %s reached it", c.Group, signalName(sig))
+		default:
+			a.Reason = fmt.Sprintf("the guard cannot signal group %d: %v", c.Group, err)
+		}
+	}
+	return a
+}
+
+// programEnded is why a signal to a named group was not sent once the program had ended: what is left of it is being
+// killed.
+func programEnded(sig syscall.Signal, group int) string {
+	return fmt.Sprintf("the program ended before %s reached group %d", signalName(sig), group)
+}
+
+// inSession says whether group has a process in session. Its leader, while it is a process (a zombie too), says; once
+// it has been reaped, the group's id stays the group's while any process is in it, and every process in the program's
+// session descends from the program, so is under this guard, a subreaper: one of them in the group says.
+func inSession(group, session int) bool {
+	if sid, err := getsid(group); err == nil {
+		return sid == session
+	}
+	return inSessionAmong(group, session, proctree.Descendants(os.Getpid()), syscall.Getpgid, getsid)
+}
+
+// inSessionAmong is inSession's search once the group's leader is gone: a member of group among members, asked its
+// session.
+func inSessionAmong(group, session int, members []int, pgidOf, sidOf func(int) (int, error)) bool {
+	for _, d := range members {
+		if pgid, err := pgidOf(d); err == nil && pgid == group {
+			sid, err := sidOf(d)
+			if err != nil {
+				continue // It ended between the two calls; another member may still run.
+			}
+			return sid == session
+		}
+	}
+	return false
+}
+
+// getsid is getsid(2), which package syscall leaves out on Linux.
+func getsid(pid int) (int, error) {
+	sid, _, errno := syscall.RawSyscall(syscall.SYS_GETSID, uintptr(pid), 0, 0)
+	if errno != 0 {
+		return 0, errno
+	}
+	return int(sid), nil
+}
+
+// releaseStdio points fds 0 to 2 at /dev/null, so the guard holds no copy of the program's pipes: once the program has
+// closed its stdin, a write to it finds no reader and fails at once.
+func releaseStdio() {
+	null, err := syscall.Open(os.DevNull, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	for fd := 0; fd <= 2; fd++ {
+		if err == nil {
+			_ = syscall.Dup3(null, fd, 0)
+		} else {
+			_ = syscall.Close(fd)
+		}
+	}
+	if err == nil {
+		_ = syscall.Close(null)
 	}
 }
 
@@ -159,53 +389,7 @@ func signalRun(pid int, leaderReaped bool, sig syscall.Signal) {
 	if !leaderReaped {
 		_ = syscall.Kill(-pid, sig)
 	}
-	for _, d := range descendants(os.Getpid()) {
+	for _, d := range proctree.Descendants(os.Getpid()) {
 		_ = syscall.Kill(d, sig)
 	}
-}
-
-// descendants lists every process under root, from one pass over /proc/*/stat. It needs no CONFIG_PROC_CHILDREN, and
-// a process that forks during the pass is found by the next one.
-func descendants(root int) []int {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	children := map[int][]int{}
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		if ppid, ok := parentOf(pid); ok {
-			children[ppid] = append(children[ppid], pid)
-		}
-	}
-	var found []int
-	for queue := []int{root}; len(queue) > 0; queue = queue[1:] {
-		for _, child := range children[queue[0]] {
-			found = append(found, child)
-			queue = append(queue, child)
-		}
-	}
-	return found
-}
-
-// parentOf reads the ppid from /proc/<pid>/stat: the second field after the command name, which may hold spaces and
-// parentheses, so it is cut at the last ')'.
-func parentOf(pid int) (int, bool) {
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, false
-	}
-	end := bytes.LastIndexByte(data, ')')
-	if end < 0 {
-		return 0, false
-	}
-	fields := strings.Fields(string(data[end+1:]))
-	if len(fields) < 2 {
-		return 0, false
-	}
-	ppid, err := strconv.Atoi(fields[1])
-	return ppid, err == nil
 }

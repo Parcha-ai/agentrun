@@ -8,9 +8,9 @@ import type { Run, TimelineRow } from "@/lib/v2";
 // The Report tab of a run waiting on a tool call's approval, and the approval's timeline row after a stop overtook a
 // message that would have declined the call (the server keeps the words, never sent, in the row's text).
 const PENDING = { kind: "approval" as const, id: "ap_0123456789abcdef", tool: "web_fetch", call_id: "call_1", args_preview: "{\"url\":\"http://public.example/\"}", requested_at: "2026-11-04T10:00:02.000Z" };
-const run: Run = {
+const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "run_1", agent_id: "fetcher", agent_version: 1, revision: "r1", kind: "agentic", status: "input_required", state: "waiting", title: "Read the page",
-  created_at: "2026-11-04T10:00:00.000Z", ended_at: null, result: null, error: null, cost: null, archived_at: null, pending: PENDING,
+  created_at: "2026-11-04T10:00:00.000Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING,
 };
 const props = (over: Partial<RunDetailProps> = {}): RunDetailProps => ({ run, agentName: "fetcher", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, onMessage: () => {}, onApprove: async () => null, ...over });
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
@@ -28,7 +28,7 @@ describe("RunDetail's Report tab while an approval waits", () => {
 describe("the approval's row when a stop overtook a declining message", () => {
   it("shows the words that were not sent under the server's summary, plainly, without opening the row", () => {
     const args = PENDING.args_preview;
-    const rows: TimelineRow[] = [{ id: "row_4:approval", seq: 4, kind: "tool_approval_requested", summary: `Withdrawn when the run was stopped: web_fetch ${args}`, text: `${args}\n\nNot sent: the run was stopped. Your message: Use the cached copy instead.`, timestamp: "2026-11-04T10:00:04.000Z", tool_name: "web_fetch", tool_use_id: "call_1", tool_status: null }];
+    const rows: TimelineRow[] = [{ created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: "row_4:approval", seq: 4, kind: "tool_approval_requested", summary: `Withdrawn when the run was stopped: web_fetch ${args}`, text: `${args}\n\nNot sent: the run was stopped. Your message: Use the cached copy instead.`, timestamp: "2026-11-04T10:00:04.000Z", tool_name: "web_fetch", tool_use_id: "call_1", tool_status: null }];
     const html = renderToStaticMarkup(createElement(RunDetail, props({ run: { ...run, state: "idle", pending: null }, rows, tab: "timeline" })));
     expect(text(html)).toContain("Withdrawn when the run was stopped: web_fetch");
     expect(text(html)).toContain("Not sent: the run was stopped. Your message: Use the cached copy instead.");

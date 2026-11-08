@@ -1,6 +1,6 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
-import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher } from "./origin.js";
+import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -42,8 +42,12 @@ export type TimelineEvent = {
   /** `server` on the row of a message the server wrote into the run, `trigger` on a trigger's (origin.ts): a `phase` row,
    *  which counts, as a person's `user_message` does, as the message its turn took (`isMessageRow`). */
   origin?: "server" | "trigger";
-  /** `true` on an `error` row that is a spend cap's refusal for room (serve): the request was not sent and the run paused
-   *  for a raise; a pause, never a failure, whether the run waits on its cap now or was raised since. */
+  /** On a trigger's row (`origin: "trigger"`) alone: its trigger, from the message's origin, so a client labels the row
+   *  by its source without reading its summary. */
+  trigger?: { id: string; source: TriggerSource; owner: boolean };
+  /** `true` on the server's `phase` row of a spend cap's refusal for room (serve), "Paused at the run's cap", origin
+   *  server and its id ending NOTE_SUFFIX: the request was not sent and the run paused for a raise; a pause, never a
+   *  failure, whether the run waits on its cap now or was raised since. */
   paused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time
@@ -150,6 +154,9 @@ export type TimelineOptions = {
   caps?: Partial<typeof CAPS>;
   /** Nothing is running: a call with no result is interrupted. */
   settled?: boolean;
+  /** The run has ended (completed, failed, cancelled): its usage row says its cost ("Cost: …"), never what it has cost
+   *  "so far". A run settled and not ended (paused, its process let go) keeps "Cost so far". */
+  ended?: boolean;
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
@@ -708,7 +715,7 @@ function createProjector(options: TimelineOptions) {
           const args = argsOf(obj(block.arguments) ?? {});
           if (BROWSER_OPENERS.has(name) && !browsers.has(conv)) {
             browsers.add(conv);
-            add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
+            add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
           const before = early.get(`${conv}:${id}`);
@@ -801,7 +808,7 @@ function createProjector(options: TimelineOptions) {
       // not a message (an id of its own, BESIDE_SUFFIX, which isMessageRow passes over). Any other: the server's row is
       // that message, with the entry's id and `origin: "server"`. A trigger's message: "Trigger <its id>: …", `origin:
       // "trigger"`, never the person's.
-      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `Trigger ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger" }));
+      if (origin.kind === "trigger") add(make("phase", conv, base, { summary: `Trigger ${origin.trigger_id}: ${firstLine(text)}`, text, origin: "trigger", trigger: { id: origin.trigger_id, source: origin.source, owner: origin.owner } }));
       else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
@@ -880,7 +887,7 @@ function createProjector(options: TimelineOptions) {
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
-      summary: requests === 0 && !charges ? "no model request sent" : `Cost so far: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+      summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
       usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}) },
     });
@@ -897,6 +904,17 @@ function createProjector(options: TimelineOptions) {
     rows: () => rows,
     conv: () => current,
   };
+}
+
+/** The usage row's label: a run that has ended says its cost, one still going (or paused) what it has cost so far. */
+export const COST_SO_FAR = "Cost so far";
+export const COST_ENDED = "Cost";
+export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** `row` as an ended run's: a usage row made while it ran ("Cost so far: …") says its cost ("Cost: …"); any other row as
+ *  it is. For a host that keeps rows read before the run ended. */
+export function endedUsage<T extends { kind: string; summary?: string | null }>(row: T): T {
+  const head = `${COST_SO_FAR}: `;
+  return row.kind === "usage" && typeof row.summary === "string" && row.summary.startsWith(head) ? { ...row, summary: `${COST_ENDED}: ${row.summary.slice(head.length)}` } : row;
 }
 
 /** Rows of a stored conversation, in log order. Pure: the same entries give the same rows. */

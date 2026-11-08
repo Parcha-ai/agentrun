@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "@parcha/pi-durable-agent";
@@ -17,7 +17,7 @@ import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, call, cookieOf, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, flowAgent, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -155,12 +155,12 @@ test("CIMD only on a public https address: the client id is this server's metada
   const key = sealKey();
   const { as, mcp } = await fakes(t, { cimd: true });
   const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test");
-  store.attach("https://agents.example.com");
+  store.attach("https://agents.example.com", "https://agents.example.com");
   const pub = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.equal(pub.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.equal(pub.searchParams.get("redirect_uri"), `https://agents.example.com${CALLBACK}`);
   assert.ok(!as.log.some((entry) => entry.path === "/register"), "no registration with a metadata document");
-  store.attach("http://127.0.0.1:4321");
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   const local = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
   assert.notEqual(local.searchParams.get("client_id"), "https://agents.example.com/v2/settings/mcp-servers/oauth/client.json");
   assert.ok(as.log.some((entry) => entry.path === "/register"), "on loopback http it registers instead");
@@ -363,7 +363,7 @@ async function publicNetwork(metadata = {}, answers) {
 /** A store on a scratch directory reaching the network `net`, under seal key `key`. */
 async function storeOn(t, key, net, data) {
   const store = new McpServers(data ?? (await scratch(t)), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
-  store.attach("http://127.0.0.1:4321");
+  store.attach("http://127.0.0.1:4321", "http://127.0.0.1:4321"); // key-gate: denylist this server's own loopback address in a test, never an endpoint
   return store;
 }
 
@@ -378,12 +378,15 @@ function savedPublic(data, key, tokenEndpoint) {
 }
 
 /** A loopback service an authorization server might steer this server to: it counts what reaches it. */
+/** A private target the authorization server names: `hits` holds only requests for its own unguessable path, so a stray
+ *  request another test sends to a reused port is not taken for this server being steered there. */
 async function target(t) {
   const hits = [];
-  const http = createServer((req, res) => (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const path = `/internal/admin-${randomBytes(8).toString("hex")}`;
+  const http = createServer((req, res) => (req.url?.startsWith(path) && hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
-  return { url: `http://127.0.0.1:${http.address().port}/internal/admin?op=x`, hits };
+  return { url: `http://127.0.0.1:${http.address().port}${path}?op=x`, hits };
 }
 
 test("a public MCP server's authorization server may not steer this server to a private address: sign-in and refresh refuse it, and the target hears nothing", async (t) => {
@@ -656,9 +659,10 @@ test("the refresh step's test-only wait has no effect outside a test runner, and
   // A server's environment: the variable set by mistake, no test runner.
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500" }), 0);
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "production" }), 0);
-  // Under a test runner (node --test sets NODE_TEST_CONTEXT; NODE_ENV=test, as the stand-ins' guards read it).
+  // NODE_ENV=test alone is no test runner: a production server can carry it.
+  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "test" }), 0);
+  // Under a test runner (node --test sets NODE_TEST_CONTEXT).
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_TEST_CONTEXT: "child-v8" }), 500);
-  assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "500", NODE_ENV: "test" }), 500);
   assert.equal(refreshDelayMs({ [REFRESH_DELAY_ENV]: "600000", NODE_TEST_CONTEXT: "child-v8" }), 1_000, "capped");
   for (const stray of [undefined, "", "soon", "-5"]) assert.equal(refreshDelayMs({ ...(stray === undefined ? {} : { [REFRESH_DELAY_ENV]: stray }), NODE_TEST_CONTEXT: "child-v8" }), 0, String(stray));
 });
@@ -797,4 +801,137 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
     assert.match(error.message, /its authorization server's endpoint https:\/\/mcp\.example\.test\/\S+ could not be reached \(DNS lookup timed out\)\.$/);
     return true;
   });
+});
+
+/** A loopback service on `host` that counts what reaches it; undefined where this machine can't listen there. */
+async function targetOn(t, host) {
+  const hits = [];
+  const http = createServer((req, res) => (hits.push(req.url), res.writeHead(200, { "content-type": "application/json" }).end("{}")));
+  const listening = await new Promise((resolve) => http.once("error", () => resolve(false)).listen(0, host, () => resolve(true)));
+  if (!listening) return undefined;
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  return { origin: `http://${host.includes(":") ? `[${host}]` : host}:${http.address().port}`, port: http.address().port, hits };
+}
+
+test("a loopback MCP server's authorization server may use only the MCP server's own loopback host, and never this server's own port: another loopback address, or this server's port, is refused and hears nothing", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  // This server's own address: a service on its port stands for it.
+  const own = await targetOn(t, "127.0.0.1"); // key-gate: this server's own loopback address, which an authorization server must not reach
+  const elsewhere = [await targetOn(t, "127.0.0.2"), await targetOn(t, "::1")].filter(Boolean); // key-gate: other loopback addresses an authorization server must not reach
+  for (const at of [own, ...elsewhere]) {
+    for (const [what, metadata] of [["token endpoint", { token_endpoint: `${at.origin}/x` }], ["registration endpoint", { registration_endpoint: `${at.origin}/x` }]]) {
+      const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+      t.after(() => mcp.close());
+      const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+      store.attach(own.origin, own.origin);
+      await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), `${what} at ${at.origin}`);
+    }
+    assert.deepEqual(at.hits, [], `${at.origin} heard nothing`);
+  }
+  assert.ok(elsewhere.length >= 1, "at least one other loopback address to try");
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+  // The MCP server's own loopback host, on another port (its authorization server's), still signs in: the repo's fake.
+  const { mcp } = await fakes(t);
+  const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+  store.attach(own.origin, own.origin);
+  assert.match((await store.oauthStart("docs", { url: mcp.url })).authorization_url, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
+});
+
+test("with a public address for browsers, this server's own listening port is still refused to a loopback MCP server's authorization server, and hears nothing; its other ports still sign in", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  // Where this server listens: a service on that port stands for it. Browsers reach it at a public address instead.
+  const listening = await targetOn(t, "127.0.0.1"); // key-gate: this server's own listening address, which an authorization server must not reach
+  for (const [what, metadata] of [["token endpoint", { token_endpoint: `${listening.origin}/x` }], ["registration endpoint", { registration_endpoint: `${listening.origin}/x` }]]) {
+    const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+    t.after(() => mcp.close());
+    const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+    store.attach("https://agents.example.test", listening.origin);
+    await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
+  }
+  assert.deepEqual(listening.hits, [], "the listening port heard nothing");
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+  const { mcp } = await fakes(t);
+  const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+  store.attach("https://agents.example.test", listening.origin);
+  const started = new URL((await store.oauthStart("docs", { url: mcp.url })).authorization_url);
+  assert.equal(started.searchParams.get("redirect_uri"), `https://agents.example.test${CALLBACK}`, "the browser still comes back at the public address");
+});
+
+test("with a LOOPBACK public address (a local https proxy in front of the listener), that proxy's port is refused to a loopback MCP server's authorization server too, and hears nothing", async (t) => {
+  const key = sealKey();
+  const sent = offLoopback(t);
+  const net = { network: { lookup: async (host) => [host], fetch: async (url) => (sent.push(url), new Response("", { status: 404 })) } };
+  // The public address browsers use is itself on loopback (a local https proxy on another port, in front of the
+  // listener): a request to it reaches this server through the proxy. Stand-ins for both record what reaches them.
+  const proxy = await targetOn(t, "127.0.0.1"); // key-gate: this server's own public address on loopback, which an authorization server must not reach
+  const listener = await targetOn(t, "127.0.0.1"); // key-gate: this server's own listening address, which an authorization server must not reach
+  for (const [what, metadata] of [["token endpoint", { token_endpoint: `${proxy.origin}/x` }], ["registration endpoint", { registration_endpoint: `${proxy.origin}/x` }]]) {
+    const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+    t.after(() => mcp.close());
+    const store = new McpServers(await scratch(t), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+    store.attach(proxy.origin, listener.origin);
+    await assert.rejects(store.oauthStart("loop", { url: mcp.url }), (error) => error.code === "upstream_failed" && /private address; refused/.test(error.message), what);
+  }
+  assert.deepEqual(proxy.hits, [], "the public (proxy) port heard nothing");
+  assert.deepEqual(listener.hits, [], "the listening port heard nothing");
+  assert.deepEqual(sent, [], "nothing was sent off loopback");
+});
+
+test("a server started with a public address refuses a loopback MCP server's authorization server that names the port it listens on", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { baseUrl, token } = await serve(t, { publicUrl: "https://agents.example.test" });
+  // As a browser at the public address reaches it, through its proxy: the sign-in starts only there.
+  const start = (body) => new Promise((resolve, reject) => {
+    const req = request(`${baseUrl}/settings/mcp-servers/loop/oauth/start`, { method: "POST", agent: false, headers: { host: "agents.example.test", "x-forwarded-proto": "https", "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) } }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).on("end", () => resolve({ status: res.statusCode, body: JSON.parse(text || "null") }));
+    });
+    req.on("error", reject).end(JSON.stringify(body));
+  });
+  for (const [what, metadata] of [["token endpoint", { token_endpoint: `${new URL(baseUrl).origin}/x` }], ["registration endpoint", { registration_endpoint: `${new URL(baseUrl).origin}/x` }]]) {
+    const mcp = await startFakeMcp({ token: () => false, oauth: await loopbackAs(t, metadata) });
+    t.after(() => mcp.close());
+    const started = await start({ url: mcp.url });
+    assert.match(started.body?.error?.message ?? "", /private address; refused/, `${what}: ${JSON.stringify(started.body)}`);
+  }
+});
+
+test("pi: a start whose sign-in server never answers its token refresh answers within ten seconds, not the 30 s two full tries took", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  // Access tokens that last two seconds: past their expiry by the run's launch, so the start refreshes first.
+  const { as, mcp } = await fakes(t, { expiresIn: 2 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("slow-as", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  as.hang();
+  const at = Date.now();
+  const made = await api("POST", "/agents/slow-as/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+  const took = Date.now() - at;
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  assert.ok(took < 10_000, `the start answered in ${took} ms`);
+});
+
+test("a workflow is granted no MCP tool, so a raise that opens a capped workflow has no MCP sign-in to refresh (a pin)", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const { mcp } = await fakes(t, { expiresIn: 60 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  const workflow = {
+    v: 2, name: "once",
+    schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } }, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } } },
+    input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+    root: { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "answer" },
+  };
+  // Its nodes bind no MCP tool (app.ts binds them for an agentic run alone): the grant is refused at the save, so no
+  // workflow run, raised or not, holds an MCP sign-in for its launch to refresh.
+  const saved = await api("POST", "/agents", flowAgent("mcp-flow", workflow, { tools: ["mcp:docs/add"] }));
+  assert.equal(saved.status, 422, JSON.stringify(saved.body));
+  assert.match(JSON.stringify(saved.body), /a workflow's nodes don't bind MCP tools here yet/);
 });

@@ -227,6 +227,30 @@ const WRITABLE = ["name", "enabled", "source", "target", "catchup_window_s", "ma
  *  least HISTORY_KEPT less DUE_KEPT and UNTOLD_KEPT (130) are always there, so a cap well under that holds. */
 export const MAX_ACTIVE_RUNS = 100;
 
+/** A POST /triggers body's own fields, read as create reads them with the sources of `adapters`: its source, target,
+ *  settings, name and enabled, with every issue. What it names (the agent, the run) is create's own check
+ *  (TriggerDeps.targetIssues). */
+function readBody(adapters: readonly TriggerAdapter[], body: Json, now: number) {
+  const issues = unknownFields(body, WRITABLE);
+  const source = sourceOf(adapters, body.source, now, issues);
+  const target = targetOf(body.target, issues);
+  const settings = settingsOf(body, issues);
+  if (source && typeof settings.max_active_runs === "number") issues.push(...capIssues(adapters, source));
+  if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
+  return { issues, source, target, settings };
+}
+
+/** Why `source` takes no max_active_runs, if it does not: only a source whose firings each start a run does. */
+function capIssues(adapters: readonly TriggerAdapter[], source: Source): InputIssue[] {
+  if (adapterIn(adapters, source.kind)?.concurrent?.(source)) return [];
+  return [{ field: "max_active_runs", reason: "not_allowed", message: "Only a trigger whose firings each start a run (a webhook with accept) takes max_active_runs; set it to null to clear it." }];
+}
+
+/** What is wrong with a POST /triggers body by itself, as create refuses it with the sources of `adapters`, all but the
+ *  agent or run its target names: a template package's triggers are checked with it before any apply (templates.ts). */
+export const triggerBodyIssues = (adapters: readonly TriggerAdapter[], body: Json, now: number): InputIssue[] => readBody(adapters, body, now).issues;
+
 /** A trigger as triggers.json keeps it, whole: what the engine reads of it is there, of its type. */
 function wellFormed(adapters: readonly TriggerAdapter[], t: unknown): t is Trigger {
   if (!isObject(t) || typeof t.id !== "string" || typeof t.name !== "string" || typeof t.enabled !== "boolean" || typeof t.created_at !== "string" || typeof t.updated_at !== "string") return false;
@@ -325,13 +349,7 @@ export class Triggers {
   async create(body: Json) {
     this.readable();
     const now = this.clock.now();
-    const issues = unknownFields(body, WRITABLE);
-    const source = sourceOf(this.adapters, body.source, now, issues);
-    const target = targetOf(body.target, issues);
-    const settings = settingsOf(body, issues);
-    if (source && typeof settings.max_active_runs === "number") issues.push(...this.capIssues(source));
-    if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
-    if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
+    const { issues, source, target, settings } = readBody(this.adapters, body, now);
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
@@ -350,7 +368,7 @@ export class Triggers {
   /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. */
   rotate(id: string): Record<string, string> {
     const trigger = this.need(id);
-    if (!mints(this.adapter(trigger.source))) throw invalid([{ field: "source.kind", reason: "not_allowed", message: `Only a trigger whose source has a signing secret has one (${this.adapters.filter(mints).map((a) => a.id).join(", ")}).` }]);
+    if (!mints(this.adapter(trigger.source))) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
     return this.mint(trigger.source, id);
   }
 
@@ -405,7 +423,7 @@ export class Triggers {
     // A cap kept, or set, needs a source whose firings each start a run: a PATCH that takes accept away is refused unless it
     // also sends max_active_runs: null.
     const cap = settings.max_active_runs === undefined ? was.max_active_runs : settings.max_active_runs;
-    if (typeof cap === "number" && (source || typeof settings.max_active_runs === "number")) issues.push(...this.capIssues(source ?? was.source));
+    if (typeof cap === "number" && (source || typeof settings.max_active_runs === "number")) issues.push(...capIssues(this.adapters, source ?? was.source));
     if (body.name !== undefined && !(typeof body.name === "string" && body.name.trim() && body.name.length <= MAX_NAME)) issues.push({ field: "name", reason: "invalid", message: `name is a string of 1 to ${MAX_NAME} characters` });
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : was.name, source ?? was.source, target, this.clock.now()))));
@@ -835,9 +853,11 @@ export class Triggers {
     return trigger;
   }
 
+  /** A trigger as the API answers it: its fields (openapi.ts TRIGGER), named one by one. A stored field outside them (an
+   *  earlier build's, as run_now_kept was, or the history) is never answered, whatever triggers.json holds. */
   private view(trigger: Trigger) {
-    const { firings, kept_firings: _, seen: __, ...rest } = trigger;
-    return { ...rest, max_active_runs: trigger.max_active_runs ?? null, last_run_id: trigger.last_run_id ?? null, last_firing: firings.length ? firingView(firings.at(-1)!) : null };
+    const { id, name, enabled, source, target, catchup_window_s, failures_in_a_row, disabled, next_at, created_at, updated_at, firings } = trigger;
+    return { id, name, enabled, source, target, catchup_window_s, max_active_runs: trigger.max_active_runs ?? null, failures_in_a_row, disabled, next_at, last_run_id: trigger.last_run_id ?? null, created_at, updated_at, last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 
   // ---- what each source's adapter says ----------------------------------------------------------------------------------
@@ -865,12 +885,6 @@ export class Triggers {
     const scope = adapter.scopeOf(source);
     const other = this.triggers.find((t) => t.id !== id && t.enabled && t.source.kind === source.kind && adapter.scopeOf!(t.source) === scope);
     if (other) throw new ApiError("scope_taken", `The ${adapter.label} scope ${scope} belongs to the trigger ${other.id}: a scope belongs to one trigger. Turn that one off, or give this one another scope.`, { details: { source: adapter.id, scope, trigger_id: other.id } });
-  }
-
-  /** Why `source` takes no max_active_runs, if it does not: only a source whose firings each start a run does. */
-  private capIssues(source: Source): InputIssue[] {
-    if (this.adapter(source).concurrent?.(source)) return [];
-    return [{ field: "max_active_runs", reason: "not_allowed", message: "Only a trigger whose firings each start a run (a webhook with accept) takes max_active_runs; set it to null to clear it." }];
   }
 
   /** Why `source` no longer reads on this server, if it does not. */

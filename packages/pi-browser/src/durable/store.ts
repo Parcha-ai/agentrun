@@ -40,7 +40,7 @@ export type StoreDeps = {
 };
 
 export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack, stopped: stoppedHook }: StoreDeps) {
-  const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }) });
+  const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }), checkpointWhen: () => false });
 
   /** One state change: the record and the open-session inventory move in the same commit. */
   async function move(tx: Tx, row: InventoryRow, next: Move): Promise<void> {
@@ -127,8 +127,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       }, context);
       return;
     }
-    await runtime.sleep(runtime.now() + backoffMs(attempt), context);
-    await runtime.commit(() => ({ status: "running", checkpoint: { phase: "release", attempt: attempt + 1, ...(found.length ? { found } : {}) } }), context);
+    // pi 1.5: the wait is a durable sleep. Its deadline is computed once on the Harness clock and stored with the sleep
+    // (the task's `until`), so a process that dies while it sleeps resumes at that same deadline, never a new one.
+    await runtime.sleepUntil(runtime.now() + backoffMs(attempt), { phase: "release", attempt: attempt + 1, ...(found.length ? { found } : {}) }, context);
   }
 
   const ReleaseTask = defineTask<ReleaseInput, ReleaseState, { released: number }, object>({
@@ -140,7 +141,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const { row, notBefore } = task.input;
         const { attempt } = task.state.checkpoint;
         const found = union(task.input.found, task.state.checkpoint.found);
-        if (attempt === 0 && notBefore && runtime.now() < notBefore) await runtime.sleep(notBefore, context);
+        // The create deadline from the task's input (durable): sleep to it, then this phase runs again at the same
+        // checkpoint, past the deadline.
+        if (attempt === 0 && notBefore && runtime.now() < notBefore) return runtime.sleepUntil(notBefore, task.state.checkpoint, context);
         let seen: string[] = [];
         // Ids the lookup found that the task does not hold yet are committed before any stop is sent: an attempt cut
         // between its stop and its next commit (the task's abort) leaves them for the abort handler, whose own lookup
@@ -163,8 +166,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const { attempt, ids, polls } = task.state.checkpoint;
         const running = await step(runtime, async () => anyRunning(await providerOf(runtime, cidOf(row), row.plane, context), row, ids, runtime.signal), true);
         if (running && polls + 1 < CONFIRM_POLLS) {
-          await runtime.sleep(runtime.now() + backoffMs(polls), context);
-          await runtime.commit(() => ({ status: "running", checkpoint: { phase: "confirm", attempt, ids, polls: polls + 1 } }), context);
+          await runtime.sleepUntil(runtime.now() + backoffMs(polls), { phase: "confirm", attempt, ids, polls: polls + 1 }, context);
           return;
         }
         if (running) return retry(runtime, row, attempt, context, ids);
@@ -222,8 +224,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
           runtime.report(scrubbed(error));
         }
         if (answer === "pending") {
-          await runtime.sleep(runtime.now() + backoffMs(attempt), context);
-          await runtime.commit(() => ({ status: "running", checkpoint: { phase: "poll", attempt: attempt + 1 } }), context);
+          await runtime.sleepUntil(runtime.now() + backoffMs(attempt), { phase: "poll", attempt: attempt + 1 }, context);
           return;
         }
         const outcome = answer;

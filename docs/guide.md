@@ -7,7 +7,7 @@ AgentRun defines workflows that combine tools, code, Jev system one decisions, a
 
 Use Node 22.19+ or 24.2+ and npm. Follow the [support example](../README.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
 
-For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths. To watch an agent read and look at files, start at [`examples/vision-agent`](../examples/vision-agent/README.md): `npm run demo:vision -- examples/document-check` runs it on scripted models, free and with no key, with `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path. `lake-mead` commits its images too; the six other vision examples fetch their files first (120 MB to 342 MB): add `--fetch-sources`.
+For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths.
 
 ## Inspect the smaller triage workflow
 
@@ -115,7 +115,7 @@ Confidence is a model output, not an empirically calibrated accuracy guarantee. 
 <a id="pi"></a>
 ## Let Pi build and run a workflow
 
-Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.0.4 to below 1.4; CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0), run these commands in your project:
+Pi drafts a typed workflow for your task, checks it, dry-runs it for free, runs it, and shows every node on its graph. With [Pi installed](../packages/pi/README.md#install) (1.5.0 exactly; CI tests 1.5.0), run these commands in your project:
 
 ```sh
 pi install npm:@parcha/agentrun-pi@latest -l
@@ -149,59 +149,6 @@ Use `createPiHostRunner` inside an existing Pi extension or `createPiRunner` wit
 For authoring, `authorWorkflow` from `@parcha/agentrun-dsl` retains a candidate and its feedback without activating it. Pass it a Pi runner as its `runNode`. Supply your own acceptance callback to evaluate behavior. Without that callback, acceptance checks structure only.
 
 For an authoritative SOP, supply complete `rubricSections` during authoring and the same source text through runtime `sop`. The author conservatively requires every generative node to carry all supplied sections and rejects semantic paths that cannot carry them. See [Pi SDK setup](../packages/pi/README.md#sdk-embed-the-runner) for configuration and limits.
-
-<a id="learn"></a>
-## An agent that learns
-
-[`@parcha/pi-agent-learn`](../packages/pi-agent-learn/README.md) gives a pi-durable agent a git repository to learn in, so what it learns between runs is a commit a person can read, diff and revert. The host owns git: no model tool commits or pushes, and no writer can change `agent.json` or `AGENTS.md`.
-
-While it works, the agent notes what would help a later run with one tool, `learn`, which makes no model call. At the end of the run the host proposes the notes on the run's own branch, `runs/<run id>`, once the guard has checked them for secrets and for values from the case. `curate` is the only step that writes `main`. It asks a judge, one typed question at a time, whether a note is general, whether it narrows the rules, and whether it repeats, replaces or contradicts a learning already there; an uncertain answer holds the note. Each run it curates becomes one commit on `main`. Every later run starts from one commit of `main` and reads what was learned there in a short `<learned>` section of its prompt. A bad lesson is undone with a `git revert` of that commit, or, once a later run has used it, retired in one more commit; history keeps it either way.
-
-Saved workflows earn their place on receipts. A workflow the agent saves with the `agentrun` tool goes to the run's branch with its notes, and curation judges it on its own document, never on what the agent wrote about it: a workflow that names a case, carries a fixed answer or carries an instruction beyond the job its rules describe is refused. When the host passes the text the run read, a workflow that copies 40 or more characters of it is withheld from the proposal. An admitted workflow reaches `main` as a trial skill, described by its input and output fields, and later runs are offered it. The host can also run a proven workflow itself before the agent says anything (`planServing`, `serve`): the active revision, or, while a newer revision is on trial, the one it superseded, so a run the workflow finishes costs no agent turn and the trial still earns its place through the agent. Curation then counts each run's uses of it, read from the workflow tasks in the run's store, the host's served runs included, each a use of its own revision with the host's verdict on its output. A trial whose last two uses, in two runs, all completed is promoted. A revision whose last two uses failed or escalated is demoted, and the one before it comes back. The host sets both thresholds.
-
-The core of a run, from the README's quickstart. `repo` is an `openRepo` repository of [`@parcha/pi-git-remote`](#git-remote) whose `main` holds the learnings, `models` has the `model` the run uses, and `workspace` is the run's working directory, an absolute path:
-
-```js
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { agentLearn, collectCandidates, seedLearning } from "@parcha/pi-agent-learn";
-
-const registry = createRegistry();
-registry.install(agentLearn());
-const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
-await seedLearning({ repo, target: harness, into: workspace });
-const conversation = await harness.root(ctx, { agent: { model, instructions: "Research the company." } });
-await (await conversation.submit({ type: "input", content: "Check Acme." }, ctx)).wait(ctx);
-console.log(await collectCandidates(harness));
-```
-
-`seedLearning` records the commit the run starts from and copies its learnings into the run's working directory; a restarted host never moves the run to a newer commit. `collectCandidates` returns what the run noted. `proposeLearning` commits the notes and the run's saved workflows to `runs/<run id>`, and `curate` merges what passes to `main`. The [quickstart](../packages/pi-agent-learn/README.md#quickstart-no-key-no-network) runs these steps with no key on pi-ai's scripted model. [`examples/agent-learn`](../examples/agent-learn/README.md) (`npm run demo:learn`) runs the whole loop with a scripted model and judge: a maintainer's correction learned in one run and applied in the next, a rule retired, and a saved workflow admitted as a trial, promoted on three clean uses, then demoted when a new revision escalates twice. Until the package is published, both run from a checkout of this repository.
-
-<a id="git-remote"></a>
-### Its own git repository
-
-[`@parcha/pi-git-remote`](../packages/pi-git-remote/README.md) is the repository the host keeps for its agent. The host commits files to branches, pushes them by sha, merges and reverts, and checks a branch out into a directory the agent reads. It builds commits with git's plumbing on a temporary index, with no working tree. No hook, filter, merge driver, fsmonitor or credential helper from either repository runs, and a push is never forced. Flags cannot stop git from reading the host repository's own config and `info/attributes`, so a host repository someone else can write runs that person's merge driver: keep `dir`, and a local remote's directory, out of the agent's reach, never inside a run's working directory. A commit with a `Run-Id` trailer is made once, so a restarted host commits nothing twice.
-
-The remote is a bare repository on this machine (`local`), any https git host (`https`) or code.storage (`codeStorage`). An https credential reaches git only on file descriptor 3, never in argv, the environment, a URL or a file. The core is plain Node over the git CLI and does not import pi. Its `./coding-agent` subpath is a pi coding-agent extension that checks a ref out for a session and commits the allowlisted changes to `sessions/{sessionId}` when the session ends.
-
-With the package installed and git 2.40 or later, save this as `repo.mjs` in an empty directory and run `node repo.mjs`:
-
-```js
-import { execFileSync } from "node:child_process";
-import { local, openRepo } from "@parcha/pi-git-remote";
-
-execFileSync("git", ["init", "-q", "--bare", "--template=", "-b", "main", "acme.git"]);
-const repo = await openRepo({ dir: "host", remote: local("acme.git") });
-const seed = await repo.commitTo("main", { files: { "AGENTS.md": "# Rules\n\nCite every claim.\n" }, message: "seed" });
-await repo.push(seed.sha, "main");
-const files = { "inbox/run-1.md": "Registries match the legal name without the suffix.\n" };
-const run = await repo.commitTo("runs/run-1", { files, message: "run-1 proposes", trailers: { "Run-Id": "run-1" } });
-await repo.push(run.sha, "runs/run-1");
-await repo.push((await repo.merge("runs/run-1", "main")).sha, "main");
-console.log((await repo.log()).map((c) => c.subject).join(" | "));
-```
-
-It prints `run-1 proposes | seed`: the run's branch reached `main` as a fast-forward. Until the package is published, the README's [quickstart](../packages/pi-git-remote/README.md#quickstart-no-key-no-network) runs the same steps from a checkout of this repository. The [README](../packages/pi-git-remote/README.md) has every method, what never runs, the path limits and the remotes.
 
 <a id="transport"></a>
 ## Run an agent's tools where each step needs them

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
-import { keyBytes, MIN_KEY_BYTES, mintSecret } from "./standard-webhooks.js";
+import { keyBytes, MIN_KEY_BYTES, mintSecret, SECRET_PREFIX } from "./standard-webhooks.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { isObject } from "./validate.js";
 
@@ -47,6 +47,8 @@ export class SealedSettings {
   private sealed: Sealed = {};
   /** Opened, by scope and field: read once at the start, then kept with every write. */
   private readonly opened: Record<string, Record<string, string>> = {};
+  /** The values this store held open and no longer does, rotated or removed: in memory alone, for this process's life. */
+  private readonly retired = new Set<string>();
   /** Why the file does not read: nothing is made, rotated or removed, nothing it holds is read, and it is never written over. */
   private readonly unreadable?: string;
 
@@ -91,7 +93,7 @@ export class SealedSettings {
     // left out of every redaction: none is kept.
     if (/\s/.test(value) || Buffer.byteLength(value, "utf8") < 8) throw invalid([{ field, reason: "invalid", message: `${field} is at least 8 bytes, with no whitespace` }]);
     // A verification key is kept only as the spec writes one, or every request it checks would be refused.
-    if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith("whsec_")) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
+    if (spec.minBytes === MIN_KEY_BYTES && !value.startsWith(SECRET_PREFIX)) throw invalid([{ field, reason: "invalid", message: `${field} is a Standard Webhooks secret: whsec_ and its key in base64` }]);
     if (spec.minBytes !== undefined && keyBytes(value) < spec.minBytes) throw invalid([{ field, reason: "too_short", message: `${field} holds at least ${spec.minBytes} bytes` }]);
     this.put(scope, field, value);
   }
@@ -99,6 +101,8 @@ export class SealedSettings {
   private put(scope: string, field: string, value: string): void {
     this.writable();
     this.write({ ...this.sealed, [scope]: { ...this.sealed[scope], [field]: seal(this.key!, Buffer.from(value, "utf8"), aad(this.adapterId, scope, field)).toString("base64") } });
+    const was = this.opened[scope]?.[field];
+    if (was !== undefined && was !== value) this.retired.add(was);
     (this.opened[scope] ??= {})[field] = value;
   }
 
@@ -112,12 +116,14 @@ export class SealedSettings {
     if (this.unreadable || !(scope in this.sealed)) return;
     const { [scope]: _, ...rest } = this.sealed;
     this.write(rest);
+    for (const value of Object.values(this.opened[scope] ?? {})) this.retired.add(value);
     delete this.opened[scope];
   }
 
-  /** Every value held open, for the server's list of its own secrets (server-secrets.ts). */
+  /** Every value held open, and every one rotated or removed since this store opened, for the server's list of its own
+   *  secrets (server-secrets.ts): a run that echoes a secret after its rotation is cut all the same. */
   values(): string[] {
-    return Object.values(this.opened).flatMap((fields) => Object.values(fields));
+    return [...Object.values(this.opened).flatMap((fields) => Object.values(fields)), ...this.retired];
   }
 
   private writable(): void {

@@ -868,7 +868,7 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 
 /** The secrets this server made and keeps in data directory `data`, by value: its API token (`ar_local_...`) and its
  *  door token (server.ts), its sign-in sessions' secret (owner.ts), its webhook's signing secret (`whsec_...`;
- *  webhooks.ts) and every value a trigger source keeps sealed (sealed-settings.ts), opened with the seal key of `env`, so left out when that key is not there. One pasted into a session is
+ *  webhooks.ts) and every value a trigger source keeps sealed (sealed-settings.ts), opened with the seal key of `env`, so left out when that key is not there; each signing secret's key in every spelling too (standard-webhooks.ts secretForms). One pasted into a session is
  *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a run's own
  *  door token (one file a run; not read at each import), and a key-shaped value this server did not make (a `whsec_`
  *  from elsewhere). A webhook secret that does not open is said to `say`, as ToolKeys says a saved key that does not:

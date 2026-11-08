@@ -98,6 +98,8 @@ test("no_budget: a turn whose request the run's cap refuses; a run whose cap sto
   settled(tight.view, tight.rows, "dropped", "no_budget");
   assert.equal(tight.view.cost.usd, spent, "only the job was paid for");
   assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$[\d.]+ of its \$[\d.]+ cap, and the next step needs at least \$[\d.]+\. Raise the cap to at least \$[\d.]+ to continue\.$/);
+  // The end-of-run turn's refusal pauses nothing (the run completed): its row stays an error row, with no pause marker.
+  assert.equal(Object.hasOwn(reflectRows(tight.rows).find((row) => row.kind === "error") ?? {}, "paused"), false, "the end-of-run turn's refusal is no pause");
   await made(api, learner("broke"));
   // Half a request's least: the job's first request is refused, so no turn is sent. The run pauses at its cap and its
   // learning waits with it: it ends with the run (a raise that lets it answer, or a cancel).
@@ -112,6 +114,116 @@ test("no_budget: a turn whose request the run's cap refuses; a run whose cap sto
   assert.equal(reflectRows(mute.rows).filter((row) => row.kind === "user_message").length, 1, "the turn was asked, though the agent has no tool");
   // The copy the run started with is as it was laid: the turn touched nothing.
   assert.equal(readFileSync(join(copyOf(data, mute.view.run_id), "MEMORY.md"), "utf8"), "");
+});
+
+/** Holds every run's seed copy once its pin is in place, until released: the run's directory, as each is held. */
+function holdSeeds(t) {
+  const held = [];
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  learningTestHooks.afterPin = async (dir) => {
+    held.push(dir);
+    await gate;
+  };
+  t.after(() => void (learningTestHooks.afterPin = undefined));
+  return { held, release: () => { learningTestHooks.afterPin = undefined; release(); } };
+}
+const heldRun = async (held) => {
+  for (let i = 0; !held.length; i++) {
+    assert.ok(i < 1200, "the seed is copied");
+    await sleep(25);
+  }
+  return held[0].split("/").at(-1);
+};
+
+test("a run read while its seed is copied (a list of runs, a poll, the console) is the run being started: no second Run is read from disk, its seed stays, its learning is seeded, and its end-of-run turn is asked", { timeout: 120_000 }, async (t) => {
+  const loaded = [];
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, onRunLoad: (id) => loaded.push(id) });
+  await made(api, learner("polled", { plan: PLAN }));
+  const seeds = holdSeeds(t);
+  const posted = started(api, "polled");
+  const runId = await heldRun(seeds.held);
+  // Reads in the window: each finds the run's row running, no learning saved, and the copy on disk. A list reads every
+  // running row it does not hold (the console's runs list did, as a run started).
+  const reads = [api("GET", "/runs"), api("GET", "/agents/polled/runs"), api("GET", `/runs/${runId}`)];
+  await sleep(300);
+  seeds.release();
+  for (const read of await Promise.all(reads)) assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(await posted, runId);
+  assert.deepEqual(loaded.filter((id) => id === runId), [], "the run being started is never read from disk: no second Run");
+  const { view, rows } = await ended(api, runId);
+  assert.ok(existsSync(join(runDir(data, runId), "learning.json")), "its pin stays");
+  settled(view, rows, "merged");
+  assert.ok(reflectRows(rows).some((row) => row.kind === "user_message"), "its end-of-run turn was asked");
+});
+
+test("a start whose seed copy throws after part of it is laid fails as before, and its learning says the copy failed in its own words: a read of the run never takes it for a stopped server's", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("threw", { plan: PLAN }));
+  const said = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    said.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => void (process.stderr.write = write));
+  let dir;
+  learningTestHooks.afterSeed = (runDir) => {
+    learningTestHooks.afterSeed = undefined;
+    dir = runDir;
+    throw new Error("the copy's last step failed");
+  };
+  t.after(() => void (learningTestHooks.afterSeed = undefined));
+  const posted = await api("POST", "/agents/threw/runs", { input: { content: "Go." } });
+  assert.notEqual(posted.status, 202, "the start fails, as it did");
+  const runId = dir.split("/").at(-1);
+  const learning = (await api("GET", `/runs/${runId}`)).body.learning;
+  assert.deepEqual([learning?.state, learning?.reason], ["dropped", "seed_failed"], JSON.stringify(learning));
+  assert.doesNotMatch(learning.detail, /server stopped/);
+  assert.equal(existsSync(join(runDir(data, runId), "learning.json")), false, "its copy is taken back");
+  assert.deepEqual(said.filter((line) => line.includes(runId) && /stopped while it copied/.test(line)), []);
+});
+
+test("a second create with the same key while the first start copies its seed is refused as in progress, never a second start: no second Run, and its seed stays", { timeout: 120_000 }, async (t) => {
+  const loaded = [];
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, onRunLoad: (id) => loaded.push(id) });
+  await made(api, learner("keyed", { plan: PLAN }));
+  const seeds = holdSeeds(t);
+  const key = { "idempotency-key": "same-create-1" };
+  const first = api("POST", "/agents/keyed/runs", { input: { content: "Go." } }, key);
+  const runId = await heldRun(seeds.held);
+  const second = api("POST", "/agents/keyed/runs", { input: { content: "Go." } }, key);
+  await sleep(300);
+  seeds.release();
+  const [a, b] = await Promise.all([first, second]);
+  // The key's first request is in flight: the second is answered 409 before any start, so the store's existing-run path
+  // is not reached in the window from here.
+  assert.deepEqual([a.status, a.body.run_id, b.status], [202, runId, 409], JSON.stringify([a.body, b.body]));
+  assert.deepEqual(loaded.filter((id) => id === runId), [], "no second Run");
+  const { view, rows } = await ended(api, runId);
+  assert.ok(existsSync(join(runDir(data, runId), "learning.json")), "its pin stays");
+  settled(view, rows, "merged");
+});
+
+test("a server that stops while a run's seed is copied: the next one takes the copy back, and the run says its server stopped", { timeout: 120_000 }, async (t) => {
+  const first = await serve(t, { learning: "on", faux: LEARN });
+  const { data } = first;
+  await made(first.api, learner("cut", { plan: PLAN }));
+  const seeds = holdSeeds(t);
+  void started(first.api, "cut").catch(() => undefined);
+  const runId = await heldRun(seeds.held);
+  await first.close();
+  const second = await serve(t, { learning: "on", faux: LEARN, data });
+  // Read at once, as a poll or a list would, whether or not the new server's recovery reached the run first: the same
+  // one load takes the copy back.
+  const early = (await second.api("GET", `/runs/${runId}`)).body.learning;
+  assert.deepEqual([early?.state, early?.reason], ["dropped", "seed_failed"], JSON.stringify(early));
+  assert.match(early.detail, /server stopped/);
+  const { view } = await ended(second.api, runId, ["completed", "failed"]);
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "seed_failed"], JSON.stringify(view.learning));
+  assert.match(view.learning.detail, /server stopped/);
+  assert.equal(existsSync(join(runDir(data, runId), "learning.json")), false, "its pin is taken back");
+  seeds.release();
 });
 
 test("a seed that failed is a learning row from the run's start, and a run that does not learn has none", { timeout: 90_000 }, async (t) => {

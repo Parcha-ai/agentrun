@@ -7,24 +7,41 @@ import (
 	"encoding/json"
 	"maps"
 	"runtime"
+	"slices"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
-// Capabilities is what this daemon offers, as hello reports it.
-var Capabilities = []string{"exec", "files"}
+// Groups is what this daemon offers with no display, as hello reports it: the groups of src/protocol.ts it answers.
+// A display adds desktop.Groups.
+var Groups = []string{"exec", "files", "processes"}
+
+// Kind is what a computer with this daemon and no display is, as hello reports it; with one it is "desktop".
+const Kind = "linux"
+
+// Options are what a daemon has besides its process table.
+type Options struct {
+	// Display is the X display the screen and input methods use; nil is none.
+	Display *desktop.Display
+	// Deadline is init's own, which deadline.extend moves; nil is none to move.
+	Deadline *lifetime.Deadline
+}
 
 type HelloParams struct {
 	Client string `json:"client"`
 }
 
 type HelloResult struct {
-	Version      string   `json:"version"`
-	OS           string   `json:"os"`
-	Arch         string   `json:"arch"`
-	Capabilities []string `json:"capabilities"`
+	Version string   `json:"version"`
+	OS      string   `json:"os"`
+	Kind    string   `json:"kind"`
+	Arch    string   `json:"arch"`
+	Groups  []string `json:"groups"`
 }
 
 type ExecRunParams struct {
@@ -40,19 +57,62 @@ type ExecRunResult = execrun.Result
 
 const maxTimeoutMs = 24 * 60 * 60 * 1000
 
-// Handlers is every method this daemon answers.
-func Handlers(version string) map[string]rpc.Handler {
+// Handlers is every method this daemon answers, with processes kept in table. hello asks the display each time, so a
+// display that comes up after init (a provider may start its X server through process.start) is declared from then on,
+// and one that goes is no longer declared.
+func Handlers(version string, table *process.Table, options Options) map[string]rpc.Handler {
+	display := options.Display
+	if display == nil {
+		display = desktop.New("")
+	}
 	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
-			return HelloResult{Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: Capabilities}, nil
+			kind, groups := Kind, slices.Clone(Groups)
+			if extra := display.Groups(); len(extra) > 0 {
+				kind, groups = "desktop", append(groups, extra...)
+			}
+			return HelloResult{Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil
 		},
-		"exec.run": execRun,
+		"exec.run":        execRun,
+		"deadline.extend": deadlineExtend(options.Deadline),
 	}
 	maps.Copy(handlers, fileHandlers())
+	maps.Copy(handlers, processHandlers(table))
+	maps.Copy(handlers, display.Handlers())
 	return handlers
+}
+
+type deadlineParams struct {
+	At string `json:"at"`
+}
+
+type deadlineResult struct {
+	At string `json:"at"`
+}
+
+// deadlineExtend moves init's deadline, never earlier and never past the maximum the provider gave at start.
+func deadlineExtend(deadline *lifetime.Deadline) rpc.Handler {
+	return func(_ context.Context, raw json.RawMessage) (any, error) {
+		var params deadlineParams
+		if err := strict(raw, &params); err != nil {
+			return nil, err
+		}
+		if deadline == nil {
+			return nil, rpc.Errorf(rpc.KindUnsupported, "this daemon holds no deadline: only computerd init has one")
+		}
+		to, err := time.Parse(time.RFC3339Nano, params.At)
+		if err != nil {
+			return nil, rpc.Errorf(rpc.KindInvalid, "at %q is not an ISO time, such as 2026-01-02T15:04:05.000Z", params.At)
+		}
+		at, err := deadline.Extend(to)
+		if err != nil {
+			return nil, err
+		}
+		return deadlineResult{At: at.UTC().Format(lifetime.ISO)}, nil
+	}
 }
 
 func execRun(ctx context.Context, raw json.RawMessage) (any, error) {

@@ -8,11 +8,12 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { codexProvider, OPENROUTER_BASE } from "../dist/adapters.js";
+
 import { MODEL_KEYS } from "../dist/model.js";
 import { explainsView, planeFor, resolveCapability } from "../dist/tool-plane.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { OPENROUTER_BASE, providerFor } from "../dist/provider.js";
 
 const fake = (name) => ["not-a-secret", name].join("-");
 const base = { gateway: false, parallelKey: false };
@@ -44,7 +45,7 @@ test("capabilities: on OPENROUTER_API_KEY alone codex's web_search resolves to k
   assert.equal(view({ OPENAI_API_KEY: fake("openai") }).resolves.codex, "native");
 });
 
-test("a run's plane follows the route its model requests take, the one codexProvider sends them on", () => {
+test("a run's plane follows the route its model requests take, the one providerFor sends them on", () => {
   const plane = (env, model) => planeFor(env, { harness: "codex", tools: ["web_search"], ...(model ? { model } : {}) }, {}).web_search;
   const cases = [
     [{ OPENROUTER_API_KEY: fake("or") }, undefined],
@@ -57,7 +58,7 @@ test("a run's plane follows the route its model requests take, the one codexProv
     const named = model ?? "openai/gpt-6-sol";
     const slash = named.indexOf("/");
     const ref = { provider: named.slice(0, slash), modelId: named.slice(slash + 1) };
-    const viaOpenRouter = codexProvider(env, ref).origin === OPENROUTER_BASE;
+    const viaOpenRouter = providerFor("openai-responses", env, ref, "codex").origin === OPENROUTER_BASE;
     assert.equal(plane(env, model), viaOpenRouter ? "exa-keyless" : "native", `${JSON.stringify(Object.keys(env))} ${named}: ${viaOpenRouter ? "OpenRouter" : "OpenAI"}`);
   }
 });

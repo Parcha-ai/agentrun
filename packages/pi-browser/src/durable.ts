@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { configure, defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
-import type { TSchema, Usage } from "@earendil-works/pi-ai";
+import type { Usage } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import { BROWSER_TOOL_NAMES, browserSection, browserToolsFor, listedFor, WEB_TOOL_NAMES } from "./core/contract.js";
 import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput, NO_HANDOFF } from "./core/custody.js";
 import { forModel } from "./durable/result.js";
@@ -29,6 +30,10 @@ import { resolvePrices, sessionCharge, withEstimate } from "./core/usage.js";
 
 export type { BrowserToolArgs, BrowserToolImpls, PageDriver, ToolCall, ToolImpl } from "./core/tools.js";
 export type { DriverFactory, DriverOptions } from "./core/custody.js";
+
+/** A host's step before a session is created at its provider (`BrowserExtensionOptions.beforeCreate`): the session's
+ *  conversation, its tag, and the session's own commit, for a record of the host's beside it in the same store. */
+export type BeforeCreate = (open: { conversationId: ConversationId; tag: string; commit<T>(change: (tx: Tx) => Promise<T>): Promise<T> }) => Promise<void>;
 
 export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOptions & {
   /** Default "browser"; a second plane installs a second extension under another name. */
@@ -72,6 +77,11 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
   decisions?: Decisions;
   /** How long a create may still land at the provider after its caller stopped waiting; default 60 s. */
   createDeadlineMs?: number;
+  /** The host's step between the session's record (state `creating`, its tag, in the inventory) reaching the store and
+   *  the provider's create: a barrier that makes that record durable, a record of the host's own beside it in the same
+   *  store (`commit`). Nothing is sent to the provider before it resolves; one that throws sends nothing, and the record
+   *  ends there, nothing made. */
+  beforeCreate?: BeforeCreate;
   /** How the request observer attaches (default `EffectObserver.open`); a seam for tests that have no Chrome. */
   openObserver?: typeof EffectObserver.open;
   /** Called synchronously at two moments of a page action, for a host that kills the process there to test a resume:
@@ -368,6 +378,16 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
     state.current[scope.plane] = state.sessions.length - 1;
     await c.store.begin(tx, row);
   });
+  // The host's barrier, with the record in the store: nothing is created at the provider until it is through.
+  if (c.options.beforeCreate) {
+    try {
+      await c.options.beforeCreate({ conversationId: scope.cid, tag, commit: scope.commit });
+    } catch (error) {
+      await scope.commit((tx) => c.store.move(tx, row, { state: "released", reason: "create_failed", at: now() })).catch(() => undefined);
+      await c.store.emitReleased(scope.cid, tag, scope.read, scope.context).catch(() => undefined);
+      throw failure(error, scope, c.redact);
+    }
+  }
   // An answer lost on the way back is not a session that never started: it is settled by its tag.
   const ref = await provider.create(plan.spec, scope.signal).then(
     async (made) => {
@@ -884,12 +904,11 @@ function siteTool<D extends PageDriver>(c: Custody<D>, sites: NonNullable<Browse
   });
 }
 
-/** pi-durable 1.2 on: a Session that a storage error failed ends with reason "failed" (`closed`), and close begins at
- *  once (`subscribeClose`). Before 1.2 a Session has no such end, and a failed commit poisons it with no sign. */
+/** A Session that a storage error failed ends `{ kind: "failed" }` (`closed`, pi-durable's SessionEnd), and close begins
+ *  at once (`subscribeClose`). */
 function endingOf(harness: Harness): Custody<PageDriver>["ending"] {
-  const closed = (harness as unknown as { closed?: Promise<{ reason: string }> }).closed;
-  if (typeof closed?.then !== "function") return null;
-  const ending = { closing: false, failed: closed.then((end) => end.reason === "failed", () => false) };
+  const closed = harness.closed;
+  const ending = { closing: false, failed: closed.then((end) => end.kind === "failed", () => false) };
   try { harness.subscribeClose(() => { ending.closing = true; }); } catch { ending.closing = true; }
   return ending;
 }
@@ -900,10 +919,10 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   const tracked = new Set<string>();
   const redact = createRedactor(() => [...providerKeyValues(process.env, options.redact?.values), ...tracked]);
   const vault = vaultRuntime(options, (secret) => { tracked.add(secret); }, (message) => process.emitWarning(`pi-browser: ${redact(message)}`, { code: "PI_BROWSER_VAULT" }));
-  const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED) });
-  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }) });
+  const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED), checkpointWhen: () => false });
+  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }), checkpointWhen: () => false });
   // A fork starts with no sessions: it never shares a live browser.
-  const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptySessions });
+  const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptySessions, checkpointWhen: () => false });
   const readers: Readers<D> = { options, redact, Config };
 
   /** Class name and redacted message only: a vendor SDK's error text can repeat the request's credentials. */

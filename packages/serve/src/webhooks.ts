@@ -138,9 +138,18 @@ export class Webhooks {
     this.base = base.replace(/\/+$/, "");
   }
 
-  /** The secret, opened here, for the server's list of its own secrets (server-secrets.ts); undefined when there is
-   *  none, or it does not open. */
-  signingSecret(): string | undefined {
+  /** The secret, opened here, and each one this server held before it since it started (removed by a DELETE, or
+   *  replaced), for the server's list of its own secrets (server-secrets.ts): a run that echoes an old one is cut all the
+   *  same. None that is not there, or does not open. */
+  signingSecrets(): string[] {
+    const now = this.signingSecret();
+    return [...(now ? [now] : []), ...this.retired];
+  }
+  /** The secrets this webhook signed with before, in memory alone, for this process's life. */
+  private readonly retired = new Set<string>();
+
+  /** The secret, opened here; undefined when there is none, or it does not open. */
+  private signingSecret(): string | undefined {
     if (this.signing === undefined) {
       const config = this.config();
       const opened = config && this.secret(config);
@@ -177,7 +186,9 @@ export class Webhooks {
   /** DELETE: the webhook gone, and its pending messages with it; the log of attempts stays. */
   remove(): void {
     if (!this.config()) return;
+    const was = this.signingSecret();
     rmSync(this.file, { force: true });
+    if (was) this.retired.add(was);
     this.signing = undefined;
     this.held = undefined;
     this.drop("the webhook was removed");
@@ -291,9 +302,12 @@ export class Webhooks {
 
   /** Throws when the write fails: what was held stays held. */
   private write(config: Config): void {
+    const was = this.signingSecret();
     writeDurableSync(this.file, `${JSON.stringify({ v: 1, ...config }, null, 2)}\n`);
     this.held = undefined;
     this.signing = undefined;
+    // A write that replaces the secret keeps the one it replaced (signingSecrets).
+    if (was && was !== this.signingSecret()) this.retired.add(was);
   }
 
   /** The outbox as the last server left it. A file of another version is not read, and the log says which it was. */

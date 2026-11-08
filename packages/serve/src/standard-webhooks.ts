@@ -16,16 +16,34 @@ export const HOOK_ID = /^[\x21-\x7e]{1,255}$/;
 /** The longest `webhook-signature` list read: room for many keys during a rotation, never an unbounded loop. */
 const MAX_SIGNATURES_CHARS = 2048;
 
+/** What a secret starts with, before its key in base64. */
+export const SECRET_PREFIX = "whsec_";
+
 /** A new secret: `whsec_` and 32 random bytes in base64. */
-export const mintSecret = (): string => `whsec_${randomBytes(32).toString("base64")}`;
+export const mintSecret = (): string => `${SECRET_PREFIX}${randomBytes(32).toString("base64")}`;
 
 /** The bytes a secret signs with: a `whsec_` secret's key, after its prefix; any other value, as base64. */
-const keyOf = (secret: string): Buffer => Buffer.from(secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret, "base64");
+const keyOf = (secret: string): Buffer => Buffer.from(secret.startsWith(SECRET_PREFIX) ? secret.slice(SECRET_PREFIX.length) : secret, "base64");
 /** How many bytes `value` holds as a key: a `whsec_` secret's decoded key, any other value's UTF-8. */
-export const keyBytes = (value: string): number => (value.startsWith("whsec_") ? keyOf(value).length : Buffer.byteLength(value, "utf8"));
+export const keyBytes = (value: string): number => (value.startsWith(SECRET_PREFIX) ? keyOf(value).length : Buffer.byteLength(value, "utf8"));
 
 const hmacOf = (secret: string, id: string, timestamp: string, body: string | Buffer): Buffer =>
   createHmac("sha256", keyOf(secret)).update(`${id}.${timestamp}.`).update(body).digest();
+
+/** Each spelling of `value` a cut needs beyond the ones redaction derives of any text (learn/secrets.ts redactSecrets:
+ *  as written, its hex, its base64): for a `whsec_` secret, itself, its key as written after the prefix, that key as
+ *  base64url (- and _ for + and /, no padding), and the key's bytes as hex, in either case; each padded one printed
+ *  without its trailing = too (openssl base64 | tr -d =, Python's rstrip(b"=")); and each that holds a / as a JSON
+ *  encoder that escapes / writes it. Any other value, itself. The one derivation the server's list of its own secrets
+ *  (server-secrets.ts) and so an import's cut use. */
+export const secretForms = (value: string): string[] => {
+  if (!value.startsWith(SECRET_PREFIX)) return [value];
+  const key = keyOf(value);
+  const hex = key.toString("hex");
+  const spelled = [value, value.slice(SECRET_PREFIX.length), key.toString("base64url"), hex, hex.toUpperCase()];
+  const forms = [...spelled, ...spelled.map((form) => form.replace(/=+$/, ""))];
+  return [...new Set([...forms, ...forms.filter((form) => form.includes("/")).map((form) => form.replaceAll("/", "\\/"))])];
+};
 
 /** The signature header of `body`, sent as message `id` at `timestamp` (Unix seconds), under `secret` (`whsec_...`). */
 export const signatureOf = (secret: string, id: string, timestamp: string, body: string | Buffer): string => `v1,${hmacOf(secret, id, timestamp, body).toString("base64")}`;

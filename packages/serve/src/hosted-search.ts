@@ -11,7 +11,7 @@
 // price plus each search at $10 per 1,000 (Anthropic's per search, OpenAI's per call). Under the run's cap its input is
 // held at its context plus HOSTED_SEARCH_ALLOWANCE_TOKENS.
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
-import { clip, TITLE_CAP } from "./fetch-page.js";
+import { clip, TITLE_CAP } from "./web-fetch-direct.js";
 import { sideRequests } from "./cap.js";
 import { ANSWER_MAX, type Hit, type Search, snippetOf } from "./web-search.js";
 
@@ -21,7 +21,9 @@ export const SEARCH_INPUT_TOKENS = 25_000;
 /** What the request may read into its input beyond its context, for the run's cap: each of its searches' results. */
 export const HOSTED_SEARCH_ALLOWANCE_TOKENS = HOSTED_MAX_USES * SEARCH_INPUT_TOKENS;
 export const ANTHROPIC_SEARCH_TOOL = Object.freeze({ type: "web_search_20250305", name: "web_search", max_uses: HOSTED_MAX_USES });
-export const OPENAI_SEARCH_TOOL = Object.freeze({ type: "web_search" });
+/** OpenAI's hosted search, as Codex's own live search asks for it: one shape whether the run's models send it or a CLI
+ *  harness's session proxy does, which admits that shape alone (run-adapters-codex's policy, LIVE_SEARCH). */
+export const OPENAI_SEARCH_TOOL = Object.freeze({ type: "web_search", external_web_access: true });
 /** OpenAI's hosted search has no per-tool limit: the Responses API's `max_tool_calls` caps the built-in tool calls of the
  *  request at the HOSTED_MAX_USES its fee is reserved for, as Anthropic's tool's `max_uses` does. */
 export const OPENAI_SEARCH_LIMIT = Object.freeze({ max_tool_calls: HOSTED_MAX_USES });
@@ -103,7 +105,7 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
   const provider = ref && slash > 0 ? ref.slice(0, slash) : undefined;
   const id = ref && slash > 0 ? ref.slice(slash + 1) : undefined;
   // The name as written, else Anthropic's own id for it (dots as dashes, as claude-agent prepares a dotted name:
-  // adapters.ts claudeModelId), the one the run's models hold.
+  // provider.ts anthropicModelId), the one the run's models hold.
   const model = models && provider && id ? (models.getModel(provider, id) ?? (provider === "anthropic" ? models.getModel(provider, id.replaceAll(".", "-")) : undefined)) : undefined;
   if (!models || !model) return { error: `web_search has no model to search on in this run${ref ? ` (${ref})` : ""}` };
   const anthropic = model.api === "anthropic-messages";
