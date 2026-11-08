@@ -2355,13 +2355,16 @@ with the token, an archived agent's too:
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
   seed, each file's patch as git writes it from the first `@@`, or `withheld` (`too_large`, `secret`).
 
-Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
-secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
+Every read is the folder's snapshot (`.agentrun/snapshot.json`, written last by the same exec as each commit to
+`main`), the files it names, each checked against its blob id (a file that is not, read twice, is a write in flight:
+`503`), and a merge's `.agentrun/diffs/<run>.json`, through the folder's file API: no git and no exec. Every text it
+answers is cut of the server's secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
 `[redacted]` whole, in the notes (`file`, `superseded_by`), the log's `files` and a diff's `path`, and a write's
-`Location` leaves it out, while its route still answers the real name to a caller who knows it. A commit's notes are
-parsed once and kept, for the few commits last read, so the view and every page at that commit read no note again; a
-log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
-counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+`Location` leaves it out, while its route still answers the real name to a caller who knows it. A page reads only its
+own notes' files, each once at its blob; a log page reads the snapshot alone (it keeps the newest 200 changes). A
+cursor reads at the main it names while this server still holds that snapshot, else as the first page of `main` now.
+Every write to `main` (a run's merge, a person's edit, create, retire, approve or restore) is one exec of the learning
+script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
 followed: a read or a write there answers `500`, and nothing is written.
 
 ### Approving a note that waits
