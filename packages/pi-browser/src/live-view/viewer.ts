@@ -25,6 +25,7 @@ const html = `<!doctype html>
   <button id="hands" type="button" hidden>Take over</button>
   <span id="drive" aria-live="polite"></span>
 </header>
+<div id="watching" role="note" hidden><span id="watching-text">View only: you're watching the agent's browser; your clicks and keys are not sent.</span><span id="where"></span></div>
 <div id="notice" role="status" hidden></div>
 <div id="still" role="status" hidden>This page is in a background tab or has not drawn yet, so there is no picture until it is shown. Typing and clicking still work.</div>
 <div id="dialog" role="alertdialog" aria-modal="true" hidden>
@@ -58,9 +59,19 @@ body { display: flex; flex-direction: column; }
 #bar #hands.holding { background: #5a3b00; border-color: #7a5410; }
 #hands[hidden] { display: none; }
 #notice { padding: 6px 10px; background: #5a3b00; color: #ffe2a8; }
-#notice.fatal { background: #5a1a1a; color: #ffc4c4; }
-#stage { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: auto; }
-#screen { max-width: 100%; max-height: 100%; background: #000; outline: none; cursor: default; }
+/* An end (the session released, the viewer refused or disconnected) reads at a glance, over a dimmed page. */
+#notice.fatal { background: #5a1a1a; color: #ffc4c4; font-size: 18px; font-weight: 600; text-align: center; padding: 18px 16px; }
+body.over #stage { opacity: 0.35; }
+/* Watch only: nothing in the toolbar acts, so it is not drawn; the banner says what this view is. */
+.view-only #bar { display: none; }
+#watching { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; padding: 10px 14px; background: #17324d; color: #d6e9ff; font-size: 16px; font-weight: 600; border-bottom: 1px solid #24507a; }
+#watching-text { flex: 0 1 auto; }
+/* Where the agent is: text, never a field; a long address ends in an ellipsis and its whole is the tooltip. */
+#where { flex: 1 1 14em; min-width: 0; text-align: right; font-weight: 400; font-size: 14px; color: #a9c7e6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#watching[hidden] { display: none; }
+/* The page fills the stage at its own shape: the script sizes the canvas to fit, so a point on it maps to the page exactly. */
+#stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+#screen { display: block; background: #000; outline: none; cursor: default; }
 #screen:focus, #stage:focus-within #screen { box-shadow: 0 0 0 2px #3b82f6; }
 #still { padding: 6px 12px; background: #3a3a1a; color: #f3e9a8; border-bottom: 1px solid #5a5a2a; }
 #sink { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; overflow: hidden; pointer-events: none; font-size: 16px; }
@@ -89,6 +100,17 @@ const js = `"use strict";
   // The page is shown on a canvas, which cannot take text: the keyboard's focus sits on a hidden textarea beside it, so a virtual keyboard and an IME have something to type into.
   function focusScreen() { try { sink.focus({ preventScroll: true }); } catch (e) { canvas.focus(); } }
   var ctx = canvas.getContext("2d");
+  var stage = $("stage");
+  // The canvas drawn as large as the stage allows at the page's own shape. point() reads this box, so input stays exact.
+  function fit() {
+    if (!canvas.width || !canvas.height) return;
+    var box = stage.getBoundingClientRect();
+    var scale = Math.min(box.width / canvas.width, box.height / canvas.height);
+    if (!(scale > 0)) return;
+    canvas.style.width = Math.floor(canvas.width * scale) + "px";
+    canvas.style.height = Math.floor(canvas.height * scale) + "px";
+  }
+  if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(stage); else window.addEventListener("resize", fit);
   var urlBox = $("url");
   var notice = $("notice");
   var drive = $("drive");
@@ -107,6 +129,7 @@ const js = `"use strict";
     notice.hidden = false;
     notice.textContent = text;
     notice.className = isFatal ? "fatal" : "";
+    document.body.classList.toggle("over", !!isFatal);
   }
   function setDrive(state) {
     drive.className = state === "agent" || state === "person" ? state : "";
@@ -133,11 +156,16 @@ const js = `"use strict";
   var CONTROLS = ["back", "reload", "url", "dialog-accept", "dialog-dismiss", "dialog-prompt"];
   function viewOnly() {
     document.body.classList.add("view-only");
+    $("watching").hidden = false;
+    // Nothing a watcher types or clicks is sent, so the no-picture notice promises no input.
+    stillEl.textContent = "This page is in a background tab or has not drawn yet, so there is no picture until it is shown.";
     CONTROLS.forEach(function (id) { $(id).disabled = true; });
   }
   // A take-over viewer drives only while it holds the browser: Take over asks for it, Hand back gives it back.
   var takeOver = false;
   var holding = false;
+  // Whether the take of the moment went live: one that ends before it did (the agent's step ran on) never gave the person the browser.
+  var heldThisTake = false;
   var handsEl = $("hands");
   var NOT_TAKEN = "Take over to drive the browser: your input is not sent until you do.";
   function showHands() {
@@ -155,7 +183,7 @@ const js = `"use strict";
   handsEl.addEventListener("click", function () {
     if (!ready || !takeOver || ws.readyState !== 1) return;
     ws.send(JSON.stringify({ type: holding ? "give" : "take" }));
-    if (!holding) say("Taking over the browser...");
+    if (!holding) { heldThisTake = false; say("Taking over the browser..."); }
   });
   function send(message) {
     if (readOnly) return;
@@ -179,7 +207,7 @@ const js = `"use strict";
     var mine = generation;
     createImageBitmap(blob).then(function (bitmap) {
       if (mine !== generation) { if (bitmap.close) bitmap.close(); return; }
-      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) { canvas.width = bitmap.width; canvas.height = bitmap.height; }
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) { canvas.width = bitmap.width; canvas.height = bitmap.height; fit(); }
       ctx.drawImage(bitmap, 0, 0);
       gotPicture();
       if (bitmap.close) bitmap.close();
@@ -211,6 +239,8 @@ const js = `"use strict";
 
   var HELD = { agent_acting: "The agent is acting, so that input was held. Try again in a moment.", no_page: "There is no page to drive yet.", bad_message: "That input was not understood.", read_only: "This view is view-only: your input is not sent.", not_taken: NOT_TAKEN, taking: "Taking over the browser: wait a moment." };
   var HOLD_ENDED = { given: "You handed the browser back to the agent.", answered: "The agent's request was answered, so the browser went back to the agent.", idle: "The browser went back to the agent: no input came from you for a while.", away: "The browser went back to the agent while this view was closed.", released: "The browser's session ended.", cap: "The browser went back to the agent: the run's spend cap has no room for more of your time." };
+  // Why a take ended before it went live: the person never had the browser, so it never "went back".
+  var NOT_STARTED = { idle: "the agent's step was still running when your time ran out", away: "this view was closed before the agent's step finished", released: "the browser's session ended", cap: "the run's spend cap has no room for more of your time", answered: "the agent's request was answered first", given: "you handed it back before it started" };
   var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this session.", released: "This session has been released.", bad_message: "The host did not understand this viewer." };
   ws.onmessage = function (event) {
     if (typeof event.data !== "string") {
@@ -221,14 +251,22 @@ const js = `"use strict";
     }
     var m;
     try { m = JSON.parse(event.data); } catch (e) { return; }
-    if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; takeOver = !readOnly && m.takeOver === true; holding = takeOver && m.held === true; if (readOnly) viewOnly(); showHands(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
-    else if (m.type === "hold") { holding = m.held === true; showHands(); setDrive(holding ? "person" : "idle"); say(holding ? "" : (typeof m.message === "string" && m.message ? (HOLD_ENDED[m.reason] || "The browser went back to the agent.") + " " + m.message : (HOLD_ENDED[m.reason] || "The browser went back to the agent."))); if (holding) focusScreen(); }
+    if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; takeOver = !readOnly && m.takeOver === true; holding = takeOver && m.held === true; heldThisTake = holding; if (readOnly) viewOnly(); showHands(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
+    else if (m.type === "hold") {
+      var started = heldThisTake;
+      holding = m.held === true;
+      if (holding) heldThisTake = true; else heldThisTake = false;
+      showHands(); setDrive(holding ? "person" : "idle");
+      var extra = typeof m.message === "string" && m.message ? " " + m.message : "";
+      say(holding ? "" : started ? (HOLD_ENDED[m.reason] || "The browser went back to the agent.") + extra : "Your take-over did not start: " + (NOT_STARTED[m.reason] || "the browser was not handed to you") + "." + extra);
+      if (holding) focusScreen();
+    }
     else if (m.type === "take_refused") say(typeof m.message === "string" && m.message ? m.message : "The browser could not be handed to you.");
     // The old page's picture goes with it, and so does the frame waiting; a decode in flight finishes without drawing.
     else if (m.type === "no_page") { noPage = true; generation += 1; waiting = null; ctx.clearRect(0, 0, canvas.width, canvas.height); stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }
     // "No page yet" stays until a page or a frame comes: who drives meanwhile changes nothing on a browser with no page.
-    else if (m.type === "status") { setDrive(m.drive); if (noPage || takeOver) return; if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
-    else if (m.type === "page") { if (noPage) { noPage = false; say(""); } document.title = m.title ? m.title + " - Live view" : "Live view"; if (document.activeElement !== urlBox) urlBox.value = m.url; if (m.url !== shownUrl) { shownUrl = m.url; expectPicture(); } }
+    else if (m.type === "status") { setDrive(m.drive); if (noPage || takeOver || readOnly) return; if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
+    else if (m.type === "page") { if (noPage) { noPage = false; say(""); } document.title = m.title ? m.title + " - Live view" : "Live view"; if (document.activeElement !== urlBox) urlBox.value = m.url; $("where").textContent = m.url; $("where").title = m.url; if (m.url !== shownUrl) { shownUrl = m.url; expectPicture(); } }
     else if (m.type === "dialog") showDialog(m);
     else if (m.type === "dialog_closed") hideDialog();
     else if (m.type === "held") say(HELD[m.reason] || "That input was held.");

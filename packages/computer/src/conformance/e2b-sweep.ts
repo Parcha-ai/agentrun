@@ -12,12 +12,14 @@
 // every swept sandbox is gone, 1 when one is still there, 2 on a usage error, a before file it cannot read, a missing
 // key, or a listing E2B refused (nothing is killed then).
 //
-// It reads COMPUTER_E2B_API_KEY and COMPUTER_E2B_DOMAIN as the provider's fromEnv does: the key passed to every SDK
-// call explicitly, an ambient E2B_SANDBOX_URL refused. It needs no AGENTRUN_COMPUTER_LIVE_E2B: it makes nothing.
+// It reads COMPUTER_E2B_API_KEY and COMPUTER_E2B_DOMAIN as the conformance module does (settingsFromEnv in ./e2b.ts)
+// and builds the provider with create(): the key passed to every SDK call explicitly, an ambient E2B_SANDBOX_URL
+// refused. It needs no AGENTRUN_COMPUTER_LIVE_E2B: it makes nothing.
 import { readFileSync, writeFileSync } from "node:fs";
 import { COMPUTER_LABEL } from "../drift.js";
-import { type E2BProvider, type E2BSandboxClass, ENV, fromEnv } from "../e2b.js";
+import { create, type E2BProvider, type E2BSandboxClass } from "../e2b.js";
 import { isCommand } from "../entry.js";
+import { E2B_ENV as ENV, settingsFromEnv } from "./e2b.js";
 import { waitUntil } from "../wait.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
@@ -42,7 +44,7 @@ const USAGE = `usage: node packages/computer/dist/conformance/e2b-sweep.js --bef
   --before <file>  record the id of every sandbox E2B lists with ${COMPUTER_LABEL}=1 into <file>
   --after <file>   kill every sandbox listed with ${COMPUTER_LABEL}=1 whose id is not in <file>, read each back until
                    E2B no longer has it (up to 60 s each), and print {"swept":n,"gone":m,"stillThere":[ids]}
-  settings: ${ENV.key} (required) and ${ENV.domain}, as the provider reads them; never E2B_API_KEY
+  settings: ${ENV.key} (required) and ${ENV.domain}, as the conformance module reads them; never E2B_API_KEY
 exit: 0 every swept sandbox is gone, 1 one is still there, 2 usage error, unreadable before file, no key, or a refused listing`;
 
 class Usage extends Error {}
@@ -90,7 +92,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 	try {
 		args = parse(argv);
 		if (args.mode === "after") before = beforeIds(args.file);
-		provider = await fromEnv(env, { ...(io.Sandbox ? { Sandbox: io.Sandbox } : {}), timeouts: { goneMs: waitMs, pollMs } });
+		provider = await create({ ...settingsFromEnv(env), ...(io.Sandbox ? { Sandbox: io.Sandbox } : {}), timeouts: { goneMs: waitMs, pollMs } });
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n${error instanceof Usage ? `${USAGE}\n` : ""}`);
 		return 2;

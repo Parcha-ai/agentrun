@@ -185,11 +185,14 @@ export class LiveViewers {
 
 /** The viewer's WebSocket to the run's port: the request line and the handshake's own headers, the Host and Origin the
  *  run's viewer takes (its own), and nothing else of the owner's (no cookie); then both ways, unread. */
-export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, handover: LiveHandover, rest: string): void {
+/** Once piping starts, the viewer's socket carries the run's WebSocket stream: nothing is ever written into it after that,
+ *  an error only ends it. `onPiping` hears when that starts (the server's own failure handling then destroys, never writes). */
+export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, handover: LiveHandover, rest: string, onPiping?: () => void): void {
   const key = String(req.headers["sec-websocket-key"] ?? "");
   const version = String(req.headers["sec-websocket-version"] ?? "");
   if (!/^[A-Za-z0-9+/]{22}==$/.test(key) || version !== "13") return void socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
   const upstream = connect({ host: LOOPBACK, port: handover.port });
+  let piping = false;
   const end = () => {
     socket.destroy();
     upstream.destroy();
@@ -198,10 +201,14 @@ export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buf
     const own = `${LOOPBACK}:${handover.port}`;
     upstream.write(`GET ${rest} HTTP/1.1\r\nHost: ${own}\r\nOrigin: http://${own}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     if (head.length) upstream.write(head);
+    piping = true;
+    onPiping?.();
     upstream.pipe(socket).pipe(upstream);
   });
   upstream.on("error", () => {
-    if (socket.writable) socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    // Before piping, the viewer is still waiting for its upgrade's answer: a 502 is that answer. After, it is mid-stream.
+    if (piping) socket.destroy();
+    else if (socket.writable) socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     upstream.destroy();
   });
   socket.on("error", end);

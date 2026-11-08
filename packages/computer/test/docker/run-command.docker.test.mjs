@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/index.js";
+import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const IMAGE = "debian:bookworm-slim";
@@ -27,6 +28,8 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 	let arch;
 	let ref;
 	let connection;
+	/** The times just before and just after create, in ms: the deadline is lifetimeMs from a moment between them. */
+	let createdAt;
 
 	const exec = (argv, extra = {}) => connection.client.call("exec.run", { argv, timeoutMs: 20_000, ...extra });
 	const run = async (argv, extra) => {
@@ -54,9 +57,11 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 	});
 
 	it("creates a computer with no network and a 10-minute lifetime", async () => {
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "run-command" } });
-		assert.equal(created.ok, true, JSON.stringify(created));
-		ref = created.value;
+		const from = Date.now();
+		const result = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "run-command" } });
+		createdAt = { from, to: Date.now() };
+		assert.equal(result.ok, true, JSON.stringify(result));
+		ref = result.value;
 		made.push(ref.name);
 		assert.match(ref.name, /^computer-[0-9a-f]{12}$/);
 	});
@@ -87,8 +92,11 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 		const labels = inspected.Config.Labels;
 		assert.deepEqual(inspected.Config.Cmd, ["init", "--deadline", labels["agentrun.computer.deadline"]]);
 		assert.equal(labels["agentrun.computer"], "1");
+		// lifetimeMs from the moment create set it, however long docker run then took: a Docker host busy with another
+		// workload can hold every container start for a minute or more.
 		const deadline = Date.parse(labels["agentrun.computer.deadline"]);
-		assert.ok(deadline > Date.now() + 9 * 60_000 && deadline <= Date.now() + 10 * 60_000, labels["agentrun.computer.deadline"]);
+		const window = `${new Date(createdAt.from + 10 * 60_000).toISOString()} to ${new Date(createdAt.to + 10 * 60_000).toISOString()}`;
+		assert.ok(deadline >= createdAt.from + 10 * 60_000 && deadline <= createdAt.to + 10 * 60_000, `${labels["agentrun.computer.deadline"]} is not within ${window}`);
 	});
 
 	it("connects, and hello reports Docker's arch, exec, files and processes", async () => {
@@ -160,19 +168,23 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});
 
-	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async () => {
-		// Long enough for create's checks while other files make computers on a loaded host; the test asserts the end.
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 45_000, network: "none", labels: { "agentrun.test": "run-command" } });
+	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async (t) => {
+		// 45 s, or longer on a host slow to start it (createForDeadline); the test asserts the end, not its timing.
+		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: IMAGE, lifetimeMs, network: "none", labels: { "agentrun.test": "run-command" } }), {
+			lifetimeMs: 45_000,
+			keep: (name) => made.push(name),
+		});
+		if (got === undefined) return;
+		const { result: created, lifetimeMs, from } = got;
 		assert.equal(created.ok, true, JSON.stringify(created));
-		made.push(created.value.name);
-		const bound = Date.now() + 120_000;
+		const bound = from + lifetimeMs + 120_000;
 		let state;
 		do {
 			[{ State: state }] = JSON.parse(docker("inspect", created.value.name));
 			if (!state.Running) break;
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		} while (Date.now() < bound);
-		assert.equal(state.Running, false, "still running 120 s after a 45 s lifetime");
+		assert.equal(state.Running, false, `still running 120 s after a ${lifetimeMs / 1000} s lifetime`);
 		assert.equal(state.ExitCode, 0);
 		assert.deepEqual(await provider.release(created.value, "delete"), { ok: true, value: undefined });
 	});

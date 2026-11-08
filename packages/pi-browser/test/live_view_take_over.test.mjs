@@ -561,7 +561,9 @@ test("take-over viewer: a person's command that never returns renews their turn 
 /** The real page driver over a stand-in Stagehand whose page is at `url` (a batch may move it), with a snapshot of two ids. */
 async function batchRig({ onAction }) {
   const { pageDriver } = await import("../dist/driver/page-driver.js");
-  const page = { pageId: "page-1", at: "https://example.test/page", url: async () => page.at, snapshot: async () => ({ formattedTree: "[1-1] link: Details\n[1-2] textbox: Name", xpathMap: { "1-1": "/html/body/a", "1-2": "/html/body/input" } }), screenshot: async () => new Uint8Array() };
+  // `doc`: the document the page shows (a new one on a navigation or a reload; the same one across a #hash or pushState),
+  // as the page reads its own performance.timeOrigin.
+  const page = { pageId: "page-1", at: "https://example.test/page", doc: 1000.25, evaluate: async (expression) => (String(expression).includes("performance.timeOrigin") ? page.doc : undefined), url: async () => page.at, snapshot: async () => ({ formattedTree: "[1-1] link: Details\n[1-2] textbox: Name", xpathMap: { "1-1": "/html/body/a", "1-2": "/html/body/input" } }), screenshot: async () => new Uint8Array() };
   const stagehand = {
     browser: { context: { activePage: async () => page } },
     experimentalBatch: async (_callback, input) => {
@@ -629,4 +631,61 @@ test("a run of several actions over the real page driver whose snapshot is stale
   assert.equal(out.isError, true);
   assert.match(JSON.parse(out.content[0].text).message, /navigated after its snapshot/, "the stale snapshot, as before");
   assert.deepEqual(acts, [], "nothing was sent");
+});
+
+test("take-over viewer: a gate registry that cannot hold (one from before holds) refuses the take in its own words, never as held already", async (t) => {
+  const base = createDrivingGates();
+  const HOLDS = new Set(["take", "give", "held", "holding", "settling", "epoch"]);
+  const legacy = (tag) => { const g = base(tag); return new Proxy(g, { get(target, key) { if (HOLDS.has(key)) return undefined; const v = Reflect.get(target, key, target); return typeof v === "function" ? v.bind(target) : v; } }); };
+  const calls = [];
+  const host = createLiveView({ hostOrigin: "'self'", stream: () => ({ input: async () => {}, nav: async () => {}, dialog: async () => {}, close() {} }), viewer: VIEWER, gates: legacy, takeOver: { take: async () => ({ end: (why) => calls.push(["end", why]), started: () => calls.push(["started"]), cancel: () => calls.push(["cancel"]) }) } });
+  t.after(() => host.close());
+  const view = await host.open("ar-run-to-legacy-1", "ws://127.0.0.1:9/x");
+  const u = new URL(view.fullscreen);
+  const c = await connect(`ws://${u.host}${u.pathname}/ws`, { origin: u.origin });
+  c.ws.sendJson({ type: "hello", token: new URLSearchParams(u.hash.slice(1)).get("t") });
+  await c.ws.next();
+  c.ws.sendJson({ type: "take" });
+  const refused = JSON.parse((await c.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "take_refused")).item?.data ?? "null");
+  assert.deepEqual(refused, { type: "take_refused", message: "This browser can't be handed over from the live view." });
+  assert.deepEqual(calls, [["cancel"]], "the host's take is cancelled, never ended");
+});
+
+/** A batch of a click (1-1) then a fill (1-2) over the real page driver, the click doing `move` to the page; its answer and
+ *  the actions that reached the page. */
+async function clickThenFill(tag, move) {
+  const gates = createDrivingGates();
+  const acts = [];
+  const { driver } = await batchRig({ onAction: async (action, page) => { acts.push(action.id); if (action.id === "1-1") move(page); } });
+  await driver.snapshot({});
+  const port = { session: async () => ({ tag, driver, notice: null }), relaunch: async () => ({ tag, driver }), release: async () => ({ released: true, sessionId: null }) };
+  const tool = drivingGuard(async (_a, p) => {
+    const s = await p.session();
+    try { return { content: [{ type: "text", text: JSON.stringify(await s.driver.run({ actions: [{ op: "click", id: "1-1" }, { op: "fill", id: "1-2", value: "Ada" }] })) }] }; }
+    catch (error) { return { content: [{ type: "text", text: JSON.stringify(error.failure ?? { message: error.message }) }], isError: true }; }
+  }, gates);
+  const out = await tool({}, port, {});
+  return { out: JSON.parse(out.content[0].text), isError: out.isError === true, acts };
+}
+
+test("a run of several actions whose first loads a new document stops before the next: the snapshot's ids never reach the new page", async () => {
+  const { out, isError, acts } = await clickThenFill("ar-run-to-23-1", (page) => { page.at = "https://example.test/other"; page.doc = 2000.5; });
+  assert.equal(isError, true, JSON.stringify(out));
+  assert.deepEqual([out.code, out.effect, out.completed], ["stale_snapshot", "partial", 1], JSON.stringify(out));
+  assert.match(out.message, /1 of the 2 actions ran.*snapshot again/);
+  assert.deepEqual(acts, ["1-1"], "the fill never reached the new page");
+});
+
+test("a run of several actions whose first moves the page's path with pushState (the same document) runs the next", async () => {
+  const { out, isError, acts } = await clickThenFill("ar-run-to-24-1", (page) => { page.at = "https://example.test/page/step-2"; });
+  assert.equal(isError, false, JSON.stringify(out));
+  assert.deepEqual(out, { completed: 2, url: "https://example.test/page/step-2" });
+  assert.deepEqual(acts, ["1-1", "1-2"]);
+});
+
+test("a run of several actions whose first reloads the page (a new document at the same address) stops before the next", async () => {
+  const { out, isError, acts } = await clickThenFill("ar-run-to-25-1", (page) => { page.doc = 3000.75; });
+  assert.equal(isError, true, JSON.stringify(out));
+  assert.deepEqual([out.code, out.effect, out.completed], ["stale_snapshot", "partial", 1], JSON.stringify(out));
+  assert.deepEqual(acts, ["1-1"]);
 });
