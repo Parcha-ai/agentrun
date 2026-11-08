@@ -19,6 +19,7 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { MODEL_KEYS } from "../dist/model.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { git } from "./learn-support.mjs";
 import { agent, answerFlow, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
@@ -273,7 +274,7 @@ test("R9 no run is offered fewer learned workflows for where its harness's reque
   mkdirSync(join(runDir, "work"), { recursive: true });
   const seed = await learning.seedOf(data, "pinned");
   // A caller that still says why it would withhold them is not heard: every learned workflow is the run's.
-  const pin = await learning.pinSeed(runDir, join(runDir, "work"), seed, { budget: 8000, read: false, shown: learning.secretsShown([]), workflowsOff: "a reason no run is refused for any more" });
+  const pin = await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown([]), workflowsOff: "a reason no run is refused for any more" });
   assert.deepEqual([pin.workflows, "workflows_off" in pin, pin.workflows_left_out], [["answer"], false, undefined], JSON.stringify(pin));
 });
 
