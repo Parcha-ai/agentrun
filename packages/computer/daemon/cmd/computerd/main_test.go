@@ -308,6 +308,36 @@ func TestInitWithOwnNetworkMustStartAsRoot(t *testing.T) {
 	}
 }
 
+// probe --sockets lists the unix sockets with a path it can connect to, the isolation fence's listing (no python3 in the
+// image needed): a socket this test listens on under /tmp is among them; without --sockets there is no list.
+func TestProbeSocketsListsAPathSocketItCanConnectTo(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "probe-sockets-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	code, stdout, stderr := computerdOut(t, 60*time.Second, "probe", "--sockets")
+	if code != 0 {
+		t.Fatalf("probe --sockets: exit %d, stderr %q", code, stderr)
+	}
+	var report struct {
+		Sockets *[]string `json:"sockets"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil || report.Sockets == nil || !strings.Contains(","+strings.Join(*report.Sockets, ",")+",", ","+path+",") {
+		t.Fatalf("probe --sockets wrote %q (%v); want %s among its sockets", stdout, err, path)
+	}
+	code, stdout, _ = computerdOut(t, 30*time.Second, "probe")
+	if code != 0 || strings.Contains(stdout, `"sockets"`) {
+		t.Fatalf("probe without --sockets: exit %d, %q; want no sockets list", code, stdout)
+	}
+}
+
 func TestProbeListsTheLiveInterfacesOfItsNetwork(t *testing.T) {
 	code, stdout, stderr := computerdOut(t, 30*time.Second, "probe")
 	if code != 0 {
