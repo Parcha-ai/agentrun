@@ -10,13 +10,14 @@ import type { KindVerdict } from "./kind.js";
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
- * stops a computer and keeps it, a mount kind capabilities().mount declares, or a provider method that is optional
- * (extend, stream), declared by being there.
+ * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
+ * (extend, stream), declared by being there, or the ports of a vendor's agent in the computer (vendor-agent: declared
+ * by capabilities().vendorAgentPorts, an empty list included).
  */
 export type Capability =
 	| Group
@@ -30,7 +31,8 @@ export type Capability =
 	| "mount:bind"
 	| "mount:archil"
 	| "extend"
-	| "stream";
+	| "stream"
+	| "vendor-agent";
 
 /**
  * A fresh run's folder for one mount kind, made by the provider's conformance module: the mount that reaches it, and its
@@ -38,6 +40,9 @@ export type Capability =
  */
 export interface RunFolder {
 	mount: MountSpec;
+	/** The run whose folder it is, for a mount made for a run (Archil: agents/<agent>/runs/<run>/work): a computer that
+	 *  mounts it is labelled agentrun.run with it. */
+	run?: string;
 	/** A file of the folder, by its path relative to the folder, read from outside; undefined when there is none. */
 	read(path: string): Promise<Uint8Array | undefined>;
 	/** Writes a file of the folder from outside, by its path relative to the folder. */
@@ -50,10 +55,12 @@ export interface RunFolder {
  * What a computer of this kind and daemon mode must declare: a case that needs one of these fails Core when it is
  * missing, where a case that needs an undeclared optional group is skipped. exec, files and processes are Core whenever
  * computerd runs (pid1 or child); with daemon none they are tested only when declared. Network none is Core wherever
- * computerd runs; a phone is tested on an open network. A browser must declare its CDP target.
+ * computerd runs; a phone is tested on an open network. A browser must declare its CDP target. A child daemon runs
+ * beside the vendor's own agent, so it must declare that agent's ports (vendor-agent), and isolation.vendor-agent checks
+ * its programs reach none of them.
  */
 export function coreGroups(kind: ComputerKind, daemon: DaemonMode): Capability[] {
-	const computerd: Capability[] = daemon === "none" ? [] : ["exec", "files", "processes", "network:none"];
+	const computerd: Capability[] = daemon === "none" ? [] : ["exec", "files", "processes", "network:none", ...(daemon === "child" ? (["vendor-agent"] as const) : [])];
 	switch (kind) {
 		case "linux":
 			return computerd;
@@ -141,6 +148,8 @@ export interface CaseContext {
 	until<T>(fn: () => Promise<T | undefined | false>, what: string, ms?: number): Promise<T>;
 	/** Ends the case as a skip, with the reason. */
 	skip(reason: string): never;
+	/** Records what the case saw without asserting it (its result's observed), for a fact not yet known either way. */
+	observe(words: string): void;
 }
 
 export interface Case {
@@ -167,6 +176,8 @@ export interface CaseResult {
 	 * these does not fail Core; any other skip of a Core case does.
 	 */
 	undeclared?: Capability[];
+	/** What the case saw and recorded without asserting it (CaseContext.observe); absent when nothing. */
+	observed?: string[];
 }
 
 export interface ConformanceReport {
@@ -206,6 +217,12 @@ export interface ConformanceReport {
 	 * accepted and sent nothing back), one entry per note, naming the computer, in the order they came; absent when none.
 	 */
 	computerNotes?: ComputerNote[];
+	/**
+	 * What the provider said through its onNote option during the run (a release that did not let an Archil folder go
+	 * cleanly), naming the computer, in the order it came: no failure of any case. The CLI gives the option and fills
+	 * this; absent when nothing was said.
+	 */
+	providerNotes?: ComputerNote[];
 }
 
 /** One note a create returned: the computer's name and the note's words. */

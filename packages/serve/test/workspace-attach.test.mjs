@@ -74,9 +74,9 @@ test("attach checks the computer's read-back against readBackOf(mountSpec()) (th
   assert.deepEqual(asked, [{ kind: "bind", path: root }], "it asked the passed-in check, with its own mount");
   // The disk's mount: never with the token in a refusal.
   const archil = { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", token: "secret-token" };
-  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/b/runs/r/work" } }), archil, { readBackOf }), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work in r1/);
-  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r2", folder: "agents/a/runs/r/work" } }), archil, { readBackOf }), "REFUSED", /in r2, not/);
-  await checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" } }), archil, { readBackOf });
+  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/b/runs/r/work", exclusive: true, epoch: 1 } }), archil, { readBackOf }), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work in r1/);
+  await refused(checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r2", folder: "agents/a/runs/r/work", exclusive: true, epoch: 1 } }), archil, { readBackOf }), "REFUSED", /in r2, not/);
+  await checkReadBack(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", exclusive: true, epoch: 1 } }), archil, { readBackOf });
   await assert.rejects(checkReadBack(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil, { readBackOf }), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
 });
 
@@ -305,6 +305,10 @@ test("attached: a folder link on the way is refused before a call changes anythi
 test("attached on a bind: what the host cannot open to sync, the computer syncs as its owner; if it cannot either, the write fails before the move", async () => {
   const root = scratch();
   writeFileSync(join(root, "a.md"), "old");
+  writeFileSync(join(root, "private.md"), "old");
+  // Each file's mode set here, not by the umask of whoever runs the test (under 077 a new file is already 0600).
+  chmodSync(join(root, "a.md"), 0o644);
+  chmodSync(join(root, "private.md"), 0o600);
   const computer = fakeComputer(root);
   const ran = [];
   computer.overrides["exec.run"] = (params) => { ran.push(params.argv); return { exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }; };
@@ -316,6 +320,13 @@ test("attached on a bind: what the host cannot open to sync, the computer syncs 
   assert.deepEqual(ran[1], ["sync", "/workspace/a.md"]);
   const order = computer.methods().filter((method) => method !== "files.stat");
   assert.deepEqual(order, ["files.write", "exec.run", "files.write", "files.move", "exec.run"], "the temporary file's bytes are synced before its mode and the move");
+  assert.equal(statSync(join(root, "a.md")).mode & 0o777, 0o644, "it keeps its mode");
+  // A 0600 file's temporary file is already 0600: no write sets its mode, and the order is the same without it.
+  computer.clear();
+  await workspace.write("private.md", "new");
+  assert.deepEqual(computer.methods().filter((method) => method !== "files.stat"), ["files.write", "exec.run", "files.move", "exec.run"]);
+  assert.equal(statSync(join(root, "private.md")).mode & 0o777, 0o600);
+  rmSync(join(root, "private.md"));
   // The computer's own sync fails: the write fails in words, before the move, and the target keeps its bytes.
   computer.overrides["exec.run"] = () => ({ exitCode: 1, stdout: "", stderr: "", timedOut: false, truncated: false });
   await refused(workspace.write("a.md", "lost?"), "UNAVAILABLE", /could not be made durable: this host cannot open it, and the computer's own sync failed \(sync exited 1\)/);

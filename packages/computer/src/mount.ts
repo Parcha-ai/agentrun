@@ -1,6 +1,7 @@
 // The run's folder in a computer: the one path it is mounted at, the spec rule every provider's check() shares, and the
 // shape a provider reads it back in. An Archil mount's token is a secret: no refusal, read-back or word here holds it.
 import { realpathSync, statSync } from "node:fs";
+import { epochProblem } from "./labels.js";
 import type { Refusal } from "./provider.js";
 
 /** Where the run's folder is mounted in every computer. HOME is elsewhere (a Docker computer's is /work). */
@@ -17,9 +18,14 @@ export const MOUNT_KINDS: readonly MountKind[] = ["bind", "archil"];
 
 /**
  * A computer's mount as read back from the computer itself: its kind and where it comes from, never the token. `other`
- * is a mount at WORKSPACE the provider never makes (read-only, a volume), in words.
+ * is a mount at WORKSPACE the provider never makes (read-only, a volume), in words. An Archil mount also reads back
+ * whether it holds the folder exclusively (no other client writes it) and the claim epoch it was made under: the
+ * computer's agentrun.epoch label (labels.ts), since Archil's hold on a folder carries no epoch of its own.
  */
-export type MountReadBack = { kind: "bind"; path: string } | { kind: "archil"; disk: string; region: string; folder: string } | { other: string };
+export type MountReadBack =
+	| { kind: "bind"; path: string }
+	| { kind: "archil"; disk: string; region: string; folder: string; exclusive: boolean; epoch: number }
+	| { other: string };
 
 const SHAPE = 'mount is { kind: "bind", path } or { kind: "archil", disk, region, folder, token }';
 const FIELDS: Record<MountKind, readonly string[]> = { bind: ["kind", "path"], archil: ["kind", "disk", "region", "folder", "token"] };
@@ -84,7 +90,14 @@ function archilRefusals({ disk, region, folder, token }: Record<string, unknown>
 	return found;
 }
 
-/** What a provider reads back of a mount it made as asked: its kind and source, never the token. */
-export function readBackOf(mount: MountSpec): MountReadBack {
-	return mount.kind === "bind" ? { kind: "bind", path: mount.path } : { kind: "archil", disk: mount.disk, region: mount.region, folder: mount.folder };
+/**
+ * What a provider reads back of a mount it made as asked: its kind and source, never the token. An Archil mount is
+ * always exclusive, and is read back under `epoch`, the computer's claim epoch. With no epoch, or a value that is not
+ * one, it is `{ other }` in words: a mount under no claim, which no attach takes, never a guessed epoch. A bind takes none.
+ */
+export function readBackOf(mount: MountSpec, epoch?: number): MountReadBack {
+	if (mount.kind === "bind") return { kind: "bind", path: mount.path };
+	const problem = epochProblem(epoch);
+	if (problem !== undefined) return { other: `an Archil mount of ${mount.disk}:/${mount.folder} with no epoch to read it back under (${problem})` };
+	return { kind: "archil", disk: mount.disk, region: mount.region, folder: mount.folder, exclusive: true, epoch: epoch as number };
 }

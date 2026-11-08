@@ -8,9 +8,12 @@
 // finished (sandbox.ts:2149-2154). exec of the daemon's stdio bridge answers hello, ping and exec.run of the probe as
 // computerd would. exec of the provider's upload command reads the daemon from stdin, as `cat` would, prints its sha256
 // and installs it only when it is the one the command names, as the script does; a sandbox whose command is the
-// provider's entrypoint has no daemon until then. No Modal client is ever constructed here, and nothing reaches the
-// network.
+// provider's entrypoint has no daemon until then (unless the image copies one in). An Archil computer's root commands
+// (the preflight, the helper's verbs and the gate init waits for) run as the helper would, answering by verb, and leave
+// the sandbox's mount table as a mount would; the bridge answers files.read of /proc/self/mounts and mount.sync from
+// it. No Modal client is ever constructed here, and nothing reaches the network.
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -19,8 +22,59 @@ export const DAEMON_IMAGE = `ghcr.io/example/computerd@sha256:${"a".repeat(64)}`
 /** The first line of each script the provider sends, by which the fake knows it. */
 export const ENTRYPOINT_MARK = "# agentrun-computer: entrypoint";
 export const UPLOAD_MARK = "# agentrun-computer: upload";
+export const PREFLIGHT_MARK = "# agentrun-computer: archil preflight";
 /** A command that is the provider's script: sh -c <script> sh <args>. */
 const isScript = (command, mark) => command?.[0] === "sh" && command[1] === "-c" && typeof command[2] === "string" && command[2].startsWith(`${mark}\n`);
+
+export const ARCHIL_HELPER = "/usr/local/sbin/agentrun-archil";
+/** The file the entrypoint of an Archil computer waits for, beside the daemon, before it becomes init. */
+export const ARCHIL_GATE = "/opt/agentrun/archil-mounted";
+const HELPER_SHA = createHash("sha256").update(readFileSync(new URL("../box/agentrun-archil", import.meta.url))).digest("hex");
+/** What the preflight prints in a computer as the Archil image makes it. */
+export const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none"].join("\n");
+/** The verb of a root command: the helper's, the preflight, or the gate; undefined for any other command. */
+export function rootVerb(command) {
+	if (command?.[0] === ARCHIL_HELPER) return command[1];
+	if (isScript(command, PREFLIGHT_MARK)) return "preflight";
+	if (command?.[0] === "touch" && command[1] === ARCHIL_GATE && command.length === 2) return "gate";
+	return undefined;
+}
+/**
+ * A fake of an Archil disk's object API, the outside of a run folder in the conformance modules: keys relative to the
+ * disk's root; a missing key throws as the SDK does, with status 404, and a key holding "broken" with status 500.
+ */
+export function fakeObjects() {
+	const objects = new Map();
+	const calls = [];
+	return {
+		objects,
+		calls,
+		async getObject(key) {
+			calls.push(["getObject", key]);
+			if (key.includes("broken")) throw Object.assign(new Error("500: the disk is unreachable"), { status: 500 });
+			if (!objects.has(key)) throw Object.assign(new Error(`404: ${key} not found`), { status: 404 });
+			return new Uint8Array(objects.get(key));
+		},
+		async putObject(key, body) {
+			calls.push(["putObject", key]);
+			objects.set(key, Buffer.from(body));
+		},
+		async deleteObject(key) {
+			calls.push(["deleteObject", key]);
+			objects.delete(key);
+		},
+	};
+}
+
+/** The mount table a sandbox's daemon reads at /proc/self/mounts. */
+export function mountsOf(box) {
+	const lines = ["proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0", "overlay / overlay rw,relatime 0 0"];
+	if (box.mounted) {
+		const { disk, folder } = box.mounted;
+		lines.push(`${box.mountSource ?? `${disk}:/${folder}`} /workspace ${box.mountType ?? "fuse.archil"} rw,nosuid,nodev,relatime,user_id=0,group_id=0,allow_other 0 0`);
+	}
+	return `${lines.join("\n")}\n`;
+}
 export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 /** What computerd probe reports in a VM sandbox: Modal's docs show `uname -srn` there as "Linux modal 7.2.6". */
 export const VM_KERNEL = "7.2.6";
@@ -85,8 +139,9 @@ function queue() {
 
 /**
  * The daemon's stdio bridge in one sandbox, as a ContainerProcess in binary mode: requests written to stdin are
- * answered on stdout. `box` holds what this sandbox's daemon reports: hello, and the probe's kernel, uid:gid, reached
- * (targets that answered) and accepted (targets that accepted a connection and sent nothing back).
+ * answered on stdout. `box` holds what this sandbox's daemon reports: hello, and the probe's kernel, uid:gid, interfaces
+ * (default the loopback alone), reached (targets that answered) and accepted (targets that accepted a connection and
+ * sent nothing back).
  */
 function bridge(box, fake) {
 	const stdout = queue();
@@ -101,16 +156,29 @@ function bridge(box, fake) {
 		stderr.end();
 		exited.resolve(code);
 	};
-	// Init not yet listening: the bridge finds no socket, as when it runs before init has made one.
-	const listening = box.daemon && !(box.notListening > 0);
-	if (box.daemon && box.notListening > 0) box.notListening--;
+	// Init not yet listening: the bridge finds no socket, as when it runs before init has made one. An entrypoint with a
+	// gate starts init only once the gate is there.
+	const started = box.daemon && (box.gate === undefined || box.gateOpen === true);
+	const listening = started && !(box.notListening > 0);
+	if (started && box.notListening > 0) box.notListening--;
 	if (!listening) {
 		stderr.push(bytesOf(`computerd stdio: no daemon listens at /run/agentrun/computerd.sock (connect: no such file or directory)\n`));
 		queueMicrotask(() => end(1));
 	}
 	const answer = (request) => {
 		const reply = (body) => stdout.push(bytesOf(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`));
+		fake.events.push({ sandbox: box.id, what: `daemon ${request.method}` });
 		if (request.method === "hello") return reply({ result: box.hello });
+		if (request.method === "files.read" && request.params?.path === "/proc/self/mounts") {
+			const text = mountsOf(box);
+			return reply({ result: { data: Buffer.from(text).toString("base64"), eof: true, size: 0 } });
+		}
+		if (request.method === "mount.sync") {
+			fake.syncs.push(box.id);
+			if (!box.served) return reply({ error: { code: -32000, message: "no Archil sync server at /run/agentrun-archil/archil.sock", data: { kind: "not_found" } } });
+			return reply({ result: { exitCode: box.syncExit ?? 0 } });
+		}
+		if (["files.write", "files.move", "files.remove", "files.mkdir"].includes(request.method)) return reply({ result: request.method === "files.write" ? { written: 0 } : {} });
 		if (request.method === "ping") return reply({ result: {} });
 		if (request.method === "exec.run") {
 			fake.execRuns.push({ sandbox: box.id, params: request.params });
@@ -120,7 +188,7 @@ function bridge(box, fake) {
 				if (box.probe === "hangs") return;
 				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
 				const reached = box.network === "none" ? [] : targets;
-				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, reached: box.reached ?? reached, accepted: box.accepted ?? [] };
+				const report = { uid: box.uid, gid: box.gid, kernel: box.kernel, interfaces: box.interfaces ?? ["lo"], quiet: box.quiet ?? [], raised: box.raised ?? [], reached: box.reached ?? reached, accepted: box.accepted ?? [] };
 				if (box.probe === "no-accepted") delete report.accepted;
 				const text = box.probe === "garbled" ? "not json\n" : `${JSON.stringify(report)}\n`;
 				return reply({ result: { exitCode: 0, stdout: Buffer.from(text).toString("base64"), stderr: "", timedOut: false, truncated: false } });
@@ -206,6 +274,56 @@ function uploader(found, command, fake, how) {
 }
 
 /**
+ * One root command of an Archil computer, as a ContainerProcess in binary mode: what is written to stdin is kept (the
+ * token, for mount and revoke), and closing it runs the verb. `answers` maps a verb to { exitCode, output }, a function
+ * of (argv, stdin, box) giving one, or "hang"; by default the preflight prints the image's facts and every verb exits 0.
+ * A verb that exits 0 changes the box as it would: mount and revoke mount the folder, serve starts the sync server,
+ * checkin lets go of both, and the gate lets init start.
+ */
+function rooter(found, command, fake, answers) {
+	const stdout = queue();
+	const stderr = queue();
+	const exited = deferred();
+	const verb = rootVerb(command);
+	const chunks = [];
+	let closed = false;
+	const finish = (code) => {
+		stdout.end();
+		stderr.end();
+		exited.resolve(code);
+	};
+	return {
+		stdin: {
+			async writeBytes(bytes) {
+				if (closed) throw new Error("the stream is closed");
+				if (!(bytes instanceof Uint8Array)) throw new TypeError("a binary-mode stdin takes Uint8Array");
+				chunks.push(Buffer.from(bytes));
+			},
+			async close() {
+				if (closed) return;
+				closed = true;
+				const stdin = chunks.length === 0 ? undefined : Buffer.concat(chunks).toString("utf8");
+				fake.rootRuns.push({ sandbox: found.id, verb, argv: [...command], stdin });
+				const given = answers[verb];
+				if (given === "hang") return;
+				const answer = typeof given === "function" ? given(command, stdin, found.box) : (given ?? (verb === "preflight" ? { exitCode: 0, output: GOOD_PREFLIGHT } : { exitCode: 0, output: "" }));
+				if (answer.exitCode === 0) {
+					if (verb === "mount" || verb === "revoke") found.box.mounted = { disk: command[2], region: command[3], folder: command[4] };
+					if (verb === "serve") found.box.served = true;
+					if (verb === "checkin") Object.assign(found.box, { mounted: undefined, served: false });
+					if (verb === "gate") found.box.gateOpen = true;
+				}
+				if (answer.output) stdout.push(bytesOf(answer.output));
+				finish(answer.exitCode);
+			},
+		},
+		stdout,
+		stderr,
+		wait: () => exited.promise,
+	};
+}
+
+/**
  * A fake Modal client. Options:
  *  - create: "ok" (default), "fail" (throws InvalidError), "slow" (never settles until fake.release()), or "late"
  *    (settles with a sandbox only when fake.release() is called, after the provider gave up);
@@ -223,21 +341,32 @@ function uploader(found, command, fake, how) {
  *  - list: "ok" (default) or "fail" (the listing throws InvalidError);
  *  - lingers: { polls, lists }: after a terminate, poll answers null for the next `polls` polls before the sandbox
  *    finishes with 137, and list still yields it for the next `lists` listings, finished or not (default none);
- *  - bridgeMs: how long exec of the daemon's stdio bridge takes to answer with its process (default at once).
+ *  - bridgeMs: how long exec of the daemon's stdio bridge takes to answer with its process (default at once);
+ *  - archil: answers of an Archil computer's root commands, by verb (see rooter).
+ * fake.events records, in order, every SDK call on a sandbox, every root command and every daemon method, each as
+ * { sandbox, what }; fake.rootRuns each root command with what its stdin was given; fake.syncs each mount.sync.
  */
-export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0 } = {}) {
+export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandboxes: seeded = [], terminate = "ok", running = true, upload = "ok", list = "ok", lingers, bridgeMs = 0, archil = {}, ended } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
-	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [] };
-	const record = (...call) => calls.push(call);
+	const fake = { calls, sandboxes, execRuns: [], stdinClosed: 0, held: [], constructed: 0, uploads: [], events: [], rootRuns: [], syncs: [] };
+	const record = (...call) => {
+		calls.push(call);
+		if (typeof call[0] === "string" && call[0].startsWith("sandbox.")) fake.events.push({ sandbox: call[1], what: call[0] === "sandbox.exec" ? `exec ${execWhat(call[2])}` : call[0] });
+	};
+	const execWhat = (command) => rootVerb(command) ?? (isScript(command, UPLOAD_MARK) ? "upload" : command[0] === DAEMON && command[1] === "stdio" ? "stdio" : command.join(" "));
 
-	const boxOf = (id, params, extra) => {
+	const boxOf = (id, params, extra, image) => {
 		const user = params?.command?.[params.command.indexOf("--user") + 1] ?? "1000:1000";
 		const [uid, gid] = user.split(":").map(Number);
+		const gateAt = params?.command?.indexOf("--gate") ?? -1;
+		const copies = (image?.layers ?? []).flat().some((line) => typeof line === "string" && line.startsWith("COPY --from="));
 		return {
 			id,
-			// A sandbox started by the provider's entrypoint has no daemon until the upload puts one there.
-			daemon: !isScript(params?.command, ENTRYPOINT_MARK),
+			// A sandbox started by the provider's entrypoint has no daemon until the upload puts one there, unless its image
+			// copies one in.
+			daemon: !isScript(params?.command, ENTRYPOINT_MARK) || copies,
+			...(gateAt >= 0 ? { gate: params.command[gateAt + 1], gateOpen: false } : {}),
 			hello: { ...HELLO },
 			kernel: VM_KERNEL,
 			uid,
@@ -247,15 +376,19 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 			...extra,
 		};
 	};
-	const add = ({ tags = {}, running: on = true, box: extra = {}, params, appId = "ap-computers", stuck = false } = {}) => {
+	const add = ({ tags = {}, running: on = true, box: extra = {}, params, appId = "ap-computers", stuck = false, image } = {}) => {
 		const id = newId();
-		sandboxes.set(id, { id, appId, tags: { ...tags }, running: on, exitCode: on ? null : 0, params, box: boxOf(id, params, extra), terminated: 0, stuck });
+		sandboxes.set(id, { id, appId, tags: { ...tags }, running: on, exitCode: on ? null : (ended?.exitCode ?? 0), params, box: boxOf(id, params, extra, image), terminated: 0, stuck });
 		return id;
 	};
 	for (const one of seeded) add(one);
+	/** The sandbox's own output, as the SDK's sandbox.stdout and stderr give it (ModalReadStream.readText). */
+	const streamOf = (text) => ({ readText: async () => text });
 
 	const handle = (id) => ({
 		sandboxId: id,
+		stdout: streamOf(ended?.stdout ?? ""),
+		stderr: streamOf(ended?.stderr ?? ""),
 		async getTags() {
 			record("sandbox.getTags", id);
 			const found = sandboxes.get(id);
@@ -295,7 +428,18 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 				if (upload === "throw") throw new Error("exec failed on the server: task command router unavailable");
 				return uploader(found, command, fake, upload);
 			}
+			if (rootVerb(command) !== undefined) return rooter(found, command, fake, archil);
 			throw new Error(`the fake runs only the daemon's stdio bridge, not ${command.join(" ")}`);
+		},
+	});
+
+	/** An Image as the SDK makes one, named tag: each dockerfileCommands adds a layer. */
+	const layered = (tag, layers) => ({
+		tag,
+		layers,
+		dockerfileCommands(commands) {
+			record("image.dockerfileCommands", commands);
+			return layered(tag, [...layers, commands]);
 		},
 	});
 
@@ -309,22 +453,19 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 		images: {
 			fromRegistry(tag) {
 				record("images.fromRegistry", tag);
-				const image = (layers) => ({
-					tag,
-					layers,
-					dockerfileCommands(commands) {
-						record("image.dockerfileCommands", commands);
-						return image([...layers, commands]);
-					},
-				});
-				return image([]);
+				return layered(tag, []);
+			},
+			// An image Modal already holds, by its id (im-...), as box/build-modal.py prints it.
+			async fromId(id) {
+				record("images.fromId", id);
+				return layered(id, []);
 			},
 		},
 		sandboxes: {
 			create(app, image, params) {
 				record("sandboxes.create", app, image, params);
 				const make = () => {
-					const id = add({ tags: params.tags, running, params, appId: app.appId });
+					const id = add({ tags: params.tags, running, params, appId: app.appId, image });
 					const made = sandboxes.get(id);
 					for (const [key, value] of Object.entries(tagPatch)) {
 						if (value === undefined) delete made.tags[key];

@@ -10,9 +10,22 @@
 // COMPUTER_MODAL_DAEMON_IMAGE names an image to copy it from, so a run publishes nothing. The drifted provider uploads
 // a daemon built with Go as version <version>-drift. Every computer of a run lives at most 30 minutes: Modal's timeout
 // is its lifetime, and a longer one is refused in words.
+//
+// For the mount cases, mountFor("archil") makes a fresh run folder on the Archil disk COMPUTER_ARCHIL_DISK names (in
+// COMPUTER_ARCHIL_REGION, mounted with the disk token COMPUTER_ARCHIL_TOKEN), and reaches it from outside through the
+// disk's object API (the shared archilRunFolder, ./archil.ts: the host's disk SDK with COMPUTER_ARCHIL_API_KEY and
+// COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
+// are skipped.
+import type { MountKind } from "../mount.js";
+import type { ProviderNote } from "../mount-archil.js";
 import type { ComputerProvider } from "../provider.js";
 import { create, type ModalClientConstructor, type ModalCreateOptions } from "../modal.js";
+import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import type { RunFolder } from "./types.js";
+
+/** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
+export { ARCHIL_ENV } from "./archil.js";
 
 /** The environment this module reads, by name, each for the option its comment names, and the live switch. */
 export const MODAL_ENV = {
@@ -66,6 +79,10 @@ export interface ModalModuleOptions {
 	daemonPath?: string;
 	/** Builds this package's daemon for linux/amd64 stamped with version, and gives its path; default go build. */
 	buildDaemon?: (version: string) => Promise<string>;
+	/** For mountFor("archil"): the disk's object API, or the SDK's Archil client, in place of the host's disk package. */
+	archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl">;
+	/** What the provider says that is no failure: the CLI gives it and puts it in the report. */
+	onNote?: ProviderNote;
 }
 
 function live(env: Record<string, string | undefined>): void {
@@ -74,10 +91,23 @@ function live(env: Record<string, string | undefined>): void {
 	}
 }
 
-export async function createProvider({ env = process.env, ModalClient, daemonPath }: ModalModuleOptions = {}): Promise<ComputerProvider> {
+export async function createProvider({ env = process.env, ModalClient, daemonPath, onNote }: ModalModuleOptions = {}): Promise<ComputerProvider> {
 	live(env);
 	// Given COMPUTER_MODAL_DAEMON_IMAGE and a daemonPath, create() takes the image.
-	return create({ ...settingsFromEnv(env), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	return create({ ...settingsFromEnv(env), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), ...(onNote ? { onNote } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+}
+
+/**
+ * A run folder for an Archil mount, and none for any other kind (a Modal computer takes no bind): a fresh folder on the
+ * disk the COMPUTER_ARCHIL_* names name (archilSettings), none when they name none (archilRunFolder, ./archil.ts).
+ * Reaching it is a call to Archil, so it needs the live switch.
+ */
+export async function mountFor(kind: MountKind, { env = process.env, archil = {} }: ModalModuleOptions = {}): Promise<RunFolder | undefined> {
+	if (kind !== "archil") return undefined;
+	const settings = archilSettings(env);
+	if (settings === undefined) return undefined;
+	live(env);
+	return archilRunFolder({ ...settings, ...archil });
 }
 
 /**

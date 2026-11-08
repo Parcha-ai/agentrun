@@ -80,7 +80,7 @@ import {
 const MOUNT_AT: typeof WORKSPACE = "/workspace";
 
 /** What attach runs of D, passed in (the cutover passes D's own): the read-back a mount made as `spec` asks gives. */
-export type MountCheck = { readonly readBackOf: (spec: MountSpec) => MountReadBack };
+export type MountCheck = { readonly readBackOf: (spec: MountSpec, epoch?: number) => MountReadBack };
 
 /** A computer as attach takes it: its ref, its computerd client, and D's read-back of what it mounts at /workspace. */
 export interface AttachableComputer {
@@ -366,7 +366,9 @@ const keyOf = (back: MountReadBack): string => ("other" in back ? `other ${back.
 export async function checkReadBack(computer: AttachableComputer, spec: MountSpec, check: MountCheck): Promise<void> {
   const read = await computer.readBack();
   if (!read.ok) throw new WorkspaceError("UNAVAILABLE", `the computer ${computer.id} did not say what it mounts at ${MOUNT_AT}: ${read.error.message}`);
-  const want = check.readBackOf(spec);
+  // The read-back's own epoch: D's Archil read-back carries the computer's claim epoch. The claim-epoch fence (this
+  // run's epoch against the computer's) lands with the cutover.
+  const want = check.readBackOf(spec, "kind" in read.value && read.value.kind === "archil" ? read.value.epoch : undefined);
   if (keyOf(read.value) !== keyOf(want)) {
     throw new WorkspaceError("REFUSED", `the computer ${computer.id} does not hold this run's folder at ${MOUNT_AT}: it mounts ${shown(read.value)}, not ${shown(want)}`);
   }

@@ -4,11 +4,12 @@
 // A computer made with a mount has the run's folder at /workspace: files.read, files.write and `cat` (with a cwd) there
 // reach the folder on this machine, the way a bind or an Archil mount reaches it.
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { DaemonClient } from "../dist/index.js";
+import { DaemonClient, epochOf } from "../dist/index.js";
+import { MAX_OUTPUT_BYTES } from "../dist/protocol.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
@@ -22,6 +23,18 @@ const WORKSPACE = "/workspace";
 function bound(computer, path) {
 	if (computer.bound === undefined || !(path === WORKSPACE || path.startsWith(`${WORKSPACE}/`))) return undefined;
 	return join(computer.bound, path.slice(WORKSPACE.length));
+}
+
+/**
+ * What mount.archil-loop-tool-edit's tool runs, `sh -c 'printf "%s\n" "$1" >> "$2"' sh <line> <path>`: the line appended
+ * to a file under the mount, or refused as a tool that may not write it is (toolCannotWrite); undefined for any other argv.
+ */
+function appendOf(argv, computer) {
+	if (argv[0] !== "sh" || argv[1] !== "-c" || argv[2] !== 'printf "%s\\n" "$1" >> "$2"' || argv.length !== 6) return undefined;
+	const host = bound(computer, argv[5]);
+	if (host === undefined || computer.toolCannotWrite) return { exitCode: 2, stdout: "", stderr: `sh: 1: cannot create ${argv[5]}: Permission denied\n` };
+	appendFileSync(host, `${argv[4]}\n`);
+	return { exitCode: 0, stdout: "", stderr: "" };
 }
 
 /** What `cat <path>` with cwd prints in a computer with a mount, or undefined when argv is not that. */
@@ -42,14 +55,24 @@ function catOf(argv, cwd, computer) {
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user }) {
+function output(argv, { uid, status, users, user, probe, pathSockets = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
+	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
+		// computerd probe --connect <target>...: the interfaces the computer's programs see, and each target refused
+		// unless the fake's vendor agent answers it.
+		const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
+		const answered = targets.filter((target) => probe.answers.includes(target));
+		const results = targets.map((target) => ({ target, protocol: "any", outcome: answered.includes(target) ? "answered" : "refused", bytes: answered.includes(target) ? 12 : 0, detail: "" }));
+		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], reached: answered, accepted: [], results })}\n`;
+	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
 		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
 		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
 	}
 	if (argv[0] === "env") return "PATH=/usr/bin:/bin\nHOME=/home/fake\n";
+	// The isolation check's listing of path unix sockets (a python3 walk): each the computer's user connects to.
+	if (argv[0] === "sh" && argv[2]?.includes("S_ISSOCK")) return pathSockets === "no python3" ? "no python3\n" : pathSockets.map((path) => `connects ${path}\n`).join("");
 	if (argv[0] === "sh" && argv[2]?.includes('echo ok > "$HOME/x"')) return "ok\n";
 	return `${argv.slice(1).join(" ")}\n`;
 }
@@ -119,9 +142,14 @@ function fakeDaemon(hello, computer) {
 			const reply = (body) => fromDaemon.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`);
 			if (request.method === "hello") reply({ result: hello });
 			else if (request.method === "ping") reply({ result: {} });
-			else if (request.method === "exec.run") {
+			else if (request.method === "exec.run" && (request.params.maxOutput ?? 0) > MAX_OUTPUT_BYTES) {
+				// As computerd refuses it: more output than one reply line holds.
+				reply({ error: { code: -32602, message: `maxOutput ${request.params.maxOutput} is over the most a reply line holds, ${MAX_OUTPUT_BYTES}`, data: { kind: "invalid" } } });
+			} else if (request.method === "exec.run") {
 				const cat = catOf(request.params.argv, request.params.cwd, computer);
-				const ran = cat ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
+				// A computer has no sudo for its user (the Archil image ships none).
+				const sudo = request.params.argv.join(" ").includes("sudo -n") ? { exitCode: 127, stdout: "", stderr: "sh: sudo: not found\n" } : undefined;
+				const ran = cat ?? sudo ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
 				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
 			} else if (["files.mkdir", "files.write", "files.list", "files.read"].includes(request.method)) {
 				const result = files(computer, request.method, request.params);
@@ -168,6 +196,8 @@ function fakeDaemon(hello, computer) {
  *   (an Archil mount reads back without its region).
  * - `listIgnoresLabels`: list() gives every computer, whatever labels it was asked for.
  * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
+ * - `vendorAgentPorts`: capabilities().vendorAgentPorts, left out unless given. `probeInterfaces`: the interfaces
+ *   `computerd probe` reports (default the loopback alone); `agentAnswers`: the probe targets that answer (default none).
  */
 export function fakeComputers({
 	id = "fake",
@@ -208,13 +238,24 @@ export function fakeComputers({
 	brokenMount,
 	listIgnoresLabels = false,
 	failRelease,
+	vendorAgentPorts,
+	probeInterfaces = ["lo"],
+	probeQuiet = [],
+	probeRaised = [],
+	agentAnswers = [],
+	toolCannotWrite = false,
+	pathSockets = [],
 } = {}) {
-	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. */
-	const readBack = (asked) => {
+	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
+	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
+	const readBack = (asked, labels = {}) => {
 		if (asked === undefined || brokenMount === "no-read-back") return {};
 		if (asked.kind === "bind") return { mount: { kind: "bind", path: asked.path } };
+		const epoch = epochOf(labels);
+		if (!epoch.ok) return { mount: { other: `an Archil mount of ${asked.disk}:/${asked.folder}: ${epoch.error.message}` } };
 		const region = brokenMount === "no-region" ? {} : { region: asked.region };
-		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, ...(brokenMount === "token-in-read-back" ? { token: asked.token } : {}) } };
+		const token = brokenMount === "token-in-read-back" ? { token: asked.token } : {};
+		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, exclusive: true, epoch: epoch.value, ...token } };
 	};
 	const folderOf = (asked) => {
 		if (asked === undefined || brokenMount === "unbound") return undefined;
@@ -228,7 +269,7 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}), ...(mount ? { mount } : {}) }),
+		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}), ...(mount ? { mount } : {}), ...(vendorAgentPorts ? { vendorAgentPorts } : {}) }),
 		check(spec) {
 			const refusals = [];
 			if (spec.mount !== undefined && !(mount ?? []).includes(spec.mount.kind) && brokenMount !== "check-ignores") {
@@ -273,6 +314,9 @@ export function fakeComputers({
 					tree: new Map(),
 					filesPage,
 					bound: folderOf(spec.mount),
+					toolCannotWrite,
+					pathSockets,
+					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
 				},
 			};
 			computers.set(name, record);
@@ -287,13 +331,13 @@ export function fakeComputers({
 			if (found.length > 1) return fail("invalid", `${found.length} computers match`);
 			const [c] = found;
 			const [u, g = u] = c.daemon.uid.split(":");
-			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount) };
+			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels) };
 			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
 		},
 		async list(labels) {
 			calls.push(["list", labels]);
 			const found = [...computers.values()].filter((c) => listIgnoresLabels || Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount) })));
+			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount, c.labels) })));
 		},
 		async network(ref, policy) {
 			const record = computers.get(ref.name);
@@ -361,7 +405,8 @@ export function fakeRunFolders() {
 				return undefined;
 			}
 		},
-		write: async (path, data) => writeFileSync(join(dir, path), data),
+		// A path ending in / is a folder, as the disk's object API makes one.
+		write: async (path, data) => (path.endsWith("/") ? mkdirSync(join(dir, path), { recursive: true }) : writeFileSync(join(dir, path), data)),
 		close: async () => {
 			closed.push(mount);
 			rmSync(dir, { recursive: true, force: true });

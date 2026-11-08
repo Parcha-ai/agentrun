@@ -207,7 +207,9 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		return 0;
 	}
 	const cwd = io.cwd ?? process.env.INIT_CWD ?? process.cwd();
-	const options = io.providerOptions ?? {};
+	// What the provider says that is no failure (onNote, as each remote provider takes it) goes in the report.
+	const providerNotes: Array<{ computer: string; note: string }> = [];
+	const options = { ...(io.providerOptions ?? {}), onNote: (note: { computer: string; note: string }) => providerNotes.push({ computer: note.computer, note: note.note }) };
 	let target: Target;
 	try {
 		const { label, module } = await conformanceModule(args.provider, cwd);
@@ -233,6 +235,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(target.mountFor ? { mountFor: target.mountFor } : {}),
 		...(onResult ? { onResult } : {}),
 	});
+	if (providerNotes.length > 0) report.providerNotes = providerNotes;
 	await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
 	if (report.kindVerdict) return report.kindVerdict.verdict === "pass" ? 0 : 1;
 	return report.core === "pass" ? 0 : report.core === "partial" ? 3 : 1;

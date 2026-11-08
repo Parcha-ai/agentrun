@@ -7,8 +7,13 @@
 // with commands and files (:6065-6083). A sandbox's commands.run runs the provider's three shell commands as a root
 // shell would: install (the upload's sha256), init (background, a daemon that answers on its socket from then on) and
 // stdio (background, with stdin: requests sent with sendStdin are answered through onStdout as computerd would). An SDK
-// call whose signal is aborted rejects, as the SDK's fetch does. Nothing reaches the network, and no SDK is loaded.
+// call whose signal is aborted rejects, as the SDK's fetch does. An Archil computer's root commands (the preflight and
+// the helper's verbs, background with stdin: what sendStdin gives is kept, and closeStdin runs the verb) answer by verb
+// and leave the sandbox's mount table as a mount would; the daemon answers files.read of /proc/self/mounts and
+// mount.sync from it. Nothing reaches the network, and no SDK is loaded.
 import { createHash } from "node:crypto";
+import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-modal.mjs";
+import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const DAEMON = "/opt/agentrun/computerd";
@@ -107,7 +112,8 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  *  - install: exit code of the install script (default 0);
  *  - initFails: words init writes to stderr before it exits 1 (no daemon listens);
  *  - notListening: how many bridges find no daemon listening before one does;
- *  - box: what the daemon reports, over the defaults (hello, uid, gid, status fields, kernel, reached, accepted (the
+ *  - box: what the daemon reports, over the defaults (hello, uid, gid, status fields, kernel, interfaces (its own
+ *    /proc/self/net/dev and the probe's, default the loopback alone), reached, accepted (the
  *    probe targets that accept and send nothing back: by default every IPv4 TCP one with no internet access), display),
  *    udpAnswers (with no internet access, a host:port/udp target answers anyway, as it would were E2B's firewall to let
  *    DNS over UDP out), probe: "no-accepted" (the probe's report has no accepted list), and what
@@ -125,6 +131,10 @@ const newId = () => `i${String(++counter).padStart(19, "0")}`;
  * The stream's servers hold their ports, x11vnc its -rfbport and noVNC its --listen (or a test's entry its port): one
  * started while a running process holds its port ends at once, unable to bind, and netstat lists a port only while a
  * running process holds it.
+ *  - archil: answers of an Archil computer's root commands, by verb: { exitCode, output }, a function of
+ *    (argv, stdin, box) giving one, or "hang"; by default the preflight prints the image's facts and every verb exits 0.
+ * fake.events records, in order, every command run (by script or root verb), every daemon method and every kill, each
+ * as { sandbox, what }; fake.rootRuns each root command with what its stdin was given; fake.syncs each mount.sync.
  */
 export function fakeE2B({
 	templates = { desktop: "tpl-desktop", base: "tpl-base" },
@@ -141,11 +151,12 @@ export function fakeE2B({
 	processPage = 8,
 	killMs = 30,
 	unlisted = 0,
+	archil = {},
 } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
 	const held = [];
-	const fake = { calls, sandboxes, requests: [], uploads: [], kills: [], bridges: [], logs: [] };
+	const fake = { calls, sandboxes, requests: [], uploads: [], kills: [], bridges: [], logs: [], events: [], rootRuns: [], syncs: [] };
 	let waitingBridges = notListening;
 	const record = (name, ...args) => calls.push([name, ...args]);
 	const step = async (name, opts, sandbox) => {
@@ -175,10 +186,11 @@ export function fakeE2B({
 			lingering: undefined,
 			box: {
 				hello: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: [...LINUX_GROUPS] },
-				uid: 1000,
-				gid: 1000,
+				uid: 2510,
+				gid: 2510,
 				status: {},
 				kernel: "6.1.102",
+				interfaces: ["lo"],
 				cwd: "/work",
 				exe: DAEMON,
 				...boxPatch,
@@ -238,9 +250,22 @@ export function fakeE2B({
 			return result({ ...sb.box.hello, groups, kind, ...(sb.box.helloPatch ?? {}) });
 		}
 		if (method === "ping") return result({});
+		if (method === "files.read" && params.path === "/proc/self/mounts") {
+			const text = mountsOf(sb.box);
+			return result({ data: Buffer.from(text).toString("base64"), size: 0, eof: true });
+		}
+		if (method === "mount.sync") {
+			fake.syncs.push(sb.id);
+			if (!sb.box.served) return error("not_found", "no Archil sync server at /run/agentrun-archil/archil.sock");
+			return result({ exitCode: sb.box.syncExit ?? 0 });
+		}
 		if (method === "files.read" && params.path === "/proc/self/status") {
-			const fields = { Uid: `${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}`, Gid: `${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, ...sb.box.status };
+			const fields = { Uid: `${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}\t${sb.box.uid}`, Gid: `${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}\t${sb.box.gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, Seccomp: "2", ...sb.box.status };
 			const text = Object.entries(fields).map(([k, v]) => `${k}:\t${v}\n`).join("");
+			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+		}
+		if (method === "files.read" && params.path === "/proc/self/net/dev") {
+			const text = netDevText(sb.box.interfaces);
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 		}
 		if (method === "files.stat") {
@@ -273,7 +298,7 @@ export function fakeE2B({
 				const none = sb.allowInternetAccess === false;
 				const reached = sb.box.reached ?? (none ? (sb.box.udpAnswers ? targets.filter(udp) : []) : targets);
 				const accepted = sb.box.accepted ?? (none ? targets.filter((target) => !udp(target) && !target.startsWith("[")) : []);
-				const report = { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, reached, accepted };
+				const report = { uid: sb.box.uid, gid: sb.box.gid, kernel: sb.box.kernel, interfaces: sb.box.interfaces, quiet: sb.box.quiet ?? [], raised: sb.box.raised ?? [], reached, accepted };
 				if (sb.box.probe === "no-accepted") delete report.accepted;
 				return out(`${JSON.stringify(report)}\n`);
 			}
@@ -381,6 +406,26 @@ export function fakeE2B({
 	/** The connected sandbox: commands and files (index.mjs:5917-6000, 4972-5150, 2332-2435). */
 	function connected(sb) {
 		const handles = new Map();
+		/** Root commands with stdin, by pid: what sendStdin gave, until closeStdin runs the verb. */
+		const roots = new Map();
+		const runRoot = (root) => {
+			const { argv, verb, handle } = root;
+			const stdin = root.chunks.length === 0 ? undefined : Buffer.concat(root.chunks).toString("utf8");
+			fake.rootRuns.push({ sandbox: sb.id, verb, argv, stdin });
+			const given = archil[verb];
+			if (given === "hang") return;
+			const answer = typeof given === "function" ? given(argv, stdin, sb.box) : (given ?? (verb === "preflight" ? { exitCode: 0, output: GOOD_PREFLIGHT } : { exitCode: 0, output: "" }));
+			if (answer.exitCode === 0) {
+				if (verb === "mount" || verb === "revoke") sb.box.mounted = { disk: argv[2], region: argv[3], folder: argv[4] };
+				if (verb === "serve") sb.box.served = true;
+				if (verb === "checkin") Object.assign(sb.box, { mounted: undefined, served: false });
+			}
+			if (answer.output) {
+				handle.stdout += answer.output;
+				handle.out(answer.output);
+			}
+			handle.end(answer.exitCode);
+		};
 		return {
 			sandboxId: sb.id,
 			getHost(port) {
@@ -400,9 +445,17 @@ export function fakeE2B({
 			commands: {
 				async run(cmd, opts = {}) {
 					const script = scriptOf(cmd);
-					record("commands.run", sb.id, script?.kind ?? cmd, opts);
-					await step(`commands.run ${script?.kind ?? "other"}`, opts, sb);
+					const verb = rootVerb(wordsOf(cmd));
+					record("commands.run", sb.id, verb ?? script?.kind ?? cmd, opts);
+					fake.events.push({ sandbox: sb.id, what: `run ${verb ?? script?.kind ?? cmd}` });
+					await step(`commands.run ${verb ?? script?.kind ?? "other"}`, opts, sb);
 					if (gone(sb)) throw new SandboxNotFoundError(`Sandbox ${sb.id} not found`);
+					if (verb !== undefined) {
+						if (opts.background !== true || opts.stdin !== true || opts.user !== "root") throw new Error(`a root command runs in the background as root with stdin, not ${JSON.stringify(opts)}`);
+						const handle = handleOf(sb, opts);
+						roots.set(handle.pid, { argv: wordsOf(cmd), verb, handle, chunks: [] });
+						return handle;
+					}
 					if (script?.kind === "install") {
 						const [staging, daemon] = script.args;
 						const bytes = sb.files.get(staging);
@@ -424,7 +477,7 @@ export function fakeE2B({
 						} else {
 							const [uid, gid] = user.split(":").map(Number);
 							Object.assign(sb.box, { uid, gid });
-							sb.init = { deadline, user, display, max, handle, timeoutMs: opts.timeoutMs };
+							sb.init = { deadline, user, display, max, handle, timeoutMs: opts.timeoutMs, command: cmd };
 						}
 						return handle;
 					}
@@ -440,7 +493,21 @@ export function fakeE2B({
 					}
 					throw new Error(`the fake runs only the provider's scripts, not ${cmd}`);
 				},
+				async closeStdin(pid, opts) {
+					const root = roots.get(pid);
+					if (root === undefined) throw new Error(`process ${pid} has no stdin to close here`);
+					if (root.closed) throw new Error(`process ${pid}'s stdin is closed already`);
+					root.closed = true;
+					runRoot(root);
+					void opts;
+				},
 				async sendStdin(pid, data, opts) {
+					const root = roots.get(pid);
+					if (root !== undefined) {
+						if (root.closed) throw new Error(`process ${pid}'s stdin is closed`);
+						root.chunks.push(Buffer.from(data));
+						return;
+					}
 					const handle = handles.get(pid);
 					if (handle === undefined || handle.exitCode !== undefined) throw new Error(`process ${pid} not found`);
 					handle.buffered += typeof data === "string" ? data : Buffer.from(data).toString("utf8");
@@ -450,6 +517,7 @@ export function fakeE2B({
 						handle.buffered = handle.buffered.slice(at + 1);
 						if (typeof request.id !== "number") continue;
 						fake.requests.push({ sandbox: sb.id, method: request.method, params: request.params });
+						fake.events.push({ sandbox: sb.id, what: `daemon ${request.method}` });
 						await onStep(request.method, sb);
 						const reply = await answer(sb, request);
 						if (reply !== undefined) handle.out(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...reply })}\n`);
@@ -525,6 +593,7 @@ export function fakeE2B({
 			if (gone(sb) || sb.killed) return false;
 			sb.killed = true;
 			fake.kills.push(id);
+			fake.events.push({ sandbox: id, what: "kill" });
 			if (lingers) sb.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0 };
 			return true;
 		},

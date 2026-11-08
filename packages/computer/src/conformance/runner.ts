@@ -237,18 +237,23 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider does not declare ${need}`;
 			} else if (need === "release:stop" && !(Array.isArray(capabilities.release) && capabilities.release.includes("stop"))) {
 				return `the provider does not declare ${need}`;
+			} else if (need === "vendor-agent" && !Array.isArray(capabilities.vendorAgentPorts)) {
+				return `the provider does not declare ${need} (capabilities().vendorAgentPorts): no vendor's agent runs beside its computers' programs`;
 			}
 		}
 		return undefined;
 	};
 
 	const runCase = async (c: Case): Promise<CaseResult> => {
+		/** What the case saw and records without asserting it, in the order it said it. */
+		const observed: string[] = [];
 		const result = (status: CaseResult["status"], reason?: string): CaseResult => ({
 			id: c.id,
 			level: c.level,
 			group: c.group,
 			status,
 			...(reason === undefined ? {} : { reason }),
+			...(observed.length > 0 ? { observed: [...observed] } : {}),
 		});
 		if (signal?.aborted) return result("fail", "not run: the run was aborted");
 		const why = await missing(c.needs);
@@ -441,6 +446,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				skip(reason: string): never {
 					throw new Skip(reason);
+				},
+				observe(words: string) {
+					observed.push(words);
 				},
 			};
 			await c.run(t);
