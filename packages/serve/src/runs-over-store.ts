@@ -10,10 +10,22 @@
 // is the run view's to read from the journal (the server's view layer, run-view.ts). These writers take it as `RunMoment`
 // and never recompute it; the coarse facts a row already holds (its state, its launch cap) they read from the store.
 import { randomBytes } from "node:crypto";
+import type { Revision } from "@parcha/pi-durable-agent";
+import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { AgentEntry } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
-import { ApiError, type InputIssue, invalid } from "./errors.js";
+import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { harnessOfBody } from "./harness.js";
+import { redacted, redactedOutput } from "./key-refusal.js";
+import { type Place, resolvePlace } from "./place.js";
+import { launchBody, type RunLaunch } from "./run-launch.js";
 import { sendCommand } from "./runner/commands.js";
-import { RunFinal, type Store } from "./store/index.js";
+import { RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { toolingOf } from "./tools.js";
+import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
+import type { RunTrigger } from "./triggers.js";
+import { clip } from "./web-fetch-direct.js";
+import { isObject, type Json } from "./validate.js";
 
 /** The store slice these writers need: the run rows, its commands, and the origin read a retry makes. */
 export type RunsStore = Pick<Store, "runs" | "command" | "commands" | "runOfOrigin">;
@@ -203,6 +215,147 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   }
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
   await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
+}
+
+// ---- start -----------------------------------------------------------------------------------------------------------
+
+/** A UUIDv7 run id: time-ordered, so a listing by start time is stable, and unique per run. */
+function uuidv7(now = Date.now()): string {
+  const bytes = randomBytes(16);
+  bytes.writeUIntBE(now, 0, 6);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** The revision's body fields a start reads: its default cap and cap mode, its place, and (agentic) its tools, for the
+ *  place fallback. Read with the shapes the old start read them with. */
+type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[] };
+
+/** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
+ *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host
+ *  cannot run), the uploads check, the place fallback, the title's redaction, the plane's settings and key environment, and
+ *  the per-server run choices (approvers, documents, box reach). The switch wires the server's own to each; a start calls
+ *  them in the old order, with the old words. */
+export interface StartDeps {
+  /** A new run id; defaults to a UUIDv7. */
+  readonly newRunId?: () => string;
+  /** The create body's field issues, before the agent is read (server.ts runBodyIssues). */
+  runBodyIssues(body: Json): InputIssue[];
+  /** The revision a run starts on (server.ts pinnedOf): the body's pin, else the agent's current; undefined when none. */
+  pinnedOf(entry: AgentEntry, body: Json): Promise<{ revision: Revision; version: number } | undefined>;
+  /** A run's input against its revision's input schema (server.ts inputIssuesOf). */
+  inputIssuesOf(revision: Revision, input: Json): Promise<InputIssue[]>;
+  /** The issues told from the revision they would start on, with its hints (server.ts explainRun). */
+  explainRun(issues: InputIssue[], body: Json, revision: Revision | null | undefined): Promise<InputIssue[]>;
+  /** Marks an input refusal as told from a revision (server.ts told). */
+  told(error: ApiError): ApiError;
+  /** Refuses a revision this host cannot run, by field (server.ts runnable). */
+  runnable(revision: Revision, place: Place, options: { capped: boolean }): Promise<void>;
+  /** The uploaded files named by file_ids, ready to copy; throws when one is not ready (server.ts uploads.readyFiles). The
+   *  copy into the run's work/ is the runner's at its claim; this only checks they are ready before the run starts. */
+  readyFiles(ids: readonly unknown[]): Promise<unknown>;
+  /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
+  fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
+  /** A run's title from its input (server.ts workflowTitle), for a workflow run's title. */
+  workflowTitle(name: string, input: Record<string, unknown>): string;
+  /** Every secret this server never shows, for the title's redaction (server.ts serverSecrets). */
+  serverSecrets(): string[];
+  /** The server's tool settings, for the plane (runs.ts toolSettings). */
+  toolSettings(): ToolSettingsMap;
+  /** The environment the plane reads to pick each tool's provider: the server's keys as it holds them (runs.ts storedKeys
+   *  merged into the environment). */
+  planeEnv(): NodeJS.ProcessEnv;
+  /** Whether anyone can answer a tool call's approval here (RunsOptions.approvers). */
+  readonly approvers?: boolean;
+  /** The documents directory a workflow's reads are rooted at, when the server gives one. */
+  readonly documents?: string;
+  /** What a run's box may reach, as the server resolved it, or "none". */
+  readonly boxAllow?: readonly string[] | "none";
+  /** The run's model, pinned at start when the server resolves one (else absent: the runner resolves it from the revision
+   *  at its claim, as the per-run process did). */
+  modelOf?(entry: AgentEntry, revision: Revision): { provider: string; modelId: string } | undefined;
+}
+
+/** How a run is asked to start, beyond its create body: a trigger and its firing, an idempotency or firing origin, whether
+ *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
+export interface StartOptions {
+  readonly trigger?: RunTrigger;
+  readonly origin?: RunOrigin;
+  readonly capped?: boolean;
+  readonly from?: MessageOrigin;
+}
+
+/** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
+ *  before a run started, in the same order and words (the body's fields, the revision it pins, the input against its schema,
+ *  the cap rules, the plane this host resolves, whether the revision can run here), then an INSERT — a queued run and its
+ *  launch body in one transaction (store.runs.create), which a runner reads at its claim. No process, no door, no setup
+ *  file: where the run runs is the runner's. Under `origin`, a key that already started a run gets that run (the store's
+ *  one-run-per-key), so a retry never starts a second. */
+export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from }: StartOptions = {}): Promise<RunRow> {
+  const issues = deps.runBodyIssues(body);
+  if (issues.length) {
+    // Told from the revision the run would start on (a pinned one, else the current), once it reads as one: a pin that is
+    // malformed or names no revision gets the refusal alone, no hint.
+    const on = issues.some((issue) => issue.field === "revision") ? undefined : await deps.pinnedOf(entry, body);
+    throw deps.told(invalid(on ? await deps.explainRun(issues, body, on.revision) : issues));
+  }
+  if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
+  // Each a ready file, before anything starts: the runner copies them into the run's work/ at its claim.
+  if (Array.isArray(body.file_ids)) await deps.readyFiles(body.file_ids);
+  const pinned = await deps.pinnedOf(entry, body);
+  if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
+  const { revision } = pinned;
+  const rbody = revision.body as StartBody;
+  const input = body.input as Json;
+  const wrong = await deps.inputIssuesOf(revision, input);
+  if (wrong.length) throw deps.told(invalid(await deps.explainRun(wrong, body, revision)));
+  // The run's own cap, else the agent's default: the caller chose its own.
+  const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : rbody.maxCostUsd;
+  if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
+  // How its cap prices a request: the run's own, else the agent's, else expected (cap.ts). Only a run with a cap has one.
+  if (body.cap_mode !== undefined && cap === undefined) throw invalid([{ field: "cap_mode", reason: "not_allowed", message: "cap_mode says how a run's cap prices its requests, and this run has no cap: give it a max_cost_usd, or set the agent's." }]);
+  const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? body.cap_mode : rbody.capMode;
+  const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
+  await deps.runnable(revision, place, { capped: cap !== undefined });
+  // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
+  // redacted before a long one is cut (a cut key could no longer be found).
+  const shown = redactedOutput(input, deps.serverSecrets());
+  const title = revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+  // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them
+  // back, never the settings of that moment. (The old start wrote them to serve.json; now they ride the launch row.)
+  const tooling = await toolingOf(revision);
+  const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
+  const model = deps.modelOf?.(entry, revision);
+  const launch: RunLaunch = {
+    input,
+    title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
+    place,
+    harness: harnessOfBody(revision.body),
+    ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
+    ...(cap !== undefined ? { maxCostUsd: cap } : {}),
+    ...(capMode !== undefined ? { capMode } : {}),
+    ...(Object.keys(plane).length ? { plane } : {}),
+    ...(deps.approvers !== undefined ? { approvers: deps.approvers } : {}),
+    ...(deps.documents !== undefined ? { documents: deps.documents } : {}),
+    ...(deps.boxAllow !== undefined ? { boxAllow: deps.boxAllow } : {}),
+    ...(trigger ? { trigger } : {}),
+    ...(from ? { inputOrigin: from } : {}),
+    ...(model ? { model } : {}),
+  };
+  const runId = (deps.newRunId ?? uuidv7)();
+  try {
+    return await store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) }, { body: launchBody(launch) });
+  } catch (error) {
+    // Only another writer of the store got here first under the same origin key: its run is the one asked for.
+    if (origin && error instanceof StoreConstraint) {
+      const existing = await store.runOfOrigin(origin.key);
+      const row = existing && (await store.runs.get(existing.runId));
+      if (row) return row;
+    }
+    throw error;
+  }
 }
 
 /** For tests and the switch: the issue list an input refusal carries. */

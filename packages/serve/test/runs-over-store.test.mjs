@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { archiveRun, approve, message, raiseCap, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
+const { archiveRun, approve, message, raiseCap, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
+const { readLaunchBody } = await import("../dist/run-launch.js");
 
 const dirs = [];
 after(() => {
@@ -285,4 +286,106 @@ test("a different answer to an answered call is 409 already-answered", async () 
     (e) => e.code === "not_continuable" && /The tool call call-1 was already answered: allow\./.test(e.message) && e.extra.details.reason === "already_answered",
   );
   assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+// ---- start ----------------------------------------------------------------------------------------------------------
+
+/** An agentic revision as toolingOf/planeFor read it. */
+const revisionOf = (over = {}) => ({ id: "r1", agentId: "a1", kind: "agentic", body: { instructions: "Answer.", tools: [], skills: {}, ...over }, createdAt: 0 });
+
+/** An AgentEntry for agent a1 on revision r1. */
+const entryOf = () => ({ agent: { id: "a1", name: "Agent one", description: null, currentRevision: "r1", createdAt: 0, archivedAt: null }, revision: revisionOf(), version: 1, revisions: 1, sizes: new Map() });
+
+/** StartDeps whose leaf checks all pass; overrides take over (e.g. a runBodyIssues that refuses). */
+const startDeps = (over = {}) => ({
+  runBodyIssues: () => [],
+  pinnedOf: async () => ({ revision: revisionOf(), version: 1 }),
+  inputIssuesOf: async () => [],
+  explainRun: async (issues) => issues,
+  told: (error) => error,
+  runnable: async () => {},
+  readyFiles: async () => [],
+  fallbackPlace: () => ({ mode: "runner" }),
+  workflowTitle: (name) => `Workflow of ${name}`,
+  serverSecrets: () => [],
+  toolSettings: () => ({}),
+  planeEnv: () => ({}),
+  ...over,
+});
+
+test("startRun inserts a queued run and its launch body with the run's cap", async () => {
+  const store = await freshStore();
+  const run = await startRun(store, startDeps(), entryOf(), { input: { content: "hi" }, max_cost_usd: 3, effort: "high" });
+  assert.equal(run.state, "queued");
+  assert.equal(run.agentId, "a1");
+  assert.equal(run.revisionId, "r1");
+  const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+  assert.equal(launch.maxCostUsd, 3);
+  assert.equal(launch.effort, "high");
+  assert.equal(launch.title, "hi");
+  assert.deepEqual(launch.place, { mode: "runner" });
+  assert.equal(launch.harness, "pi");
+});
+
+test("startRun takes the agent's default cap and cap mode when the body names none", async () => {
+  const store = await freshStore();
+  const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2, capMode: "expected" }), version: 1 }) });
+  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" } });
+  const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+  assert.equal(launch.maxCostUsd, 2);
+  assert.equal(launch.capMode, "expected");
+});
+
+test("startRun keeps the body's cap mode over the agent's default", async () => {
+  const store = await freshStore();
+  const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2, capMode: "expected" }), version: 1 }) });
+  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" }, max_cost_usd: 5, cap_mode: "strict" });
+  const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+  assert.equal(launch.maxCostUsd, 5);
+  assert.equal(launch.capMode, "strict");
+});
+
+test("startRun refuses an invalid body with its field issues, nothing written", async () => {
+  const store = await freshStore();
+  const deps = startDeps({ runBodyIssues: () => [{ field: "input", reason: "missing", message: "input is an object" }] });
+  await assert.rejects(
+    () => startRun(store, deps, entryOf(), {}),
+    (e) => e.code === "input_invalid" && /input is an object/.test(e.message),
+  );
+  assert.equal((await store.runs.list({ agentId: "a1" })).length, 0);
+});
+
+test("startRun refuses a body naming an unknown revision, nothing written", async () => {
+  const store = await freshStore();
+  const deps = startDeps({ pinnedOf: async () => undefined });
+  await assert.rejects(
+    () => startRun(store, deps, entryOf(), { input: { content: "hi" }, revision: "rX" }),
+    (e) => e.code === "input_invalid" && /rX is not a revision of the agent a1/.test(e.message),
+  );
+  assert.equal((await store.runs.list({ agentId: "a1" })).length, 0);
+});
+
+test("a trigger run with no cap and no agent default is refused (every trigger run is capped)", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => startRun(store, startDeps(), entryOf(), { input: { content: "hi" } }, { capped: true }),
+    (e) => e.code === "input_invalid" && /Every run a trigger starts is capped/.test(e.message),
+  );
+  assert.equal((await store.runs.list({ agentId: "a1" })).length, 0);
+});
+
+test("a cap mode with no cap is refused", async () => {
+  const store = await freshStore();
+  await assert.rejects(
+    () => startRun(store, startDeps(), entryOf(), { input: { content: "hi" }, cap_mode: "strict" }),
+    (e) => e.code === "input_invalid" && /cap_mode says how a run's cap prices its requests, and this run has no cap/.test(e.message),
+  );
+});
+
+test("startRun under an origin key starts one run; a retry under the same key gets that run", async () => {
+  const store = await freshStore();
+  const first = await startRun(store, startDeps(), entryOf(), { input: { content: "hi" } }, { origin: { key: "firing-1" } });
+  const again = await startRun(store, startDeps(), entryOf(), { input: { content: "hi" } }, { origin: { key: "firing-1" } });
+  assert.equal(again.id, first.id);
+  assert.equal((await store.runs.list({ agentId: "a1" })).length, 1);
 });
