@@ -38,7 +38,11 @@ from agentrun import (
     StreamedResponse,
     Tagged,
 )
+import agentrun
 from agentrun._scrub import scrubber_of, secrets_of
+
+# The package's own directory: a frame is the client's when its file is under it, whatever the checkout's path holds.
+PACKAGE = os.path.dirname(os.path.abspath(agentrun.__file__)) + os.sep
 
 
 def page(**fields: Any) -> dict[str, Any]:
@@ -605,7 +609,7 @@ class Rules(unittest.TestCase):
             self.assertIsInstance(error, AgentRunError)
             rendered = traceback.TracebackException.from_exception(error, capture_locals=True)
             # The client's own frames: the test's frames hold the key it passed, as any caller's would.
-            frames = [frame for frame in rendered.stack if f"{os.sep}agentrun{os.sep}" in frame.filename]
+            frames = [frame for frame in rendered.stack if os.path.abspath(frame.filename).startswith(PACKAGE)]
             self.assertTrue(frames, "the error came from inside the client")
             self.assertNotIn(KEY, "".join(traceback.StackSummary.from_list(frames).format()) + "".join(rendered.format_exception_only()))
 
