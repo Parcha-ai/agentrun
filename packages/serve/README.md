@@ -1526,7 +1526,9 @@ actions; an `in` lists at most 20 values of at most 1024 characters of JSON each
 and an event, an action or a prefix at most 200. A trigger with `accept` starts a run for each event it takes, its last
 run active or not, since the events it takes are each their own work (a review per pull request); the server's run
 limit still holds: a start it refuses (`429`) keeps the firing due and tries it again, and past 20 firings due a new
-delivery answers `429`.
+delivery answers `429`. This holds for every firing of such a trigger, a run now (`POST /v2/triggers/{id}/fire`)
+included. Runs start in the order their events came while the server has room; while one firing waits to be tried
+again after a `429`, a later one can start first.
 
 A trigger's input, a started run's first message or a firing's message, is the trigger's, never the person's: it carries
 the origin `{kind: "trigger", trigger_id, source, owner}`, `owner` decided by the trigger's definition as it fires and
