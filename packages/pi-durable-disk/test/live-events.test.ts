@@ -6,8 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { AgentDoc, createRegistry, Harness, LiveDoc, MemoryStorage } from "@earendil-works/pi-durable";
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { AgentDoc, createRegistry, defineExtension, defineTool, Harness, LiveDoc, MemoryStorage } from "@earendil-works/pi-durable";
 import { watchEvents } from "../src/live-events.ts";
 
 async function opened() {
@@ -151,4 +151,63 @@ test("commits stored together in one group commit while the stream is held each 
   const levels = events.filter((event) => event.type === "agent_changed").map((event) => event.agent?.thinkingLevel);
   assert.deepEqual(levels, ["low", "medium", "high"], `each held commit's own agent, in order: ${JSON.stringify(events.map((event) => event.type))}`);
   await stream.stop();
+});
+
+/** A Harness whose model calls `slow` once, then answers; `slow` writes output, waits `ms`, and returns. */
+async function withTool(ms: number) {
+  const slow = defineTool({
+    name: "slow", description: "Takes a while.", parameters: { type: "object", properties: {} },
+    execute: async (_args, api) => {
+      api.output("working\n");
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return { output: [{ type: "text", text: "done" }] };
+    },
+  });
+  const faux = fauxProvider();
+  faux.setResponses([() => fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }), () => fauxAssistantMessage([fauxText("finished")], { stopReason: "stop" })]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const registry = createRegistry();
+  const extension = defineExtension({ name: "slow-tool", tools: [slow] });
+  registry.install(extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  const model = faux.getModel();
+  const root = await harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id }, extensions: [extension] } });
+  return { harness, root };
+}
+
+test("a tool call's start, update and end reach the stream, though pi 1.5 only ever holds its running status and output", async (t) => {
+  // pi 1.5 stores a tool slot's `running` status and its output with the next commit (deferred), so the stored commits
+  // go from pending to done: only the Session's own observers see `running`, as each change is made in memory.
+  const { harness, root } = await withTool(150);
+  t.after(() => harness.close(ctx));
+  const stream = await watchEvents(harness, root.id, ctx);
+  const events: { type: string; toolName?: string }[] = [];
+  stream.start(async (batch) => void events.push(...(batch as typeof events)));
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await harness.waitForIdle(ctx);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const tool = events.filter((event) => event.toolName === "slow").map((event) => event.type);
+  assert.deepEqual([...new Set(tool)], ["tool_execution_start", "tool_execution_update", "tool_execution_end"], `the slow tool's events: ${JSON.stringify(events.map((event) => event.type))}`);
+  await stream.stop();
+});
+
+test("a streaming answer's partial reaches the stream as pi shows it, well before pi stores it (its hold lasts up to a second)", async (t) => {
+  const faux = fauxProvider({ tokensPerSecond: 40, tokenSize: { min: 1, max: 2 } });
+  let asked = 0;
+  faux.setResponses([() => ((asked = Date.now()), fauxAssistantMessage([fauxText("a fairly long answer that streams for well over a second, one small token at a time, so its partial is held")], { stopReason: "stop" }))]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  const model = faux.getModel();
+  const root = await harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
+  const stream = await watchEvents(harness, root.id, ctx);
+  let firstPartial = 0;
+  stream.start(async (batch) => { if (!firstPartial && batch.some((event) => event.type === "message_start" || event.type === "message_update")) firstPartial = Date.now(); });
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await stream.stop();
+  assert.ok(asked > 0 && firstPartial > 0, "the model was asked and a partial reached the stream");
+  // The partial commits every 100 ms (progress.partialIntervalMs), held up to 1 s (persistWithinMs) before it is stored.
+  assert.ok(firstPartial - asked < 700, `the first partial reached the stream ${firstPartial - asked} ms after the request, not at its store`);
 });
