@@ -30,6 +30,9 @@ const isoOf = (ms: number): string => new Date(ms).toISOString();
 
 /** A run's v2 state from A's state and an ended run's outcome: an escalation reads 'escalated', a plain completion
  *  'completed'; stopped and failed are their own; queued, running and parked read 'running'. */
+export function runReadState(run: RunRow): RunReadState {
+  return stateOf(run);
+}
 function stateOf(run: RunRow): RunReadState {
   switch (run.state) {
     case "ended":
