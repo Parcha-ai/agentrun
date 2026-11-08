@@ -151,6 +151,20 @@ const STATUS_SCRIPT = [
 	'if [ -S "$s" ]; then echo "socket present"; else echo "socket absent"; fi',
 	"echo \"log $(tail -c 300 \"$l\" 2>/dev/null | tr '\\n' ' ')\"",
 ].join("\n");
+/**
+ * The TCP ports root listens on in Orgo's own network (its agent, its VNC, anything else of the image's), one decimal
+ * port a line, from /proc/net/tcp and tcp6 (state 0A, LISTEN): no tool of the image's is relied on but awk.
+ */
+const PORTS_SCRIPT = [
+	"# agentrun-computer: orgo-ports",
+	"for f in /proc/net/tcp /proc/net/tcp6; do [ -r \"$f\" ] && awk 'NR > 1 && $4 == \"0A\" { n = split($2, a, \":\"); print a[n] }' \"$f\"; done | sort -u | while read -r h; do printf '%d\\n' \"0x$h\"; done",
+].join("\n");
+/**
+ * The ports Orgo's own agent is known to listen on in a computer, which its tools must never reach: provisional (VNC and
+ * its websockify) until a live run's notes name them, since Orgo documents only the host's side. create reads every
+ * port root listens on beside these and holds the tools to none of them either.
+ */
+const ORGO_AGENT_PORTS = [5900, 6080];
 
 /** What the labels file holds. */
 interface LabelsFile {
@@ -332,6 +346,8 @@ export class OrgoProvider implements ComputerProvider {
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
 			mount: [...MOUNT],
+			// Init starts with --own-network (childCommands): no tool reaches these, nor any port root listens on.
+			vendorAgentPorts: [...ORGO_AGENT_PORTS],
 		};
 	}
 
@@ -434,6 +450,9 @@ export class OrgoProvider implements ComputerProvider {
 		}
 		const written = await this.#writeLabels(ref, file, signal);
 		if (!written.ok) return written;
+		// Every port root listens on in Orgo's own network, read before init starts in a network of its own.
+		const ports = await this.#rootPorts(ref, signal);
+		if (!ports.ok) return ports;
 		const started = await this.#channel.start(ref.id, ["sh", "-c", commands.init], { how: this.#start, timeoutMs: execMs, ...(signal ? { signal } : {}) });
 		if (!started.ok) return fail(started.error.code, `starting the daemon in ${ref.name} failed: ${started.error.message}`);
 		const opened = await this.#openWhenListening(ref, signal);
@@ -442,10 +461,29 @@ export class OrgoProvider implements ComputerProvider {
 			return fail(opened.error.code, `the daemon did not answer: ${opened.error.message}; in the computer: ${await this.#status(ref, signal)}`);
 		}
 		try {
-			return await this.#checkInside(opened.value, ref.name, signal);
+			const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal);
+			if (!inside.ok) return inside;
+			return ok([...inside.value, `Orgo's own network listens on ${ports.value.join(", ") || "no TCP port"} (TCP, as root reads it); the tools' probe was refused at each and at ${ORGO_AGENT_PORTS.join(", ")}, on both loopbacks`]);
 		} finally {
 			await opened.value.close();
 		}
+	}
+
+	/** The TCP ports root listens on in Orgo's own network, sorted, read through the channel. */
+	async #rootPorts(ref: ComputerRef, signal?: AbortSignal): Promise<Result<number[]>> {
+		const read = await this.#channel.run(ref.id, ["sh", "-c", PORTS_SCRIPT], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+		if (!read.ok) return read;
+		if (read.value.exitCode !== 0) return fail("refused", `reading the ports root listens on in ${ref.name} failed (exit ${read.value.exitCode}): ${read.value.output.trim().slice(0, 200)}`);
+		const ports = read.value.output
+			.split("\n")
+			.map((line) => Number(line.trim()))
+			.filter((port) => Number.isSafeInteger(port) && port > 0 && port < 65536);
+		return ok([...new Set(ports)].sort((a, b) => a - b));
+	}
+
+	/** The probe's targets on the computer's own loopbacks: every port given and every declared agent port, on 127.0.0.1 and ::1. */
+	#agentTargets(ports: readonly number[]): string[] {
+		return [...new Set([...ports, ...ORGO_AGENT_PORTS])].sort((a, b) => a - b).flatMap((port) => [`127.0.0.1:${port}`, `[::1]:${port}`]); // key-gate: loopback-rule the computer's own loopbacks, where Orgo's agent listens and its tools must be refused
 	}
 
 	/** What the computer holds, in words, for a daemon that does not answer: init running or not, its socket, its log's tail. */
@@ -491,10 +529,10 @@ export class OrgoProvider implements ComputerProvider {
 	 * The daemon's report (hello with the desktop groups, its credentials, home and binary) and the probe, which refuses
 	 * on an answer from any target and records a silent accept in the notes it returns.
 	 */
-	async #checkInside(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #checkInside(connection: ComputerConnection, name: string, ports: readonly number[], signal?: AbortSignal): Promise<Result<string[]>> {
 		const found = await daemonDrift(connection, this.#daemonExpected(), this.#timeouts.helloMs, signal);
 		if (!found.ok) return found;
-		const probe = await this.#probe(connection, name, signal);
+		const probe = await this.#probe(connection, name, ports, signal);
 		if (!probe.ok) return probe;
 		const drift = [...found.value, ...probeNetworkDrift(probe.value)];
 		return drift.length === 0 ? ok(probeNotes(probe.value, "none")) : fail("refused", `it did not match its spec: ${drift.join("; ")}`);
@@ -509,10 +547,10 @@ export class OrgoProvider implements ComputerProvider {
 		return signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
 	}
 
-	/** `computerd probe` through the daemon, as the tool user. */
-	async #probe(connection: ComputerConnection, name: string, signal?: AbortSignal): Promise<Result<ProbeReport>> {
+	/** `computerd probe` through the daemon, as the tool user: the outside targets, and Orgo's agent's ports (ports and the declared ones) on both loopbacks. */
+	async #probe(connection: ComputerConnection, name: string, ports: readonly number[], signal?: AbortSignal): Promise<Result<ProbeReport>> {
 		const { probeMs } = this.#timeouts;
-		const argv = [DAEMON_IN_COMPUTER, "probe", ...this.#probeTargets.flatMap((target) => ["--connect", target])];
+		const argv = [DAEMON_IN_COMPUTER, "probe", ...[...this.#probeTargets, ...this.#agentTargets(ports)].flatMap((target) => ["--connect", target])];
 		const ran = await connection.client.call("exec.run", { argv, timeoutMs: probeMs }, { signal: this.#bounded(probeMs + 5_000, signal) });
 		if (!ran.ok) {
 			if (signal?.aborted) return fail("aborted", `the probe in ${name} was aborted`);
@@ -693,10 +731,12 @@ export class OrgoProvider implements ComputerProvider {
 		let notes: string[] = [];
 		let kind: AttachedComputer["spec"]["kind"];
 		if (found.length === 0) {
+			const ports = await this.#rootPorts(ref, signal);
+			if (!ports.ok) return ports;
 			const opened = await this.#open(ref, signal);
 			if (!opened.ok) return opened;
 			try {
-				const inside = await this.#checkInside(opened.value, ref.name, signal);
+				const inside = await this.#checkInside(opened.value, ref.name, ports.value, signal);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
 				else notes = inside.value;
@@ -772,10 +812,12 @@ export class OrgoProvider implements ComputerProvider {
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
 		if (found.value.status !== "running") return fail("refused", `${ref.name} is ${found.value.status}: its network is read from inside, and a read would wake it`);
+		const ports = await this.#rootPorts(ref, signal);
+		if (!ports.ok) return ports;
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		try {
-			const probe = await this.#probe(opened.value, ref.name, signal);
+			const probe = await this.#probe(opened.value, ref.name, ports.value, signal);
 			if (!probe.ok) return probe;
 			if (probe.value.reached.length > 0) return ok({ other: `created with network none, yet from inside an answer came back from ${probe.value.reached.join(", ")}` });
 			return ok("none");
