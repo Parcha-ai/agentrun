@@ -780,11 +780,18 @@ const CONTINUE_RETRY_MS = [1_000, 3_000];
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
- *  refused request's least, rounded up to a whole dollar, and always above the cap (the next dollar above it, if not),
- *  so a PATCH with it is a raise. */
+ *  refused request's least, scaled from that need: from a dollar on, rounded up to a whole dollar; under a dollar, for a
+ *  cap under one, to the cent (a $0.0002 cap is offered $0.03, never $1). Always above the cap (the next dollar or cent
+ *  above it, if not), so a PATCH with it is a raise. The kernel cap's suggestedRaise (run-adapters kernel/cap/words.ts)
+ *  is the same rule, held to it figure for figure by cap-raise.test.mjs until this cap retires. */
 export const suggestedCap = (cap: number, spentUsd: number, needsUsd: number): number => {
+  const total = spentUsd + SUGGESTED_RAISE_FACTOR * needsUsd;
+  if (total < 1 - 1e-9 && cap < 1) {
+    const cents = Math.ceil(total * 100 - 1e-7) / 100;
+    return cents > cap + CAP_TOLERANCE ? cents : (Math.floor((cap + CAP_TOLERANCE) * 100) + 1) / 100;
+  }
   // A hair under, so a sum a float puts just past a whole dollar (3.0000000000000004) stays that dollar.
-  const up = Math.ceil(spentUsd + SUGGESTED_RAISE_FACTOR * needsUsd - 1e-9);
+  const up = Math.ceil(total - 1e-9);
   // Above the cap as a raise must be (by more than CAP_TOLERANCE, takeRaise), so a PATCH with it is always taken.
   return up > cap + CAP_TOLERANCE ? up : Math.floor(cap + CAP_TOLERANCE) + 1;
 };
