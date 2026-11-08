@@ -56,7 +56,8 @@ for (const [name, open] of Object.entries(BACKENDS)) {
     assert.ok((await ws.list(".agentrun")).some((entry) => entry.name === "learning-0123abcd.sh"), "the script is there before it runs");
     const stdin = randomBytes(2 * 1024 * 1024);
     const ran = await ws.exec(["sh", SCRIPT, "merge", "abc1234"], { env: ENV, stdin, timeoutMs: 60_000 });
-    assert.deepEqual([ran.code, ran.timedOut, ran.signal], [3, false, undefined]);
+    // No signal ended it: the port says so as an absent or null signal.
+    assert.deepEqual([ran.code, ran.timedOut, ran.signal ?? null], [3, false, null]);
     assert.ok(Buffer.from(await ws.read("got.bin")).equals(stdin), "stdin arrived whole");
     assert.equal(text(await ws.read("seen.txt")), `merge abc1234 ${stdin.length}\n`);
     // The server's snapshot reads: read and list, no exec.

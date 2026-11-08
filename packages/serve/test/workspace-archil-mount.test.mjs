@@ -47,6 +47,20 @@ test("archil mountSpec: the computer module's read-back of it is exactly { disk,
   assert.deepEqual(readBackOf(await workspace.mountSpec(), EPOCH), { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), exclusive: true, epoch: EPOCH });
 });
 
+test("archil mountSpec: with no epoch (or one that is not an epoch) the computer module reads it back as { other }, and attach refuses it", async () => {
+  const disk = new FakeArchilDisk();
+  const { workspace } = mounted(disk);
+  const spec = await workspace.mountSpec();
+  for (const epoch of [undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const back = readBackOf(spec, epoch);
+    assert.deepEqual(Object.keys(back), ["other"], String(epoch));
+    assert.match(back.other, new RegExp(`^an Archil mount of ${disk.id}:/${runKey(AGENT, RUN)} with no epoch to read it back under \\(an epoch must be a whole number`));
+    assert.ok(!back.other.includes(TOKEN));
+  }
+  const exact = { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), exclusive: true, epoch: EPOCH };
+  await assert.rejects(workspace.attach(computerWith(exact), { readBackOf }), (error) => error instanceof WorkspaceError && error.code === "REFUSED" && !error.message.includes(TOKEN));
+});
+
 test("archil attach: through the shared path, the exact read-back is accepted without asking for the token", async () => {
   const disk = new FakeArchilDisk();
   const { workspace, asked } = mounted(disk);
