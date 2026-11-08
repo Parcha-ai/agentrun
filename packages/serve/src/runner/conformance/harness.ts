@@ -392,6 +392,29 @@ const CASES: readonly Case[] = [
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
     },
   },
+  {
+    id: "approval-double-click",
+    title: "a double-clicked approval runs the call once: the first answers it, the second is refused in words",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+      await w.ended("parked");
+      const callId = await w.askedCall();
+      const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
+      const second = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
+      await w.ended("ended");
+      assert.equal(ran.asked, 1, "the call ran once");
+      assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
+      const late = await until(async () => {
+        const row = await w.commandRow(second.id);
+        return row.takenAt !== null && row;
+      }, "the second approve answered");
+      assert.match(late.refused ?? "", /\w/, `the second approve is refused in words: ${JSON.stringify(late)}`);
+      const { calls } = await w.read();
+      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
+    },
+  },
 ];
 
 /** Registers the six cases for `subject` with `test` (node:test). A case the subject cannot model is skipped with its
