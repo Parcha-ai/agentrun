@@ -1647,3 +1647,30 @@ test("a reused session meets the navigation allow list the policy sets now: a se
   assert.doesNotMatch(kept.texts[1], /"code":"refused"/, "a session whose list is inside the policy's was refused");
   assert.equal(kept.backend.tally().creates, 1);
 });
+
+test("a run of several actions whose connection drops partway is a dropped browser still: the driver is let go (the next call reconnects), and the model hears partial, with how many ran", async () => {
+  const { drivingGuard } = await import("../dist/core/driving-guard.js");
+  const { createDrivingGates } = await import("../dist/core/driving.js");
+  const record = { lastUrl: START, navigation: [{ at: "2026-10-16T00:00:00.000Z", url: START }] };
+  const call = { callId: "call-run", conversationId: 1, signal: undefined, label: "node-a", redact: (text) => text, evidence: { file: async () => null } };
+  const acts = [];
+  const driver = {
+    checkActions: async () => {},
+    run: async (input) => { for (const action of input.actions) { if (action.id === "2-2") throw lostConnection(); acts.push(action.id); } return { completed: input.actions.length, url: START }; },
+    url: async () => START,
+  };
+  let dropped = 0;
+  const port = {
+    session: async () => ({ driver, tag: "t-run", sessionId: "s-1", record, notice: null, interrupted: null, recorded: false, effects: null, replaced: null }),
+    dispatching: async () => {}, journal: async () => {}, mark: async () => {}, settle: async () => {}, navigated: async () => {},
+    dropped: async () => { dropped += 1; },
+    ended: async () => false,
+    unreachable: async () => ({ released: false, lastUrl: START }),
+  };
+  const run = drivingGuard(pageToolsOf({}).run, createDrivingGates());
+  const out = JSON.parse((await run({ actions: [{ op: "click", id: "1-1" }, { op: "click", id: "2-2" }] }, port, call)).content[0].text);
+  assert.deepEqual([out.code, out.effect, out.completed], ["browser_unavailable", "partial", 1], JSON.stringify(out));
+  assert.match(out.message, /1 of the 2 actions ran/);
+  assert.equal(dropped, 1, "the dropped driver was let go, so the next call reconnects");
+  assert.deepEqual(acts, ["1-1"]);
+});

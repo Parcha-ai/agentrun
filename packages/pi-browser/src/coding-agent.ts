@@ -381,7 +381,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   }
 
   /** Blocks on the port until the person answers or the call is aborted; the session comes back either way. */
-  async handoff(ask: { requestId: string; instruction: string; completionCondition: string }, signal?: AbortSignal): Promise<{ outcome: HandoffOutcome } | { refused: string }> {
+  async handoff(ask: { requestId: string; instruction: string; completionCondition: string }, signal?: AbortSignal): Promise<{ outcome: HandoffOutcome; reason?: string } | { refused: string }> {
     const port = this.d.handoff;
     if (!port) throw new BrowserFailureError(NO_HANDOFF);
     const { tag, sessionId } = await this.hold(ask.requestId);
@@ -398,7 +398,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
           // A sign-in just happened and the person has handed back: kept now, so a crash after it does not lose it.
           await this.resume(null);
           if (this.live) await this.captured(this.live, true);
-          return { outcome: answer };
+          return typeof answer === "string" ? { outcome: answer } : answer;
         }
         await sleep(backoffMs(attempt), undefined, { signal: stop });
       }
