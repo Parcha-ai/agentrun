@@ -15,7 +15,8 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
   const body: StartBody = { input };
   if (f.revision) body.revision = f.revision;
   if (f.effort) body.effort = f.effort;
-  if (kind === "agentic" && f.maxCostUsd?.trim()) {
+  // Either kind takes a cap: serve holds an agentic run and a workflow run to it alike.
+  if (f.maxCostUsd?.trim()) {
     const cap = Number(f.maxCostUsd);
     if (!Number.isFinite(cap) || cap <= 0) return { ok: false, field: "max_cost_usd", message: "A spend cap is a positive number of dollars." };
     body.max_cost_usd = cap;
