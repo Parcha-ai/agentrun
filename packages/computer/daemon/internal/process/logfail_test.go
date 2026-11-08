@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"sync"
 	"syscall"
 	"testing"
@@ -30,39 +30,41 @@ func logErrorOf(t *testing.T, res process.ReadResult) string {
 
 // A log write that fails or writes short stops the log for good: nothing more is written, so the file stays a true
 // prefix of the output, and a read of the log stream says why it stopped.
+//
+// The failure is tied to the bytes, not to how the pipe splits them: the first write that reaches past byte 5 writes
+// only up to byte 7 and fails there, so the file is "0123456" whether the output came in one read or in three.
 func TestALogStopsAtItsFirstFailedWrite(t *testing.T) {
+	const failPast, keep = 5, 7
 	for _, c := range []struct {
 		name string
-		// fail answers the second write, of p: what it wrote of it, and its error.
-		fail func(f *os.File, p []byte, off int64) (int, error)
-		said string
+		// err is what the failing write answers beside the bytes it wrote; nil is a short write.
+		err  error
+		said *regexp.Regexp
 	}{
-		{"a full disk", func(f *os.File, p []byte, off int64) (int, error) {
-			n, _ := f.WriteAt(p[:2], off)
-			return n, syscall.ENOSPC
-		}, "no space left on device"},
-		{"a short write", func(f *os.File, p []byte, off int64) (int, error) {
-			n, _ := f.WriteAt(p[:2], off)
-			return n, nil
-		}, "wrote 2 of 5 bytes"},
+		{"a full disk", syscall.ENOSPC, regexp.MustCompile(`the log stopped at byte 7: no space left on device`)},
+		{"a short write", nil, regexp.MustCompile(`the log stopped at byte 7: it wrote \d+ of \d+ bytes`)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var mu sync.Mutex
-			calls := 0
+			calls, failedAt := 0, 0
 			restore := process.SetLogWriteAt(func(f *os.File, p []byte, off int64) (int, error) {
 				mu.Lock()
 				calls++
-				call := calls
-				mu.Unlock()
-				if call == 2 {
-					return c.fail(f, p, off)
+				fail := failedAt == 0 && off+int64(len(p)) > failPast
+				if fail {
+					failedAt = calls
 				}
-				return f.WriteAt(p, off)
+				mu.Unlock()
+				if !fail {
+					return f.WriteAt(p, off)
+				}
+				n, _ := f.WriteAt(p[:keep-off], off)
+				return n, c.err
 			})
 			defer restore()
 			tbl := table(t, process.Options{})
 			path := filepath.Join(t.TempDir(), "output.log")
-			// Three writes, apart: the second fails, and the third, of a disk with room again, must not land after it.
+			// Three writes, apart where the pipe keeps them apart: whichever write fails, nothing after it may land.
 			p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "exec 2>&1; printf 01234; sleep 0.3; printf 56789; sleep 0.3; printf abcde"}, Log: path})
 			wait(t, tbl, p.ID)
 			if got := readAll(t, tbl, p.ID, "log"); got != "0123456" {
@@ -72,13 +74,13 @@ func TestALogStopsAtItsFirstFailedWrite(t *testing.T) {
 				t.Fatalf("the file %q %v: not the prefix up to the failure", data, err)
 			}
 			mu.Lock()
-			if calls != 2 {
-				t.Fatalf("%d writes: none should follow the failed one", calls)
+			if failedAt == 0 || calls != failedAt {
+				t.Fatalf("%d writes, the failed one #%d: none should follow it", calls, failedAt)
 			}
 			mu.Unlock()
 			res, err := tbl.Read(context.Background(), process.ReadParams{ID: p.ID, Stream: "log", Offset: off(0)})
-			if err != nil || res.Size != 7 || !strings.Contains(logErrorOf(t, res), c.said) {
-				t.Fatalf("the read says %q, size %d (%v); want %q", logErrorOf(t, res), res.Size, err, c.said)
+			if err != nil || res.Size != keep || !c.said.MatchString(logErrorOf(t, res)) {
+				t.Fatalf("the read says %q, size %d (%v); want %s", logErrorOf(t, res), res.Size, err, c.said)
 			}
 		})
 	}
