@@ -295,11 +295,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             followedUp = true;
           }
         }
+        // A claim that starts a turn (the input, a recovery, a follow-up) waits for that turn's end: state is the session as
+        // open found it, and a CLI adapter reads idle once its turn is sent, so state read after a send says nothing.
+        const placed = followedUp || session!.state !== "idle";
         if (followedUp) {
           // The follow-up is the turn this claim runs.
         } else if (session!.state === "new") await session!.send(spec.input);
         else if (session!.state === "open_turn") await session!.recover();
-        const turn = session!.state === "idle" ? Promise.resolve({ status: "completed" as const }) : session!.turnEnd();
+        const turn = placed ? session!.turnEnd() : Promise.resolve({ status: "completed" as const });
         const end = await Promise.race([turn.then(() => "answered" as const), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
         if (end === "parked") {
           gate.seal(new Parked());
