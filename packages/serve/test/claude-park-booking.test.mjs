@@ -18,6 +18,8 @@ const KEY = `not-a-secret-${"anthropic"}`;
 const MODEL = "claude-haiku-4-5";
 const PAGE = "http://public.example/";
 const json = { "content-type": "application/json" };
+/** The owner's sign-in phrase for this test's server. */
+const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 
 /** The run's store entries, once its process has let it go. */
 function entriesOf(data, runId) {
@@ -95,7 +97,7 @@ async function parkedRun(t, holdMs) {
   Object.assign(process.env, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: proxy, AGENT_MODEL: `anthropic/${MODEL}` });
   const { api, data, port } = await serve(t, { faux: undefined, accounts: true, openSetup: true });
   const origin = `http://127.0.0.1:${port}`;
-  const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: "the owner signs in with this phrase" } });
+  const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   assert.equal((await api("POST", "/agents", agent("fetcher", { harness: "claude-agent", model: `anthropic/${MODEL}`, instructions: `Fetch ${PAGE} once.`, tools: ["web_fetch"] }))).status, 201);
