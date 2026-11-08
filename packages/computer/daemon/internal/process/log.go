@@ -134,9 +134,12 @@ func (l *logFile) write(p []byte) {
 	if len(p) == 0 {
 		return
 	}
-	n, _ := l.file.WriteAt(p, l.written)
+	n, _ := logWriteAt(l.file, p, l.written)
 	l.written += int64(n)
 }
+
+// logWriteAt writes a log's bytes; a test swaps it to fail a write.
+var logWriteAt = (*os.File).WriteAt
 
 // state is how many bytes the log holds and whether output was dropped past them.
 func (l *logFile) state() (written int64, capped bool) {
