@@ -19,7 +19,8 @@ import { type Conversation, type ConversationId, createRegistry, Harness, LiveDo
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
-import type { AlsoRow, Claim, Command, CommandOutcome, EndOfRunAnswer, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { originOf } from "@parcha/pi-durable-agent/timeline";
+import { type AlsoRow, type Claim, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { answerText, REFLECT_NOTE_ONLY, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
 import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
@@ -195,12 +196,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
     // own, never steering the turn in flight, and never as a waiting call's answer.
     const followUp = (command.body as { answers?: unknown } | null)?.answers === false;
+    // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
+    const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
     const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
     // A seal while the steer is placed fails it before it is awaited: handled here.
     taken.catch(() => undefined);
     const theGate = gate;
     try {
-      await session.steer(text, requestId, followUp ? "followUp" : "steer");
+      await session.steer(text, requestId, followUp ? "followUp" : "steer", origin ? { origin } : undefined);
     } catch (error) {
       // Sealed while it was placed (the run parked meanwhile): left for the resume, as above.
       if (theGate.sealed) return { later: "the run is parking: the steer waits for its resume" };
@@ -350,9 +353,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           let timer: NodeJS.Timeout | undefined;
           const settled = await Promise.race([settling, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), settleMs)))]);
           clearTimeout(timer);
+          // A cancel ends the same way, in its own words (main's "cancelled"); the bound is the same.
+          const words = endedBy(stopReason.cancel);
           const cut = await cutRows(claim, spec, "stopped");
-          if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `stopped by a person, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId], cut);
-          return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId], cut);
+          if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `${words}, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId], cut);
+          return await writeEnd(harness, root, gate, { state: "stopped", summary: words }, [stopReason.commandId], cut);
         }
         const outcome = await turn;
         await harness.waitForIdle(context);
@@ -370,7 +375,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
-        if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [step.commandId], await cutRows(claim, spec, "stopped-looking"));
+        if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason?.kind === "command" ? stopReason.cancel : undefined) }, [step.commandId], await cutRows(claim, spec, "stopped-looking"));
         if (step.kind === "interrupted") return await interrupted(stopReason?.kind ?? "its claim's signal aborted");
         return await writeEnd(harness, root, gate, data, [], step.also);
       }
@@ -406,7 +411,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (decision === "allow") return "allow";
       const answer = await answerOf(call);
       if (answer === "park") return { park: true };
-      return answer.approved ? "allow" : { deny: `Permission denied: a person denied ${call.tool}.` };
+      return answer.approved ? "allow" : { deny: deniedText(call.tool, answer.note) };
     };
   }
 
@@ -441,7 +446,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const row = inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === call.callId);
       if (row) {
         inbox.splice(inbox.indexOf(row), 1);
-        const data: AnswerData = { callId: call.callId, approved: row.kind === "approve" };
+        const data: AnswerData = { callId: call.callId, approved: row.kind === "approve", ...noteOf(row) };
         if (!(await entryLands(KINDS.answer, data, { take: [row.id] }))) return "park";
         return data;
       }

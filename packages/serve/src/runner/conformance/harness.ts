@@ -526,7 +526,8 @@ const CASES: readonly Case[] = [
       assert.deepEqual(answers, [{ callId, approved: false, note: "not on a Friday" }], "the answer keeps the note");
       const said = messages.filter((message) => message.role === "model").map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
-      assert.ok(said[0]!.endsWith(" Reason: not on a Friday"), `the model read the person's reason: ${JSON.stringify(said)}`);
+      // The harness may frame a refusal its own way (pi: a blocked call's error): the kernel's words and the reason are in it.
+      assert.ok(said[0]!.includes("a person denied asked. Reason: not on a Friday"), `the model read the person's reason: ${JSON.stringify(said)}`);
     },
   },
   {
@@ -626,7 +627,7 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       // A trigger's message: it says "yes", but it answers nothing (answers: false), so it resolves no approval.
-      await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger: "trigger-1" } } });
+      await sendCommand(w.server, RUN, { kind: "steer", body: { text: "yes", answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } } });
       await sleep(TIMING.leaseMs * 2);
       assert.equal(ran.asked, 0, "the waiting call did not run on a message");
       const row = await w.run();

@@ -7,6 +7,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/journal-reader.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
+const { deniedText, endedBy, noteOf } = await import("../dist/runner/loop-contract.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 /** A task that kept faulting: the run fails, saying so. */
@@ -23,8 +24,11 @@ function lastResult(entries) {
   const answer = [...entries].reverse().find((entry) => entry.kind === KINDS.answer);
   if (!answer || answer.data.approved) return "";
   const ask = entries.find((entry) => entry.kind === KINDS.ask && entry.data.callId === answer.data.callId);
-  return `Permission denied: a person denied ${ask?.data.tool ?? "the call"}.`;
+  return deniedText(ask?.data.tool ?? "the call", answer.data.note);
 }
+
+/** A steer row as the message the reference records: its text, and who wrote it when the person did not. */
+const steerData = (steer) => ({ role: "steer", text: steer.body.text, ...(steer.body.origin ? { origin: steer.body.origin } : {}) });
 
 /** The subject the suite runs: reference loops for `setup`. */
 export const referenceSubject = {
@@ -65,11 +69,11 @@ function referenceLoop({ script, tools, hooks }, deps) {
   const writeSteers = async () => {
     // any-row-answers leaves steers in the inbox too, for the ask to take as an answer.
     const steers = MUTANT === "steer-at-end" || MUTANT === "any-row-answers" ? [] : takeSteers();
-    for (const steer of steers) await append(KINDS.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
+    for (const steer of steers) await append(KINDS.message, steerData(steer), { take: [steer.id] });
   };
-  /** The run ends stopped, why on its row (the end commit's summary), the stop row taken in the same commit. */
+  /** The run ends stopped, why on its row (the end commit's summary), the stop or cancel row taken in the same commit. */
   const writeStop = async () => {
-    const run = MUTANT === "stop-unwritten" ? { state: "stopped" } : { state: "stopped", summary: "stopped by a person" };
+    const run = MUTANT === "stop-unwritten" ? { state: "stopped" } : { state: "stopped", summary: endedBy(stopReason.cancel) };
     await append(TURN_END, {}, { run, take: [stopReason.commandId] });
     return { state: "stopped" };
   };
@@ -167,7 +171,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
                 await waitForCommand();
               }
               inbox.splice(inbox.indexOf(answer), 1);
-              await append(KINDS.answer, { callId, approved: answer.kind === "approve" }, { take: [answer.id] });
+              await append(KINDS.answer, { callId, approved: answer.kind === "approve", ...noteOf(answer) }, { take: [answer.id] });
               if (answer.kind === "deny") continue;
             }
           }
@@ -192,7 +196,7 @@ function referenceLoop({ script, tools, hooks }, deps) {
       return { state: "ended" };
 
       async function writeSteersNow() {
-        for (const steer of takeSteers()) await append(KINDS.message, { role: "steer", text: steer.body.text }, { take: [steer.id] });
+        for (const steer of takeSteers()) await append(KINDS.message, steerData(steer), { take: [steer.id] });
       }
     },
     async command(command) {

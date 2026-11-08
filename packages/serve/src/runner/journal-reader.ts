@@ -3,7 +3,7 @@
 // one output: a pi run's own records (its pi.tool tasks and its pi.user / pi.assistant entries), and a CLI run's
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
 import type { Context } from "@earendil-works/chord";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
 import type { ConversationId, ConversationRecord, EntryRecord, TaskRecord } from "@earendil-works/pi-durable";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
 // Reads only (JournalReads): a run's live journal (journal(claim)) and the server's read-only view (store.readJournal) both
@@ -139,8 +139,15 @@ function piText(entry: EntryRecord): string {
 export function messagesOf(from: readonly EntryRecord[] | JournalRecords): MessageRecord[] {
   const out: MessageRecord[] = [];
   for (const entry of recordOf(asRecords(from).entries)) {
-    if (entry.kind === KINDS.message) out.push({ ...dataOf<MessageData>(entry), entry: entryNumber(entry) });
-    else if (entry.kind === PI.user) out.push({ role: entry.byTaskId === undefined ? "person" : "steer", text: piText(entry), entry: entryNumber(entry) });
+    if (entry.kind === KINDS.message) {
+      const { origin, ...data } = dataOf<MessageData>(entry);
+      const known = originOf(origin);
+      out.push({ ...data, entry: entryNumber(entry), ...(known ? { origin: known } : {}) });
+    } else if (entry.kind === PI.user || entry.kind === KINDS.input) {
+      // A pi input under the host's kind carries who wrote it (a trigger's message); pi's own user entry is the person's.
+      const known = entry.kind === KINDS.input ? originOf((entry.data as { origin?: unknown } | undefined)?.origin) : undefined;
+      out.push({ role: entry.byTaskId === undefined ? "person" : "steer", text: piText(entry), entry: entryNumber(entry), ...(known ? { origin: known } : {}) });
+    }
     else if (entry.kind === PI.assistant) {
       const text = piText(entry);
       if (text !== "") out.push({ role: "model", text, entry: entryNumber(entry) });
