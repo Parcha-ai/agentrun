@@ -289,6 +289,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     // own (pi's follow-up), never steering the turn in flight, and never as a waiting call's answer.
     const followUp = (command.body as { answers?: unknown } | null)?.answers === false;
     const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
+    // A seal while the steer is placed fails it before it is awaited: handled here.
+    taken.catch(() => undefined);
     try {
       await root.submit({ type: "input", content: text, requestId, whenBusy: followUp ? "followUp" : "steer" }, context);
     } catch (error) {
@@ -319,17 +321,30 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
       const answerOf = async (callId: string): Promise<AnswerData | undefined> => findData<AnswerData>(await entriesOf(gate!.journal, root!.id, context), KINDS.answer, (data) => data.callId === callId);
       const askedOf = async (callId: string): Promise<boolean> => findData<AskData>(await entriesOf(gate!.journal, root!.id, context), KINDS.ask, (data) => data.callId === callId) !== undefined;
 
+      /** Commits the root's entry of `kind`, staging `staged` with it. False when the journal is sealed first (another call
+       *  of the round parked the run): nothing landed, and the expectation's failure is no one's to wait on. */
+      const entryLands = async (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]): Promise<boolean> => {
+        const landed = gate!.expect(writesEntry(kind, (entry) => entry.callId === data.callId), staged);
+        // A seal while the commit is in flight fails it before it is awaited: handled here, read by the await below.
+        landed.catch(() => undefined);
+        try {
+          await harness!.commit((tx) => tx.appendEntry(root!.id, { kind, data: data as unknown as JsonValue }), context);
+          await landed;
+          return true;
+        } catch (error) {
+          if (gate!.sealed) return false;
+          throw error;
+        }
+      };
+
       /** The gate's ask: an answer in the journal stands; else wait for one on a resume, or ask and park. */
       const answer = async (call: ToolCall, hookContext: Context): Promise<AnswerData> => {
         await ready;
         const known = await answerOf(call.callId);
         if (known) return known;
         if (!(await askedOf(call.callId))) {
-          const data: AskData = { callId: call.callId, tool: call.tool };
-          const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
-          await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
-          await asked;
-          parked();
+          // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
+          if (await entryLands(KINDS.ask, { callId: call.callId, tool: call.tool }, { run: { state: "parked" } })) parked();
           return heldUntilAborted(hookContext);
         }
         // Asked before and resumed: the approve or deny row the runner hands over, naming this call, answers it.
@@ -338,9 +353,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
           if (row) {
             inbox.splice(inbox.indexOf(row), 1);
             const data: AnswerData = { callId: call.callId, approved: row.kind === "approve" };
-            const answered = gate!.expect(writesEntry(KINDS.answer, (entry) => entry.callId === call.callId), { take: [row.id] });
-            await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.answer, data: data as unknown as JsonValue }), context);
-            await answered;
+            if (!(await entryLands(KINDS.answer, data, { take: [row.id] }))) return heldUntilAborted(hookContext);
             return data;
           }
           if (stopReason) return heldUntilAborted(hookContext);
@@ -348,11 +361,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
           // named no waiting call and was refused): the call is asked again and the run parks on it, so it never waits
           // here holding the claim while it reads running.
           if (delivered || refusals > 0) {
-            const data: AskData = { callId: call.callId, tool: call.tool };
-            const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
-            await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
-            await asked;
-            parked();
+            if (await entryLands(KINDS.ask, { callId: call.callId, tool: call.tool }, { run: { state: "parked" } })) parked();
             return heldUntilAborted(hookContext);
           }
           await new Promise<void>((resolve) => (wakeInbox = resolve));
@@ -537,6 +546,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch and the rows it takes. */
   async function writeEnd(harness: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[]): Promise<LoopEnd> {
     const ended = theGate.expect(writesEntry(KINDS.end), { run: { state: data.state, ...(data.summary ? { summary: data.summary } : {}) }, ...(take.length ? { take } : {}) });
+    // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
+    ended.catch(() => undefined);
     try {
       await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue }), context);
     } catch (error) {
