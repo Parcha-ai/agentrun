@@ -21,7 +21,8 @@ export {
 	type ModalTimeouts,
 } from "./modal.js";
 export { drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
-export { sweep, type SweepOptions, type Swept } from "./janitor.js";
+export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
+export { EPOCH_LABEL, epochOf, epochProblem, RUN_LABEL, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export { type ConformanceModule, isProviderId, type ProviderEnv, type ProviderId, providerFromEnv, providerIds, type ProviderModule, providerModule, providers } from "./providers.js";
 export * from "./conformance/index.js";
