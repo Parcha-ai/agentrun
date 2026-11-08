@@ -16,6 +16,7 @@ const RETURN_WORDS: Record<string, string> = {
   state_invalid: "That connection was started elsewhere or has expired. Start again.",
   conversion_failed: "GitHub didn't hand back the App. Try connecting again.",
   installation_unverified: "The App's install couldn't be confirmed. Install it again from GitHub.",
+  already_connected: "Another GitHub App was connected while this one was being created. Delete the new App on GitHub.",
 };
 export const githubReturnWords = (r: GitHubReturn): string =>
   r.ok ? "Connected. The App is installed." : (r.reason && Object.hasOwn(RETURN_WORDS, r.reason) ? RETURN_WORDS[r.reason] : "The connection didn't finish. Try again.");

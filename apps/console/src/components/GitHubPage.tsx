@@ -31,6 +31,8 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
   // The form to GitHub, once the start is in: the browser leaves with it.
   const [opening, setOpening] = useState<{ action: string; manifest: string } | null>(null);
   const [said, setSaid] = useState<string | null>(null);
+  // A wrong-origin refusal's public URL, as the server serves it (details.public_url): never read from the words.
+  const [openAt, setOpenAt] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [disconnected, setDisconnected] = useState<GitHubDisconnected | null>(null);
   // One start per click run: a second click before the first answers sends nothing.
@@ -52,7 +54,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
   const connect = async () => {
     if (starting.current) return;
     starting.current = true;
-    setBusy(true); setSaid(null); setDisconnected(null);
+    setBusy(true); setSaid(null); setOpenAt(null); setDisconnected(null);
     try {
       const start = await v2.connectGitHub(org.trim() || undefined);
       const action = githubFormAction(start.action, httpHref);
@@ -62,17 +64,22 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
     } catch (e) {
       starting.current = false; setBusy(false);
       setSaid(e instanceof Error ? e.message : String(e));
+      // Started on another host than the public URL: link the one the server serves, through httpHref.
+      if (e instanceof ClientError && e.code === "github_wrong_origin") {
+        const served = e.details?.public_url;
+        setOpenAt((typeof served === "string" && httpHref(served)) || null);
+      }
       // Already connected: show the App this server has.
       if (e instanceof ClientError && e.code === "github_already_connected") void read();
     }
   };
 
   const disconnect = async () => {
-    setConfirming(false); setBusy(true); setSaid(null);
+    setConfirming(false); setBusy(true); setSaid(null); setOpenAt(null);
     try { setDisconnected(await v2.disconnectGitHub()); setConnection(null); }
     catch (e) {
-      // Not connected (any more): the status read again says so.
-      if (e instanceof ClientError && e.code === "github_not_connected") await read();
+      // Not connected (any more; another tab may have disconnected it): the status read again says so, no error.
+      if (e instanceof ClientError && (e.status === 404 || e.code === "github_not_connected")) await read();
       else setSaid(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
   };
@@ -89,7 +96,12 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
         {returned && (
           <p aria-label="From GitHub" role="status" className={cn("border p-4 text-[14px]", returned.ok ? "border-success/50 bg-success/5" : "border-warning/50 bg-warning/5 text-warning-text")}>{githubReturnWords(returned)}</p>
         )}
-        {said && <p role="alert" className="border border-destructive/50 px-4 py-3 text-[14px] text-destructive-text">{said}</p>}
+        {said && (
+          <div role="alert" className="border border-destructive/50 px-4 py-3 text-[14px] text-destructive-text">
+            <p>{said}</p>
+            {openAt && <p className="mt-1">Open this server at <a href={openAt} className="break-all underline underline-offset-2">{openAt}</a> to connect GitHub.</p>}
+          </div>
+        )}
         {disconnected && (
           <section aria-label="Disconnected" className="border p-4 text-[14px]">
             <p><Note note={disconnected.note} /></p>
