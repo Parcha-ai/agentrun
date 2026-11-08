@@ -3,9 +3,13 @@
 // the last thing it was told (the tool's result, or the message that resumed it), so a test reads what it saw; the faux
 // harness says "Fetched once.". A workflow's model node told "Fetch <url> once." fetches it, then submits what it read.
 import { access } from "node:fs/promises";
+import { noteRequest } from "./faux-requests.mjs";
 
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 const urlOf = (text) => /Fetch (\S+) once\./.exec(text)?.[1];
+/** The last thing the model was told: the latest user message or tool result that has text. An assistant message (a tool
+ *  call alone), or an empty one, after it never makes the answer a bare "Saw:" (F39, F40). */
+const toldOf = (context) => textOf(context.messages.findLast((m) => (m.role === "user" || m.role === "toolResult") && textOf(m) !== ""));
 
 /** Answers `text` after `ms`, or as an aborted reply as soon as the turn is stopped. */
 const slow = (faux, ms, text) =>
@@ -15,6 +19,7 @@ const slow = (faux, ms, text) =>
   });
 
 export default function reply(context, faux) {
+  noteRequest(context);
   // A workflow's model node (its `submit` tool added), told "Fetch <url> once.": web_fetch on the url, then it submits
   // `{ answer }`, the whole of what the tool said.
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
@@ -34,13 +39,13 @@ export default function reply(context, faux) {
       while (!(await access(again[2]).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
       return faux.message(faux.toolCall("web_fetch", { url: again[1] }), { stopReason: "toolUse" });
     })();
-    return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
+    return faux.message(`Saw: ${toldOf(context)}`);
   }
   // "Fetch <url> once <file> exists.": the turn works until the file exists, then calls web_fetch on the url; then "Saw: "
   // and the last thing it was told.
   const later = /Fetch (\S+) once (\S+) exists\./.exec(textOf(context.messages.find((m) => m.role === "user")));
   if (later) {
-    if (context.messages.some((m) => m.role === "toolResult")) return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.message(`Saw: ${toldOf(context)}`);
     return (async () => {
       while (!(await access(later[2]).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
       return faux.message(faux.toolCall("web_fetch", { url: later[1] }), { stopReason: "toolUse" });
@@ -49,7 +54,7 @@ export default function reply(context, faux) {
   // "Write <path> once.": write on the path, "hello" its content; then "Saw: " and the last thing it was told.
   const written = /Write (\S+) once\./.exec(textOf(context.messages.find((m) => m.role === "user")))?.[1];
   if (written) {
-    if (context.messages.some((m) => m.role === "toolResult")) return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.message(`Saw: ${toldOf(context)}`);
     return faux.message(faux.toolCall("write", { path: written, content: "hello" }), { stopReason: "toolUse" });
   }
   const url = urlOf(textOf(context.messages.find((m) => m.role === "user")));
@@ -57,7 +62,7 @@ export default function reply(context, faux) {
   // "Slowly, please." as the last message: a turn that streams for 8 s, unless it is stopped.
   if (textOf(context.messages.at(-1)).endsWith("Slowly, please.")) return slow(faux, 8_000, "Done slowly.");
   if (!context.messages.some((m) => m.role === "toolResult")) return faux.message(faux.toolCall("web_fetch", { url }), { stopReason: "toolUse" });
-  return faux.message(`Saw: ${textOf(context.messages.at(-1))}`);
+  return faux.message(`Saw: ${toldOf(context)}`);
 }
 
 export function script(spec) {
