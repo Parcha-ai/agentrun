@@ -54,6 +54,7 @@ import {
 } from "./docker/egress.js";
 import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { addressBytes } from "./docker/egress-table.js";
+import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -70,6 +71,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 
 /**
  * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
@@ -126,6 +128,12 @@ export interface DockerProviderOptions {
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
 export const MOUNT: readonly MountKind[] = ["bind"];
+
+/** The machine kind and groups of each configuration: a linux computer, and one made with the desktop option. */
+export const CAPABILITIES: readonly KindCapabilities[] = [
+	{ kind: "linux", groups: ["exec", "files", "processes"] },
+	{ kind: "desktop", groups: ["exec", "files", "processes", ...DESKTOP_GROUPS] },
+];
 
 /** What create() takes: the provider's options, the daemon optional. */
 export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
@@ -758,6 +766,11 @@ export class DockerProvider implements ComputerProvider {
 		const [report] = found.value;
 		if (report === undefined || report.Id !== match.id || !ours(report)) return fail("not_found", `no Docker computer has the labels ${words}`);
 		return this.#attached(report, signal);
+	}
+
+	/** Settings' test: a list by the provider's own label on this Docker host, which makes nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("Docker", await this.list({}, context));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

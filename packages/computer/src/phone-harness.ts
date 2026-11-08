@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import { checkActions } from "./actions.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
 	type ComputerClient,
@@ -51,6 +52,8 @@ export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
 export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
 /** A phone mounts no folder. */
 export const MOUNT: readonly MountKind[] = [];
+/** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */

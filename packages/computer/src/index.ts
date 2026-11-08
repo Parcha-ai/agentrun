@@ -54,17 +54,18 @@ export {
 	providers,
 } from "./providers.js";
 export {
-	type Kind,
+	type ComputerSettingKind,
 	type KindCapabilities,
-	type KindPlane,
-	type KindSpec,
-	type KindTool,
-	KIND_PROVIDERS,
-	KIND_SPECS,
-	KINDS,
 	kindOf,
+	type ProviderEntry,
+	type ProviderKey,
+	PROVIDERS,
+	SETTING_KIND_NAMES,
+	SETTING_KINDS,
+	type SettingKindSpec,
 	serves,
 	servingRefusals,
-	toolsFor,
+	type TestConnection,
+	type TestConnectionOptions,
 } from "./kinds.js";
 export * from "./conformance/index.js";

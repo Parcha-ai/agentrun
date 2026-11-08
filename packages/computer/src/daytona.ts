@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import {
@@ -27,6 +28,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** The longest each kind of call may take, and the pauses between polls and retries. */
@@ -144,6 +146,9 @@ interface CallInit {
 
 /** The mount kinds a Daytona computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
 export const MOUNT: readonly MountKind[] = [];
+
+/** The machine kind and groups of its one configuration: a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
 
 /** What create() takes: the provider's options, the daemon optional (default this package's build for the arch). */
 export type DaytonaCreateOptions = Omit<DaytonaProviderOptions, "daemonPath"> & { daemonPath?: string };
@@ -1076,6 +1081,11 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!answer.ok) return answer;
 		const state = (parseJson(answer.value.bytes) as { state?: unknown } | null)?.state;
 		return ok({ status: answer.value.status, ...(typeof state === "string" ? { state } : {}) });
+	}
+
+	/** Settings' test: a list by the provider's own label, one read of the account's sandboxes, which makes nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("Daytona", await this.list({}, context));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
