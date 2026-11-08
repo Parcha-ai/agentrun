@@ -3,7 +3,7 @@
 // adb runs, and no test waits on the wall clock: the fake's clock moves on when the provider sleeps.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -411,6 +411,25 @@ test("a drifted twin's phone is refused at connect, in the drift check's words",
 	const refused = await drifted.connect(ref);
 	assert.equal(refused.error.code, "refused");
 	assert.match(refused.error.message, new RegExp(`hello: the daemon reports version 0\\.0\\.0-drift, expected ${provider.version.replaceAll(".", "\\.")}`));
+});
+
+test("an unreadable ledger is a result in words from list and testConnection, never a throw; create makes no phone without one", async () => {
+	const broken = join(dir, "broken-ledger.json");
+	writeFileSync(broken, "{ not json");
+	for (const ledger of [conformance.fileLedger(broken), { put: () => { throw new Error("the store is down"); }, get: () => { throw new Error("the store is down"); }, list: () => { throw new Error("the store is down"); }, remove: () => { throw new Error("the store is down"); } }]) {
+		const { provider, fake } = await setup({}, { ledger });
+		const listed = await provider.list({});
+		assert.equal(listed.ok, false);
+		assert.equal(listed.error.code, "phone");
+		assert.match(listed.error.message, /^the phone ledger could not be read: /);
+		const tested = await provider.testConnection();
+		assert.equal(tested.ok, false);
+		assert.match(tested.error.message, /^the phone ledger could not be read: /);
+		const made = await provider.create(SPEC);
+		assert.equal(made.ok, false);
+		assert.match(made.error.message, /^the phone ledger could not be (read|written): /);
+		assert.ok(!fake.requests().some((r) => r.method === "POST"), "no phone is rented that the ledger could not keep");
+	}
 });
 
 test("a file ledger loses no phone when processes and calls put at once: every entry lands", async () => {
