@@ -35,6 +35,13 @@ test("provider.release-older passes a provider that carries the labels, lists by
 	assert.equal(runs.size, 2, "two runs");
 });
 
+test("provider.release-older passes a provider whose create also returns notes: refs are compared by id and name", async () => {
+	// Modal's and E2B's create return notes beside the ref when the network probe records an accept with no answer.
+	const { report, fake } = await run({ notes: ["network: none; accepted with no answer (no bytes came back): 1.1.1.1:443"] });
+	assert.deepEqual(statuses(report), { [ID]: "pass" }, JSON.stringify(reasons(report)));
+	assert.deepEqual(fake.alive(), []);
+});
+
 /** For each misbehaving fake: the options, and what the failure says. */
 const BROKEN = [
 	// releaseOlder re-checks the run label, so it releases the right ones; the case's own list by the run label shows the rest.

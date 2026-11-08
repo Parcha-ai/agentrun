@@ -279,5 +279,33 @@ export function suite(name, make) {
       assert.equal(err.stderr, "e".repeat(100));
       assert.equal(err.truncated, true);
     });
+
+    test("exec: onOutput gets the output, joined per stream it is the result's (capped), and it comes as it is made", async () => {
+      const { workspace } = await fresh();
+      const seen = { stdout: [], stderr: [] };
+      let firstAt;
+      const started = Date.now();
+      const script = "printf one; sleep 1; printf two; printf err >&2; head -c 5000 /dev/zero";
+      const out = await workspace.exec(["bash", "-c", script], { env: ENV, maxOutput: 1000, timeoutMs: 10_000, onOutput: ({ stream, data }) => {
+        firstAt ??= Date.now() - started;
+        seen[stream].push(Buffer.from(data));
+      } });
+      assert.ok(Buffer.concat(seen.stdout).equals(Buffer.from(out.stdout)), "stdout's pieces join to the result's stdout");
+      assert.equal(Buffer.concat(seen.stderr).toString("utf8"), out.stderr, "stderr's pieces join to the result's stderr");
+      assert.equal(out.stdout.length, 1000, "both are cut at the cap");
+      assert.equal(Buffer.from(out.stdout).subarray(0, 6).toString(), "onetwo");
+      // A backend that streams gives the first piece before the program ends; one that cannot gives each stream once.
+      const streams = seen.stdout.length > 1 || seen.stderr.length > 1;
+      if (streams) assert.ok(firstAt < 900, `the first piece came as it was made (${firstAt} ms)`);
+      else assert.deepEqual([seen.stdout.length, seen.stderr.length], [1, 1], "a backend that cannot stream calls it once per stream");
+    });
+
+    test("with no computer, every background call is REFUSED, cause no-computer", async () => {
+      const { workspace } = await fresh();
+      for (const call of ["start", "read", "write", "signal", "wait", "list"]) {
+        await refused(workspace.process[call]({ id: "p1", argv: ["sleep", "1"] }), "REFUSED", `process.${call}`);
+        await assert.rejects(workspace.process[call]({ id: "p1" }), (error) => error.cause === "no-computer", `process.${call}: cause no-computer`);
+      }
+    });
   });
 }

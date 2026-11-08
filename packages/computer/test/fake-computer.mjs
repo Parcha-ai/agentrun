@@ -147,6 +147,7 @@ function fakeDaemon(hello, computer) {
  * - `status`: /proc/self/status fields over the unprivileged ones, in every computer (a value of undefined drops the
  *   line); `statusForUser`: the same, in a computer whose spec asked for a user.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
+ * - `notes`: create returns these notes beside the ref, as a provider records what a read-back found (silent accepts).
  * - `listPage`: how many processes one process.list page holds. `filesPage`: how many entries one files.list page holds.
  * - `declaresStopDeletes`: capabilities().stopDeletes, left out unless given. `stopIgnored`: a stop does nothing, and the
  *   computer runs on.
@@ -193,6 +194,7 @@ export function fakeComputers({
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
+	notes,
 	declaresStopDeletes,
 	stopIgnored = false,
 	networkSwitches = false,
@@ -275,7 +277,7 @@ export function fakeComputers({
 			};
 			computers.set(name, record);
 			made.push({ name, labels: record.labels });
-			return ok(record.ref);
+			return ok(notes ? { ...record.ref, notes } : record.ref);
 		},
 		async attach(ref) {
 			const found = [...computers.values()].filter((c) =>

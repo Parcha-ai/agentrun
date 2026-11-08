@@ -4,9 +4,10 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, type Stats, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
+import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import {
 	COMPUTER_LABEL,
 	CPU_PERIOD_US,
@@ -18,15 +19,37 @@ import {
 	type DockerHost,
 	type DockerInspect,
 	drift,
+	egressShaped,
 	helloDrift,
 	hostOf,
 	inspectDrift,
 	mountOf,
 	networkOf,
+	samePolicy,
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
 import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
+import {
+	ALLOW_PORTS,
+	allowOf,
+	EGRESS_IMAGE,
+	EGRESS_LABEL,
+	EGRESS_MOUNT,
+	EGRESS_READY_MS,
+	EGRESS_SOCKET,
+	type EgressCode,
+	egressCode,
+	egressCodeProblem,
+	egressNameOf,
+	egressRunArgs,
+	egressVolumeArgs,
+	hostAddresses,
+	MAX_ALLOW,
+	policyWords,
+	RELAY_FLAG,
+} from "./docker/egress.js";
+import { EGRESS_READY } from "./docker/egress-proxy.js";
 import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -47,22 +70,25 @@ import { fail, ok, type Result } from "./result.js";
 /**
  * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
  * computerd stays the first process and starts nothing of its own: create gives it DISPLAY, then starts the X server
- * through it with process.start, as any program, so the server is in its process table and ends with the computer.
- * The daemon reaches the display once it answers, and hello declares screen, input.pointer and input.keys from then on.
+ * through it with process.start (startDisplay in ./desktop.ts).
  */
-export interface DockerDesktopOptions {
-	/** The display the daemon and the X server use, given to the daemon as DISPLAY. Default ":0". */
-	display?: string;
-	/** The X server's argv, run in the computer as its user. Default Xvfb on the display, 1280x800 at 24 bits, no TCP. */
-	server?: readonly string[];
-	/** How long create waits for the display to answer, from asking the daemon to start the server: every call to the
-	 *  daemon in that time is bounded by it, so a daemon that stops answering fails create as `timeout`. Default 30 s. */
-	timeoutMs?: number;
+export type DockerDesktopOptions = DesktopOptions;
+
+/** A computer's egress proxy, for a spec whose network is an allowlist (src/docker/egress.ts). */
+export interface DockerEgressOptions {
+	/** The proxy container's image: one with Node 22.19 or later as `node`. Default EGRESS_IMAGE, pinned by digest. */
+	image?: string;
+	/** What a refusal of a host off the list says to do, after its words: printable ASCII, since it goes into a status line. */
+	hint?: string;
+	/** How long create waits for the proxy to say it is ready before it gives up, in ms. Default 10 s. */
+	readyMs?: number;
 }
 
 export interface DockerProviderOptions {
 	/** The daemon binary on this machine, for the computer's architecture (dist/computerd-linux-<arch>). */
 	daemonPath: string;
+	/** The egress proxy of a computer whose network is an allowlist. */
+	egress?: DockerEgressOptions;
 	/** Makes every computer a desktop (kind desktop): its image must have the X server. */
 	desktop?: DockerDesktopOptions;
 	/** The docker CLI. */
@@ -140,16 +166,13 @@ const MAX_PIDS = 4_194_304;
 /** Docker's least --memory. */
 const MIN_MEMORY_MB = 6;
 const HELLO_TIMEOUT_MS = 30_000;
-const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
-const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
-/** How often create asks the daemon whether the display is up yet. */
-const DISPLAY_POLL_MS = 100;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
 /** Only the fields list() reads, in inspect's own shape: a whole inspect is kilobytes a container, and execFile's
- *  output is capped. */
+ *  output is capped. The user and init's command are an allowlist's read-back: its relay, and its proxy's user. */
 const LIST_FORMAT =
-	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},"Config":{"Labels":{{json .Config.Labels}}},' +
+	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},' +
+	'"Config":{"Labels":{{json .Config.Labels}},"User":{{json .Config.User}},"Cmd":{{json .Config.Cmd}}},' +
 	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}},"Mounts":{{json .Mounts}}}';
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
  *  container label, and a label cannot change after create. */
@@ -158,9 +181,12 @@ const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb
 const NUL = "a NUL byte cannot be passed to docker run";
 /** What --mount's comma-separated fields cannot hold in a source path. */
 const MOUNT_UNSAFE = /[,"\r\n]/;
-const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
-/** Docker cannot move a container with no network onto one, nor take one off a network without a restart. */
+/** Docker cannot move a container with no network onto one, nor take one off a network without a restart; an allowlist
+ *  needs its volume mounted at create. */
 const FIXED = "a Docker computer's network is fixed at create; create a new computer";
+const NETWORKS = 'network is required: "none", "open" or { allow: [names or CIDRs] }';
+/** How often create asks whether the egress proxy is ready. */
+const EGRESS_POLL_MS = 100;
 /** Only the fields hostOf reads, as JSON. */
 const INFO_FORMAT =
 	'{"Architecture":{{json .Architecture}},"SecurityOptions":{{json .SecurityOptions}},"MemoryLimit":{{json .MemoryLimit}},' +
@@ -178,7 +204,6 @@ const noSuchContainer = (stderr: string) => /no such container/i.test(stderr);
 const nameOf = (report: DockerInspect) => (report.Name ?? "").replace(/^\//, "");
 /** Only a container this provider made counts: its label, and a name of its making. */
 const ours = (report: DockerInspect) => report.Config?.Labels?.[COMPUTER_LABEL] === "1" && NAME.test(nameOf(report));
-const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : JSON.stringify(policy));
 
 export class DockerProvider implements ComputerProvider {
 	readonly id = "docker";
@@ -188,16 +213,20 @@ export class DockerProvider implements ComputerProvider {
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	readonly #image: ImageSource;
+	readonly #egress: { image: string; hint?: string; readyMs: number };
+	/** Where the egress proxy's code is: this package's own build. */
+	readonly #code: EgressCode = egressCode();
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
 	#host: DockerHost | undefined;
 
-	constructor({ daemonPath, docker = "docker", user, desktop, image = { recipe: DOCKER_RECIPE } }: DockerProviderOptions) {
+	constructor({ daemonPath, docker = "docker", user, desktop, egress, image = { recipe: DOCKER_RECIPE } }: DockerProviderOptions) {
 		this.#daemonPath = resolve(daemonPath);
 		this.#docker = docker;
 		const unusable = imageSourceProblem(image);
 		if (unusable !== undefined) throw new Error(`the provider's image: ${unusable}`);
 		this.#image = image;
 		this.#desktop = desktop === undefined ? undefined : desktopOf(desktop);
+		this.#egress = egressOptionsOf(egress ?? {});
 		const given = user === undefined ? defaultUser() : userOf(user);
 		if (given === undefined) throw new Error(`the provider's user ${JSON.stringify(user)} must be ${USER_FORM}`);
 		if (given.startsWith("0:")) throw new Error(`the provider's user ${user} is root; a computer runs as root only when its spec asks for user "0"`);
@@ -216,7 +245,8 @@ export class DockerProvider implements ComputerProvider {
 		return {
 			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
-			network: ["none", "open"],
+			network: ["none", "open", "allow"],
+			allow: { domains: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, cidrs: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, mixed: true },
 			networkReadBack: true,
 			isolation: "container",
 			os: "linux",
@@ -238,12 +268,13 @@ export class DockerProvider implements ComputerProvider {
 		return ensureImage(this.#image, { ...options, docker: this.#docker });
 	}
 
-	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind on a host
-	 *  that remaps user ids. */
+	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind or an
+	 *  allowlist on a host that remaps user ids. */
 	check(spec: ComputerSpec): Refusal[] {
 		const host = this.#host;
 		const remapped = host?.remap !== undefined && spec?.mount?.kind === "bind" ? [{ field: "mount", message: remapWords(host.remap, String(spec.mount.path)) }] : [];
-		return [...this.#checkSpec(spec), ...remapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
+		const allowRemapped = host?.remap !== undefined && isAllow(spec?.network) ? [{ field: "network", message: remapAllowWords(host.remap) }] : [];
+		return [...this.#checkSpec(spec), ...remapped, ...allowRemapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
 	}
 
 	#checkSpec(spec: ComputerSpec): Refusal[] {
@@ -255,8 +286,10 @@ export class DockerProvider implements ComputerProvider {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
-		if (typeof network === "object" && network !== null && "allow" in network) refuse("network", ALLOWLIST);
-		else if (network !== "none" && network !== "open") refuse("network", 'network is required: "none" or "open"');
+		if (typeof network === "object" && network !== null && "allow" in network) {
+			const allow = allowOf((network as { allow: unknown }).allow);
+			if ("problem" in allow) refuse("network", allow.problem);
+		} else if (network !== "none" && network !== "open") refuse("network", NETWORKS);
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= 0.01)) refuse("cpus", "cpus must be a number of CPUs of at least 0.01");
 		if (memoryMb !== undefined && !(isWhole(memoryMb) && memoryMb >= MIN_MEMORY_MB)) {
 			refuse("memoryMb", `memoryMb must be a whole number of MiB, at least ${MIN_MEMORY_MB}`);
@@ -299,10 +332,18 @@ export class DockerProvider implements ComputerProvider {
 			return fail("invalid", `the daemon at ${this.#daemonPath} has mode ${(mode & 0o777).toString(8)}; a computer's user, with no capabilities, cannot run it: chmod 755 it`);
 		}
 		if (this.#daemonPath.includes(",")) return fail("invalid", `the daemon path ${this.#daemonPath} has a comma, which a Docker mount cannot hold`);
+		// An allowlist: the list as the proxy reads it, and the proxy's code, built.
+		const allow = typeof spec.network === "object" ? (allowOf(spec.network.allow) as { list: string[] }).list : undefined;
+		if (allow !== undefined) {
+			const unbuilt = egressCodeProblem(this.#code, user);
+			if (unbuilt !== undefined) return fail("not_found", unbuilt);
+		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Docker was called");
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
 		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		// Under remapped ids the egress volume and the proxy's code belong to host ids the computer's user is not.
+		if (allow !== undefined && host.value.remap !== undefined) return fail("refused", `network: ${remapAllowWords(host.value.remap)}`);
 		if (bound !== undefined) {
 			// Under remapped ids the folder's owner on the host is not the computer's user: refuse, never guess the mapping.
 			if (host.value.remap !== undefined) return fail("refused", `mount: ${remapWords(host.value.remap, bound)}`);
@@ -313,6 +354,15 @@ export class DockerProvider implements ComputerProvider {
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		if (allow !== undefined) {
+			// The proxy first, ready before the computer exists: a computer never runs with an allowlist it cannot reach.
+			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, signal);
+			if (!started.ok) {
+				const removed = await this.release({ id: name, name }, "delete");
+				const after = removed.ok ? "its proxy and volume were removed" : `its proxy and volume could not be removed (${removed.error.message})`;
+				return fail(started.error.code, `${started.error.message}; the computer ${name} was never run, and ${after}`);
+			}
+		}
 		const args = ["run", "--detach", "--name", name, "--label", `${COMPUTER_LABEL}=1`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 		for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
@@ -322,7 +372,8 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(spec.pids ?? DEFAULT_PIDS));
 		// Not the daemon's defaults, which a host may set to shareable IPC or, on cgroup v1, the host's cgroup namespace.
 		args.push("--ipc", "private", "--cgroupns", "private");
-		args.push("--network", spec.network === "none" ? "none" : "bridge");
+		// An allowlist's computer has no network either: its one way out is the proxy's socket.
+		args.push("--network", spec.network === "open" ? "bridge" : "none");
 		args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round((spec.cpus ?? DEFAULT_CPUS) * CPU_PERIOD_US)));
 		// Memory and swap together are the memory: swap never adds to it.
 		const memory = `${memoryMb}m`;
@@ -330,14 +381,17 @@ export class DockerProvider implements ComputerProvider {
 		args.push("--mount", `type=bind,src=${this.#daemonPath},dst=${DAEMON_IN_COMPUTER},readonly`, "--entrypoint", DAEMON_IN_COMPUTER);
 		// The run's folder, read-write at /workspace; HOME and the default workdir stay /work.
 		if (bound !== undefined) args.push("--mount", `type=bind,src=${bound},dst=${WORKSPACE}`);
+		// The proxy's volume, read-only: the computer reaches its socket and cannot replace it.
+		if (allow !== undefined) args.push("--mount", `type=volume,src=${egressNameOf(name)},dst=${EGRESS_MOUNT},readonly`);
 		args.push("--workdir", spec.workdir ?? WORK);
-		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops.
-		args.push(spec.image, "init", "--deadline", deadline);
+		// PID 1 ends the computer at the deadline the label holds, so a computer the janitor misses still stops. With an
+		// allowlist it relays its loopback port 3128 to the proxy's socket, and names that port as every program's proxy.
+		args.push(spec.image, "init", "--deadline", deadline, ...(allow === undefined ? [] : [RELAY_FLAG, EGRESS_SOCKET]));
 
 		const started = await this.#run(args, signal);
 		if (!started.ok || started.value.exitCode !== 0) {
-			// A run that failed or was aborted may still have made the container.
-			await this.#run(["rm", "--force", "--volumes", name]);
+			// A run that failed or was aborted may still have made the container; an allowlist's proxy and volume go with it.
+			await this.release({ id: name, name }, "delete");
 			return started.ok ? fail("docker", `docker run failed: ${started.value.stderr.trim()}`) : started;
 		}
 		const ref = { id: started.value.stdout.trim(), name };
@@ -347,7 +401,7 @@ export class DockerProvider implements ComputerProvider {
 		const report = inspected.ok ? inspected.value[0] : undefined;
 		const state = report?.State;
 		if (state?.Running !== true) {
-			await this.#run(["rm", "--force", "--volumes", name]);
+			await this.release(ref, "delete");
 			const why = state ? `status ${state.Status}, exit code ${state.ExitCode}${state.Error ? `: ${state.Error}` : ""}` : "it could not be inspected";
 			return fail("docker", `the computer ${name} was not running after its start (${why}), so it was removed`);
 		}
@@ -378,41 +432,45 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Starts the desktop's X server through the daemon (process.start) and waits until hello declares the display: the
-	 * server ending first, or the bound passing, is a failure in words, with the server's own last words. Every call
-	 * takes a signal that ends at the bound, so a hello the X connection setup holds, or a daemon that stops answering,
-	 * cannot outwait it.
+	 * Makes computer `name`'s egress volume and proxy container (src/docker/egress.ts) and waits, within the provider's
+	 * bound, until the proxy logs its ready line. A proxy that ends first fails with its own last words. The caller
+	 * removes whatever was made when this fails.
 	 */
+	async #startEgress(name: string, user: string, deadline: string, allow: string[], labels: Record<string, string>, signal?: AbortSignal): Promise<Result<void>> {
+		const proxy = egressNameOf(name);
+		const volume = await this.#run(egressVolumeArgs(name, user), signal);
+		if (!volume.ok) return volume;
+		if (volume.value.exitCode !== 0) return fail("docker", `docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
+		const { image, hint, readyMs } = this.#egress;
+		const args = egressRunArgs({ name, user, image, allow, local: hostAddresses(), deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
+		const ran = await this.#run(args, signal);
+		if (!ran.ok) return ran;
+		if (ran.value.exitCode !== 0) return fail("docker", `docker run of the egress proxy ${proxy} failed: ${ran.value.stderr.trim()}`);
+		const bound = Date.now() + readyMs;
+		for (;;) {
+			const logs = await this.#run(["logs", proxy], signal);
+			if (!logs.ok) return logs;
+			const said = `${logs.value.stdout}\n${logs.value.stderr}`;
+			if (said.split("\n").some((line) => line.startsWith(EGRESS_READY))) return ok(undefined);
+			const found = await this.#inspect([proxy], signal);
+			if (!found.ok) return found;
+			const state = found.value[0]?.State;
+			if (state?.Running !== true) {
+				const words = said.trim().split("\n").filter(Boolean).slice(-3).join("; ");
+				return fail("docker", `the egress proxy ${proxy} ended (exit code ${state?.ExitCode ?? "unknown"}) before it was ready${words ? `: ${words}` : ""}`);
+			}
+			if (Date.now() >= bound) return fail("timeout", `the egress proxy ${proxy} was not ready within ${readyMs / 1000} s`);
+			await sleep(EGRESS_POLL_MS, undefined, { signal }).catch(() => undefined);
+			if (signal?.aborted) return fail("aborted", `create was aborted while the egress proxy ${proxy} started`);
+		}
+	}
+
+	/** Starts the desktop's X server through the daemon and waits until hello declares the display (startDisplay). */
 	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
-		const { client } = opened.value;
-		const server = desktop.server.join(" ");
-		const bound = AbortSignal.timeout(desktop.timeoutMs);
-		const either = signal ? AbortSignal.any([signal, bound]) : bound;
-		const late = () => fail("timeout", `the display ${desktop.display} was not up within ${desktop.timeoutMs / 1000} s of starting the X server (${server})`);
-		// A call that failed because the bound passed is the timeout; the caller's own abort stays aborted.
-		const timedOut = () => bound.aborted && !signal?.aborted;
 		try {
-			const started = await client.call("process.start", { argv: [...desktop.server] }, { signal: either });
-			if (!started.ok) return timedOut() ? late() : fail(started.error.code, `the X server (${server}) did not start: ${started.error.message}`);
-			const { id } = started.value;
-			for (;;) {
-				const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: either });
-				if (!hello.ok) return timedOut() ? late() : hello;
-				if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) return ok(undefined);
-				const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal: either });
-				if (waited.ok && !waited.value.running) {
-					const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal: either });
-					const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
-					const how = waited.value.signal ? `signal ${waited.value.signal}` : `exit code ${waited.value.exitCode}`;
-					return fail("docker", `the X server (${server}) ended with ${how} before the display ${desktop.display} was up${words ? `: ${words}` : ""}`);
-				}
-				if (timedOut()) return late();
-				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
-				await sleep(DISPLAY_POLL_MS, undefined, { signal: either }).catch(() => undefined);
-				if (signal?.aborted) return fail("aborted", "create was aborted while the display came up");
-			}
+			return await startDisplay(opened.value.client, desktop, { version: VERSION, vendor: "docker", signal });
 		} finally {
 			await opened.value.close();
 		}
@@ -420,17 +478,27 @@ export class DockerProvider implements ComputerProvider {
 
 	/** The drift check: the computer's own report, from inspect and from its daemon's hello, against the spec. */
 	async #check(spec: ComputerSpec, ref: ComputerRef, report: DockerInspect, host: DockerHost, deadline: string, user: string, signal?: AbortSignal): Promise<Result<void>> {
+		const proxy = await this.#proxyOf(report, signal);
+		if (!proxy.ok) return proxy;
 		const opened = await this.#open(ref, signal);
 		if (!opened.ok) return opened;
 		await opened.value.close();
-		const found = drift(spec, report, opened.value.hello, this.#expected(host, deadline, user));
+		const found = drift(spec, report, opened.value.hello, this.#expected(host, deadline, user, proxy.value));
 		return found.length === 0 ? ok(undefined) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
-	#expected(host: DockerHost, deadline: string, user: string) {
+	#expected(host: DockerHost, deadline: string, user: string, proxy?: DockerInspect | null) {
 		const { arch, apparmor, selinux } = host;
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user };
+		return { version: VERSION, kind, groups, arch, apparmor, selinux, daemonPath: this.#daemonPath, deadline, user, proxy, egressCode: this.#code };
+	}
+
+	/** The egress proxy container's inspect for a computer that shows any part of an allowlist, null when it is gone;
+	 *  undefined, with no Docker call, for any other computer. */
+	async #proxyOf(report: DockerInspect, signal?: AbortSignal): Promise<Result<DockerInspect | null | undefined>> {
+		if (!egressShaped(report)) return ok(undefined);
+		const found = await this.#inspect([egressNameOf(nameOf(report))], signal);
+		return found.ok ? ok(found.value[0] ?? null) : found;
 	}
 
 	/** The Docker host's architecture and enforcement (hostOf), read by docker info once per provider. */
@@ -462,8 +530,10 @@ export class DockerProvider implements ComputerProvider {
 		const config = report.Config ?? {};
 		const limits = report.HostConfig ?? {};
 		const found: string[] = [];
-		const network = networkOf(report);
-		if (typeof network !== "string") found.push(`network: ${"other" in network ? network.other : JSON.stringify(network)}, which this provider never makes`);
+		const proxy = await this.#proxyOf(report, signal);
+		if (!proxy.ok) return proxy;
+		const network = networkOf(report, proxy.value, this.#code);
+		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}, which this provider never makes`);
 		const deadline = config.Labels?.[DEADLINE_LABEL] ?? "";
 		const at = Date.parse(deadline);
 		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {
@@ -476,7 +546,7 @@ export class DockerProvider implements ComputerProvider {
 		const spec = {
 			image: config.Image,
 			lifetimeMs: 1,
-			network: typeof network === "string" ? network : "none",
+			network: typeof network === "string" || "allow" in network ? network : "none",
 			cpus: typeof limits.CpuQuota === "number" ? limits.CpuQuota / CPU_PERIOD_US : limits.CpuQuota,
 			memoryMb: typeof limits.Memory === "number" ? limits.Memory / (1024 * 1024) : limits.Memory,
 			pids: limits.PidsLimit,
@@ -486,8 +556,8 @@ export class DockerProvider implements ComputerProvider {
 		} as ComputerSpec;
 		found.push(...this.#checkSpec({ ...spec, mount: undefined }).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		const user = userOf(config.User) ?? String(config.User);
-		const expected = this.#expected(host.value, deadline, user);
-		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !line.startsWith("network:")));
+		const expected = this.#expected(host.value, deadline, user, proxy.value);
+		found.push(...inspectDrift(spec, report, expected).filter((line) => typeof network === "string" || !("other" in network) || !line.startsWith("network:")));
 		let kind: AttachedComputer["spec"]["kind"];
 		if (report.State?.Running === true) {
 			const opened = await this.#open(ref, signal);
@@ -595,34 +665,70 @@ export class DockerProvider implements ComputerProvider {
 			// A computer removed between ps and inspect is left out.
 			const found = await this.#inspect(ids.slice(at, at + INSPECT_BATCH), signal, LIST_FORMAT);
 			if (!found.ok) return found;
-			infos.push(...found.value.filter(ours).map(infoOf));
+			const computers = found.value.filter(ours);
+			// The allowlist computers' proxies, in one inspect: each read-back holds the list its proxy runs with.
+			const shaped = computers.filter(egressShaped).map((report) => egressNameOf(nameOf(report)));
+			const proxies = new Map<string, DockerInspect>();
+			if (shaped.length > 0) {
+				const read = await this.#inspect(shaped, signal);
+				if (!read.ok) return read;
+				for (const proxy of read.value) proxies.set(nameOf(proxy), proxy);
+			}
+			infos.push(...computers.map((report) => infoOf(report, egressShaped(report) ? (proxies.get(egressNameOf(nameOf(report))) ?? null) : undefined, this.#code)));
 		}
 		return ok(infos);
 	}
 
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		if (!NAME.test(ref?.name)) return fail("invalid", `${ref?.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
-		if (policy !== undefined && policy !== "none" && policy !== "open") {
-			const allow = typeof policy === "object" && policy !== null && "allow" in policy;
-			return fail("refused", allow ? `${ALLOWLIST}; ${FIXED}` : `${FIXED}; a network is "none" or "open"`);
-		}
+		let asked: NetworkSpec | undefined = policy;
+		if (typeof policy === "object" && policy !== null && "allow" in policy) {
+			const allow = allowOf(policy.allow);
+			if ("problem" in allow) return fail("refused", `${allow.problem}; ${FIXED}`);
+			asked = { allow: allow.list };
+		} else if (policy !== undefined && policy !== "none" && policy !== "open") return fail("refused", `${FIXED}; ${NETWORKS}`);
 		const found = await this.#inspect([ref.name], signal);
 		if (!found.ok) return found;
 		const [report] = found.value;
 		if (report === undefined || !ours(report)) return fail("not_found", `no Docker computer is named ${ref.name}`);
-		const current = networkOf(report);
-		if (policy === undefined || policy === current) return ok(current);
-		return fail("refused", `${FIXED}: ${ref.name} has network ${policyWords(current)}, not ${policy}`);
+		const proxy = await this.#proxyOf(report, signal);
+		if (!proxy.ok) return proxy;
+		const current = networkOf(report, proxy.value, this.#code);
+		if (asked === undefined || samePolicy(asked, current)) return ok(current);
+		return fail("refused", `${FIXED}: ${ref.name} has network ${policyWords(current)}, not ${policyWords(asked)}`);
 	}
 
+	/**
+	 * Stops or deletes the computer, then its egress proxy, found by its label (EGRESS_LABEL=<name>), and on delete its
+	 * egress volume, found the same way: a container or volume of the proxy's name without that label is never touched.
+	 * Each is ok when already gone.
+	 */
 	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
 		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];
 		const ran = await this.#run(args);
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode === 0 || noSuchContainer(ran.value.stderr)) return ok(undefined);
-		return fail("docker", `docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
+		if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return fail("docker", `docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
+		const label = `label=${EGRESS_LABEL}=${ref.name}`;
+		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"]);
+		if (!proxies.ok) return proxies;
+		if (proxies.value.exitCode !== 0) return fail("docker", `docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`);
+		for (const id of proxies.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+			const ended = await this.#run(how === "stop" ? ["stop", id] : ["rm", "--force", id]);
+			if (!ended.ok) return ended;
+			if (ended.value.exitCode !== 0 && !noSuchContainer(ended.value.stderr)) return fail("docker", `docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy failed: ${ended.value.stderr.trim()}`);
+		}
+		if (how === "stop") return ok(undefined);
+		const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
+		if (!volumes.ok) return volumes;
+		if (volumes.value.exitCode !== 0) return fail("docker", `docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`);
+		for (const volume of volumes.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+			const removed = await this.#run(["volume", "rm", "--force", volume]);
+			if (!removed.ok) return removed;
+			if (removed.value.exitCode !== 0) return fail("docker", `docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
+		}
+		return ok(undefined);
 	}
 
 	/** Inspects containers by name or id, whole or only the fields a format names; one that is gone is left out. */
@@ -656,24 +762,6 @@ export class DockerProvider implements ComputerProvider {
 	}
 }
 
-/** The desktop options with their defaults, or a throw in words. */
-/** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */
-const MAX_TIMER_MS = 2_147_483_647;
-
-function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: DockerDesktopOptions): Required<DockerDesktopOptions> {
-	if (typeof display !== "string" || !DISPLAY.test(display)) throw new Error(`the desktop's display ${JSON.stringify(display)} must be a local X display, such as :0`);
-	const argv = server ?? ["Xvfb", display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
-	if (!Array.isArray(argv) || argv.length === 0 || !argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) || argv[0] === "") {
-		throw new Error("the desktop's server must be a program and its arguments, such as [\"Xvfb\", \":0\"]");
-	}
-	// AbortSignal.timeout and Node's timers hold at most 2^31 - 1 ms (a longer one throws or fires at once), so a longer
-	// bound is refused here, before any computer exists, not in create after the container is made.
-	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
-		throw new Error(`the desktop's timeoutMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${timeoutMs}`);
-	}
-	return { display, server: [...argv], timeoutMs };
-}
-
 function labelProblem(key: string, value: unknown): string | undefined {
 	if (typeof value !== "string") return `the label ${key} must be a string`;
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: ${NUL}`;
@@ -694,14 +782,46 @@ function filterProblem(labels: unknown): string | undefined {
 }
 
 /** A computer as list() reports it. The deadline counts only as the provider writes it, an ISO time. */
-function infoOf(report: DockerInspect): ComputerInfo {
+function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, code: EgressCode): ComputerInfo {
 	const labels = { ...(report.Config?.Labels ?? {}) };
 	const written = labels[DEADLINE_LABEL];
 	const at = written === undefined ? Number.NaN : Date.parse(written);
 	const deadline = Number.isNaN(at) || new Date(at).toISOString() !== written ? undefined : new Date(at);
 	const state = report.State?.Running === true ? "running" : "stopped";
 	const mount: MountReadBack | undefined = mountOf(report);
-	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report), ...(mount === undefined ? {} : { mount }) };
+	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report, proxy, code), ...(mount === undefined ? {} : { mount }) };
+}
+
+/** The longest delay Node's timers, and so AbortSignal.timeout, hold: 2^31 - 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** The egress options with their defaults, or a throw in words. */
+function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS }: DockerEgressOptions): { image: string; hint?: string; readyMs: number } {
+	if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || image.includes("\0")) {
+		throw new Error(`the egress proxy's image ${JSON.stringify(image)} must name an image, such as ${EGRESS_IMAGE}`);
+	}
+	// The hint goes into a status line, which carries printable ASCII only.
+	if (hint !== undefined && (typeof hint !== "string" || !/^[\x20-\x7e]*$/.test(hint))) throw new Error("the egress proxy's hint must be printable ASCII: it goes into a status line");
+	if (!Number.isSafeInteger(readyMs) || readyMs <= 0 || readyMs > MAX_TIMER_MS) {
+		throw new Error(`the egress proxy's readyMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${readyMs}`);
+	}
+	return { image, readyMs, ...(hint === undefined ? {} : { hint }) };
+}
+
+/** Whether a spec's network is an allowlist. */
+const isAllow = (network: unknown): network is { allow: unknown } => typeof network === "object" && network !== null && "allow" in network;
+
+/**
+ * Why an allowlist is refused on a host that remaps user ids: the egress volume's tmpfs owner and the proxy's code are
+ * ids of the host, and the computer's user and its proxy run as other ones there, so the proxy could not make its socket
+ * or the computer reach it. The provider does not guess the mapping.
+ */
+function remapAllowWords(remap: "userns" | "rootless"): string {
+	return (
+		`this Docker host remaps user ids (${remap === "userns" ? "userns-remap" : "rootless Docker"}), so the egress volume and the proxy's code are ` +
+		"owned by host ids the computer's user does not map to, and the provider cannot give it an allowlist: ask for network none or open, " +
+		"or use a Docker host that does not remap ids"
+	);
 }
 
 /**

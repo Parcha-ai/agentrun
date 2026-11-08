@@ -1,8 +1,9 @@
 // The drift check for a Docker computer: what the computer reports of itself after create, from docker inspect and the
 // daemon's hello, against what was declared. Pure: no Docker call. Each mismatch is one sentence; none is an empty list.
+import { EGRESS_MOUNT, EGRESS_SOCKET, type EgressCode, egressNameOf, egressOf, policyWords, RELAY_FLAG, sameAllow } from "./docker/egress.js";
 import { type MountReadBack, WORKSPACE } from "./mount.js";
 import type { ComputerKind, Group, HelloResult } from "./protocol.js";
-import type { ComputerSpec, NetworkPolicy } from "./provider.js";
+import type { ComputerSpec, NetworkPolicy, NetworkSpec } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
 export const DAEMON_IN_COMPUTER = "/opt/agentrun/computerd";
@@ -145,9 +146,13 @@ export interface DriftExpected extends HelloExpected {
 	/** Whether the host's Docker gives every container an AppArmor profile, or an SELinux label (hostOf). */
 	apparmor: boolean;
 	selinux: boolean;
+	/** For a computer with an allowlist: its proxy container's inspect (none when it is gone), and where the proxy's code
+	 *  is on the host, as it was bound. */
+	proxy?: DockerInspect | null;
+	egressCode?: EgressCode;
 }
 
-const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
+const show =(value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const text = (value: unknown) => (typeof value === "string" ? value : show(value));
 const sameList = (a: unknown, b: string[]) => Array.isArray(a) && a.length === b.length && a.every((item, i) => item === b[i]);
 /** Docker's default for a field it reports: nothing, an empty string, list or map, zero or false. A map with any key,
@@ -189,19 +194,99 @@ const CONFIG_IRRELEVANT = new Set([
 /** A mount's options as a set, so their order is no drift. */
 const optionSet = (options: unknown) => (typeof options === "string" ? options.split(",").sort().join(",") : undefined);
 
-/**
- * The network a computer is on, read back from inspect: `none` is network mode none on no network but Docker's own
- * `none`, `open` is the default bridge alone. Anything else is reported in words, never as a policy it might widen to.
- */
-export function networkOf(inspected: DockerInspect | null | undefined): NetworkPolicy {
-	const mode = inspected?.HostConfig?.NetworkMode;
-	const networks = Object.keys(inspected?.NetworkSettings?.Networks ?? {}).sort();
-	if (mode === "none" && networks.every((name) => name === "none")) return "none";
-	if (mode === "bridge" && sameList(networks, ["bridge"])) return "open";
-	return { other: `network mode ${mode ?? "unknown"} on networks ${networks.join(", ") || "none"}` };
+/** Whether a computer's inspect shows any part of an allowlist: the egress volume at its path, or init's relay. */
+export function egressShaped(inspected: DockerInspect | null | undefined): boolean {
+	const cmd = inspected?.Config?.Cmd;
+	return (inspected?.Mounts ?? []).some((mount) => mount.Destination === EGRESS_MOUNT) || (Array.isArray(cmd) && cmd.includes(RELAY_FLAG));
 }
 
-const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
+/**
+ * The network a computer is on, read back from inspect: `none` is network mode none on no network but Docker's own
+ * `none`, `open` is the default bridge alone. An allowlist is network mode none with the computer's egress volume
+ * mounted read-only at EGRESS_MOUNT and init relaying to its socket, and the list read back from `proxy`, the
+ * computer's proxy container's inspect (egressOf: none when it is gone). Anything else is reported in words, never as a
+ * policy it might widen to.
+ */
+export function networkOf(inspected: DockerInspect | null | undefined, proxy?: DockerInspect | null, code?: EgressCode): NetworkPolicy {
+	const mode = inspected?.HostConfig?.NetworkMode;
+	const networks = Object.keys(inspected?.NetworkSettings?.Networks ?? {}).sort();
+	const none = mode === "none" && networks.every((name) => name === "none");
+	const where = `network mode ${mode ?? "unknown"} on networks ${networks.join(", ") || "none"}`;
+	if (!egressShaped(inspected)) {
+		if (none) return "none";
+		if (mode === "bridge" && sameList(networks, ["bridge"])) return "open";
+		return { other: where };
+	}
+	if (!none) return { other: `${where}, with an egress volume or relay, which this provider never makes` };
+	const name = (inspected?.Name ?? "").replace(/^\//, "");
+	const at = (inspected?.Mounts ?? []).filter((mount) => mount.Destination === EGRESS_MOUNT);
+	const cmd = inspected?.Config?.Cmd;
+	const relay = Array.isArray(cmd) ? cmd.indexOf(RELAY_FLAG) : -1;
+	if (at.length === 0) return { other: `init's relay points at ${show(Array.isArray(cmd) ? cmd[relay + 1] : undefined)} but no egress volume is mounted at ${EGRESS_MOUNT}` };
+	if (relay < 0) return { other: `an egress volume at ${EGRESS_MOUNT} but no relay in init's command` };
+	if (cmd?.[relay + 1] !== EGRESS_SOCKET) return { other: `init relays to ${show(cmd?.[relay + 1])}, not ${EGRESS_SOCKET}` };
+	const [only] = at;
+	if (at.length !== 1 || only?.Type !== "volume" || only.Name !== egressNameOf(name) || only.RW !== false) {
+		return { other: `the egress volume at ${EGRESS_MOUNT} is ${at.map(mountWords).join(", ")}, not ${egressNameOf(name)} read-only` };
+	}
+	return egressOf(proxy, { name, user: inspected?.Config?.User, deadline: inspected?.Config?.Labels?.[DEADLINE_LABEL], running: inspected?.State?.Running === true }, code);
+}
+
+/** Whether a policy read back is the one declared: the same string, or an allowlist with the same entries, normalized. */
+export function samePolicy(declared: NetworkSpec, read: NetworkPolicy): boolean {
+	if (typeof declared === "string" || typeof read === "string") return declared === read;
+	return "allow" in declared && "allow" in read && sameAllow(declared.allow, read.allow);
+}
+
+/**
+ * What `computerd probe` reports from inside a computer: the uid:gid its programs run as, the kernel, reached (the
+ * targets that answered: bytes came back) and accepted (those that accepted a connection and sent nothing back). One
+ * rule for every provider that probes (README, "Network none, read from inside"): only an answer refuses network none.
+ */
+export interface ProbeReport {
+	uid: number;
+	gid: number;
+	kernel: string;
+	reached: string[];
+	accepted: string[];
+}
+
+const isAddresses = (value: unknown): value is string[] => Array.isArray(value) && value.every((one) => typeof one === "string");
+const isId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
+
+/**
+ * The probe's JSON line from exec.run's stdout (base64), or what is wrong with it in words. The accepted list is
+ * required: a report without it cannot tell a target that only accepted from one refused, so it is no read-back of
+ * network none.
+ */
+export function probeReportOf(stdout: string): ProbeReport | { not: string } {
+	const text = Buffer.from(stdout, "base64").toString("utf8");
+	const notReport = { not: `wrote what is not its report: ${text.slice(0, 200)}` };
+	let value: Partial<ProbeReport> | null;
+	try {
+		value = JSON.parse(text) as Partial<ProbeReport> | null;
+	} catch {
+		return notReport;
+	}
+	if (!(isId(value?.uid) && isId(value?.gid) && typeof value?.kernel === "string" && isAddresses(value?.reached))) return notReport;
+	if (!isAddresses(value.accepted)) {
+		return { not: `wrote a report with no accepted list, so a target that only accepted cannot be told from one refused: ${text.slice(0, 200)}` };
+	}
+	return { uid: value.uid, gid: value.gid, kernel: value.kernel, reached: value.reached, accepted: value.accepted };
+}
+
+/** Network none's drift by the probe: a target that answered, in words; none when nothing answered. */
+export function probeNetworkDrift(probe: ProbeReport): string[] {
+	return probe.reached.length > 0 ? [`network: declared none, read back an answer from ${probe.reached.join(", ")}`] : [];
+}
+
+/**
+ * What the probe recorded that does not refuse the computer: under network none, the targets that accepted a connection
+ * and sent nothing back. A firewall that accepts first and decides after looks so from inside; only an answer is drift.
+ */
+export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPolicy): string[] {
+	return network === "none" && probe.accepted.length > 0 ? [`network: none; accepted with no answer (no bytes came back): ${probe.accepted.join(", ")}`] : [];
+}
 
 type InspectMount = NonNullable<DockerInspect["Mounts"]>[number];
 /** One mount as a person reads it: "a read-write bind of /runs/r1". */
@@ -252,8 +337,10 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	const host = inspected?.HostConfig ?? {};
 	const config = inspected?.Config ?? {};
 
-	const network = networkOf(inspected);
-	if (network !== spec.network) found.push(`network: declared ${policyWords(spec.network)}, read back ${policyWords(network)}`);
+	const network = networkOf(inspected, expected.proxy, expected.egressCode);
+	if (!samePolicy(spec.network, network)) found.push(`network: declared ${policyWords(spec.network)}, read back ${policyWords(network)}`);
+	const allowed = typeof spec.network === "object" && spec.network !== null && "allow" in spec.network;
+	const volume = egressNameOf((inspected?.Name ?? "").replace(/^\//, ""));
 	if (!sameList(host.CapDrop, ["ALL"])) mismatch("CapDrop", ["ALL"], host.CapDrop);
 	if ((host.CapAdd ?? []).length > 0) mismatch("CapAdd", [], host.CapAdd);
 	if (host.Privileged !== false) mismatch("Privileged", false, host.Privileged);
@@ -283,10 +370,12 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 	// A Docker computer takes a bind alone; check() refuses any other kind, so one here is drift, named by its kind only.
 	if (spec.mount !== undefined && spec.mount.kind !== "bind") found.push(`mount: declared a mount of kind ${String(spec.mount.kind)}, which a Docker computer never makes`);
 	const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
-	// In create's order: the daemon read-only, then the run's folder read-write at /workspace when one was asked for.
+	// In create's order: the daemon read-only, then the run's folder read-write at /workspace when one was asked for, then
+	// the egress volume read-only for an allowlist.
 	const asked: Array<Record<string, unknown>> = [
 		{ Type: "bind", Source: expected.daemonPath, Target: DAEMON_IN_COMPUTER, ReadOnly: true },
 		...(bound === undefined ? [] : [{ Type: "bind", Source: bound, Target: WORKSPACE }]),
+		...(allowed ? [{ Type: "volume", Source: volume, Target: EGRESS_MOUNT, ReadOnly: true }] : []),
 	];
 	const hostMounts = host.Mounts ?? [];
 	const sameMount = (made: Record<string, unknown> | undefined, want: Record<string, unknown>) =>
@@ -329,13 +418,14 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 			found.push(`workspace mount: declared ${bound} bound read-write at ${WORKSPACE}, read back ${show(workspace)}`);
 		}
 	}
-	const declared = bound === undefined ? "the daemon's" : "the daemon's and the run folder's";
+	// The egress volume itself, its name, type and mode, is the network's read-back above.
+	const declared = ["the daemon's", ...(bound === undefined ? [] : ["the run folder's"]), ...(allowed ? ["the egress volume's"] : [])].join(" and ");
 	for (const mount of mounts) {
-		if (mount.Destination === DAEMON_IN_COMPUTER || (bound !== undefined && mount.Destination === WORKSPACE)) continue;
+		if (mount.Destination === DAEMON_IN_COMPUTER || (bound !== undefined && mount.Destination === WORKSPACE) || (allowed && mount.Destination === EGRESS_MOUNT)) continue;
 		found.push(`${mount.Type ?? "unknown"} mount: none declared but ${declared}, read back ${show(mount)}`);
 	}
 	if (!sameList(config.Entrypoint, [DAEMON_IN_COMPUTER])) mismatch("Entrypoint", [DAEMON_IN_COMPUTER], config.Entrypoint);
-	const cmd = ["init", "--deadline", expected.deadline];
+	const cmd = ["init", "--deadline", expected.deadline, ...(allowed ? [RELAY_FLAG, EGRESS_SOCKET] : [])];
 	if (!sameList(config.Cmd, cmd)) mismatch("Cmd", cmd, config.Cmd);
 
 	const labels = config.Labels ?? {};

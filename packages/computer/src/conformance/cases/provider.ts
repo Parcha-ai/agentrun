@@ -16,7 +16,7 @@ const names = async (t: CaseContext, labels: Record<string, string>) =>
 		.ok(await t.provider.list(labels), `list ${JSON.stringify(labels)}`)
 		.map((info) => info.ref.name)
 		.sort();
-/** What attach found, as a ref: its id and name alone. */
+/** A computer as the cases compare it: its id and name alone, so what else create or attach returns (notes) is not compared. */
 const refOf = ({ id, name }: ComputerRef): ComputerRef => ({ id, name });
 const byName = (a: ComputerRef, b: ComputerRef) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 const kindOf = (policy: NetworkSpec) => (typeof policy === "string" ? policy : "allow");
@@ -126,9 +126,9 @@ export const providerCases: Case[] = [
 		const a = await t.create(spec);
 		const b = await t.create({ labels: { ...labels, role: "b" } });
 		const byId = t.ok(await t.provider.attach({ id: a.id }), "attach by id");
-		t.deepEqual(refOf(byId), a, "attach by id");
+		t.deepEqual(refOf(byId), refOf(a), "attach by id");
 		const byLabels = t.ok(await t.provider.attach({ labels: { ...labels, role: "b" } }), "attach by labels");
-		t.deepEqual(refOf(byLabels), b, "attach by labels");
+		t.deepEqual(refOf(byLabels), refOf(b), "attach by labels");
 		// What attach reports is read back from the computer: the network and image create asked for, and, since create
 		// asked for no user, the provider's non-root default.
 		for (const [how, attached] of [["by id", byId], ["by labels", byLabels]] as const) {
@@ -155,7 +155,7 @@ export const providerCases: Case[] = [
 		const listed = t.ok(await t.provider.list(labels), "list");
 		t.equal(listed.length, 1, "computers with the case's labels");
 		const info = t.present(listed[0], "the listed computer");
-		t.deepEqual(info.ref, ref, "its ref");
+		t.deepEqual(refOf(info.ref), refOf(ref), "its ref");
 		t.equal(info.labels.role, "listed", "its label role");
 		t.equal(info.labels[CASE_LABEL], labels[CASE_LABEL], "its case label");
 		t.equal(info.state, "running", "its state");
@@ -281,7 +281,7 @@ export const providerCases: Case[] = [
 				"a sweep past two deadlines: the stopped and the running computer deleted, the third kept",
 			);
 			t.deepEqual(await names(t, labels), [long.name], "left after the sweep");
-			t.deepEqual(refOf(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer")), t.ref, "a computer outside the swept labels");
+			t.deepEqual(refOf(t.ok(await t.provider.attach({ id: t.ref.id }), "attach to the run's computer")), refOf(t.ref), "a computer outside the swept labels");
 			t.deepEqual(t.ok(await sweep(t.provider, { labels }), "a second sweep"), { deleted: [], kept: 1 }, "a second sweep, now");
 		},
 		{ level: "full", needs: ["lifetime:janitor", "release:stop"], computer: "shared" },
@@ -296,9 +296,12 @@ export const providerCases: Case[] = [
 			const nonce = randomBytes(6).toString("hex");
 			const run = `conformance-${nonce}`;
 			const other = `conformance-other-${nonce}`;
-			const [e1, e2, e3, o1] = await Promise.all(
-				[runLabels(run, 1), runLabels(run, 2), runLabels(run, 3), runLabels(other, 1)].map((epochs) => t.create({ labels: { ...labels, ...epochs } })),
-			);
+			// Compared by id and name: create may return notes beside the ref (a provider's probe records what it found).
+			const [e1, e2, e3, o1] = (
+				await Promise.all(
+					[runLabels(run, 1), runLabels(run, 2), runLabels(run, 3), runLabels(other, 1)].map((epochs) => t.create({ labels: { ...labels, ...epochs } })),
+				)
+			).map(refOf);
 			// The provider carries both labels and reads them back.
 			const read = t.ok(await t.provider.list({ [RUN_LABEL]: run }), `list by ${RUN_LABEL}`);
 			for (const [ref, of, epoch] of [[e1, run, "1"], [e2, run, "2"], [e3, run, "3"]] as const) {
