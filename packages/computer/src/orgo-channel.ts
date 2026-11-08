@@ -129,6 +129,37 @@ interface Terminal {
 	close(): void;
 	/** The frames seen so far, by kind (output, text, binary, exit, error, other), in words: "2 frames (1 output, 1 text)". */
 	seen(): string;
+	/** All the output so far: its last 64 KiB. */
+	text(): string;
+	/** What ended the terminal, in words, or undefined while it is open. */
+	ended(): string | undefined;
+	/** Resolves true once cond holds (checked on each output and at the end), false when ms pass first. */
+	waitFor(cond: () => boolean, ms: number): Promise<boolean>;
+}
+
+/** How many times a line the shell never echoed is typed in all. */
+const TYPE_TRIES = 3;
+
+/**
+ * Types line into the terminal's shell once it has prompted (any output: a shell still starting drops what is typed,
+ * as Orgo's `bash -l` did live), and types it again when the shell has not heard it (heard(): its echo, or what it
+ * prints) within echoMs, at most TYPE_TRIES times in all, all before deadline. Its error's words are the reason alone.
+ */
+async function typeLine(terminal: Terminal, line: string, heard: () => boolean, { deadline, echoMs }: { deadline: number; echoMs: number }): Promise<Result<void>> {
+	const left = () => Math.max(1, deadline - Date.now());
+	const prompted = await terminal.waitFor(() => terminal.text() !== "" || terminal.ended() !== undefined, left());
+	if (!prompted) return fail("timeout", "the shell never prompted");
+	for (let tries = 1; tries <= TYPE_TRIES; tries++) {
+		const ended = terminal.ended();
+		if (ended !== undefined) return fail("orgo", ended);
+		terminal.send(line);
+		if (await terminal.waitFor(() => heard() || terminal.ended() !== undefined, Math.min(echoMs, left()))) {
+			const after = terminal.ended();
+			return after !== undefined && !heard() ? fail("orgo", after) : ok(undefined);
+		}
+		if (Date.now() >= deadline) return fail("timeout", `the line was typed ${tries} ${tries === 1 ? "time" : "times"}, and the shell had not echoed it`);
+	}
+	return fail("orgo", `the line was typed ${TYPE_TRIES} times, and the shell never echoed it`);
 }
 
 /** A frame's bytes as text, when they are: a string, an ArrayBuffer or a typed array; a Blob is read, in order. */
@@ -147,7 +178,18 @@ function frameText(data: unknown): { text: string; binary: boolean } | Promise<{
  * line (the prompt, the typed line's echo) is dropped. The marker is printed from two words, so the echo of the line
  * that prints it never holds it.
  */
-export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebSocket }: { rest: OrgoRest; workspaceId: string; webSocket?: OrgoWebSocketFactory }): OrgoChannel {
+export function orgoTerminalChannel({
+	rest,
+	workspaceId,
+	webSocket = defaultWebSocket,
+	echoMs = 3_000,
+}: {
+	rest: OrgoRest;
+	workspaceId: string;
+	webSocket?: OrgoWebSocketFactory;
+	/** How long a typed line waits for the shell's echo before it is typed again. */
+	echoMs?: number;
+}): OrgoChannel {
 	const bash = async (computer: string, command: string, timeoutMs: number, signal?: AbortSignal): Promise<Result<{ exitCode: number; output: string }>> => {
 		const timeout = Math.min(BASH_MAX_S, Math.max(1, Math.ceil(timeoutMs / 1000)));
 		const ran = await rest.request<{ exit_code?: unknown; output?: unknown }>("POST", `/computers/${encodeURIComponent(computer)}/bash`, { body: { command, timeout }, timeoutMs: timeout * 1000 + BASH_PROXY_MS, ...(signal ? { signal } : {}) });
@@ -174,10 +216,16 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 		const outputs: Array<(data: string) => void> = [];
 		const ends: Array<(words: string) => void> = [];
 		let ended: string | undefined;
+		let transcript = "";
+		const waiters = new Set<() => void>();
+		const poke = () => {
+			for (const waiter of [...waiters]) waiter();
+		};
 		const end = (words: string) => {
 			if (ended !== undefined) return;
 			ended = words;
 			for (const listener of ends) listener(words);
+			poke();
 		};
 		// Binary frames as ArrayBuffers, where the socket takes the setting: no Blob to read out of order.
 		if ("binaryType" in socket) (socket as { binaryType: string }).binaryType = "arraybuffer";
@@ -186,8 +234,10 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 		// Output before the first listener (the prompt, which comes as the socket opens) is kept for it.
 		const backlog: string[] = [];
 		const output = (data: string) => {
+			transcript = (transcript + data).slice(-65536);
 			if (outputs.length === 0) backlog.push(data);
 			for (const listener of outputs) listener(data);
+			poke();
 		};
 		// The docs give JSON text frames; output that comes as plain text or binary frames is taken as the bytes it is.
 		const take = ({ text, binary }: { text: string; binary: boolean }) => {
@@ -248,6 +298,22 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 				const total = [...kinds.values()].reduce((sum, n) => sum + n, 0);
 				return `${total} frame${total === 1 ? "" : "s"}${total === 0 ? "" : ` (${[...kinds].map(([kind, n]) => `${n} ${kind}`).join(", ")})`}`;
 			},
+			text: () => transcript,
+			ended: () => ended,
+			waitFor: (cond, ms) =>
+				new Promise<boolean>((done) => {
+					if (cond()) return done(true);
+					const finish = (value: boolean) => {
+						clearTimeout(timer);
+						waiters.delete(check);
+						done(value);
+					};
+					const check = () => {
+						if (cond()) finish(true);
+					};
+					const timer = setTimeout(() => finish(cond()), ms);
+					waiters.add(check);
+				}),
 		};
 		const opened = await new Promise<Result<void>>((settle) => {
 			const timer = setTimeout(() => settle(fail("timeout", `the terminal of ${computer} did not open within ${timeoutMs / 1000} s`)), timeoutMs);
@@ -290,14 +356,16 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 				if (!ran.ok) return ran;
 				return ran.value.exitCode === 0 ? ok(undefined) : fail("orgo", `starting ${argv[0]} from bash exited ${ran.value.exitCode}: ${ran.value.output.trim().slice(0, 300)}`);
 			}
+			const deadline = Date.now() + timeoutMs;
 			const terminal = await open(computer, { session: SESSION, timeoutMs, ...(signal ? { signal } : {}) });
 			if (!terminal.ok) return terminal;
-			terminal.value.send(`exec ${detached}\r`);
+			const typed = await typeLine(terminal.value, `exec ${detached}\r`, () => terminal.value.text().includes("exec "), { deadline, echoMs });
 			terminal.value.close();
-			return ok(undefined);
+			return typed.ok ? ok(undefined) : fail(typed.error.code, `starting ${argv[0]} in the terminal session ${SESSION} failed: ${typed.error.message}`);
 		},
 
 		async stdio(computer, argv, { timeoutMs, signal }) {
+			const deadline = Date.now() + timeoutMs;
 			const opened = await open(computer, { timeoutMs, ...(signal ? { signal } : {}) });
 			if (!opened.ok) return opened;
 			const terminal = opened.value;
@@ -326,10 +394,13 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 				settle(fail("orgo", `computerd's bridge in ${computer} ended before it started: ${words}; ${sent()}`));
 				readable.end();
 			});
-			terminal.send(`stty raw -echo; printf '%s%s\\n' AGENTRUN- BRIDGE-${nonce}; exec ${commandLine(argv)}\r`);
-			const timer = setTimeout(() => settle(fail("timeout", `computerd's bridge in ${computer} did not start within ${timeoutMs / 1000} s: ${sent()}`)), timeoutMs);
+			const late = (why: string) => fail("timeout", `computerd's bridge in ${computer} did not start within ${timeoutMs / 1000} s: ${why}; ${sent()}`);
+			// Typed once the shell prompts, and again if it never echoed (it was still starting); then the marker, by the deadline.
+			const line = `stty raw -echo; printf '%s%s\\n' AGENTRUN- BRIDGE-${nonce}; exec ${commandLine(argv)}\r`;
+			const typed = await typeLine(terminal, line, () => through || before.includes("stty raw -echo"), { deadline, echoMs });
+			if (!typed.ok) settle(typed.error.code === "timeout" ? late(typed.error.message) : fail(typed.error.code, `computerd's bridge in ${computer} did not start: ${typed.error.message}; ${sent()}`));
+			else if (!(await terminal.waitFor(() => through || terminal.ended() !== undefined, Math.max(1, deadline - Date.now())))) settle(late("the shell echoed the line and printed no marker"));
 			const started = await ready;
-			clearTimeout(timer);
 			if (!started.ok) {
 				terminal.close();
 				return started;
