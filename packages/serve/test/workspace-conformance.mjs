@@ -27,9 +27,26 @@ async function refused(promise, code, label) {
 
 const text = (bytes) => Buffer.from(bytes).toString("utf8");
 
+/** Waits for process `pid` (one an exec started, on this machine) to be gone, and says whether it went: it waits on the
+ *  process's own exit, never a fixed time, up to a minute for a box under load. */
+async function exited(pid) {
+  assert.ok(Number.isSafeInteger(pid) && pid > 1, `a pid: ${pid}`);
+  for (let tries = 0; tries < 6_000; tries++) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code === "ESRCH") return true;
+      throw error;
+    }
+    await sleep(10);
+  }
+  return false;
+}
+
 /** `options.skip` names cases a backend cannot have, each with the reason: `symlinks` (no symbolic link can be made
  *  where the suite plants them), `linksListed` (the backend cannot tell a link from a file, so list shows it as one),
- *  `abortKills` (an exec, once sent, cannot be stopped: an abort answers at once, and the command runs on). */
+ *  `abortKills` (an exec, once sent, cannot be stopped: an abort answers at once, and the command runs on),
+ *  `noStreaming` (exec gives its output once, at its end). */
 export function suite(name, make, options = {}) {
   /** A fresh workspace, with a sentinel file outside its root. */
   async function fresh() {
@@ -95,9 +112,11 @@ export function suite(name, make, options = {}) {
       assert.deepEqual(await workspace.list("z/y"), []);
     });
 
-    test("list gives each file's last change (mtimeMs, ms since the epoch): a later write moves it on", async () => {
+    test("list gives each file's last change (mtimeMs, ms since the epoch), the one stat gives; a later write never moves it back", async () => {
       const { workspace } = await fresh();
-      // A backend's clock (a disk's servers) may be a little off this machine's: two seconds either way.
+      // A stamp set before the write, which the file's time is held against: a backend's clock (a disk's servers) may
+      // be a little off this machine's, two seconds either way. No sleep: a later write in the same millisecond may keep
+      // the time, so the test holds it to never going back.
       const before = Date.now() - 2000;
       await workspace.write("a.txt", "one");
       await workspace.mkdir("d");
@@ -110,10 +129,10 @@ export function suite(name, make, options = {}) {
       // when it was written.
       const file = first.find((e) => e.name === "a.txt");
       assert.ok(file.mtimeMs >= before && file.mtimeMs <= Date.now() + 2000, `a.txt: ${new Date(file.mtimeMs).toISOString()} is about now`);
-      await sleep(1100);
+      assert.equal((await workspace.stat("a.txt")).mtimeMs, file.mtimeMs, "list's time is stat's");
       await workspace.write("a.txt", "two");
       const again = (await workspace.list("")).find((e) => e.name === "a.txt");
-      assert.ok(again.mtimeMs > first.find((e) => e.name === "a.txt").mtimeMs, "a write moves the file's time on");
+      assert.ok(again.mtimeMs >= file.mtimeMs, "a later write never moves the file's time back");
     });
 
     test("mkdir makes a directory and its parents; one already there is fine; a file in the way is EXISTS", async () => {
@@ -142,12 +161,11 @@ export function suite(name, make, options = {}) {
         { path: "notes/b.txt", line: 2, text: "needle three" },
         { path: "src/c.ts", line: 1, text: "const needle = 4;" },
       ], "every match, in path order, and none from the binary file");
-      const started = Date.now();
       await workspace.write("evil.txt", `aaa\n${"a".repeat(64)}!\n`);
+      // The regex never ends on its own, so an answer at all is one the deadline made: truncated "time".
       const evil = await workspace.grep("^(a+)+$", { timeMs: 500 });
       assert.equal(evil.truncated, "time", "a regex that backtracks without end is stopped at the deadline");
       assert.deepEqual(evil.matches, [{ path: "evil.txt", line: 1, text: "aaa" }], "what it found before the deadline, in the same file, is returned");
-      assert.ok(Date.now() - started < 5_000, `it returned at the deadline, not ${Date.now() - started} ms later`);
       await workspace.remove("evil.txt");
       const two = await workspace.grep("needle", { max: 2 });
       assert.equal(two.matches.length, 2);
@@ -281,16 +299,13 @@ export function suite(name, make, options = {}) {
 
     test("exec: the deadline kills the child and its grandchild; nothing it started outlives it", async () => {
       const { workspace } = await fresh();
-      const started = Date.now();
-      const slow = await workspace.exec(["bash", "-c", "(sleep 1.5; echo alive > late) & sleep 30"], { env: ENV, timeoutMs: 500 });
-      assert.equal(slow.timedOut, true);
-      assert.equal(slow.code, null);
-      assert.ok(Date.now() - started < 5_000, "it returns at the deadline, not when the sleep would end");
-      const quick = await workspace.exec(["bash", "-c", "(sleep 1.5; echo alive > left) & echo done"], { env: ENV, timeoutMs: 10_000 });
+      // Each grandchild writes its pid, then would run on; the test waits for its exit, not for a clock.
+      const slow = await workspace.exec(["bash", "-c", "sleep 300 & echo $! > late; sleep 300"], { env: ENV, timeoutMs: 500 });
+      assert.deepEqual([slow.timedOut, slow.code], [true, null], "it ended at its deadline, not when the sleep would");
+      const quick = await workspace.exec(["bash", "-c", "sleep 300 & echo $! > left; echo done"], { env: ENV, timeoutMs: 10_000 });
       assert.deepEqual([text(quick.stdout), quick.code, quick.timedOut], ["done\n", 0, false]);
-      await sleep(2_500);
-      await refused(workspace.read("late"), "NOT_FOUND", "the grandchild of a timed-out exec was killed");
-      await refused(workspace.read("left"), "NOT_FOUND", "the grandchild of an exec that exited was killed");
+      assert.equal(await exited(Number(text(await workspace.read("late")))), true, "the grandchild of a timed-out exec was killed");
+      assert.equal(await exited(Number(text(await workspace.read("left")))), true, "the grandchild of an exec that exited was killed");
     });
 
     test("a symbolic link an exec makes is left out of list", { skip: options.skip?.linksListed }, async () => {
@@ -313,14 +328,11 @@ export function suite(name, make, options = {}) {
       assert.equal(err.truncated, true);
     });
 
-    test("exec: onOutput gets all the output, past the cap too, and it comes as it is made; the result keeps the cap's head", async () => {
+    test("exec: onOutput gets all the output, past the cap too; the result keeps the cap's head", async () => {
       const { workspace } = await fresh();
       const seen = { stdout: [], stderr: [] };
-      let firstAt;
-      const started = Date.now();
-      const script = "printf one; sleep 1; printf two; printf err >&2; head -c 5000 /dev/zero";
+      const script = "printf one; printf two; printf err >&2; head -c 5000 /dev/zero";
       const out = await workspace.exec(["bash", "-c", script], { env: ENV, maxOutput: 1000, timeoutMs: 10_000, onOutput: ({ stream, data }) => {
-        firstAt ??= Date.now() - started;
         seen[stream].push(Buffer.from(data));
       } });
       // onOutput gets all of it, the cap or not (a caller keeps the end of a long output from it); the result keeps the
@@ -332,10 +344,19 @@ export function suite(name, make, options = {}) {
       assert.equal(Buffer.concat(seen.stderr).toString("utf8"), out.stderr, "stderr's pieces join to the result's stderr");
       assert.equal(out.stdout.length, 1000, "the result is cut at the cap");
       assert.equal(out.truncated, true);
-      // A backend that streams gives the first piece before the program ends; one that cannot gives each stream once.
-      const streams = seen.stdout.length > 1 || seen.stderr.length > 1;
-      if (streams) assert.ok(firstAt < 900, `the first piece came as it was made (${firstAt} ms)`);
-      else assert.deepEqual([seen.stdout.length, seen.stderr.length], [1, 1], "a backend that cannot stream calls it once per stream");
+    });
+
+    test("exec: onOutput gets output as it is made: the program waits for what the first piece set off", { skip: options.skip?.noStreaming }, async () => {
+      const { workspace, root } = await fresh();
+      const seen = [];
+      // The program prints "one", then waits until the file "go" is there; the test makes it when onOutput gets "one".
+      // A backend that gave output only at the end would never make it, and the exec would end at its deadline.
+      const out = await workspace.exec(["bash", "-c", "printf one; while [ ! -e go ]; do sleep 0.01; done; printf two"], { env: ENV, timeoutMs: 20_000, onOutput: ({ data }) => {
+        if (seen.length === 0) writeFileSync(join(root, "go"), "");
+        seen.push(Buffer.from(data).toString());
+      } });
+      assert.deepEqual([out.timedOut, text(out.stdout)], [false, "onetwo"], "the first piece came before the program ended");
+      assert.equal(seen[0], "one");
     });
 
     test("exec: a signal that ends it is said in Node's naming (SIGTERM, SIGSEGV), its code null; an exit has none; the deadline is timedOut", async () => {
@@ -351,28 +372,20 @@ export function suite(name, make, options = {}) {
       assert.deepEqual([slow.code, slow.timedOut], [null, true]);
     });
 
-    test("exec: an abort kills the group (its grandchild too)", { skip: options.skip?.abortKills }, async () => {
+    test("exec: an abort while it runs rejects with an AbortError and kills the group, its grandchild too", { skip: options.skip?.abortKills }, async () => {
       const { workspace } = await fresh();
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 300);
+      // Aborted when the program says it has started its grandchild (after writing its pid), not after a clock. Had the
+      // abort done nothing, the exec would answer with a result at its deadline, not reject.
       await assert.rejects(
-        workspace.exec(["bash", "-c", "(sleep 1.5; echo alive > late) & sleep 30"], { env: ENV, timeoutMs: 20_000, signal: controller.signal }),
+        workspace.exec(["bash", "-c", "sleep 300 & echo $! > late; echo started; sleep 300"], { env: ENV, timeoutMs: 600_000, signal: controller.signal, onOutput: () => controller.abort() }),
         (error) => error?.name === "AbortError",
       );
-      await sleep(2_000);
-      await refused(workspace.read("late"), "NOT_FOUND", "the grandchild of an aborted exec was killed");
+      assert.equal(await exited(Number(text(await workspace.read("late")))), true, "the grandchild of an aborted exec was killed");
     });
 
-    test("exec: an abort answers at once with an AbortError; an aborted signal runs nothing", async () => {
+    test("exec: an aborted signal runs nothing", async () => {
       const { workspace } = await fresh();
-      const controller = new AbortController();
-      const started = Date.now();
-      setTimeout(() => controller.abort(), 300);
-      await assert.rejects(
-        workspace.exec(["bash", "-c", "sleep 3"], { env: ENV, timeoutMs: 20_000, signal: controller.signal }),
-        (error) => error?.name === "AbortError",
-      );
-      assert.ok(Date.now() - started < 2_500, "it returns at the abort");
       await assert.rejects(
         workspace.exec(["bash", "-c", "echo ran > ran"], { env: ENV, timeoutMs: 10_000, signal: AbortSignal.abort() }),
         (error) => error?.name === "AbortError",
