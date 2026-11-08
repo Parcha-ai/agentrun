@@ -22,7 +22,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A store with one queued run, a runner on the adapter loop running `script` with `beforeRequest`, until the run is
  *  not running or `ms` passes. `asked`: each request the host was asked about; `sent`: each body the provider got. */
-export async function capRun(t, { script, beforeRequest, cap: runCap, ms = 20_000 }) {
+export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, ms = 20_000 }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -37,7 +37,8 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, ms = 20_00
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const asked = [];
   const sent = [];
-  const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
+  // `specOf(sent)`: a test's own spec (a priced model, its own origin), else the suite's on the script.
+  const spec = specOf ? specOf(sent) : piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
     ...(runCap ? { cap: runCap } : {}),
