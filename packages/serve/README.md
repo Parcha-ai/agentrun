@@ -1467,7 +1467,10 @@ asked by default.
   refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
   permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
   nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
-  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again. Until the agent
+  `tool-settings.json` that does not read refuses every call of its tool, and `GET /settings/tools` serves it as
+  `pin_broken: true`. A `PUT` that keeps the tool's key and sets no valid pin (the mark sent back as served, or the pin
+  left out) keeps it broken, so saving another tool's setting never lifts it; a valid pin repairs it, and leaving the
+  key out removes the setting. Until the agent
   store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
   store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
@@ -1694,6 +1697,22 @@ overrides?: {model}}` makes one, or nothing when a check fails (a trigger refuse
 package's `version` is SemVer and never `definition.version`, the agent's revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
+
+`agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
+and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
+touches yours, with each case's fake MCP servers on loopback and its learned notes seeded through the learning API. Real
+models cost money: each run is capped at its case's `max_cost_usd`. It exits 0 when every case passed, 1 when one
+failed, 2 when nothing ran. The runner, the graders and the report are in
+[templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md#running-the-evals).
+
+| `eval-template` flag | What |
+| --- | --- |
+| `--case NAME` | A case to run; repeat it. Without one, every case. |
+| `--runs N` | Runs of each case, in place of each case's `runs`. |
+| `--server URL` | Run on that server, its token in `AGENTRUN_API_KEY` (the launcher hands it over its pipe; never printed). The agents the eval makes are archived at the end. |
+| `--grader-model PROVIDER/MODEL` | The `llm` graders' model; default the server's. |
+| `--report FILE` | The whole report as JSON (per case, run and grader: pass, reason, cost); a summary goes to stdout, progress to stderr. |
+| `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does. Not with `--server`. |
 
 ## What it serves
 
