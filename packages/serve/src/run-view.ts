@@ -15,6 +15,9 @@ import type { PendingAsk } from "./browser-person.js";
 import { type PendingApproval, previewOf } from "./tool-gate.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
+import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
+import { pointerHash, type SignIns } from "./sign-ins.js";
+import { MIN_SECRET } from "./learn/secrets.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -427,4 +430,63 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     ...(run.approvals ? { approvalIds: new Set(run.approvals.keys()) } : {}),
     ...(answered ? { answeredApprovals: Object.fromEntries(Object.entries(answered).map(([id, a]) => [id, { decision: a.decision }])) } : {}),
   };
+}
+
+// --- What a run serves of its error, its review and its handed sign-in: the redaction choke point, as pure functions over
+// the run's refused values and (for a run read from its row alone) the sign-in reads injected as `signIns`. The server
+// passes its own serverSecrets and signIns; the store-backed view passes the same. summaryOfRow is the ONE summary choke
+// point: a run whose summary holds a handed pointer serves it cut, and an unreadable handed hash withholds it (rowShown). ---
+
+/** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
+export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+
+/** What a `sign_in_handed` the server did not write (anything but a non-empty array of SHA-256 hashes: a `true` or one
+ *  hash an older build wrote, or a damaged value) reads as: some pointer was handed, which one is not known, so the run is
+ *  hidden or withheld, never served uncut, and forget waits for it while it goes. */
+export const MALFORMED = "malformed";
+export type Handed = string[] | typeof MALFORMED;
+
+/** Every secret value a run's errors never show, as learning's checker holds them: every one this server never shows
+ *  (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
+export const refusedValuesOf = (serverSecrets: () => string[], handed: ReadonlySet<string> | undefined): string[] => [...serverSecrets(), ...(handed ?? [])];
+/** A run's redactor (decision-rows.ts, tool previews): redacted over its refused values. */
+export const redactorOf = (values: string[]) => (text: string) => redacted(text, values);
+/** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
+ *  no loopback address. */
+export const shownOf = (values: string[]) => (text: string) => withoutLoopback(redacted(text, values));
+/** A run's error as its view and the run lists serve it: its message, and its detail strings, in `shown`'s terms. */
+export const servedRunErrorWith = <E extends { message: string; details?: unknown }>(shown: (text: string) => string, error: E): E => ({ ...error, message: shown(error.message), ...(error.details !== undefined ? { details: cutStrings(error.details, shown) } : {}) });
+/** A run's review as its view serves it: its reason (an escalation's own words) in `shown`'s terms, or withheld as its
+ *  other words are while the run is hidden (`unshown`), as a list row read from disk withholds it. */
+export const servedReviewWith = <R extends { reason: string }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null => (review && { ...review, reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason) });
+
+/** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its `sign_in_handed`: none
+ *  for a run with no mark (it was never handed one); else, for each hash it names, the live or forgotten pointer whose
+ *  SHA-256 it is. `unreadable` when what it was handed can't be read back here: a MALFORMED mark, no vendor browser kept
+ *  beside the mark, the sign-ins file can't be read, or any of its hashes matches no pointer that opens (one under another
+ *  seal key or none, one forgotten and dropped past MAX_FORGOTTEN, the sign-ins file gone). Fails closed: a marked run is
+ *  cut of every pointer it was handed, or withheld, never served uncut. Read anew at each call: nothing caches this
+ *  verdict, so a run withheld while its key was missing is shown once it opens. */
+export async function handedPointers(signIns: SignIns | undefined, agentId: string, browser: string | undefined, handed: Handed | undefined): Promise<{ refs: string[] } | "unreadable"> {
+  if (handed === undefined) return { refs: [] };
+  if (handed === MALFORMED || !signIns || !browser) return "unreadable";
+  const live = await signIns.peek(agentId, browser).catch(() => "unreadable" as const);
+  const gone = await signIns.forgotten(agentId, browser).catch(() => "unreadable" as const);
+  if (gone === "unreadable") return "unreadable";
+  const kept = [...(typeof live === "object" ? [live.ref] : []), ...gone.refs];
+  const refs = handed.map((hash) => kept.find((ref) => pointerHash(ref) === hash));
+  return refs.every((ref) => ref !== undefined) ? { refs: refs as string[] } : "unreadable";
+}
+
+/** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
+ *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in
+ *  (handedPointers); `withheld` when that can't be read back here, as a load would hide the run. `browser` and `handed`
+ *  come from the run's record (its plane's vendor browser and its `sign_in_handed` mark); `damaged` when the record was
+ *  there but unreadable, so what it was handed went with it. This is the summary choke point. */
+export async function rowShown(deps: { serverSecrets: () => string[]; signIns: SignIns | undefined }, agentId: string, browser: string | undefined, handed: Handed | undefined, damaged = false): Promise<((text: string) => string) | "withheld"> {
+  if (damaged) return "withheld";
+  const pointers = await handedPointers(deps.signIns, agentId, browser, handed);
+  if (pointers === "unreadable") return "withheld";
+  const values = [...deps.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
+  return (text) => withoutLoopback(redacted(text, values));
 }
