@@ -15,6 +15,7 @@ import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js"
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { denyPlace, permissionFrom, permissionOf } from "./tool-gate.js";
+import { approvalsOf } from "./approvals.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { wireName } from "./catalog.js";
@@ -27,8 +28,8 @@ export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtin
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap }
-  | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap };
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
+  | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
  *  not bind), `missing` (a bound tool's unset variables), `adapter`, `decision` (a decision provider's unset key), `codeNodes`
@@ -78,7 +79,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
   const unavailable = (field: string, tools: readonly string[], tool: string) => {
-    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings, { capped })[tool as Pickable];
+    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}), ...(revision.approvals === "never" ? { approvals: "never" as const } : {}) }, settings, { capped })[tool as Pickable];
     if (isUnavailable(resolved) && resolved !== DENIED) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} does not run here on ${harness}: ${whyUnavailable(resolved)}.`, host: true, ...(resolved === NO_PARALLEL_KEY ? { missing: { tool, vars: [PARALLEL_KEY_ENV] } } : {}) });
   };
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
@@ -217,8 +218,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!allows(CALL_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
     // A call node is the author's own step, and it cannot wait for an approval: one that calls a tool set to deny, or to
     // ask (which it could never get), would be refused mid-run (app.ts runEffect), so the run never starts.
-    else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: tool });
-    else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to deny ${denyPlace(permissionFrom(tool, settings as never, (revision.toolSettings ?? {}) as never).from)}.`, host: true, denied: tool });
+    // Under approvals "never" (the agent runs unattended) a tool set to ask is allowed, so its call node runs; a deny never lifts.
+    else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never, approvalsOf(revision.approvals)) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: tool });
+    else if (permissionOf(tool, settings as never, (revision.toolSettings ?? {}) as never, approvalsOf(revision.approvals)) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${tool}, which is set to deny ${denyPlace(permissionFrom(tool, settings as never, (revision.toolSettings ?? {}) as never).from)}.`, host: true, denied: tool });
   }
   for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {
     unset("definition.workflow", tool);
