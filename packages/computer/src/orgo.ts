@@ -17,10 +17,10 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
-import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
+import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
 import { checkMount, type MountKind } from "./mount.js";
-import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel } from "./orgo-channel.js";
+import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
 import type { Group } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -145,6 +145,14 @@ const NETWORK =
 const X11_SCRIPT = ["# agentrun-computer: orgo-x11", "s=$1", '[ -S "$s" ] || { echo "no X socket at $s"; exit 1; }'].join("\n");
 const LABELS_SCRIPT = ["# agentrun-computer: orgo-labels", 'p=$1; t=$2; d=${p%/*}', 'mkdir -p "$d" && printf \'%s\' "$t" > "$p.part" && chmod 0644 "$p.part" && mv -f "$p.part" "$p"'].join("\n");
 const LABELS_READ_SCRIPT = ["# agentrun-computer: orgo-labels-read", 'cat "$1"'].join("\n");
+/** What the computer holds when its daemon does not answer: init running (anchored, so this script never matches itself), its socket, its log's tail. */
+const STATUS_SCRIPT = [
+	"# agentrun-computer: orgo-status",
+	"d=$1; s=$2; l=$3",
+	'if pgrep -f "^$d init" >/dev/null 2>&1; then echo "init running"; else echo "init not running"; fi',
+	'if [ -S "$s" ]; then echo "socket present"; else echo "socket absent"; fi',
+	"echo \"log $(tail -c 300 \"$l\" 2>/dev/null | tr '\\n' ' ')\"",
+].join("\n");
 
 /** What the labels file holds. */
 interface LabelsFile {
@@ -431,12 +439,22 @@ export class OrgoProvider implements ComputerProvider {
 		const started = await this.#channel.start(ref.id, ["sh", "-c", commands.init], { how: this.#start, timeoutMs: execMs, ...(signal ? { signal } : {}) });
 		if (!started.ok) return fail(started.error.code, `starting the daemon in ${ref.name} failed: ${started.error.message}`);
 		const opened = await this.#openWhenListening(ref, signal);
-		if (!opened.ok) return opened.error.code === "aborted" ? opened : fail(opened.error.code, `the daemon did not answer: ${opened.error.message}`);
+		if (!opened.ok) {
+			if (opened.error.code === "aborted") return opened;
+			return fail(opened.error.code, `the daemon did not answer: ${opened.error.message}; in the computer: ${await this.#status(ref, signal)}`);
+		}
 		try {
 			return await this.#checkInside(opened.value, ref.name, signal);
 		} finally {
 			await opened.value.close();
 		}
+	}
+
+	/** What the computer holds, in words, for a daemon that does not answer: init running or not, its socket, its log's tail. */
+	async #status(ref: ComputerRef, signal?: AbortSignal): Promise<string> {
+		const read = await this.#channel.run(ref.id, ["sh", "-c", STATUS_SCRIPT, "sh", DAEMON_IN_COMPUTER, `${SOCKET_DIR}/computerd.sock`, START_LOG], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+		if (!read.ok) return `its status could not be read (${read.error.message})`;
+		return read.value.output.trim().split("\n").map((line) => line.trim()).join("; ").slice(0, 600);
 	}
 
 	/** Polls Orgo until it reads the computer running, within createMs. */

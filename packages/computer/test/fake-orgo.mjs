@@ -200,6 +200,8 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			let buffered = "";
 			const writable = new Writable({
 				write(chunk, _encoding, callback) {
+					// No daemon listens: what is written goes nowhere, and the stream ends.
+					if (!listening) return callback();
 					buffered += chunk.toString("utf8");
 					let at;
 					while ((at = buffered.indexOf("\n")) >= 0) {

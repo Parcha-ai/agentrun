@@ -25,7 +25,7 @@ const BASH_MAX_S = 300;
 /** How much longer than the command's own timeout Orgo's proxy waits for a bash call. */
 const BASH_PROXY_MS = 30_000;
 /** Where a detached start writes what it prints. */
-const START_LOG = "/tmp/agentrun-init.log";
+export const START_LOG = "/tmp/agentrun-init.log";
 /** The terminal session a session start runs in: it survives the socket. */
 const SESSION = "agentrun-init";
 
@@ -127,6 +127,17 @@ interface Terminal {
 	onEnd(listener: (words: string) => void): void;
 	send(data: string): void;
 	close(): void;
+	/** The frames seen so far, by kind (output, text, binary, exit, error, other), in words: "2 frames (1 output, 1 text)". */
+	seen(): string;
+}
+
+/** A frame's bytes as text, when they are: a string, an ArrayBuffer or a typed array; a Blob is read, in order. */
+function frameText(data: unknown): { text: string; binary: boolean } | Promise<{ text: string; binary: boolean }> | undefined {
+	if (typeof data === "string") return { text: data, binary: false };
+	if (data instanceof ArrayBuffer) return { text: Buffer.from(data).toString("utf8"), binary: true };
+	if (ArrayBuffer.isView(data)) return { text: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8"), binary: true };
+	if (typeof Blob !== "undefined" && data instanceof Blob) return data.text().then((text) => ({ text, binary: true }));
+	return undefined;
 }
 
 /**
@@ -168,22 +179,62 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 			ended = words;
 			for (const listener of ends) listener(words);
 		};
-		socket.addEventListener("message", ({ data }) => {
-			let frame: { type?: unknown; data?: unknown; message?: unknown; code?: unknown };
+		// Binary frames as ArrayBuffers, where the socket takes the setting: no Blob to read out of order.
+		if ("binaryType" in socket) (socket as { binaryType: string }).binaryType = "arraybuffer";
+		const kinds = new Map<string, number>();
+		const count = (kind: string) => kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+		// Output before the first listener (the prompt, which comes as the socket opens) is kept for it.
+		const backlog: string[] = [];
+		const output = (data: string) => {
+			if (outputs.length === 0) backlog.push(data);
+			for (const listener of outputs) listener(data);
+		};
+		// The docs give JSON text frames; output that comes as plain text or binary frames is taken as the bytes it is.
+		const take = ({ text, binary }: { text: string; binary: boolean }) => {
+			let frame: { type?: unknown; data?: unknown; message?: unknown; code?: unknown } | undefined;
 			try {
-				frame = JSON.parse(String(data));
+				const parsed: unknown = JSON.parse(text);
+				frame = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) && typeof (parsed as { type?: unknown }).type === "string" ? parsed : undefined;
 			} catch {
-				return;
+				frame = undefined;
 			}
-			if (frame.type === "output" && typeof frame.data === "string") for (const listener of outputs) listener(frame.data);
-			else if (frame.type === "exit") end(`the terminal's program exited with ${String(frame.code)}`);
-			else if (frame.type === "error") end(`the terminal said: ${String(frame.message).slice(0, 200)}`);
+			if (frame === undefined) {
+				count(binary ? "binary" : "text");
+				return output(text);
+			}
+			if (frame.type === "output" && typeof frame.data === "string") {
+				count("output");
+				output(frame.data);
+			} else if (frame.type === "exit") {
+				count("exit");
+				end(`the terminal's program exited with ${String(frame.code)}`);
+			} else if (frame.type === "error") {
+				count("error");
+				end(`the terminal said: ${String(frame.message).replaceAll(password, "[password]").slice(0, 200)}`);
+			} else count("other");
+		};
+		// A frame read at once is taken at once; a Blob is read in order, and frames after it wait their turn.
+		let order: Promise<void> = Promise.resolve();
+		let reading = 0;
+		socket.addEventListener("message", ({ data }) => {
+			const read = frameText(data);
+			if (read === undefined) return void count("other");
+			if (!(read instanceof Promise) && reading === 0) return take(read);
+			reading++;
+			order = order
+				.then(() => (read instanceof Promise ? read.then(take, () => void count("other")) : take(read)))
+				.finally(() => {
+					reading--;
+				});
 		});
 		socket.addEventListener("close", ({ code, reason }) => end(`the terminal closed with ${code ?? "no code"}${reason ? ` (${String(reason).slice(0, 100)})` : ""}`));
 		socket.addEventListener("error", () => end("the terminal's socket failed"));
 		const terminal: Terminal = {
 			socket,
-			onOutput: (listener) => outputs.push(listener),
+			onOutput: (listener) => {
+				outputs.push(listener);
+				for (const data of backlog.splice(0)) listener(data);
+			},
 			onEnd: (listener) => (ended === undefined ? ends.push(listener) : listener(ended)),
 			send: (data) => socket.send(JSON.stringify({ type: "input", data })),
 			close: () => {
@@ -192,6 +243,10 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 				} catch {
 					// Closed already.
 				}
+			},
+			seen: () => {
+				const total = [...kinds.values()].reduce((sum, n) => sum + n, 0);
+				return `${total} frame${total === 1 ? "" : "s"}${total === 0 ? "" : ` (${[...kinds].map(([kind, n]) => `${n} ${kind}`).join(", ")})`}`;
 			},
 		};
 		const opened = await new Promise<Result<void>>((settle) => {
@@ -264,13 +319,15 @@ export function orgoTerminalChannel({ rest, workspaceId, webSocket = defaultWebS
 				settle(ok(undefined));
 				if (after !== "") readable.write(after);
 			});
+			// What came before the marker, for the words of a bridge that never started: by kind, and its last bytes escaped.
+			const sent = () => `the terminal sent ${terminal.seen()} and no marker; its last bytes: ${JSON.stringify(before.slice(-300))}`;
 			terminal.onEnd((words) => {
 				said = words;
-				settle(fail("orgo", `computerd's bridge in ${computer} ended before it started: ${words}`));
+				settle(fail("orgo", `computerd's bridge in ${computer} ended before it started: ${words}; ${sent()}`));
 				readable.end();
 			});
 			terminal.send(`stty raw -echo; printf '%s%s\\n' AGENTRUN- BRIDGE-${nonce}; exec ${commandLine(argv)}\r`);
-			const timer = setTimeout(() => settle(fail("timeout", `computerd's bridge in ${computer} did not start within ${timeoutMs / 1000} s`)), timeoutMs);
+			const timer = setTimeout(() => settle(fail("timeout", `computerd's bridge in ${computer} did not start within ${timeoutMs / 1000} s: ${sent()}`)), timeoutMs);
 			const started = await ready;
 			clearTimeout(timer);
 			if (!started.ok) {
