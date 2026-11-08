@@ -1860,6 +1860,13 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   deadline in its `ledger` option: `{ put, get, list, remove }`. It is in memory by default; serve passes a store-backed
   one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
   only the phones it names, never another session on the account, and forget a phone the service ended.
+  - create puts an entry under `pending-<Idempotency-Key>` before its POST, and replaces it by the session's id once
+    known; a refused POST forgets it.
+  - If the POST's answer and its recovery (`GET /sessions/requests/<key>`) are both lost, the entry stays. `list()`
+    takes as its phone the one account session whose `request_key` equals that key exactly, and nothing else, so the
+    janitor's sweep and release find and end a phone made under a lost create.
+  - A pending entry with no such session is kept while a create may still be under way, and forgotten after its
+    deadline.
 - **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
   the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
   (port 5037, adb's own). Without it, connect says so in words.

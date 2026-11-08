@@ -76,7 +76,16 @@ export interface PhoneLedgerEntry {
 	image: string;
 	/** When the service ends the session, ISO time. */
 	deadline: string;
+	/**
+	 * The Idempotency-Key of a create not answered yet: the entry is put before the POST, under the id pending-<key>,
+	 * so a phone made under a create whose answer and recovery were both lost is still found. list() takes the account's
+	 * session whose request_key is exactly this key as the entry's phone.
+	 */
+	request?: string;
 }
+
+/** The ledger's id for a create not answered yet. */
+const pendingId = (requestKey: string) => `pending-${requestKey}`;
 
 /** Where the provider keeps its phones' labels: the vendor keeps none. Each call may be sync or async. */
 export interface PhoneLedger {
@@ -240,6 +249,8 @@ interface Session {
 	expires_at?: number;
 	error?: string;
 	adb?: { host?: string; port?: number; code?: string } | null;
+	/** The Idempotency-Key the session was made under. */
+	request_key?: string;
 }
 
 export class PhoneHarnessProvider implements ComputerProvider {
@@ -374,18 +385,28 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const from = this.#now();
 		const requestKey = randomBytes(16).toString("hex");
 		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(spec.lifetimeMs / 1000) };
+		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
+		const pending = pendingId(requestKey);
+		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey });
 		let posted = await this.#api("POST", "/sessions", body, { "Idempotency-Key": requestKey }, signal);
 		if (!posted.ok && posted.thrown) {
 			// The request may have been admitted though its answer was lost: ask by its key, never POST again.
 			const recovered = await this.#api("GET", `/sessions/requests/${requestKey}`);
-			if (!recovered.ok) return fail("phone", `${posted.error.message}; and the service has no session for the request: ${recovered.error.message}`);
+			if (!recovered.ok) {
+				return fail("phone", `${posted.error.message}; and the service has no session for the request: ${recovered.error.message}; the ledger keeps the request's key, so list() finds the phone if it was made`);
+			}
 			posted = recovered;
 		}
-		if (!posted.ok) return posted;
+		if (!posted.ok) {
+			// The phone harness refused the request: nothing was made, and the key is forgotten.
+			await this.#ledger.remove(pending);
+			return posted;
+		}
 		const first = sessionOf(posted.value.json, "POST /sessions");
 		if (!first.ok) return first;
 		const id = first.value.id;
 		await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
+		await this.#ledger.remove(pending);
 		const ended = async (code: ComputerErrorCode, words: string) => {
 			const gone = await this.#end(id);
 			return fail(code, `${words}; ${gone.ok ? "it was ended" : `it could not be ended (${gone.error.message})`}`);
@@ -416,7 +437,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			entry = await this.#ledger.get(ref.id);
 			if (entry === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		} else {
-			const found = (await this.#ledger.list()).filter((one) => carries(one.labels, ref.labels));
+			// A pending entry is a create not answered yet, not a phone: list() adopts it once its phone is seen.
+			const found = (await this.#ledger.list()).filter((one) => one.request === undefined && carries(one.labels, ref.labels));
 			if (found.length === 0) return fail("not_found", `no phone of this provider carries the labels ${show(ref.labels)}`);
 			if (found.length > 1) return fail("invalid", `${found.length} phones of this provider (${found.map((one) => one.id).join(", ")}) carry the labels ${show(ref.labels)}: attach takes one`);
 			entry = found[0];
@@ -447,7 +469,20 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (session.ok) live.set(session.value.id, session.value);
 		}
 		const out: ComputerInfo[] = [];
-		for (const entry of await this.#ledger.list()) {
+		for (const listed of await this.#ledger.list()) {
+			let entry = listed;
+			if (entry.request !== undefined) {
+				// A create not answered yet: its phone is the account's session whose request_key is exactly its key.
+				const made = [...live.values()].find((session) => session.request_key === entry.request);
+				if (made === undefined) {
+					// Still being made, or never made: after its deadline nothing of it can be alive, and it is forgotten.
+					if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
+					continue;
+				}
+				entry = { id: made.id, labels: { ...entry.labels }, image: entry.image, deadline: this.#deadlineOf(made, Date.parse(entry.deadline)) };
+				await this.#ledger.put(entry);
+				await this.#ledger.remove(listed.id);
+			}
 			const session = live.get(entry.id);
 			if (session === undefined) {
 				// The service ended it: the ledger forgets it.
