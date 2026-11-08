@@ -18,6 +18,7 @@ export {
   ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilClaim, archilClaim, type ArchilClaimOptions, ArchilClaimRefused, type ArchilSettings,
 } from "./archil-claim.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
+export { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type RunBrowser, type RunComputer, type RunHold, runTools, type RunTools } from "./run-tools.js";
