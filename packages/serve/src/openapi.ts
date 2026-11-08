@@ -538,10 +538,11 @@ const sourceSchemaOf = (adapters: readonly TriggerAdapter[]) => ({
   description: `When it fires: ${adapters.map((a) => a.fires).join(", or ")}. Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
 });
 const TRIGGER_SOURCE = sourceSchemaOf(TRIGGER_ADAPTERS);
-/** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
- *  start always set, to UTC and to when it was written when the write left them out. */
-const sentOf = (sources: ReturnType<typeof sourceSchemaOf>) => ({ ...sources, oneOf: sources.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) });
-const TRIGGER_SOURCE_SENT = sentOf(TRIGGER_SOURCE);
+/** A trigger's source as the server holds and sends it: each adapter's sent shapes (a cron line's zone and an interval's
+ *  start always set, to UTC and to when it was written when the write left them out), else its own (a webhook's
+ *  signature and accept, absent when the write left them out). */
+const sentOf = (adapters: readonly TriggerAdapter[]) => ({ ...sourceSchemaOf(adapters), oneOf: adapters.flatMap((a) => a.sent ?? a.schemas) });
+const TRIGGER_SOURCE_SENT = sentOf(TRIGGER_ADAPTERS);
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
@@ -1800,7 +1801,7 @@ function withAdapters(doc: Json, adapters: readonly TriggerAdapter[]): void {
     if (!value || typeof value !== "object") return value;
     const text = JSON.stringify(value);
     if (text === source) return sourceSchemaOf(adapters);
-    if (text === sent) return sentOf(sourceSchemaOf(adapters));
+    if (text === sent) return sentOf(adapters);
     if (text === by) return firedByOf(adapters);
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
   };

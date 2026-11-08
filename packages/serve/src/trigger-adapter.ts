@@ -42,6 +42,9 @@ export type TriggerAdapter = {
   firedBy?: string;
   /** Its shapes as JSON Schema, each a closed object with `kind` its id: the OpenAPI document's source oneOf. */
   schemas: ObjectSchema[];
+  /** Its shapes as a trigger's view sends them, when the server fills in fields a write may leave out (a schedule's zone
+   *  and start). Default `schemas`: a field the write left out stays out. */
+  sent?: ObjectSchema[];
   /** A source given at a create or a PATCH (`value.kind` is its id), checked: each issue added through `bad`, with its
    *  field under `source`. Undefined when it does not read. */
   parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
