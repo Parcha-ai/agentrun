@@ -466,10 +466,14 @@ test('the agent-home package is published: listed, not held, a release manifest 
 test('the computer package is published: listed, not held, a release manifest at the workspace version, in the first layer, and in the plan after decisions', () => fixture(async root => {
   // agentrun-serve imports its mount rule at runtime, so `npm i @parcha/agentrun-serve` installs it from the registry.
   assert.ok(releasePackages.includes('computer') && !heldPackages.includes('computer'), 'published from this checkout');
+  // A release manifest at its own version: the release pull request sets every package's version to the workspace's, and the
+  // preflight below holds the fixture's computer to it. A pull request that moves a version is a release commit to
+  // `changes.mjs --check`, so this one leaves it where it is.
   const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  checkManifest(repoManifest('computer'), 'computer', workspace.version, workspace.license);
-  // It depends on no package of the release, so it is published in the first layer, beside dsl.
   const computer = repoManifest('computer');
+  checkManifest(computer, 'computer', computer.version, workspace.license);
+  assert.match(computer.version, /^\d+\.\d+\.\d+-beta\.\d+$/, 'on the workspace beta line');
+  // It depends on no package of the release, so it is published in the first layer, beside dsl.
   assert.deepEqual(Object.keys({ ...computer.dependencies, ...computer.peerDependencies, ...computer.optionalDependencies }).filter(name => name.startsWith('@parcha/')), []);
   assert.ok(releaseLayers(releasePackages)[0].includes('computer'), 'in the first layer');
   const plan = (await preflight(root)).packages.map(pkg => pkg.directory);

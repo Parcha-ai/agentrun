@@ -1,6 +1,21 @@
 # @parcha/agentrun-computer
 
-Private for now: not published, and nothing else in the repository uses it yet.
+Published from the next release; nothing else in the repository uses it yet.
+
+```sh
+npm install @parcha/agentrun-computer@latest
+```
+
+```ts
+import { DockerProvider, providerModule } from "@parcha/agentrun-computer";
+// The mount rule alone: loads no provider, no vendor SDK and no conformance code.
+import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agentrun-computer/mount";
+```
+
+The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
+vendor's SDK is the host's: Modal's `modal` package is imported only when the Modal provider is built, and the package
+depends on nothing. A provider's mount kinds are its file's `MOUNT`, read with `(await providerModule(id)).MOUNT`,
+which loads that one provider's file and the protocol modules it uses, and no other provider.
 
 The open platform's computer protocol. A computer is anything an agent can run commands on: a container, a microVM, a
 full VM, a machine. The protocol has two layers:

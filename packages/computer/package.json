@@ -1,7 +1,6 @@
 {
   "name": "@parcha/agentrun-computer",
   "version": "0.1.0-beta.30",
-  "private": true,
   "description": "The open platform's computer protocol: a daemon in every computer, and one provisioner per vendor, starting with Docker.",
   "keywords": [
     "agentrun",
@@ -22,6 +21,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./mount": {
+      "types": "./dist/mount.d.ts",
+      "default": "./dist/mount.js"
     },
     "./package.json": "./package.json"
   },
