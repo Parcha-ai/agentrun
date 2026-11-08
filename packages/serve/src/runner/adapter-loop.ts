@@ -284,6 +284,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             followedUp = true;
           }
         }
+        if (!followedUp && spec.cap?.followUpOf) {
+          // A raise that resumed its pause, whose follow-up this claim did not send: a runner lost after the raise entry's
+          // commit, before the follow-up's submission or with its turn still open. Sent under its own id, so pi answers
+          // one already placed from its submission and never places it twice; and the turn this claim runs, whose end is
+          // the run's, is the follow-up's, never the first input's.
+          const state = await raiseStateOf();
+          if (state.pause === undefined && state.lastRaise?.pause !== undefined) {
+            await session!.send(spec.cap.followUpOf(state.lastRaise.to).text, { id: `agentrun:raise:${state.lastRaise.pause}` });
+            followedUp = true;
+          }
+        }
         if (followedUp) {
           // The follow-up is the turn this claim runs.
         } else if (session!.state === "new") await session!.send(spec.input);
