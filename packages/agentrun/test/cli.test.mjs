@@ -608,3 +608,29 @@ test("agents create --help and runs start --help end with the document's working
   assert.equal(started.code, 0, started.err);
   assert.equal(started.json().status, "queued");
 });
+
+test("server mcp from flags alone is a JSON-RPC request: the body's required const (jsonrpc) and the map's fill (id) are added; a --body goes as given, a notification keeps no id; and the real server lists its tools", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch(t);
+  const fake = await listener(t);
+  const extra = { AGENTRUN_API_KEY: "fake-test-key" };
+  const at = ["--base-url", fake.base];
+  const listed = await run(env, ["server", "mcp", "--method", "tools/list", ...at], { extra });
+  assert.equal(listed.code, 0, listed.err);
+  assert.equal(fake.requests.at(-1).url, "/v2/mcp");
+  assert.deepEqual(JSON.parse(fake.requests.at(-1).body), { jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const note = '{"jsonrpc":"2.0","method":"notifications/initialized"}';
+  assert.equal((await run(env, ["server", "mcp", "--body", note, ...at], { extra })).code, 0);
+  assert.equal(fake.requests.at(-1).body.toString(), note, "a whole --body is sent as given: a notification gets no id");
+  assert.equal((await run(env, ["server", "mcp", "--body", '{"jsonrpc":"2.0","id":"a"}', "--method", "ping", ...at], { extra })).code, 0);
+  assert.deepEqual(JSON.parse(fake.requests.at(-1).body), { jsonrpc: "2.0", id: "a", method: "ping" }, "a --body's own fields, with the flag's");
+  const help = await run(env, ["server", "mcp", "--help"]);
+  assert.equal(help.code, 0, help.err);
+  assert.match(help.out, /^Built from flags alone, the body also has: jsonrpc "2\.0", id 1\.$/m);
+
+  const server = await serve(t, dir, env);
+  const tools = await run(env, ["--data", server.data, "server", "mcp", "--method", "tools/list"]);
+  assert.equal(tools.code, 0, tools.err);
+  const answer = JSON.parse(tools.out);
+  assert.equal(answer.id, 1);
+  assert.ok(answer.result.tools.some((tool) => tool.name === "whoami"), tools.out);
+});
