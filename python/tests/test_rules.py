@@ -171,7 +171,7 @@ class Rules(unittest.TestCase):
         client.learning.read("a", "skills/find-policies/SKILL.md")
         client.home.read("a", "notes/a b.md")
         client.runs.get("a b/c?d#e")
-        self.assertEqual([r.url for r in server.requests], ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", "/v2/agents/a/home/files/notes/a%20b.md", "/v2/runs/a%20b%2Fc%3Fd%23e"])
+        self.assertEqual([r.url for r in server.requests], ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", "/".join(["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"]), "/v2/runs/a%20b%2Fc%3Fd%23e"])
 
     def test_a_secret_bodys_values_are_cut_from_the_answer_as_json_values_its_structure_and_public_fields_kept_and_a_refusal_keeps_only_its_code(self) -> None:
         secret = f's3cr"et/{secrets.token_hex(8)} x'
