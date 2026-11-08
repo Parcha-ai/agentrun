@@ -60,7 +60,7 @@ func dial(t *testing.T) *conn {
 	t.Helper()
 	cr, cw := io.Pipe()
 	sr, sw := io.Pipe()
-	server := rpc.NewServer(methods.Handlers("0.0.0-test", process.NewTable(process.Options{})), log.New(io.Discard, "", 0))
+	server := rpc.NewServer(methods.Handlers("0.0.0-test", process.NewTable(process.Options{}), methods.Options{}), log.New(io.Discard, "", 0))
 	c := &conn{t: t, in: cw, out: sr, lines: make(chan []byte, 1024), served: make(chan struct{})}
 	go func() {
 		_ = server.Serve(context.Background(), cr, sw)

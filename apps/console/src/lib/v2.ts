@@ -58,6 +58,10 @@ export type TimelinePage = components["TimelinePage"];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];
+/** GET /v2/runs/{id}/browser (owner session only, no-store): `off`, the run has no browser or it resolves unavailable;
+ *  `none`, it has one with no session open (yet, or any more); `live`, a session is open, watched through `viewer`, a
+ *  same-origin path whose token is in its fragment (never sent to a server). */
+export type RunBrowser = Answer<"getRunBrowser">;
 
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension). The server never sends a value. */
 export type ToolKeys = Answer<"listToolKeys">;

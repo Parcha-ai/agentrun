@@ -130,7 +130,9 @@ test("modelRequestStarted through a box loss: a capped request sent, then the bo
 
 test("workflowAdmit through a box loss: a call node's effect admitted and sent, then the box lost; on reopen it is admitted and unknown, refused, and never dispatched again", { skip, timeout: 180_000 }, async (t) => {
   if (!shim) return void assert.ok(!process.env.CI, "the shim is required in CI");
-  const paths = await lostMidEffect(t, "workflow", ({ effects }) => existsSync(effects));
+  // Sent once its line is in the file, never at the file alone: the effect opens the file, then writes, and a kill
+  // between the two would leave it empty (#1934's run 42435209304, '' !== 'first\n').
+  const paths = await lostMidEffect(t, "workflow", ({ effects }) => existsSync(effects) && readFileSync(effects, "utf8") === "first\n");
   const { outcome } = reopened(paths, "workflow");
   assert.equal(outcome.code, "FROZEN_EFFECT_UNKNOWN", `the admitted effect is unknown on reopen: ${JSON.stringify(outcome)}`);
   assert.equal(readFileSync(paths.effects, "utf8"), "first\n", "dispatched once, by the process the box took");

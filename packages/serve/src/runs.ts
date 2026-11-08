@@ -3454,7 +3454,7 @@ export class Runs {
         try {
           meta.learning = await pin(started, at);
         } catch (error) {
-          meta.learning = await this.learning.copyThrew(started, at, error as Error);
+          meta.learning = await this.learning.copyThrew(started, at, error);
           await this.setUp(started.runId, started.dir, meta).catch(() => undefined);
           throw error;
         }
