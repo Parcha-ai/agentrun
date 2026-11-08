@@ -329,3 +329,49 @@ test("a key whose last line is short shows nothing of itself where the server's 
   const shown = redactedAnswer(`the run printed: ${pem} and ended`, held);
   for (const line of lines) assert.ok(!shown.includes(line), `nothing of the key shows: ${shown}`);
 });
+
+test("an installation event checked while GitHub is disconnected and connected again, to another App, is dropped: nothing lands in the new connection, and no trigger turns off", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  const { webhook_secret: secret } = server.github.app;
+  server.github.installations.delete(777);
+  const hold = held();
+  server.github.holds.installation = hold.promise;
+  const asked = server.github.requests.length;
+  const event = deliver(server.baseUrl, secret, "installation", { action: "deleted", installation: { id: 777, account: { login: "acme" }, app_id: 4242 } });
+  while (!server.github.requests.slice(asked).some((r) => r.url === "/app/installations/777")) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await server.api("DELETE", "/integrations/github")).status, 200);
+  const again = await startConnect(server);
+  assert.equal((await callback(server, "code-2", again.body.state, String(again.headers.get("set-cookie")).split(";")[0])).status, 302);
+  assert.equal((await server.api("PATCH", `/triggers/${id}`, { enabled: true })).status, 200, "on again under the new App");
+  hold.release();
+  assert.equal((await event).status, 200);
+  assert.equal((await server.api("GET", `/triggers/${id}`)).body.enabled, true, "the old App's event turned nothing off");
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [], "and wrote nothing into the new App");
+});
+
+test("GitHub out of reach when an installation event is checked answers 503, so GitHub shows the delivery failed and it can be sent again; the list is repaired from GitHub's own when the connection is read", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await connect(server);
+  const { webhook_secret: secret } = server.github.app;
+  server.github.installations.set(778, { account: "other", suspended_at: null });
+  server.github.failures.installation = 500;
+  const event = await deliver(server.baseUrl, secret, "installation", { action: "created", installation: { id: 778, account: { login: "other" }, app_id: 4242 } });
+  assert.equal(event.status, 503, JSON.stringify(event.body));
+  assert.ok(server.lines.some((line) => line.includes("condition=github_unavailable")), "said");
+  delete server.github.failures.installation;
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, [{ id: 777, account: "acme" }, { id: 778, account: "other" }], "the read repairs the list from GitHub's");
+});
+
+test("a read of the connection that finds GitHub holds no installation of the App left turns every github trigger off, as a missed deletion would have", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  server.github.installations.delete(777);
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, []);
+  const trigger = (await server.api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual([trigger.enabled, trigger.disabled?.reason], [false, "connection_lost"], JSON.stringify(trigger));
+});

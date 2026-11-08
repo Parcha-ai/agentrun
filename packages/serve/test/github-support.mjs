@@ -26,6 +26,8 @@ export async function fakeGitHub(t) {
   const byCode = new Map([["code-1", app], ["code-2", second]]);
   const installations = new Map([[777, { account: "acme", suspended_at: null }]]);
   const holds = {};
+  /** An HTTP status a test makes GitHub answer: `installation` (one installation's read), `installations` (the list). */
+  const failures = {};
   const requests = [];
   const tokens = [];
   const server = createServer((req, res) => {
@@ -48,14 +50,25 @@ export async function fakeGitHub(t) {
         const iss = verified ? Number(JSON.parse(Buffer.from(claims, "base64url").toString()).iss) : undefined;
         return iss === app.id || iss === second.id ? iss : undefined;
       };
+      // Each installation is one App's (4242 unless it says): an App sees only its own.
+      const own = (id) => [...installations].filter(([, held]) => (held.app_id ?? app.id) === id);
       const installation = /^\/app\/installations\/(\d+)$/.exec(req.url);
       if (req.method === "GET" && installation) {
         const id = appId();
         if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
         await holds.installation;
-        const held = installations.get(Number(installation[1]));
+        if (failures.installation) return answer(failures.installation, { message: "Server Error" });
+        const held = own(id).find(([key]) => key === Number(installation[1]))?.[1];
         if (!held) return answer(404, { message: "Not Found" });
         return answer(200, { id: Number(installation[1]), account: { login: held.account, type: "Organization" }, app_id: id, suspended_at: held.suspended_at });
+      }
+      const listing = /^\/app\/installations\?per_page=(\d+)&page=(\d+)$/.exec(req.url);
+      if (req.method === "GET" && listing) {
+        const id = appId();
+        if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
+        if (failures.installations) return answer(failures.installations, { message: "Server Error" });
+        const [size, page] = [Number(listing[1]), Number(listing[2])];
+        return answer(200, own(id).slice((page - 1) * size, page * size).map(([key, held]) => ({ id: key, account: { login: held.account, type: "Organization" }, app_id: id, suspended_at: held.suspended_at })));
       }
       // An installation token, narrowed to the repositories asked (by name), which installation 777 holds: acme/widgets.
       const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(req.url);
@@ -80,7 +93,7 @@ export async function fakeGitHub(t) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
-  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, installations, holds };
+  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, installations, holds, failures };
 }
 
 /** A promise and the function that settles it: a hold a test lets go. */
