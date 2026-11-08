@@ -199,6 +199,31 @@ test("a build or pull that fails because another process tagged the image first 
 	assert.deepEqual(fake.calls().slice(6), [[...INSPECT, recipeTag(other)], BUILD(recipeTag(other), recipeHash(other)), [...INSPECT, recipeTag(other)]]);
 });
 
+test("an onWait that aborts its own caller's signal settles that caller as aborted at once, joining a build under way or starting one; the build goes on for the others", { timeout: 30_000 }, async () => {
+	const fake = fakeImageDocker({ "build-hold": "" });
+	/** The call's result, or "still waiting" when it has not settled within ms: the build is held far longer. */
+	const within = (call, ms = 2_000) => Promise.race([call, new Promise((resolve) => setTimeout(() => resolve("still waiting"), ms))]);
+	const stays = ensureImage({ recipe: RECIPE }, { docker: fake.docker });
+	await until(() => fake.builds().length === 1, "the build");
+	// Joins the build under way: onWait is told at once, before ensureImage returns, and aborts the caller's own signal.
+	const leaving = new AbortController();
+	const left = ensureImage({ recipe: RECIPE }, { docker: fake.docker, signal: leaving.signal, onWait: () => leaving.abort() });
+	assert.deepEqual(await within(left), { ok: false, error: { code: "aborted", message: `the wait for ${TAG} was aborted; the build goes on for the other callers waiting on it` } });
+	assert.equal(alive(fake.builds()[0].pid), true, "the build goes on for the caller still waiting");
+	fake.clear("build-hold");
+	assert.deepEqual(await stays, { ok: true, value: TAG });
+	assert.equal(fake.builds().length, 1);
+
+	// Starts the build itself and is its only caller: onWait, told when the build begins, aborts it, and the build stops.
+	const other = "FROM alpine:3.20\nRUN echo seven > /seven\n";
+	fake.mark("build-hold");
+	const alone = new AbortController();
+	const stopped = ensureImage({ recipe: other }, { docker: fake.docker, signal: alone.signal, onWait: () => alone.abort() });
+	assert.deepEqual(await within(stopped), { ok: false, error: { code: "aborted", message: `the wait for ${recipeTag(other)} was aborted, and the build, which no other caller waited on, was stopped` } });
+	await until(() => fake.builds().length === 2 && !alive(fake.builds()[1].pid), "the stopped build's docker to end", 5_000);
+	fake.clear("build-hold");
+});
+
 test("onWait is told once, before a caller waits on a build or pull, its own or one it joined; never when Docker has the image; a throw from it changes nothing", async () => {
 	const fake = fakeImageDocker({ "build-hold": "" });
 	const told = [];
