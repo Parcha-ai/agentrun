@@ -3,7 +3,7 @@
 // a request that is verified but does not parse is answered 200 and said, never swallowed; a path that does not decode
 // is said as such.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
@@ -71,14 +71,14 @@ async function post(baseUrl, path, body, { secret, headers } = {}) {
   return { status: res.status, headers: Object.fromEntries(res.headers), body: await res.json().catch(() => null) };
 }
 
-async function pingServer(t) {
+async function pingServer(t, extra = {}) {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
   new SealedSettings(data, "ping", ping.settings, sealKey, () => {}).set("server", "signing", secret);
   const lines = [];
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line) });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, ping], log: (line) => lines.push(line), ...extra });
   t.after(() => server.close());
   return { server, api: client(server.baseUrl, server.token), secret, lines };
 }
@@ -377,4 +377,60 @@ test("a server-wide source whose triggers each choose their events fires every t
   assert.equal(res.body.firings.length, 2, JSON.stringify(res.body));
   for (const id of [a1.id, a2.id]) assert.equal((await firings(api, id, 1))[0].status, "started");
   assert.deepEqual((await api("GET", `/triggers/${b.id}/firings`)).body.firings, []);
+});
+
+test("a hook body that does not arrive whole within the hook's time is 408 at once, its socket closed, never waited on further", { timeout: 60_000 }, async (t) => {
+  const { server } = await pingServer(t, { hookBodyMs: 300 });
+  const { port, hostname: host } = new URL(server.baseUrl);
+  const answer = await new Promise((resolve, reject) => {
+    const socket = connect(Number(port), host);
+    let text = "";
+    socket.on("data", (chunk) => (text += chunk));
+    socket.on("close", () => resolve(text));
+    socket.on("error", reject);
+    // A body of 100 bytes declared, ten sent, the rest never.
+    socket.write(`POST /v2/hooks/ping HTTP/1.1\r\nHost: ${host}\r\nwebhook-id: msg_slow\r\nwebhook-timestamp: ${Math.floor(Date.now() / 1000)}\r\nwebhook-signature: v1,AAAA\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n`);
+    socket.write("x".repeat(10));
+    setTimeout(() => reject(new Error(`no answer and close within 5 s: ${text}`)), 5_000).unref();
+  });
+  assert.match(answer, /^HTTP\/1\.1 408 /, answer);
+  assert.match(answer, /request_timeout/);
+});
+
+/** A second source whose settings are each trigger's, signed its own way (x-relay-signature: hex HMAC of the body under
+ *  the trigger's whole secret, keyed by x-relay-id): its triggers' own hooks are its, not the webhook's. */
+const relay = {
+  id: "relay", label: "relay trigger", delivery: "push", owner: false,
+  describe: '{kind: "relay"}', fires: "a relay", schemas: [],
+  settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
+  push: {
+    maxBodyBytes: 4096,
+    key: "secret",
+    headers: (headers) => (typeof headers["x-relay-signature"] === "string" && typeof headers["x-relay-id"] === "string" ? undefined : "missing_headers"),
+    verify: (key, headers, body) => (createHmac("sha256", key).update(body).digest("hex") === headers["x-relay-signature"] ? undefined : "bad_signature"),
+    parse: (headers, body) => [{ key: String(headers["x-relay-id"]), text: body.toString("utf8") }],
+  },
+  parse: () => ({ kind: "relay" }),
+  wellFormed: () => true,
+};
+
+test("a trigger's own hook is checked by that trigger's source, whichever trigger-scoped source comes first; two sources on one hook route refuse to start", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, relay] });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("relayed"))).status, 201);
+  const made = await api("POST", "/triggers", { name: "relay", source: { kind: "relay" }, target: { kind: "start_run", agent_id: "relayed", input: { content: "A relay." }, max_cost_usd: 0.5 } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const body = JSON.stringify({ hello: "relay" });
+  const res = await fetch(`${server.baseUrl}/hooks/${made.body.id}`, { method: "POST", headers: { "content-type": "application/json", "x-relay-id": "r-1", "x-relay-signature": createHmac("sha256", made.body.secret).update(body).digest("hex") }, body });
+  assert.equal(res.status, 202, await res.text());
+  const [fired] = await firings(api, made.body.id, 1);
+  assert.equal(fired.by, "relay");
+
+  const twice = join(await scratch(t), "agents");
+  await mkdir(twice, { recursive: true });
+  await assert.rejects(startServe({ data: twice, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, ping, { ...ping }] }), /\/hooks\/ping/, "two sources on one route");
 });
