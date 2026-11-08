@@ -7,6 +7,10 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/journal-reader.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+
+/** A task that kept faulting: the run fails, saying so. */
+class RestartsRanOut extends Error {}
 /** The reference's own bookkeeping entry: a commit that carries a run patch and no call or message. */
 const TURN_END = "reference.turn.end";
 
@@ -70,14 +74,36 @@ function referenceLoop({ script, tools, hooks }, deps) {
       await append(KINDS.callStart, start);
       if (!tool.replaySafe) await deps.flush();
     }
-    const output = await tool.run(call.args, turn.signal);
-    if (MUTANT === "intent-after-route") {
-      await hooks.beforeIntent(call);
-      await append(KINDS.callStart, start);
+    // The restart rule: a fault in the task (the process alive) restarts it. A replay-safe call runs again, at most
+    // MAX_RESTARTS times, then the run fails; any other call is not run again: it ends interrupted and the turn goes on.
+    for (let restarts = 0; ; restarts++) {
+      let output;
+      try {
+        output = await tool.run(call.args, turn.signal);
+        if (MUTANT === "intent-after-route" && restarts === 0) {
+          await hooks.beforeIntent(call);
+          await append(KINDS.callStart, start);
+        }
+        await hooks.beforeResult(call, output);
+      } catch (fault) {
+        if (turn.signal.aborted) throw fault;
+        const again = tool.replaySafe || MUTANT === "restart-reruns-effect";
+        if (again && (restarts < MAX_RESTARTS || MUTANT === "restart-forever")) {
+          // A restart waits a moment, as a kernel's does: never a busy loop that starves every other loop.
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          continue;
+        }
+        if (again) {
+          await append(KINDS.callEnd, { callId: call.callId, status: "failed" });
+          throw new RestartsRanOut(`the ${call.tool} call faulted and was restarted ${restarts} times: ${fault.message}`);
+        }
+        await append(KINDS.callEnd, { callId: call.callId, status: "interrupted" });
+        return;
+      }
+      const status = turn.signal.aborted ? "interrupted" : "done";
+      await append(KINDS.callEnd, { callId: call.callId, status, output });
+      return;
     }
-    await hooks.beforeResult(call, output);
-    const status = turn.signal.aborted ? "interrupted" : "done";
-    await append(KINDS.callEnd, { callId: call.callId, status, output });
   };
 
   return {
@@ -126,7 +152,13 @@ function referenceLoop({ script, tools, hooks }, deps) {
               if (answer.kind === "deny") continue;
             }
           }
-          await invoke({ callId, tool: next.call, args: next.args ?? {} });
+          try {
+            await invoke({ callId, tool: next.call, args: next.args ?? {} });
+          } catch (error) {
+            if (!(error instanceof RestartsRanOut)) throw error;
+            await append(TURN_END, {}, { run: { state: "failed", summary: error.message } });
+            return { state: "failed", error: { code: "restarts", message: error.message } };
+          }
           if (stopReason?.kind === "command") return writeStop();
           if (stopReason) return { state: "interrupted" };
         } else {
