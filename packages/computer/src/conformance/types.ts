@@ -195,6 +195,17 @@ export interface ConformanceReport {
 	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[] };
 	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
 	notes?: string[];
+	/**
+	 * What create's read-back recorded of each computer the run made that does not refuse it (a probe target that
+	 * accepted and sent nothing back), one entry per note, naming the computer, in the order they came; absent when none.
+	 */
+	computerNotes?: ComputerNote[];
+}
+
+/** One note a create returned: the computer's name and the note's words. */
+export interface ComputerNote {
+	computer: string;
+	note: string;
 }
 
 export interface ConformanceOptions {
