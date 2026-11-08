@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, acceptWords, FIRED_BY, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, acceptWords, FIRED_BY, githubWhen, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -106,7 +106,7 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
 /** A trigger's when and what, in one line: a schedule's times or a webhook's signed requests, then the agent it starts or
  *  the run it messages. */
 function whatWords(t: Trigger, agentName: (id: string) => string): string {
-  const when = t.source.kind === "schedule" ? whenWords(t.source) : hookWhen(t.source);
+  const when = t.source.kind === "schedule" ? whenWords(t.source) : t.source.kind === "github" ? githubWhen(t.source) : hookWhen(t.source);
   return `${when} · ${t.target.kind === "start_run" ? agentName(t.target.agent_id) || t.target.agent_id : `messages run ${runLabel(t.target.run_id)}`}`;
 }
 

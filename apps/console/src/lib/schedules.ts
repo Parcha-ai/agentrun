@@ -85,7 +85,10 @@ export const acceptWords = (a: Accept, conditions = true): string =>
 export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
-export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request" };
+export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event" };
+
+/** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
+export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;
 
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {
