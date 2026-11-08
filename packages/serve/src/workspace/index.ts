@@ -11,3 +11,4 @@ export {
 } from "./paths.js";
 export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
 export { localWorkspace } from "./local.js";
+export { ARCHIL_MAX_EXEC_S, type Hands, type HandsExecResult, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
