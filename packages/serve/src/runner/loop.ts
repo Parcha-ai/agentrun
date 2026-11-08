@@ -262,6 +262,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
   let context: Context = BACKGROUND_CONTEXT;
   /** Approve or deny rows refused because they named no call waiting for its answer. */
   let refusals = 0;
+  /** The claim's first delivery is done (LoopDeps.delivered): every row the runner read is with the loop. */
+  let delivered = false;
 
   /** Whether a call of this run waits for the answer `approval` names: asked, and not answered yet. */
   const waitsFor = async (approval: string | undefined): Promise<boolean> => {
@@ -304,6 +306,11 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     const hooks = spec.hooks ?? quiet;
     const restartLimit = spec.restartLimit ?? DEFAULT_RESTART_LIMIT;
     context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
+    // Every row the runner read for this claim is with the loop once delivered resolves (at once without a runner's).
+    void (deps.delivered ?? Promise.resolve()).then(() => {
+      delivered = true;
+      wakeInbox();
+    });
     const signalAbort = () => gate?.seal(new Interrupted("its claim's signal aborted"));
     deps.signal.addEventListener("abort", signalAbort, { once: true });
     /** A fault of the kernel's own between a call and its result, which restarts the Session (see below). */
@@ -337,9 +344,10 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
             return data;
           }
           if (stopReason) return heldUntilAborted(hookContext);
-          // The row that woke this run named no waiting call and was refused: the call is asked again and the run parks
-          // on it, so a refused approval neither answers it nor keeps the run claimed.
-          if (refusals > 0) {
+          // No answer for this call came with the claim's first delivery (a steer woke the run, or the row that woke it
+          // named no waiting call and was refused): the call is asked again and the run parks on it, so it never waits
+          // here holding the claim while it reads running.
+          if (delivered || refusals > 0) {
             const data: AskData = { callId: call.callId, tool: call.tool };
             const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
             await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
