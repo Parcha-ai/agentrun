@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { callback, CONNECTED, connect, connectable, deliver, failedWith, held, install, PUBLIC, SEAL, startConnect } from "./github-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { runDir, serve, withEnv } from "./support.mjs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { firings, keyOf, made } from "./trigger-support.mjs";
 
 const target = (agentId, content = "Review it.") => ({ kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 });
@@ -378,4 +379,61 @@ test("a read of the connection that finds GitHub holds no installation of the Ap
   assert.deepEqual((await server.api("GET", "/integrations/github")).body.installations, []);
   const trigger = (await server.api("GET", `/triggers/${id}`)).body;
   assert.deepEqual([trigger.enabled, trigger.disabled?.reason], [false, "connection_lost"], JSON.stringify(trigger));
+});
+
+test("a repair whose list GitHub answers after a verified installation event landed is asked again, not applied: the older list never drops the newer installation, and no github trigger turns off", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  const { webhook_secret: secret } = server.github.app;
+  // GitHub holds none now: the list asked here answers empty, held back while a newer installation arrives.
+  server.github.installations.delete(777);
+  const hold = held();
+  server.github.holds.installations = hold.promise;
+  const asked = server.github.requests.length;
+  const read = server.api("GET", "/integrations/github");
+  while (!server.github.requests.slice(asked).some((r) => r.url.startsWith("/app/installations?"))) await sleep(20);
+  server.github.installations.set(778, { account: "other", suspended_at: null });
+  const event = await deliver(server.baseUrl, secret, "installation", { action: "created", installation: { id: 778, account: { login: "other" }, app_id: 4242 } });
+  assert.equal(event.status, 200, JSON.stringify(event.body));
+  hold.release();
+  const view = await read;
+  assert.equal(view.status, 200, JSON.stringify(view.body));
+  assert.deepEqual(view.body.installations, [{ id: 778, account: "other" }], "the list asked again after the event, never the older empty one");
+  assert.equal(server.github.requests.slice(asked).filter((r) => r.url.startsWith("/app/installations?")).length, 2, "asked once more");
+  const trigger = (await server.api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], JSON.stringify(trigger));
+});
+
+test("a server that closes while its start's repair waits on GitHub stops waiting: close resolves, nothing is written after it, and nothing rejects unhandled", { timeout: 60_000 }, async (t) => {
+  const first = await connectable(t);
+  await made(first.api, "review");
+  await connect(first);
+  const id = (await first.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  await first.close();
+  // GitHub holds none now: the start's repair would turn the trigger off, were its answer taken.
+  first.github.installations.delete(777);
+  const hold = held();
+  first.github.holds.installations = hold.promise;
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const asked = first.github.requests.length;
+  const lines = [];
+  const second = await serve(t, { data: first.data, publicUrl: PUBLIC, githubApi: first.github.url, log: (line) => lines.push(line) });
+  while (!first.github.requests.slice(asked).some((r) => r.url.startsWith("/app/installations?"))) await sleep(20);
+  const triggersFile = join(first.data, "triggers.json");
+  const settingsFile = join(first.data, "trigger-settings-github.json");
+  await second.close();
+  const [triggersAtClose, settingsAtClose] = await Promise.all([readFile(triggersFile, "utf8"), readFile(settingsFile, "utf8")]);
+  hold.release();
+  await sleep(500);
+  assert.equal(await readFile(triggersFile, "utf8"), triggersAtClose, "no trigger written after close");
+  assert.equal(await readFile(settingsFile, "utf8"), settingsAtClose, "no installation list written after close");
+  const trigger = JSON.parse(triggersAtClose).triggers.find((x) => x.id === id);
+  assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], "still on");
+  assert.deepEqual(lines.filter((line) => /github_installations_repaired|connection_lost/.test(line)), [], "no repair taken");
+  assert.deepEqual(unhandled, [], "no unhandled rejection");
 });

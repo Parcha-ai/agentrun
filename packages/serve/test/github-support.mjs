@@ -18,7 +18,7 @@ export const INSTALLED = new Set(["acme/widgets"]);
  *  App's installations as GitHub holds them now (`installations`: id → {account, suspended_at}, which a test changes as
  *  GitHub would), installation tokens and a repository's installation. It keeps each request so a test reads what was
  *  asked and with which credential; `holds` keeps an answer back until a test lets it go (a conversion by its code, an
- *  installation's read by `installation`). */
+ *  installation's read by `installation`, the list by `installations`, which answers the list as it was when asked). */
 export async function fakeGitHub(t) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
   const app = { id: 4242, slug: "agentrun-test-app", client_id: `Iv1.${randomBytes(8).toString("hex")}`, client_secret: randomBytes(20).toString("hex"), webhook_secret: randomBytes(20).toString("hex"), pem: privateKey, tokenMs: 3600_000 };
@@ -68,7 +68,11 @@ export async function fakeGitHub(t) {
         if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
         if (failures.installations) return answer(failures.installations, { message: "Server Error" });
         const [size, page] = [Number(listing[1]), Number(listing[2])];
-        return answer(200, own(id).slice((page - 1) * size, page * size).map(([key, held]) => ({ id: key, account: { login: held.account, type: "Organization" }, app_id: id, suspended_at: held.suspended_at })));
+        // The list as GitHub held it when asked, answered once the hold (if any) lets go: a slow answer, older than now.
+        const list = own(id).slice((page - 1) * size, page * size).map(([key, held]) => ({ id: key, account: { login: held.account, type: "Organization" }, app_id: id, suspended_at: held.suspended_at }));
+        await holds.installations;
+        if (res.destroyed) return;
+        return answer(200, list);
       }
       // An installation token, narrowed to the repositories asked (by name), which installation 777 holds: acme/widgets.
       const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(req.url);
