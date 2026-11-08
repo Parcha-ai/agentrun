@@ -127,8 +127,9 @@ export type TriggerDeps = {
   /** Sends `input` to the target's run, as POST /runs/{id}/messages would, under `key` (the run's store takes a message
    *  once per key), as the trigger's (`from`); ApiError when refused. */
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin): Promise<void | { skipped: string }>;
-  /** A webhook trigger's signing secret, made now (at its create or a rotation) and shown once; its removal. */
-  secrets: { mint(triggerId: string): string; remove(triggerId: string): void };
+  /** An adapter's sealed settings (sealed-settings.ts): a trigger's minted secret made (at its create or a rotation)
+   *  and shown once; a trigger's settings removed with it. Undefined for an adapter that keeps none. */
+  settings(adapterId: string): { mint(scope: string, field: string): string; remove(scope: string): void } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
   /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start.
@@ -317,18 +318,19 @@ export class Triggers {
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
     const trigger: Trigger = { id, name: typeof body.name === "string" ? body.name.trim() : id, enabled, source, target, catchup_window_s: settings.catchup_window_s ?? CATCHUP_WINDOW_S, failures_in_a_row: 0, disabled: null, created_at: iso(now), updated_at: iso(now), next_at: enabled ? this.nextIso(source, now) : null, firings: [] };
-    // A secret is kept before its trigger is: one that cannot be kept (no seal key) makes none.
-    const secret = this.adapter(source).secret ? this.deps.secrets.mint(id) : undefined;
+    // Its secrets are kept before the trigger is: one that cannot be kept (no seal key) makes none.
+    const minted = this.mint(source, id);
     this.commit(() => void this.triggers.push(trigger));
     this.arm();
-    return { ...this.view(trigger), ...(secret ? { secret } : {}) };
+    // What it minted, shown this once, by field: a webhook's `secret`.
+    return { ...this.view(trigger), ...(minted as { secret?: string }) };
   }
 
   /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-  rotate(id: string): { secret: string } {
+  rotate(id: string): Record<string, string> {
     const trigger = this.need(id);
-    if (!this.adapter(trigger.source).secret) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
-    return { secret: this.deps.secrets.mint(id) };
+    if (!mints(this.adapter(trigger.source))) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
+    return this.mint(trigger.source, id);
   }
 
   /** Whether `id` is a trigger of the pushed source `kind` that is on: the one a request delivered for `kind` may fire. */
@@ -386,7 +388,7 @@ export class Triggers {
   remove(id: string): void {
     const trigger = this.need(id);
     this.commit(() => void (this.triggers = this.triggers.filter((t) => t !== trigger)));
-    if (this.adapter(trigger.source).secret) this.deps.secrets.remove(id);
+    if (this.adapter(trigger.source).settings?.scope === "trigger") this.deps.settings(trigger.source.kind)?.remove(id);
     this.arm();
   }
 
@@ -751,6 +753,16 @@ export class Triggers {
     return adapterIn(this.adapters, source.kind)!;
   }
 
+  /** Each field `source`'s adapter mints for its triggers, made now for trigger `id`, by field: none for one that keeps
+   *  no trigger-scoped secret. */
+  private mint(source: Source, id: string): Record<string, string> {
+    const adapter = this.adapter(source);
+    if (!mints(adapter)) return {};
+    const store = this.deps.settings(adapter.id);
+    if (!store) throw new Error(`no sealed settings for ${adapter.id}`);
+    return Object.fromEntries(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(([field]) => [field, store.mint(id, field)]));
+  }
+
   /** Why `source` no longer reads on this server, if it does not. */
   private problem(source: Source): string | undefined {
     return this.adapter(source).problem?.(source);
@@ -789,6 +801,8 @@ export class Triggers {
   }
 }
 
+/** Whether `adapter`'s triggers each get a secret it mints. */
+const mints = (adapter: TriggerAdapter) => adapter.settings?.scope === "trigger" && Object.values(adapter.settings.fields).some((f) => f.mint);
 /** A failed firing whose trigger.failed is not marked queued. */
 const unmarked = (firing: Firing) => firing.status === "failed" && !firing.notified;
 /** A time a Date holds: past it (about the year 275760) a next time is none. */

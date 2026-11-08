@@ -36,7 +36,6 @@ export const schedule: TriggerAdapter = {
   label: "schedule",
   delivery: "clock",
   owner: true,
-  secret: false,
   describe: '{kind: "schedule", cron, timezone}, {kind: "schedule", at}, {kind: "schedule", every_s, start_at?}',
   fires: `a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more)`,
   schemas: [
