@@ -677,3 +677,25 @@ test("an ask whose waiting row cannot be written fails, and says so: nothing is 
   assert.deepEqual(held.notes, ["Do thing 51"], "its waiting row written");
   assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-51-1" }])?.id, second.interactionId, "the owner sees it");
 });
+
+test("an ask's waiting entry carries the whole hand-over, as the server reads it: id, session, instruction, done-when condition, asked and expiry times; and so does one a later process commits for an ask whose row never came", async (t) => {
+  const root = await scratch(t);
+  const entries = [];
+  const note = async (kind, data) => void entries.push({ kind, data });
+  const grant = async () => ({ drop() {} });
+  const first = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note });
+  t.after(() => first.close());
+  const asked = await first.handoff.request(ask(61, "ar-run-61-1"));
+  const record = openAsk(root);
+  assert.equal(record?.id, asked.interactionId, "the ask waits");
+  // The server's reader (browser-commands.ts waitingAsk) needs every one of these; the timeline reads `reason`.
+  const whole = { state: "waiting", id: asked.interactionId, session: "ar-run-61-1", instruction: "Do thing 61", completion_condition: "thing 61 is done", asked_at: record.asked_at, expires_at: record.expires_at, reason: "Do thing 61" };
+  const handovers = () => entries.filter((entry) => entry.kind === "agent.handover").map((entry) => entry.data);
+  assert.deepEqual(handovers(), [whole], "the ask's entry is the whole record");
+  first.close();
+  // A later process takes the ask up and finds no waiting row for it (the earlier one ended between record and row).
+  const later = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note, waiting: async () => 0 });
+  t.after(() => later.close());
+  assert.deepEqual(await later.handoff.request(ask(61, "ar-run-61-1")), { interactionId: asked.interactionId });
+  assert.deepEqual(handovers(), [whole, whole], "the row committed for it is the whole record too");
+});
