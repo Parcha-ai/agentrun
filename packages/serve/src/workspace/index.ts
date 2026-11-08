@@ -17,3 +17,4 @@ export {
   ARCHIL_API_KEY_ROW, ARCHIL_DISK_TOKEN_ROW, type ArchilClaim, archilClaim, type ArchilClaimOptions, ArchilClaimRefused, type ArchilSettings,
 } from "./archil-claim.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
+export { type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
