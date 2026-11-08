@@ -11,20 +11,21 @@
 // answered), prints one JSON line, then kills the sandbox and reads it back gone, on an error and on an abort (SIGINT,
 // SIGTERM, or the run's own 8-minute bound) too. Its E2B timeout is 10 minutes. It changes nothing in the provider.
 //
-// Settings are the provider's (COMPUTER_E2B_API_KEY, COMPUTER_E2B_DOMAIN, COMPUTER_E2B_KIND, COMPUTER_E2B_DAEMON; never
-// E2B_API_KEY), and the template is COMPUTER_E2B_TEMPLATE as for conformance (default "desktop"). The live switch is
-// checked before any of them is read. Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 on a
-// usage error, no live switch, or a setting the provider refuses (nothing is made then).
-import { diagnoseNetworkNone, type E2BFromEnvOptions, ENV, fromEnv } from "../e2b.js";
+// Settings are the conformance module's (COMPUTER_E2B_API_KEY, COMPUTER_E2B_DOMAIN, COMPUTER_E2B_KIND,
+// COMPUTER_E2B_DAEMON and the rest settingsFromEnv reads; never E2B_API_KEY), passed to the provider's create(), and the
+// template is COMPUTER_E2B_TEMPLATE as for conformance (default "desktop"). The live switch is checked before any of
+// them is read. Exit 0 when a diagnosis came back and the sandbox reads gone, 1 otherwise, 2 on a usage error, no live
+// switch, or a setting the provider refuses (nothing is made then).
+import { create, diagnoseNetworkNone, type E2BOptions } from "../e2b.js";
 import { isCommand } from "../entry.js";
-import { conformanceImage, E2B_ENV } from "./e2b.js";
+import { conformanceImage, E2B_ENV, settingsFromEnv } from "./e2b.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
 export interface Writer {
 	write(text: string, done?: (error?: Error | null) => void): unknown;
 }
 
-export interface DiagnoseIo extends Pick<E2BFromEnvOptions, "Sandbox" | "daemonPath" | "timeouts"> {
+export interface DiagnoseIo extends Pick<E2BOptions,"Sandbox" | "daemonPath" | "timeouts"> {
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 	stdout?: Writer;
@@ -35,7 +36,7 @@ export interface DiagnoseIo extends Pick<E2BFromEnvOptions, "Sandbox" | "daemonP
 	boundMs?: number;
 }
 
-const USAGE = `usage: ${E2B_ENV.live}=1 ${ENV.key}=<key> node packages/computer/dist/conformance/e2b-diagnose.js
+const USAGE = `usage: ${E2B_ENV.live}=1 ${E2B_ENV.key}=<key> node packages/computer/dist/conformance/e2b-diagnose.js
   makes one E2B sandbox as the provider makes one for network none, runs computerd probe --diagnose in it, prints one
   JSON line, and kills the sandbox and reads it back gone. It takes no argument; the template is ${E2B_ENV.template}.
 exit: 0 diagnosed and gone, 1 otherwise, 2 usage error, no live switch, or a refused setting`;
@@ -54,12 +55,12 @@ export async function main(argv: string[], io: DiagnoseIo = {}): Promise<number>
 		await write(stderr, `it takes no argument, not ${argv.join(" ")}\n${USAGE}\n`);
 		return 2;
 	}
-	const key = env[ENV.key] ?? "";
+	const key = env[E2B_ENV.key] ?? "";
 	// Nothing the SDK or E2B says reaches an output with the key in it.
 	const clean = (text: string) => (key === "" ? text : text.split(key).join("[key]"));
-	let provider: Awaited<ReturnType<typeof fromEnv>>;
+	let provider: Awaited<ReturnType<typeof create>>;
 	try {
-		provider = await fromEnv(env, { ...(io.Sandbox ? { Sandbox: io.Sandbox } : {}), ...(io.daemonPath === undefined ? {} : { daemonPath: io.daemonPath }), ...(io.timeouts ? { timeouts: io.timeouts } : {}) });
+		provider = await create({ ...settingsFromEnv(env), ...(io.Sandbox ? { Sandbox: io.Sandbox } : {}), ...(io.daemonPath === undefined ? {} : { daemonPath: io.daemonPath }), ...(io.timeouts ? { timeouts: io.timeouts } : {}) });
 	} catch (error) {
 		await write(stderr, `${clean((error as Error).message)}\n`);
 		return 2;

@@ -10,7 +10,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { REQUEST_EXAMPLES, RUN_FIELDS_SENT } from "../dist/openapi.js";
+import { DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -138,6 +138,17 @@ test("the contract's operations are as vendored; this server's own are added and
       const { parameters: _a, ...same } = rest;
       const { parameters: _b, ...vendoredSame } = original;
       assert.ok(isDeepStrictEqual(same, vendoredSame), "getTimeline is the contract's but for its limit");
+      continue;
+    }
+    if (op.operationId === "listAgents") {
+      // archivedparam/1: this route also takes `archived`, as GET /runs already does (C1): the contract's
+      // parameters, then this server's one, and the rest as vendored.
+      assert.deepEqual(Object.keys(changes), ["archived"]);
+      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
+      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["archived", "query", false]);
+      const { parameters: _a, ...same } = rest;
+      const { parameters: _b, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "listAgents is the contract's but for its archived");
       continue;
     }
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
@@ -269,6 +280,14 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   // A security scheme this server adds is its own, marked (the owner's session that approving a note takes).
   for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
+  // DefinitionInput: instructions, version, skills and tools are optional here where the server does not require them
+  // (validate.ts, agents.ts definitionOf); Definition keeps only instructions optional, as a workflow revision's own
+  // answer has none, and always sends the rest. Checked absent, then restored, so the comparison below is the
+  // contract's own required arrays.
+  for (const [name, fields] of [["DefinitionInput", DEFINITION_INPUT_OPTIONAL], ["Definition", DEFINITION_OPTIONAL]]) {
+    for (const field of fields) assert.ok(!components.schemas[name].required.includes(field), `${name}.${field} is optional here`);
+    components.schemas[name].required = VENDORED.components.schemas[name].required;
+  }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
   assert.deepEqual(unrequired.sort(), ["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)).sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
@@ -355,13 +374,8 @@ test("live answers meet the served document: capabilities, and an agent made, re
   for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["in-runner", agent("in-runner", { place: { mode: "runner" } })], ["in-bwrap", agent("in-bwrap", { place: { mode: "sandbox", box: "bwrap" } })], ["in-sandbox", agent("in-sandbox", { place: { mode: "sandbox", box: "daytona" } })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
     const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
     const read = (await api("GET", `/agents/${id}`)).body;
-    if (id !== "on-codex") {
-      check("Agent", made);
-      check("Agent", read);
-      continue;
-    }
-    // A workflow definition keeps no instructions, which v2/0 requires of every definition: the one gap left, for v2/1.
-    for (const answer of [made, read]) assert.deepEqual([...new Set(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, answer))], ["$.definition.instructions: is required"]);
+    check("Agent", made);
+    check("Agent", read);
   }
   // The document's place takes the two modes the server takes, and refuses what it refuses.
   const place = doc.components.schemas.DefinitionInput.properties.place;
@@ -640,6 +654,51 @@ test("what /usage and an agentic run's pause answer is in the document: the repo
   assert.equal(typeof report.unpriced_runs, "number");
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Usage" }, report), []);
   for (const path of ["/runs/{run_id}/pause", "/runs/{run_id}/resume"]) assert.ok(doc.paths[path].post.responses["501"], `${path} documents 501`);
+});
+
+test("the agent create and update answers carry warnings, which the document now allows: A2", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const created = await api("POST", "/agents", agent("qa-warnings", { harness: "claude-agent" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.ok(Array.isArray(created.body.warnings) && created.body.warnings.some((w) => w.field === "definition.harness"), "POST /agents warns of a harness it does not run here");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, created.body), [], "the create answer, warnings included, meets Agent");
+  const updated = await api("PUT", "/agents/qa-warnings/definition", { definition: { instructions: "Answer, again.", harness: "claude-agent" } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.ok(Array.isArray(updated.body.warnings) && updated.body.warnings.some((w) => w.field === "definition.harness"), "PUT .../definition warns the same way");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, updated.body), [], "the commit answer, warnings included, meets Agent");
+});
+
+test("a workflow revision names no instructions, version, skills or tools, which the document now allows, and keeps the 422s instructions and workflow together or neither give: A4", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const body = flowAgent("qa-workflow-fields");
+  assert.deepEqual(body.definition.version ?? body.definition.skills ?? body.definition.tools, undefined, "the create names none of the three");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/DefinitionInput" }, body.definition), [], "the create's definition meets DefinitionInput without instructions, version, skills or tools");
+  const created = await api("POST", "/agents", body);
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const read = await api("GET", "/agents/qa-workflow-fields");
+  assert.equal(read.status, 200);
+  assert.equal(read.body.definition.instructions, undefined, "a workflow revision's own answer has none");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, read.body), [], "the read answer, instructions absent, meets Agent");
+  const both = await api("POST", "/agents", agent("qa-workflow-both", { workflow: body.definition.workflow }));
+  assert.deepEqual([both.status, both.body.error.fields[0].field, both.body.error.fields[0].reason], [422, "definition.workflow", "not_allowed"], "instructions and workflow together are still refused");
+  const neither = await api("POST", "/agents", { definition: { id: "qa-workflow-neither", name: "x" } });
+  assert.deepEqual([neither.status, neither.body.error.fields[0].field, neither.body.error.fields[0].reason], [422, "definition.instructions", "missing"], "neither is still refused");
+});
+
+test("GET /agents documents archived, as GET /runs already does, and lists an archived agent by it: C1", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const param = doc.paths["/agents"].get.parameters.find((p) => p.name === "archived");
+  assert.ok(param, "GET /agents documents archived");
+  assert.deepEqual([param.in, param.required, param.schema.type], ["query", false, "boolean"]);
+  await made(api, agent("qa-archived"));
+  assert.equal((await api("POST", "/agents/qa-archived/archive")).status, 200);
+  const archived = await api("GET", "/agents?archived=true");
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.ok(archived.body.agents.some((a) => a.agent_id === "qa-archived"), "the archived agent is in the archived list");
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/AgentList" }, archived.body), []);
 });
 
 test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, an agent's tools on its own route, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {

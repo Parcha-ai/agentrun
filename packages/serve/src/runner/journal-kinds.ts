@@ -24,6 +24,11 @@ export const KINDS = {
   /** The loop's end commit: how the run ended (ended, stopped, failed). Its commit carries the run row's patch and any
    *  command it takes; neither a call nor a message, so the reader passes over it. */
   end: "agentrun.end",
+  /** A workflow run parked for a raise: a step its spend cap held let go, the run parks (its row's patch rides on this
+   *  commit), and a raise or its wake makes it claimable again, when the resumed run reads the raised cap. Its data is the
+   *  refusal a reader shows as the run's pending (its words and figures); neither a call nor a message, so the reader
+   *  passes over it. */
+  workflowParked: "agentrun.workflow.parked",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */

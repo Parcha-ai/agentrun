@@ -4,10 +4,23 @@
 // (tool-gate.ts NOTE_ONLY_TEXT, underLearning), kept equal by a test.
 import { posix, resolve, sep, join } from "node:path";
 
+/** The prefix of the end-of-run turn's request id: the server's own (turns.ts REFLECT_REQUEST). */
+export const REFLECT_PREFIX = "learn-reflect-";
+/** The label a reader puts on the end-of-run turn's rows and messages: the server's (learning.ts LEARNING_LABEL). */
+export const REFLECT_LABEL = "learning";
+
 /** The end-of-run turn's request id, one per run: pi answers a repeat of it from its submission, so a turn asked again
- *  on a later claim is never asked of the model twice. The server's own prefix (turns.ts REFLECT_REQUEST), so the run's
- *  timeline tells the turn's rows apart as it always has. */
-export const reflectRequestId = (runId: string) => `learn-reflect-${runId}`;
+ *  on a later claim is never asked of the model twice. The server's own prefix, so the run's readers tell the turn's
+ *  rows apart by it (reflectFrom). */
+export const reflectRequestId = (runId: string) => `${REFLECT_PREFIX}${runId}`;
+
+/** Where the end-of-run turn began in a run's journal: the entry its input placed, from the input submission under the
+ *  turn's request id; undefined before it is placed, or for a run that asked none. Every entry from it on, until the
+ *  run's end, is the turn's (the server's labelled: after the entry before it). */
+export function reflectFrom(submissions: readonly { readonly type?: string; readonly requestId?: string; readonly entry?: unknown }[]): number | undefined {
+  const placed = submissions.filter((record) => record.type === "input" && typeof record.requestId === "string" && record.requestId.startsWith(REFLECT_PREFIX) && record.entry !== undefined);
+  return placed.length ? Math.min(...placed.map((record) => Number(record.entry))) : undefined;
+}
 
 /** The refusal of the end-of-run turn's write or edit under work/.learning/. */
 export const REFLECT_NOTE_ONLY = "A note is kept only from your answer: write it in a ```note block, not to a file.";
