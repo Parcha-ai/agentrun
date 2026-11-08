@@ -27,6 +27,7 @@ import {
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	type ProviderNote,
 	recordedMount,
 	syncingClient,
 } from "./mount-archil.js";
@@ -178,6 +179,8 @@ export interface E2BTimeouts {
 export interface E2BProviderOptions {
 	/** The E2B API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
+	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
+	onNote?: ProviderNote;
 	/** The SDK's Sandbox class: the host's `e2b` package's, or a fake. */
 	Sandbox: E2BSandboxClass;
 	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
@@ -654,11 +657,13 @@ export class E2BProvider implements ComputerProvider {
 	readonly #publicStream: boolean;
 	readonly #timeouts: E2BTimeouts;
 	readonly #probeTargets: string[];
+	readonly #onNote: ProviderNote | undefined;
 	/** Each computer's last extend, by sandbox id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
 
 	constructor({
 		apiKey,
+		onNote,
 		Sandbox,
 		domain = DEFAULT_DOMAIN,
 		daemonPath = DEFAULT_DAEMON_PATH,
@@ -670,6 +675,7 @@ export class E2BProvider implements ComputerProvider {
 		timeouts = {},
 		probeTargets = DEFAULT_PROBE_TARGETS,
 	}: E2BProviderOptions) {
+		this.#onNote = onNote;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("an E2B API key is required");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
@@ -1653,7 +1659,8 @@ export class E2BProvider implements ComputerProvider {
 	 * E2B answers a kill before the sandbox is gone, so release then waits (#settle) until E2B reads it gone and no longer
 	 * lists it, within goneMs and the caller's signal, the one step the signal ends. A running Archil computer lets go of
 	 * the run's folder first (archilRelease: the final sync through computerd, then checkin as root); the kill runs
-	 * whatever that answers, and a folder not let go cleanly is said in the result's words, after it.
+	 * whatever that answers. A folder not let go cleanly loses nothing (every call that changed it synced, and the next
+	 * claim revokes the hold), so it is said through onNote, and the release succeeds once the sandbox is gone.
 	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
@@ -1668,7 +1675,8 @@ export class E2BProvider implements ComputerProvider {
 		const gone = killed.ok ? await this.#settle(ref, signal) : killed;
 		if (letGo.ok) return gone;
 		if (!gone.ok) return fail(gone.error.code, `${gone.error.message}; and ${letGo.error.message}`);
-		return fail(letGo.error.code, `${ref.name} was killed, but ${letGo.error.message}`);
+		this.#onNote?.({ computer: ref.name, note: `${ref.name} was killed, and ${letGo.error.message}` });
+		return gone;
 	}
 
 	/** A running Archil computer's folder let go: the final sync through a connection when it answers, then checkin as root. */

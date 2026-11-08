@@ -42,6 +42,13 @@ export interface ArchilRoot {
 	run(argv: readonly string[], options: { stdin?: string; timeoutMs: number; signal?: AbortSignal }): Promise<Result<{ exitCode: number; output: string }>>;
 }
 
+/**
+ * What a provider says, through its onNote option, that is no failure of the call it came from: a release whose final
+ * sync or checkin did not let the run's folder go cleanly (no data is lost: every call that changed the folder synced
+ * before it answered, and the run's next claim revokes a hold left behind). The computer, by name, and the words.
+ */
+export type ProviderNote = (note: { computer: string; note: string }) => void;
+
 // The shapes the helper itself checks (box/agentrun-archil), so a spec it would refuse is refused before any vendor call.
 const DISK = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
 const REGION = /^[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}$/;

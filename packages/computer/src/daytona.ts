@@ -22,6 +22,7 @@ import {
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	type ProviderNote,
 	recordedMount,
 	syncingClient,
 } from "./mount-archil.js";
@@ -83,6 +84,8 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export interface DaytonaProviderOptions {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
+	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
+	onNote?: ProviderNote;
 	/** Default https://app.daytona.io/api. */
 	apiUrl?: string;
 	/** The daemon binary on this machine, for the sandboxes' architecture (dist/computerd-linux-<arch>). */
@@ -658,9 +661,11 @@ export class DaytonaProvider implements ComputerProvider {
 	readonly #timeouts: DaytonaTimeouts;
 	readonly #autoStop: number;
 	readonly #autoDelete: number;
+	readonly #onNote: ProviderNote | undefined;
 
 	constructor({
 		apiKey,
+		onNote,
 		apiUrl = DEFAULT_API_URL,
 		daemonPath,
 		arch = "amd64",
@@ -673,6 +678,7 @@ export class DaytonaProvider implements ComputerProvider {
 		webSocket,
 		timeouts,
 	}: DaytonaProviderOptions) {
+		this.#onNote = onNote;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a Daytona API key is required");
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
@@ -1383,23 +1389,23 @@ export class DaytonaProvider implements ComputerProvider {
 		// destroys, so the name is not held to the ref's here.
 		if (going(sb)) return this.#settle(ref, "gone", how, signal);
 		if (!ours(sb) || sb.name !== ref.name) return fail("not_found", `no Daytona computer is ${ref.name} (${ref.id}): the sandbox is not this provider's, so it is left as it is`);
-		if (recordedMount(sb.labels) && sb.state === "started") await this.#letGo(sb, signal);
-		if (how === "stop") return this.#stop(ref, sb, signal);
-		const deleted = await this.#delete(ref.id);
-		return deleted.ok ? this.#settle(ref, "gone", how, signal) : deleted;
+		const letGo = recordedMount(sb.labels) && sb.state === "started" ? await this.#letGo(sb, signal) : ok(undefined);
+		const released = how === "stop" ? await this.#stop(ref, sb, signal) : await this.#delete(ref.id).then((deleted) => (deleted.ok ? this.#settle(ref, "gone", how, signal) : deleted));
+		if (!letGo.ok && released.ok) this.#onNote?.({ computer: ref.name, note: `${ref.name} was ${how === "stop" ? "stopped" : "deleted"}, and ${letGo.error.message}` });
+		return released;
 	}
 
 	/**
 	 * An Archil computer lets its folder go before it is stopped or deleted: a final sync through its computerd (when it
 	 * answers), then checkin as root. Neither stops the release: every call that changed the folder synced before it
-	 * answered, and a hold left behind is revoked by the run's next claim.
+	 * answered, and a hold left behind is revoked by the run's next claim. What did not go cleanly is said through onNote.
 	 */
-	async #letGo(sb: Sandbox, signal?: AbortSignal): Promise<void> {
+	async #letGo(sb: Sandbox, signal?: AbortSignal): Promise<Result<void>> {
 		const toolbox = await this.#toolbox(sb, signal);
-		if (!toolbox.ok) return;
+		if (!toolbox.ok) return fail(toolbox.error.code, `the run's folder was not let go: the toolbox could not be reached (${toolbox.error.message})`);
 		const opened = await this.#open(sb, toolbox.value, signal);
 		try {
-			await archilRelease({ root: this.#root(toolbox.value), client: opened.ok ? opened.value.client : undefined, timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+			return await archilRelease({ root: this.#root(toolbox.value), client: opened.ok ? opened.value.client : undefined, timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
 		} finally {
 			if (opened.ok) await opened.value.close();
 		}

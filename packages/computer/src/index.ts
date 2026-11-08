@@ -31,6 +31,7 @@ export {
 	type ArchilMount,
 	type ArchilMountOptions,
 	type ArchilRoot,
+	type ProviderNote,
 	archilLabels,
 	archilMount,
 	archilReadBack,

@@ -31,6 +31,7 @@ import {
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	type ProviderNote,
 	syncingClient,
 } from "./mount-archil.js";
 import {
@@ -139,6 +140,8 @@ export interface ModalTimeouts {
 export interface ModalProviderOptions {
 	/** The host's Modal client, or anything with the same slice. */
 	sdk: ModalSdk;
+	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
+	onNote?: ProviderNote;
 	/** The Modal App the sandboxes live in; made when missing. */
 	app: string;
 	/**
@@ -727,9 +730,11 @@ export class ModalProvider implements ComputerProvider {
 	readonly #user: string;
 	readonly #timeouts: ModalTimeouts;
 	readonly #probeTargets: string[];
+	readonly #onNote: ProviderNote | undefined;
 	#app: ModalApp | undefined;
 
-	constructor({ sdk, app, daemonImage, daemonPath, maxLifetimeMs = MAX_LIFETIME_MS, user, timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS }: ModalProviderOptions) {
+	constructor({ sdk, app, daemonImage, daemonPath, maxLifetimeMs = MAX_LIFETIME_MS, user, timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, onNote }: ModalProviderOptions) {
+		this.#onNote = onNote;
 		const lacks = [
 			["apps.fromName", sdk?.apps?.fromName],
 			["images.fromRegistry", sdk?.images?.fromRegistry],
@@ -1420,8 +1425,9 @@ export class ModalProvider implements ComputerProvider {
 	 * releasePollMs to 5 s, until poll reads an exit code (null while it runs, sandbox.ts:2761-2771) or Modal no longer
 	 * knows it, within releaseMs and the caller's signal. Past releaseMs it is a timeout that says what poll last read,
 	 * never done. An Archil computer that still runs lets go of the run's folder first (archilRelease: the final sync
-	 * through computerd, then checkin as root); the terminate runs whatever that answers, and a folder not let go cleanly
-	 * is said in the result's words, after it.
+	 * through computerd, then checkin as root); the terminate runs whatever that answers. A folder not let go cleanly
+	 * loses nothing (every call that changed it synced, and the next claim revokes the hold), so it is said through
+	 * onNote, and the release succeeds once the sandbox is gone.
 	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
@@ -1436,7 +1442,8 @@ export class ModalProvider implements ComputerProvider {
 		const deleted = await this.#delete(sandbox, ref, signal);
 		if (letGo.ok) return deleted;
 		if (!deleted.ok) return fail(deleted.error.code, `${deleted.error.message}; and ${letGo.error.message}`);
-		return fail(letGo.error.code, `${ref.name} was terminated, but ${letGo.error.message}`);
+		this.#onNote?.({ computer: ref.name, note: `${ref.name} was terminated, and ${letGo.error.message}` });
+		return deleted;
 	}
 
 	/** An Archil computer's folder let go, when the sandbox still runs: there is nothing to let go in one that finished. */
