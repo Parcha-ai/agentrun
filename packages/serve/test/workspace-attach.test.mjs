@@ -123,7 +123,9 @@ test("attached: read, ranged and chunked, from /workspace/<path>; append in chun
   computer.plant.file("/workspace/b.txt", "bb");
   computer.plant.link("/workspace/link");
   computer.clear();
-  assert.deepEqual(await workspace.list(""), [
+  const listed = await workspace.list("");
+  assert.ok(listed.every((entry) => typeof entry.mtimeMs === "number"), "each entry carries its modified time");
+  assert.deepEqual(listed.map(({ mtimeMs, ...entry }) => entry), [
     { name: "b.txt", kind: "file", size: 2 }, { name: "f.txt", kind: "file", size: 10 }, { name: "logs", kind: "dir", size: 0 }, { name: "z", kind: "dir", size: 0 },
   ], "files and folders, sorted, a link left out");
   assert.deepEqual(computer.calls.map(([, p]) => [p.depth, p.offset]), [[1, 0], [1, 2], [1, 4]], "one level, every page");

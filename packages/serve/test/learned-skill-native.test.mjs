@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
-import { ended, git } from "./learn-support.mjs";
+import { ended, git, resnap } from "./learn-support.mjs";
 import { agent, runDir, scratch, serve } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -35,6 +35,7 @@ async function learnedSkill(data, id) {
   writeFileSync(join(repo, path), SKILL);
   git(repo, ["add", "--", path]);
   git(repo, ["commit", "-q", "-m", "learned"]);
+  await resnap(data, id);
 }
 
 /** serve's gateway on loopback: each Responses request kept, and answered by `answer(body, i)` (SSE events). */
