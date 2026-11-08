@@ -125,8 +125,8 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
-| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
+| `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?, log?, waitGroup?, orphans?: "keep"` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null. `log`, `waitGroup` and `orphans` are below |
+| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited, size, capped?, logError?}`: `stream` is `stdout` or `stderr`, or `pty`, or `log`; at most 512 KiB a call (more is `limit`); `size` is the stream's bytes so far, kept or dropped |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
@@ -168,6 +168,23 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   no data, `dropped` counts every byte from `offset` on, and `exited` is true. When no ended ring is left and running
   processes still hold more, each running process's ring stops growing and keeps at most an equal share of the budget
   (never under 64 KiB), dropping its oldest bytes; a read from an offset it dropped reports them in `dropped`.
+- `log` is an absolute path for a new file the daemon makes and writes the first 16 MiB of the output to, stdout and
+  stderr (or the terminal's) as they come; later output is dropped there while the process runs on. The daemon makes
+  the missing directories and the file itself, never through a link: each directory is entered from the one above it
+  with `O_NOFOLLOW|O_DIRECTORY`, and the file is made with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0644, the daemon's. A
+  link at the path or at any directory on its way is refused as `denied`, a file already there as `exists`, and the
+  program never starts; a start that fails after the file was made removes it. The `log` stream reads it through the
+  daemon's own open file, never by the path, so a rename or removal under it changes nothing read: `size` is the bytes
+  the log holds, `capped` says output past them was dropped, and `dropped` is 0. A write to the log that fails or
+  writes short (a full disk) stops the log for good: nothing after it is written, so the file stays a true prefix of
+  the output, and `logError` says why. The log holds all of the output once its stream reads `exited`; the process's
+  end can come before that.
+- `waitGroup`: the process runs until its program and every live process left in its process group (with a pty, its
+  session) have ended, and reports the program's own exit. A signal goes once to each process group of the run: the
+  program's, and every other group its live processes are in (a terminal session's jobs), by the group's id. On a pty,
+  the program's exit hangs up the terminal's foreground group, as a terminal does.
+- `orphans: "keep"`: when the process ends, what it started that still runs (a daemon in its own session) is not ended:
+  it runs on under the guard, unsignalled, until it ends or the computer does. Without it, it is ended with the process.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
