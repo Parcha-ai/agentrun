@@ -40,8 +40,9 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   times out.
 - `stdout` and `stderr` come back apart, in base64. Each keeps at most 360 KiB (`maxOutput`, the default and the most):
   both, in base64, fit one 1 MiB line. The rest is read and dropped, and `truncated` is true.
-- The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then `env` over them. Nothing else of the
-  daemon's environment is passed on.
+- The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then, when init relays to an egress
+  proxy (`init --egress`, [below](#an-allowlist-the-egress-proxy)), `HTTP_PROXY`, `HTTPS_PROXY`, their lowercase forms
+  and `NO_PROXY`, then `env` over them. Nothing else of the daemon's environment is passed on.
 - `user` is a name or `uid[:gid]`. A daemon without CAP_SETUID and CAP_SETGID cannot switch users and answers `denied`.
   Init leaves itself no capability (below), so a command runs as the daemon's own user.
 - Requests run at once; replies may come in any order. A line over 1 MiB gets an error reply and the connection goes
@@ -453,15 +454,15 @@ await docker.release(made.value, "delete");
   a server that ends first, with its last words on stderr, or a display that is not up in time deletes the computer in
   words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
-  30 days), a network
-  allowlist (Docker cannot enforce one yet: ask for `none` or `open`), a NUL byte in any string, and any field Docker
-  does not support. Once the host has been read (below), it also refuses with `field: "host"` for each enforcement
+  30 days), a network that is not `none`, `open` or an allowlist the egress proxy takes
+  ([below](#an-allowlist-the-egress-proxy)), a NUL byte in any string, and any field Docker does not support. Once the host has been read (below), it also refuses with `field: "host"` for each enforcement
   the host lacks. `create` never throws on a spec `check` passes.
 - Before `docker run`, `create` reads the host's enforcement once per provider (`host()`, from `docker info`; see
   below), and refuses a host that lacks any of it in words, having made nothing.
 - `create` runs `docker run` as a non-root user (`--user`, below), with every capability dropped (`--cap-drop ALL`),
   `--security-opt no-new-privileges`, `--ipc private --cgroupns private` (never the daemon's defaults, which a host can
-  set to `shareable` or, on cgroup v1, the host's cgroup namespace), `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
+  set to `shareable` or, on cgroup v1, the host's cgroup namespace), `--network bridge` for `open` and `--network none`
+  for `none` and an allowlist, serve's sizes unless the spec gives its own (2
   CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
   the same; 1024 pids), and the daemon (its copy, next) bind-mounted read-only at `/opt/agentrun/computerd` as
   the entrypoint, `computerd init --deadline <time>`, which is PID 1, holds every process and reaps orphans. The label
@@ -513,10 +514,12 @@ await docker.release(made.value, "delete");
   the ISO time the provider writes), `state` (`running` or `stopped`), `network` as read back, and `mount` when
   something is mounted at `/workspace`.
 - `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
-  (the default bridge alone), or `{ other: "<words>" }` for anything else, which is never reported as a policy.
-  `network(ref, policy)` returns the policy when it is the computer's; any change is refused: a Docker computer's
-  network is fixed at create, since Docker cannot move a container with no network onto one.
-- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`; `capabilities().release`
+  (the default bridge alone), `{ allow: [...] }` (below), or `{ other: "<words>" }` for anything else, which is never
+  reported as a policy. `network(ref, policy)` returns the policy when it is the computer's (an allowlist with the same
+  entries, normalized, in any order); any change is refused: a Docker computer's network is fixed at create, since
+  Docker cannot move a container with no network onto one, and an allowlist needs its volume mounted at create.
+- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`, then stops or removes the
+  computer's egress proxy and, on delete, its volume, each found by its label (below); `capabilities().release`
   declares both, and `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is
   ok.
 - Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
@@ -525,7 +528,84 @@ await docker.release(made.value, "delete");
 Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
 
 What a Docker computer cannot do: run as root or in root's group unless its spec asks, switch users, gain a capability, reach any network
-when asked for `none`, write the daemon, or run past its deadline.
+when asked for `none`, reach anything but its list, through its own proxy, when asked for an allowlist, write the
+daemon, or run past its deadline.
+
+### An allowlist: the egress proxy
+
+```ts
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } });
+// In the computer, HTTP_PROXY and HTTPS_PROXY name port 3128 on its own loopback for every program computerd starts.
+```
+
+A computer whose network is an allowlist stays `--network none`: its own loopback, no route, no resolver. Its one way
+out is its own egress proxy, in a second container the provider makes, reads back and removes with it. The proxy is
+serve's (`src/docker/egress-proxy.ts`, with its address table in `src/docker/egress-table.ts`), moved here; it holds no
+key.
+
+- **The volume** `computer-<hex>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy
+  makes its Unix socket there (0600); the computer mounts it read-only at `/opt/agentrun/egress` (`EGRESS_MOUNT`).
+- **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.4-bookworm-slim, pinned by
+  digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
+  package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
+  port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
+  pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list, the computer's deadline (it ends itself then), this machine's own
+  public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
+  `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
+  lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
+  `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
+  (in this repository, from `packages/computer` after a build: `node -e 'import("./dist/index.js").then((m) => console.log(m.EGRESS_IMAGE))'`).
+- **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
+  carries each connection to the socket, and gives every program it starts `HTTP_PROXY` and `HTTPS_PROXY` (and their
+  lowercase forms) naming that port, with `NO_PROXY` naming the loopback itself. A program that ignores them reaches
+  nothing; one that dials the socket itself meets the same proxy. Init refuses to start when it cannot listen.
+- **What a list holds** (`capabilities().allow`): names, exact or `*.suffix` (two labels or more), and CIDRs, IPv4 or
+  IPv6, with host bits zero and over no range the address rule refuses; both in one list, at most 256 of each, each on
+  ports 80 and 443. `check` refuses anything else in words: an empty list (ask for `none`), an address with no prefix, a
+  port, a URL, a private range. On a Docker host that remaps user ids (userns-remap or rootless Docker), an allowlist
+  is refused before anything is made, as a bind is: the volume's owner and the proxy's code are host ids the computer's
+  user does not map to, and the provider does not guess the mapping.
+- **The Docker host's own addresses.** The proxy refuses them as `this-host`, so it must know them. Docker does not
+  report them; the provider passes this machine's public interface addresses, which are the Docker host's only when
+  the provider runs on it. When it runs in a container (`/.dockerenv`, `/run/.containerenv`, or a container's cgroup in
+  `/proc/self/cgroup`), or its docker CLI talks to a daemon that is not a local unix socket (`docker context inspect`,
+  which resolves the context and `DOCKER_HOST` as the CLI does), an allowlist is refused in words before anything is
+  made, and `check` says so once it knows, unless `egress.hostAddresses` names the host's addresses (IP addresses),
+  which then go to the proxy beside this machine's own. A plain local host is as before. `egress.hostRoot` (default
+  `/`) is the root those container signs are read under, for tests and embedders. An address that is not on any
+  interface is never seen: a cloud machine's NAT'd or elastic public IP. Put those in `egress.hostAddresses` too. The
+  read-back holds every proxy to the addresses as they are now, so a host that gains an address after create reads its
+  older proxies back as `other` (fail closed).
+- **What the proxy refuses**, each before any socket opens: a name off the list, before any lookup, so it never
+  leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
+  address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
+  octal, hex, IPv4-mapped, NAT64, 6to4), or one of this machine's own; a Host header that names another host than the
+  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past 64 connections open at once or 20,000 in all. A name is
+  resolved once, every answer is checked, and the checked address is the one dialled, so rebinding a name between the
+  check and the dial reaches nothing new; a redirect reaches the client as sent and is never followed. A log line holds
+  the host, port, address and class, never a path, query or header. A refusal reads `403 <host> is not on this box's
+  network list: <hint>`, the words serve's model sees today. The proxy does not open TLS, so a CONNECT to a listed CDN
+  name can carry an SNI for any other tenant of that CDN (domain fronting); listing a CDN's shared name lists every site
+  behind it. That is inherent to a CONNECT proxy, and the same as serve.
+- **Lifetime.** `create` first makes sure the computer's image and the proxy's are on the host (`docker image inspect`,
+  then `docker pull` for one that is not; a failed pull fails create in words, with nothing made). It then makes the
+  volume, starts the proxy and waits for its ready line (`egress.readyMs`, 10 s), then runs the computer; both runs
+  take `--pull never`, so no pull happens between the volume and the computer. A proxy that ends first, or is not ready in time, fails create in its own words; the proxy and the
+  volume are removed, and the computer is never run. `release` removes the proxy and the volume after the computer, each
+  found by the label `agentrun.computer.egress=<computer>`, never by name alone, so the janitor's sweep and
+  `releaseOlder` remove them too. Parts left with no computer (one removed by hand, or a provider that died between its
+  proxy and its computer) the sweep removes too (`sweepLeftovers`): a proxy or volume with the egress label, and the
+  sweep's labels, whose deadline label has passed, or whose computer is gone and that is older than a create could
+  take (its ready wait and two minutes), removed by what the label found. The volume carries the computer's deadline
+  and the spec's labels for this. Until then the proxy stops forwarding at its deadline.
+- **Read-back.** `network`, `list` and `attach` read the allowlist from Docker: network mode none, the egress volume
+  read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
+  deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
+  IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
+  argv holds the list and refuses every one of the Docker host's own addresses the provider requires now (more is
+  fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }`. **A crashed proxy** is not
+  restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
+  it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
 
 ### Mounting the run's folder
 
@@ -595,7 +675,7 @@ From `docker inspect`, what create asks for:
 
 | Field | Must be |
 | --- | --- |
-| network (`HostConfig.NetworkMode`, `NetworkSettings.Networks`) | `none` or `open` as declared, read back as `network(ref)` does |
+| network (`HostConfig.NetworkMode`, `NetworkSettings.Networks`, and for an allowlist the egress volume, init's relay and the proxy container) | `none`, `open` or the allowlist as declared, read back as `network(ref)` does |
 | `HostConfig.CapDrop`, `CapAdd`, `Privileged` | `["ALL"]`, nothing added, false |
 | `HostConfig.SecurityOpt` | exactly `["no-new-privileges"]`: `seccomp=unconfined`, `apparmor=unconfined`, `label=disable`, `systempaths=unconfined` or any other option is drift |
 | `HostConfig.IpcMode`, `CgroupnsMode` | `private`, `private` |
@@ -605,11 +685,11 @@ From `docker inspect`, what create asks for:
 | `HostConfig.Memory`, `MemorySwap` | both `memoryMb` MiB, or 4096 MiB |
 | `HostConfig.CpuPeriod`, `CpuQuota` | 100000, and `cpus` (or 2) times 100000 |
 | `HostConfig.Tmpfs` | exactly `/work` and `/run/agentrun`, each with that uid and gid, `mode=0700`, `nosuid` and `nodev` (`/work` `exec` and `size=` half of `memoryMb` in MiB, `/run/agentrun` `noexec` and `size=1m`); options in any order; a missing or other size, or another tmpfs, is drift |
-| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`); when the spec has a `mount`, then the run's folder bound read-write at `/workspace` from exactly that path (propagation `rprivate`); and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
+| `HostConfig.Mounts`, `Mounts` | the provider's daemon binary bound read-only at `/opt/agentrun/computerd` (propagation `rprivate`); when the spec has a `mount`, then the run's folder bound read-write at `/workspace` from exactly that path (propagation `rprivate`); for an allowlist, then the computer's own egress volume read-only at `/opt/agentrun/egress`; and no other mount of any type: an image's `VOLUME` is drift too, so an image that declares one is refused |
 | `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
 | `Config.Image`, `WorkingDir` | the spec's image; its `workdir`, or `/work` |
 | `Config.Env` | one `HOME`, `HOME=/work`; the image's other variables are its own |
-| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]` |
+| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]`, and for an allowlist `"--egress", "/opt/agentrun/egress/egress.sock"` after it |
 | `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for; others are the image's |
 | `AppArmorProfile` | `docker-default` when the host has AppArmor, else empty |
 | `ProcessLabel` | of type `container_t` when the host has SELinux, else empty |
@@ -1539,7 +1619,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 9 optional cases skipped, not declared · full 8/14 · network:allow mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 optional cases skipped, not declared · full 10/14 · mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is

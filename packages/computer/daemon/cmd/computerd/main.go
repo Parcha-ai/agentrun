@@ -1,6 +1,6 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--egress <socket>]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
@@ -8,7 +8,9 @@
 //	                    With --user, init starts as root, gives HOME and the socket's directory to uid:gid and becomes
 //	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
 //	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
-//	                    capability in any set and no_new_privs set, or refuses to start
+//	                    capability in any set and no_new_privs set, or refuses to start.
+//	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
+//	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--connect <host:port>[/udp]]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, the addresses that
@@ -31,11 +33,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
@@ -68,7 +72,11 @@ func main() {
 			logger.Printf("init refuses to start: %v", dropped)
 			os.Exit(1)
 		}
-		os.Exit(daemon.Init(version, daemon.SocketPath(), opts.deadline, logger))
+		var relay daemon.Egress
+		if opts.egress != "" {
+			relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
+		}
+		os.Exit(daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, logger))
 	case "probe":
 		if diagnose, ok := diagnoseOf(logger, os.Args[2:]); !ok {
 			os.Exit(2)
@@ -95,7 +103,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] | stdio | probe [--connect <host:port>[/udp]]... | probe --diagnose | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--egress <socket>] | stdio | probe [--connect <host:port>[/udp]]... | probe --diagnose | version")
 	os.Exit(2)
 }
 
@@ -105,24 +113,30 @@ type initOptions struct {
 	// deadline is the computer's end, which deadline.extend moves up to --max-deadline, and not at all without it.
 	deadline *lifetime.Deadline
 	user     *account
+	// egress is the egress proxy's socket init relays to; empty is none.
+	egress string
 }
 
-const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to) and --user <uid:gid> may follow, each once"
+const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid> and --egress <socket> may follow, each once"
 const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
+const egressWords = "--egress takes the egress proxy's socket, one absolute path, given once"
 
-// initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>` and `--user <uid:gid>`, in any order, each at
-// most once. With no deadline, a time that is not RFC 3339, or a maximum before the deadline, it says why and init refuses
-// to start, so no computer lives forever or past what its provider allows.
+// initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>` and `--egress <socket>`,
+// in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum before the deadline, it
+// says why and init refuses to start, so no computer lives forever or past what its provider allows.
 func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	var opts initOptions
 	var deadline, most time.Time
-	var sawDeadline, sawMost, sawUser bool
+	var sawDeadline, sawMost, sawUser, sawEgress bool
 	for i := 0; i < len(args); i += 2 {
 		flag := args[i]
 		if i+1 >= len(args) {
-			if flag == "--user" {
+			switch flag {
+			case "--user":
 				logger.Printf("init: %s", userWords)
-			} else {
+			case "--egress":
+				logger.Printf("init: %s", egressWords)
+			default:
 				logger.Printf("init: %s", deadlineWords)
 			}
 			return opts, false
@@ -155,6 +169,16 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 			opts.user = &user
 		case flag == "--user":
 			logger.Printf("init: %s, given once", userWords)
+			return opts, false
+		case flag == "--egress" && !sawEgress:
+			sawEgress = true
+			if !filepath.IsAbs(value) {
+				logger.Printf("init: %s, not %q", egressWords, value)
+				return opts, false
+			}
+			opts.egress = value
+		case flag == "--egress":
+			logger.Printf("init: %s", egressWords)
 			return opts, false
 		default:
 			logger.Printf("init: %s; %q is none of them", deadlineWords, flag)

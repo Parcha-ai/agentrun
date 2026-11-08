@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after } from "node:test";
 import test from "node:test";
 import * as computer from "../dist/index.js";
-import { container, fakeDocker, idOf, report, valuesOf } from "./fake-docker.mjs";
+import { container, fakeDocker, idOf, removal, report, valuesOf } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const TOKEN = "archil-token-fedcba9876543210";
@@ -189,7 +189,7 @@ test("create() deletes a computer whose bind is not what was asked: another fold
 		assert.equal(result.error.code, "refused");
 		assert.match(result.error.message, words);
 		assert.match(result.error.message, /HostConfig\.Mounts/);
-		assert.equal(calls().at(-1)[0], "rm");
+		assert.deepEqual(calls().slice(-3), removal(valuesOf(runOf(calls()), "--name")[0]));
 		assert.deepEqual(names(), []);
 	}
 });
