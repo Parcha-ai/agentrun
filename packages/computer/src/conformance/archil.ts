@@ -140,8 +140,14 @@ export async function archilRunFolder(options: ArchilRunFolderOptions): Promise<
 		touched.add(at);
 		return at;
 	};
+	// The folder is there before any computer mounts it: its own marker (a key ending in /, a folder on the disk), removed
+	// last at close.
+	const marker = `${folder}/`;
+	await objects.putObject(marker, new Uint8Array());
+	touched.add(marker);
 	return {
 		mount: { kind: "archil", disk, region, folder, token },
+		run,
 		read: async (path) => {
 			const at = key(path);
 			try {
@@ -155,7 +161,8 @@ export async function archilRunFolder(options: ArchilRunFolderOptions): Promise<
 			await objects.putObject(key(path), data);
 		},
 		close: async () => {
-			for (const at of touched) await objects.deleteObject(at).catch(() => {});
+			// Deepest first, so a folder's marker goes after what is in it.
+			for (const at of [...touched].sort((a, b) => b.length - a.length)) await objects.deleteObject(at).catch(() => {});
 		},
 	};
 }

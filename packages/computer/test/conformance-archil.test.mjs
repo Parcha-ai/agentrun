@@ -87,7 +87,10 @@ test("archilRunFolder with no object API given: the SDK's Archil client, every s
 	const folder = await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, apiKey: KEY, s3BaseUrl: S3, Archil });
 	assert.deepEqual(made, [{ options: { apiKey: KEY, region: REGION, s3BaseUrl: S3 }, got: [DISK] }]);
 	await folder.write("b.txt", Buffer.from("y"));
-	assert.deepEqual(objects.calls, [["putObject", `${folder.mount.folder}/b.txt`]]);
+	assert.deepEqual(objects.calls, [
+		["putObject", `${folder.mount.folder}/`],
+		["putObject", `${folder.mount.folder}/b.txt`],
+	]);
 	await assert.rejects(archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, Archil }), (error) => /apiKey/.test(error.message) && !error.message.includes(TOKEN));
 	const failing = class {
 		constructor() {

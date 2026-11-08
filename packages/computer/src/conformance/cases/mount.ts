@@ -35,9 +35,14 @@ function tokenless(t: CaseContext, asked: MountSpec, read: unknown, what: string
 	if (asked.kind === "archil") t.assert(!JSON.stringify(read ?? null).includes(asked.token), `${what} holds the Archil token`);
 }
 
-/** The labels of a computer that mounts `folder` under `epoch`: the run's (the folder's own run when it has one). */
+/**
+ * The labels of a computer that mounts `folder` under `epoch`, for the folder's own run: the run it says, else the
+ * <run> of an Archil folder agents/<agent>/runs/<run>/work (every remote provider refuses a folder of another run than
+ * the agentrun.run label), else a fresh one.
+ */
 function labelsFor(t: CaseContext, folder: RunFolder, epoch: number, name: string): Record<string, string> {
-	return { ...t.runLabels, ...claimLabels(folder.run ?? `mount-${randomBytes(6).toString("hex")}`, epoch), [CASE_LABEL]: name };
+	const ofFolder = folder.mount.kind === "archil" ? /^agents\/[^/]+\/runs\/([^/]+)\/work$/.exec(folder.mount.folder)?.[1] : undefined;
+	return { ...t.runLabels, ...claimLabels(folder.run ?? ofFolder ?? `mount-${randomBytes(6).toString("hex")}`, epoch), [CASE_LABEL]: name };
 }
 
 /** A computer made with the folder's mount under `epoch`, after check() takes it; and its read-back, checked. */
@@ -83,8 +88,18 @@ const runFolder = (kind: MountKind): Case =>
 			const before = `before-${nonce}.txt`;
 			const beforeText = `written outside before the computer ${nonce}\n`;
 			await folder.write(before, Buffer.from(beforeText));
+			// A folder made from outside too (a key ending in /), so the computer shows what owner and mode it was given.
+			const madeDir = `dir-${nonce}`;
+			if (kind === "archil") await folder.write(`${madeDir}/`, new Uint8Array());
 			const { ref } = await mounted(t, folder, EPOCH, `mount-${kind}`);
 			const connected = await t.connect(ref);
+			if (kind === "archil") {
+				// Recorded, not asserted: the owner and mode a tool (agentrun-tool, 2510) writes against.
+				for (const [what, path] of [["a file", before], ["a folder", madeDir]]) {
+					const stat = await connected.client.call("files.stat", { path: `${WORKSPACE}/${path}` });
+					t.observe(`${what} the file API made, seen at ${WORKSPACE}: ${stat.ok ? `uid ${stat.value.uid}, gid ${stat.value.gid}, mode ${(stat.value.mode & 0o7777).toString(8)}` : `not stated (${stat.error.code}: ${stat.error.message})`}`);
+				}
+			}
 			const read = await t.call("files.read", { path: `${WORKSPACE}/${before}` }, connected.client);
 			t.equal(decode(read.data), beforeText, `files.read of ${WORKSPACE}/${before}, a file written outside before the computer`);
 

@@ -365,7 +365,8 @@ export function fakeRunFolders() {
 				return undefined;
 			}
 		},
-		write: async (path, data) => writeFileSync(join(dir, path), data),
+		// A path ending in / is a folder, as the disk's object API makes one.
+		write: async (path, data) => (path.endsWith("/") ? mkdirSync(join(dir, path), { recursive: true }) : writeFileSync(join(dir, path), data)),
 		close: async () => {
 			closed.push(mount);
 			rmSync(dir, { recursive: true, force: true });
