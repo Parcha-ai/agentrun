@@ -25,11 +25,22 @@ the evals](#running-the-evals)).
 
 None needs a sandbox: each reads and writes through web tools and MCP servers the owner saves.
 
-**Writes ask.** Every package reads content someone else wrote (web pages, pull requests, form submissions), and the
-tool gate cannot pin a write's recipient or record. So no package puts a write or a send in its `allow`: each asks
-until the owner grants it at apply (`grants`), and then it is the owner's choice, made on the screen that lists it. A
-package's `allow` holds only the reads its unattended runs need. A test classifies every MCP tool a shipped package
-lists as a read or a write, and refuses a write at `allow`.
+**Writes ask.** Every package reads content someone else wrote (web pages, pull requests, form submissions). So no
+package puts a write or a send in its `allow`: each asks until the owner grants it at apply (`grants`), and then it is
+the owner's choice, made on the screen that lists it. A package's `allow` holds only the reads its unattended runs
+need. A test classifies every MCP tool a shipped package lists as a read or a write, and refuses a write at `allow`.
+
+**A pinned send goes only where the owner set.** A package may pin a send's destination to a parameter (`pin` in its
+`mcp` entry): apply writes it into the agent's tool settings, and the server's tool gate refuses any call of that tool
+whose destination is not the pinned one, before it is sent or asked about, even once the owner granted the tool. So
+a page that talks the agent into posting elsewhere gets a refusal, never a post. A pin fixes where a send goes, not
+what it says, and it does not reach a write to a record (a CRM contact): that one is held by its skill's own check.
+`market-monitor` pins `slack_send_message`'s `channel_id` and `GMAIL_SEND_EMAIL`'s `recipient_email` to its `channel`
+parameter (and keeps `cc`, `bcc` and `extra_recipients` out), and `inbound-lead` pins `slack_send_message`'s
+`channel_id` to its `slack_channel`. `market-monitor`'s `channel` takes a Slack channel id or an email address: each
+pin applies only to its own tool, so a channel id leaves no address `GMAIL_SEND_EMAIL` can send to and an address no
+channel Slack can post in, and its skill sends with the tool that matches the destination's kind. A send whose
+destination parameter apply was not given is set to deny, so it never runs.
 
 **Scope the credentials.** An allowed read reaches whatever the saved credential reaches. Save `github` with a
 fine-grained token for the one repository the agent works on, `hubspot` with the scopes its tools need, and so on: once
@@ -153,9 +164,9 @@ The report gives each run's cost and each `llm` grade's, as their run records sa
 | `model` | `{tier: fast \| balanced \| strong, prefer?: "provider/model-id"}`. Apply uses `prefer` when this server runs it on the chosen harness (it has the provider's key, or a gateway); otherwise the server's model for the tier: `AGENT_MODEL_FAST`, `AGENT_MODEL` (balanced) or `AGENT_MODEL_STRONG`, each else the default of a model key the server holds. `overrides.model` in the apply wins over both. Absent: the server's default. |
 | `effort` | The thinking level: `low`, `medium`, `high`, `xhigh` or `max`. |
 | `tools` | The tools the agent is granted, never an MCP tool (`mcp` grants those). Absent: those the server gives a new agent (its box's shell, where it has a box). |
-| `mcp` | `[{server, tools, required?, allow?}]`: MCP servers by the name a server saves them under (Settings → MCP servers), the tools of each the agent uses (each one tool by its name, `A-Z a-z 0-9 _ . -`; never `*`), and `allow`, those of its tools the package asks the owner to allow (`GET /v2/templates` shows each tool with `asks: allow` or `ask`, for a consent screen). Where the server has one saved, apply grants `mcp:<server>/<tool>` for each, beside the other tools, at the owner's own setting: a package never sets a permission. Only the apply's `grants`, the owner's answer, are set to `allow`. Where it has none, apply skips it with a warning (`mcp.<server>`), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. |
+| `mcp` | `[{server, tools, required?, allow?, pin?}]`: MCP servers by the name a server saves them under (Settings → MCP servers), the tools of each the agent uses (each one tool by its name, `A-Z a-z 0-9 _ . -`; never `*`), and `allow`, those of its tools the package asks the owner to allow (`GET /v2/templates` shows each tool with `asks: allow` or `ask`, for a consent screen). Where the server has one saved, apply grants `mcp:<server>/<tool>` for each, beside the other tools, at the owner's own setting: a package never sets a permission. Only the apply's `grants`, the owner's answer, are set to `allow`. Where it has none, apply skips it with a warning (`mcp.<server>`), or, when `required` is true, refuses with `409 agent_not_runnable` and makes nothing. `pin`, optional: `{<tool>: {<argument>: <value>}}`, for tools of the entry, 1 to 8 top-level arguments each, every value a scalar (text, which may be or hold `${parameters.<name>}`, a number, `true`/`false`, or `null` for an argument that must be left out). Apply writes it, filled, as the tool's `pin` in the agent's `tool_settings` (text that is one placeholder alone takes the parameter's value and type), whatever the tool's permission, and the gate refuses any call not as pinned. A pin whose parameter apply is not given sets the tool to `deny` instead, granted or not, with a `pins.mcp:<server>/<tool>` warning. `GET /v2/templates` shows each tool's `pin`, unfilled. |
 | `computer` | `default` only, for now: the agent runs where this server puts a new one. |
-| `parameters` | By name: `{type: string \| number \| integer \| boolean, required?, pattern? (strings), default?, description}`. Apply takes them in `parameters`, and one left out takes its `default`. `display_name`, the body, a trigger's `target.input` and a schedule's `cron` and `timezone` name them as `${parameters.<name>}`, nowhere else. A parameter a schedule uses has a default, and the package's own schedule is checked with it; apply checks every trigger with the parameters given before it makes anything, so a bad cron or zone is a `422` under `triggers.<i>`. |
+| `parameters` | By name: `{type: string \| number \| integer \| boolean, required?, pattern? (strings), default?, description}`. Apply takes them in `parameters`, and one left out takes its `default`. `display_name`, the body, a trigger's `target.input`, a schedule's `cron` and `timezone` and an `mcp` entry's `pin` values name them as `${parameters.<name>}`, nowhere else. A parameter a schedule uses has a default, and the package's own schedule is checked with it; apply checks every trigger with the parameters given before it makes anything, so a bad cron or zone is a `422` under `triggers.<i>`. |
 | `secrets` | Variable names (never values) the server must hold: a model or tool key Settings saves (`OPENROUTER_API_KEY`, `PARALLEL_API_KEY`, ...), set where it starts or saved there. Any other name is refused: the server could neither save it nor hand it to a run. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
 | `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`). Required when the package has triggers. |
 | `learning` | `true` or `false`: whether the agent's runs learn. |
@@ -179,7 +190,8 @@ apply. A trigger's date is checked for its form only: one that has passed is ref
 2. The agent is made through `POST /v2/agents`' own function: named by `display_name` (else the package's name),
    described as the package, its MCP tools granted where their server is saved, each at the owner's setting (a
    third-party tool asks by default) and those in `grants` set to `allow`, never one the owner denies on this server
-   (it stays denied, with a `grants.<tool>` warning), its body held to `POST /v2/agents`' 1 MiB limit (`413`), its instructions
+   (it stays denied, with a `grants.<tool>` warning), each pinned tool with its pin filled (or set to `deny`, with a
+   `pins.<tool>` warning, when its parameter was not given), its body held to `POST /v2/agents`' 1 MiB limit (`413`), its instructions
    the body with the parameters filled in, its skills and rules as its skill files, its harness and model chosen as
    above, `thinking` from `effort`, `max_cost_usd` from `budget`.
 3. Each trigger is made on the agent through `POST /v2/triggers`' own function. One that still fails (the store, say)

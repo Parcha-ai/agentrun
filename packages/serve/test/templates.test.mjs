@@ -55,7 +55,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
   assert.match(review.skills["review/SKILL.md"], /## With GitHub MCP tools/);
   assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], [], []]);
-  assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", ["read"], [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS }]]);
+  assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", ["read"], [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS, pin: {} }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
 
@@ -112,7 +112,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(scheduled("${parameters.cron}", "  cron: { type: string, default: 7, description: the schedule }"), /parameters\.cron\.default is a string/);
   assert.deepEqual(await problemsOf(t, scheduled("${parameters.cron}", '  cron: { type: string, default: "0 8 * * 1", description: the schedule }')), [], "a schedule from parameters with good defaults reads");
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "${parameters.repo}" }')(edit), /parameters\.repo is used in triggers\[0\]\.source\.cron, so it needs a default/);
-  await refused(({ edit }) => edit("learning: false", 'learning: false\ntriggers:\n  - name: "nightly ${parameters.repo}"\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run, input: { content: Go. } }'), /triggers\[0\]\.name holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions, a trigger's target\.input or a schedule's cron and timezone/);
+  await refused(({ edit }) => edit("learning: false", 'learning: false\ntriggers:\n  - name: "nightly ${parameters.repo}"\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run, input: { content: Go. } }'), /triggers\[0\]\.name holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, or an mcp pin's values/);
   await refused(({ edit }) => edit("tools: [read]", "tools: [read, bassh]"), /tools: bassh is not a tool this server binds/);
   await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "a\\b.md"), "x"), /skills\/review\/a\\b\.md: the skill path/);
   // An MCP tool is one tool by its name: `*`, the server's wildcard, is none; and a package asks allow only of its own.
@@ -326,8 +326,8 @@ test("the keyed-tool check above sees a tool that needs a key: a package grantin
 });
 
 test("no package lets its agent write or send unasked: each MCP tool a package lists is a known read or write, and no write is in its allow", () => {
-  // An agent that reads untrusted content (pages, PRs, payloads) never gets a write or send tool at allow: the gate
-  // cannot pin a recipient or a record, so a write asks until the owner grants it at apply. A tool new to a package is
+  // An agent that reads untrusted content (pages, PRs, payloads) never gets a write or send tool at allow: a pin fixes a
+  // send's destination, but not what it says, nor a write's record, so a write asks until the owner grants it at apply. A tool new to a package is
   // classified here before it ships.
   const WRITES = new Set(["github/pull_request_review_write", "github/add_comment_to_pending_review", "github/issue_write", "hubspot/manage_crm_objects", "slack/slack_send_message", "gmail/GMAIL_SEND_EMAIL"]);
   const READS = new Set([
@@ -426,4 +426,78 @@ test("a parameter is read from the caller's own fields: a required one named con
   const p = readPackage(dir);
   assert.throws(() => applyBodyOf(p, { parameters: {} }), (error) => error.extra?.fields?.some((f) => f.field === "parameters.constructor" && f.reason === "missing"));
   assert.deepEqual(applyBodyOf(p, { parameters: { constructor: "Ada" } }).parameters, { constructor: "Ada" });
+});
+
+/** The problems readPackage finds in a package of one Slack send, whose `mcp` entry is `entry` (YAML). */
+function pinProblems(t, entry) {
+  return scratch(t).then((root) => {
+    const dir = join(root, "sender");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "agent.md"), `---\nname: sender\nversion: 1.0.0\ndescription: Sends one message.\nparameters:\n  channel: { type: string, description: the channel's id }\n  count: { type: integer, description: how many }\nmcp:\n  - server: slack\n    tools: [slack_send_message, slack_search]\n${entry}\n---\nSend to \${parameters.channel}.\n`);
+    try {
+      return { p: readPackage(dir), problems: [] };
+    } catch (error) {
+      assert.ok(error instanceof PackageError, error.stack);
+      return { problems: error.problems };
+    }
+  });
+}
+
+test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 arguments, each a scalar, a placeholder only a declared parameter", async (t) => {
+  const { p } = await pinProblems(t, '    pin: { slack_send_message: { channel_id: "${parameters.channel}", limit: "${parameters.count}", unfurl_links: false, thread_ts: null } }');
+  assert.deepEqual(p.mcp[0].pin, { slack_send_message: { channel_id: "${parameters.channel}", limit: "${parameters.count}", unfurl_links: false, thread_ts: null } });
+  const refused = async (entry, pattern) => {
+    const { problems } = await pinProblems(t, entry);
+    assert.ok(problems.some((problem) => pattern.test(problem)), `${pattern}: ${JSON.stringify(problems)}`);
+  };
+  await refused('    pin: { slack_delete_message: { channel_id: "C0123" } }', /mcp\[0\]\.pin\.slack_delete_message: slack_delete_message is not one of this entry's tools/);
+  await refused('    pin: { slack_send_message: { channel_id: ["C0123", "C0456"] } }', /mcp\[0\]\.pin\.slack_send_message\.channel_id is a scalar/);
+  await refused('    pin: { slack_send_message: { channel_id: { id: "C0123" } } }', /mcp\[0\]\.pin\.slack_send_message\.channel_id is a scalar/);
+  await refused('    pin: { slack_send_message: { channel_id: "${parameters.chanel}" } }', /\$\{parameters\.chanel\} names no parameter/);
+  await refused("    pin: { slack_send_message: {} }", /mcp\[0\]\.pin\.slack_send_message is an object of 1 to 8/);
+  await refused(`    pin: { slack_send_message: { ${Array.from({ length: 9 }, (_, i) => `a${i}: x`).join(", ")} } }`, /mcp\[0\]\.pin\.slack_send_message is an object of 1 to 8/);
+  await refused("    pin: [slack_send_message]", /mcp\[0\]\.pin is \{<tool>: \{<argument>:/);
+  // A placeholder is still refused anywhere else in a trigger, and the refusal names a pin as a place one goes.
+  const { problems } = await pinProblems(t, "    pin: { slack_send_message: { channel_id: x } }\ntriggers:\n  - name: hook\n    source: { kind: webhook, name: \"${parameters.channel}\" }\n    target: { kind: start_run }\nbudget: { per_run_usd: 1 }");
+  assert.ok(problems.some((problem) => /a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, or an mcp pin's values/.test(problem)), JSON.stringify(problems));
+});
+
+test("market-monitor's sends are pinned to its channel: the consent screen shows each pin, apply writes it filled, and with no channel the sends are denied with a warning", async (t) => {
+  const { api } = await serve(t);
+  const slack = await startFakeMcp({ name: "slack" });
+  t.after(() => slack.close());
+  slack.tools.slack_send_message = { description: "Slack's send.", input: { type: "object", properties: { channel_id: { type: "string" }, message: { type: "string" } }, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
+  assert.equal((await api("PUT", "/settings/mcp-servers/slack", { url: slack.url, auth: { type: "none" } })).status, 200);
+  const SEND = "mcp:slack/slack_send_message";
+
+  const listed = (await api("GET", "/templates")).body.templates.find((x) => x.name === "market-monitor");
+  assert.deepEqual(listed.mcp.map((need) => need.tools), [
+    [{ name: "slack_send_message", tool: SEND, asks: "ask", pin: { channel_id: "${parameters.channel}" } }],
+    [{ name: "GMAIL_SEND_EMAIL", tool: "mcp:gmail/GMAIL_SEND_EMAIL", asks: "ask", pin: { recipient_email: "${parameters.channel}", cc: null, bcc: null, extra_recipients: null } }],
+  ]);
+  const inbound = (await api("GET", "/templates")).body.templates.find((x) => x.name === "inbound-lead");
+  assert.deepEqual(inbound.mcp.find((need) => need.server === "slack").tools, [{ name: "slack_send_message", tool: SEND, asks: "ask", pin: { channel_id: "${parameters.slack_channel}" } }]);
+  assert.equal(inbound.mcp.find((need) => need.server === "hubspot").tools.find((x) => x.name === "manage_crm_objects").pin, undefined, "its CRM write stays unpinned: the SOP's email match proves the record");
+
+  const settingsOf = async (applied) => (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.tool_settings;
+  // A channel given: the pin, filled, whatever the permission (here the owner's default, ask), and with the grant, allow.
+  const given = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" } });
+  assert.equal(given.status, 201, JSON.stringify(given.body));
+  assert.deepEqual(await settingsOf(given), { [SEND]: { pin: { channel_id: "C0MKTINTEL" } } });
+  assert.deepEqual(given.body.warnings.filter((w) => w.field.startsWith("pins.")), []);
+  assert.equal((await api("GET", `/agents/${given.body.agent_id}`)).body.tools.find((x) => x.name === SEND).permission, "ask");
+  const granted = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" }, grants: [SEND] });
+  assert.equal(granted.status, 201, JSON.stringify(granted.body));
+  assert.deepEqual(await settingsOf(granted), { [SEND]: { permission: "allow", pin: { channel_id: "C0MKTINTEL" } } });
+
+  // No channel: the send has no destination, so it can't run at all, granted or not, and the answer says so.
+  const none = await api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)" }, grants: [SEND] });
+  assert.equal(none.status, 201, JSON.stringify(none.body));
+  assert.deepEqual(await settingsOf(none), { [SEND]: { permission: "deny" } });
+  assert.equal((await api("GET", `/agents/${none.body.agent_id}`)).body.tools.find((x) => x.name === SEND).permission, "deny");
+  const warned = none.body.warnings.filter((w) => w.field.startsWith("pins."));
+  assert.deepEqual(warned.map((w) => [w.field, w.reason]), [[`pins.${SEND}`, "not_set_up_here"]]);
+  assert.match(warned[0].message, /fixed by the channel parameter, which was not given, so the agent was made with mcp:slack\/slack_send_message set to deny/);
+  // Gmail is not saved here: skipped, so no pin of it is written.
+  assert.ok(none.body.warnings.some((w) => w.field === "mcp.gmail"));
 });
