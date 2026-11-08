@@ -14,4 +14,5 @@ export { type Available, type Place, type Registry, type Resolved, resolvePlace 
 export { localWorkspace } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
-export { ARCHIL_MAX_EXEC_S, type Hands, type HandsExecResult, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
+export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
+export { type RunComputer, runTools, type RunTools } from "./run-tools.js";

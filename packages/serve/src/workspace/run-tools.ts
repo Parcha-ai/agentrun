@@ -14,10 +14,12 @@
 // The computer's check: `check` is the mount check attach takes (attach.ts MountCheck), which the caller builds with
 // the claim's epoch bound in, so a read-back under another epoch is refused.
 //
-// The registry itself joins here (runTools) once the kernel's registry is in the base; until then runHands gives what it
-// binds.
+// runTools is the one call: runHands binds the run's hands and executors, the kernel's createRegistry makes the run's
+// registry over them, and bindTools gives its tools as the kernel's HostTool, through the run's gate. The run's end
+// (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
+import { createRegistry, endBackground, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { Park, RunGate } from "../tool-gate.js";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
@@ -69,7 +71,8 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
   return {
     workspace: attached,
-    hands: handsOf(attached, { maxExecS, env }),
+    // The computer's processes, for the five background tools: the attached Workspace's own; none with no computer.
+    hands: handsOf(attached, { maxExecS, env, ...(computer === undefined ? {} : { processes: attached.process }) }),
     shell: computer === undefined ? "local" : "computer",
     maxExecS,
     cwd,
@@ -136,4 +139,41 @@ export function bindTools(run: RunHands, registry: RunRegistry, names: readonly 
       },
     }];
   });
+}
+
+/** A run's tools: what E2's harness start calls runTools for. */
+export type RunTools = {
+  /** The run's Workspace: attached to the computer when there is one. */
+  readonly workspace: Workspace;
+  /** The run's registry: the kernel's definitions, words and limits, over this run's hands and executors. */
+  readonly registry: Registry;
+  readonly hands: Hands;
+  /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
+   *  run's gate (`gated`; none for the gate's own run of an approved call), each answer kept in `results` (bindTools). */
+  hostTools(names: readonly string[], gated?: { readonly gate: RunGate; readonly park: Park }, results?: ToolResults): HostTool[];
+  /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
+   *  no computer), then bash's full outputs and TMPDIR swept. */
+  end(): Promise<void>;
+};
+
+/**
+ * A run's tools on `workspace`, attached to `computer` when there is one. `computer.check` is the mount check attach
+ * runs (attach.ts MountCheck: `{ readBackOf, epoch }`), which the caller builds with the claim's epoch, so a read-back
+ * under another epoch is refused. `options.mode`: 1, or 2 (the run's folder on Archil); `options.aliases`: other absolute
+ * names of the run's folder a tool call may give (the harness's scratch folder). The tools' definitions, words and
+ * limits come only from the kernel's registry; this binds its executors to the run.
+ */
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[] }): Promise<RunTools> {
+  const run = await runHands(workspace, computer, options);
+  const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, executors: run.executors });
+  return {
+    workspace: run.workspace,
+    registry,
+    hands: run.hands,
+    hostTools: (names, gated, results) => bindTools(run, registry, names, { ...(gated ? { gated } : {}), ...(results ? { results } : {}) }),
+    async end() {
+      await endBackground(run.hands);
+      await run.sweep();
+    },
+  };
 }

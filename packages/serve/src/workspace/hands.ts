@@ -1,27 +1,21 @@
-// The run's hands, as the kernel's tool registry reaches them, over the run's Workspace: what a host tool does with the
-// run's files and shell, wherever the run's folder is. The registry's types are structural here until it lands where
-// serve builds against it; its Hands (packages/run-adapters kernel/registry/hands.ts) is this shape.
+// The run's hands, as the kernel's tool registry reaches them (run-adapters kernel/registry Hands), over the run's
+// Workspace: what a host tool does with the run's files, its shell and, in a computer, its processes, wherever the run's
+// folder is.
 //
 // The shell: `bash -c <command>` (sh where there is no bash), in the run's folder, stdin at its end, with the run's
 // fixed environment (shellEnv) and nothing of this process's: no key, no token, no variable of the server's reaches a
 // command. The output goes to onOutput as it comes, decoded per stream; the port keeps none of it.
+//
+// The processes: in a computer, the attached Workspace's own (attach.ts, computerd's process calls with paths taken in
+// the run's folder), as the kernel's narrow port (its Processes: start, read, write, signal, list), which the five
+// background tools run on. With no computer there are none, and the registry refuses those tools in words.
 import { StringDecoder } from "node:string_decoder";
+import type { Hands, ProcessInfo, Processes as KernelProcesses } from "@parcha/agentrun-kernel/kernel";
+import type { Result } from "@parcha/agentrun-computer";
+import type { Processes } from "./attach.js";
 import { type Stat, type Workspace, WorkspaceError } from "./workspace.js";
 
-/** How one exec ended: its exit code, or the signal that ended it (exitCode null), and whether its timeout did. */
-export type HandsExecResult = { readonly exitCode: number | null; readonly signal: string | null; readonly timedOut: boolean };
-
-/** The kernel registry's Hands. */
-export type Hands = {
-  readonly maxExecS: number;
-  stat(path: string): Promise<{ kind: "file" | "dir" | "link"; size: number; mtimeMs: number } | undefined>;
-  read(path: string, range?: { offset?: number; length?: number }): Promise<Uint8Array>;
-  write(path: string, bytes: Uint8Array): Promise<void>;
-  append(path: string, bytes: Uint8Array): Promise<void>;
-  list(path: string): Promise<readonly { name: string; kind: "file" | "dir" | "link"; size: number }[]>;
-  grep(pattern: string, path: string, options?: { glob?: string; ignoreCase?: boolean; maxMatches?: number }): Promise<string>;
-  exec(command: string, options: { timeoutS: number; onOutput?: (chunk: { stream: "stdout" | "stderr"; data: string }) => void }, signal?: AbortSignal): Promise<HandsExecResult>;
-};
+export type { Hands } from "@parcha/agentrun-kernel/kernel";
 
 /** The longest one exec runs, in seconds: on this machine or a computer; on Archil's serverless exec (its 5 minutes,
  *  less a margin). */
@@ -43,10 +37,55 @@ export function shellEnv(options: { readonly home?: string; readonly tmpdir?: st
 
 const kindOf = (stat: Stat): "file" | "dir" | "link" => (stat.kind === "dir" ? "dir" : stat.kind === "link" ? "link" : "file");
 
-/** The run's hands over `workspace`: its files, and its shell with `env`, for at most `maxExecS` a command. */
-export function handsOf(workspace: Workspace, options: { readonly maxExecS: number; readonly env: Readonly<Record<string, string>> }): Hands {
+/** A computer call's value, or its refusal thrown as the kernel's port says: an error with the computer's `code` and words. */
+async function valueOf<T>(call: Promise<Result<T>>): Promise<T> {
+  const result = await call;
+  if (result.ok) return result.value;
+  throw Object.assign(new Error(result.error.message), { code: result.error.code });
+}
+
+/** The attached Workspace's processes as the kernel's port: only the fields the five background tools use. Each start's
+ *  output goes to its log (the "log" stream is what a read reads); a listing is read to its last page. */
+export function processesOf(processes: Processes): KernelProcesses {
+  return {
+    async start(spec) {
+      const started = await valueOf(processes.start({
+        argv: [...spec.argv], cwd: spec.cwd, log: spec.log, waitGroup: spec.waitGroup, orphans: spec.orphans,
+        ...(spec.stdin ? { stdin: true } : {}), ...(spec.pty ? { pty: { cols: spec.pty.cols, rows: spec.pty.rows } } : {}),
+      }));
+      return { handle: started.id, pid: started.pid };
+    },
+    async read(handle, range) {
+      const page = await valueOf(processes.read({ id: handle, stream: "log", offset: range.offset, maxBytes: range.maxBytes }));
+      return { data: Buffer.from(page.data, "base64"), size: page.size, capped: page.capped === true };
+    },
+    async write(handle, input) {
+      await valueOf(processes.write({ id: handle, ...(input.data ? { data: Buffer.from(input.data).toString("base64") } : {}), ...(input.close ? { close: true } : {}) }));
+    },
+    async signal(handle, name) {
+      const sent = await valueOf(processes.signal({ id: handle, signal: name }));
+      return sent.note === undefined ? {} : { note: sent.note };
+    },
+    async list() {
+      const out: ProcessInfo[] = [];
+      for (let from = 0; ;) {
+        const page = await valueOf(processes.list({ from }));
+        for (const one of page.processes) {
+          out.push({ handle: one.id, argv: one.argv, running: one.running, exitCode: one.exitCode, signal: one.signal, startedAt: one.startedAt, pty: one.pty });
+        }
+        if (!page.truncated || page.processes.length === 0) return out;
+        from = page.next;
+      }
+    },
+  };
+}
+
+/** The run's hands over `workspace`: its files, its shell with `env` for at most `maxExecS` a command, and the
+ *  computer's processes when it has one (`processes`, the attached Workspace's). */
+export function handsOf(workspace: Workspace, options: { readonly maxExecS: number; readonly env: Readonly<Record<string, string>>; readonly processes?: Processes }): Hands {
   return {
     maxExecS: options.maxExecS,
+    ...(options.processes ? { processes: processesOf(options.processes) } : {}),
     async stat(path) {
       const stat = await workspace.stat(path);
       return stat === undefined ? undefined : { kind: kindOf(stat), size: stat.size, mtimeMs: stat.mtimeMs };
