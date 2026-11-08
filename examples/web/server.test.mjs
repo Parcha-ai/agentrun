@@ -235,7 +235,7 @@ test("rows group the way the page draws them: rounds, pairs by call id, saved fi
     groups.map((g) => (g.type === "row" ? g.row.kind : `calls:${g.calls.map((c) => c.use.tool_name)}`)),
     ["user_message", "thinking", "text_block", "phase", "calls:run", "thinking", "calls:snapshot,screenshot", "text_block", "calls:request_sign_in", "waiting", "user_message", "thinking", "calls:write", "phase", "final_answer"],
   );
-  assert.deepEqual(rows.filter((r) => r.kind === "phase").map((r) => r.summary), ["Opened a live browser session", "Saved notes.md"]);
+  assert.deepEqual(rows.filter((r) => r.kind === "phase").map((r) => r.summary), ["A live browser session started", "Saved notes.md"]);
   assert.equal(rows.find((r) => r.summary === "Saved notes.md").path, "notes.md", "the page links a saved file by its path, not by its summary");
   const round = groups[6];
   assert.deepEqual(round.calls.map((c) => [c.use.tool_use_id, c.result.tool_status]), [["c2", "success"], ["c3", "success"]], "each call is paired with its result by id");

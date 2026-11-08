@@ -33,9 +33,9 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
-  // A capped agentic run that has not ended takes a raise here too, so a working one is raised before it pauses.
+  // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
   const cap = run.cost?.cap_usd;
-  const raisable = !!actions.onRaiseCap && run.kind === "agentic" && !view.final && typeof cap === "number";
+  const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number";
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   return (

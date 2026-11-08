@@ -186,6 +186,20 @@ test("checkActions: the whole batch first: its shape, its length, each key, each
 	assert.deepEqual(failure([{ type: "move", at: [1, "2"] }]), [0, "invalid"]);
 	assert.deepEqual(failure([{ type: "teleport" }]), [0, "invalid"]);
 	assert.deepEqual(failure([null]), [0, "invalid"]);
+	// A null is given (has is !== undefined), and is no number, point, list or name: the daemon's check pins the same.
+	assert.deepEqual(failure([{ type: "click", at: [1, 1] }, { type: "move", at: [null, 20] }]), [1, "invalid"]);
+	assert.deepEqual(failure([{ type: "move", at: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "click", at: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "wait", ms: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "hold", keys: ["shift"], ms: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "key", keys: ["a"], repeat: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "down", button: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "click", count: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "click", keys: null }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "drag", path: [[0, 0], [null, 1]] }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "scroll", dy: null, unit: "clicks" }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "scroll", dx: null, unit: "clicks" }]), [0, "invalid"]);
+	assert.deepEqual(failure([{ type: "type", text: null }]), [0, "invalid"]);
 	assert.deepEqual(failure([{ type: "wait", ms: 1 }, { type: "tap", at: [1, 1] }], ["input.pointer"]), [1, "unsupported"]);
 	assert.deepEqual(failure([{ type: "wait", ms: 1 }], []), [0, "unsupported"]);
 	assert.deepEqual(failure([{ type: "scroll", dy: 10, unit: "px" }], all, { pixelScroll: false }), [0, "unsupported"]);

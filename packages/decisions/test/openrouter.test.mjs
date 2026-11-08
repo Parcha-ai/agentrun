@@ -261,6 +261,15 @@ test("through judgeFromProviders, a node's timeoutMs that cuts the image check i
   assert.deepEqual(posts, [], 'nothing was sent');
 });
 
+test("priceOf: a Decisions model's price as the public catalog lists it, read with the catalog; null for a model it lists no price for", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  const seen = [];
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: (url, init) => (seen.push(new URL(String(url)).pathname), faux(url, init)) });
+  assert.deepEqual(await provider.priceOf("liquid/d1"), { promptUsd: 0.00000002, completionUsd: 0, requestUsd: 0, imageUsd: 0, maxCompletionTokens: null });
+  assert.equal(await provider.priceOf("acme/unlisted-decider"), null);
+  assert.deepEqual(seen, ["/api/v1/models"], "the catalog is read once");
+});
+
 test('url_citation annotations are the evidence, in the shape Parallel citations take', async () => {
   const annotations = [
     { type: 'url_citation', url_citation: { url: 'https://example.test/a', title: 'Page A', content: 'Line from A.' } },
@@ -283,4 +292,22 @@ test('a reported usage.cost above 0 is booked as reported; a cost of 0 is unpric
   const { fetch: zero } = fakeFetch([answered({ usage: { input_tokens: 10, output_tokens: 0, cost: 0 } })]);
   const free = await openrouterProvider({ ...settings, fetch: zero }).decide({ questions: QUESTIONS, state: {} }, ctx());
   assert.deepEqual([free.cost_usd, free.cost_basis], [null, 'unknown'], 'a $0 report (a model the catalog prices at 0) is no price');
+});
+
+test("priceOf: a catalog that cannot be read throws CatalogUnreadable, never a price or null, and is read again on the next call", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  let down = true;
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async (url, init) => (down && new URL(String(url)).pathname.endsWith("/v1/models") ? new Response("{}", { status: 503 }) : faux(url, init)) });
+  await assert.rejects(provider.priceOf("liquid/d1"), { name: "CatalogUnreadable", message: "OpenRouter's catalog could not be read" });
+  down = false;
+  assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers");
+});
+
+test("priceOf: a catalog that answers 200 with no list of models is one that cannot be read: CatalogUnreadable, never kept, and read again next time", async () => {
+  const { default: faux } = await import("../dist/testing/faux-system-one.js");
+  let broken = true;
+  const provider = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async (url, init) => (broken && new URL(String(url)).pathname.endsWith("/v1/models") ? new Response("{}", { status: 200, headers: { "content-type": "application/json" } }) : faux(url, init)) });
+  await assert.rejects(provider.priceOf("liquid/d1"), { name: "CatalogUnreadable" });
+  broken = false;
+  assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers a list");
 });
