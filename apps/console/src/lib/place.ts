@@ -1,11 +1,15 @@
+import type { components } from "./api.generated";
+
 /** Where an agent's runs execute (a definition's `place`, a run's `place`) and what this server offers
  *  (capabilities `places`). The server's words for a box it lacks (`reason`) are shown as it gives them. */
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: string };
 /** `state`: the server's word on an available box (`preparing`: its image is still coming; a sandbox run's first box
  *  waits for it), or `unavailable`. */
 export type BoxOffer = { id: string; available: boolean; reason?: string; state?: BoxState };
-const BOX_STATES = ["ready", "preparing", "unavailable"] as const;
-type BoxState = (typeof BOX_STATES)[number];
+/** A box's state as the server's document types it (capabilities' `places.boxes[].state`). */
+type BoxState = NonNullable<components["Capabilities"]["places"]>["boxes"][number]["state"];
+/** The same states at run time, to check an answer by: each must be one of the generated type's states. */
+const BOX_STATES = ["ready", "preparing", "unavailable"] as const satisfies readonly BoxState[];
 /** `defaultPlace`: the server's `default_place`, the place a NEW agent is given and where a revision that names no place
  *  runs (agentForm.ts defaultPlaceOf). */
 export type Places = { modes: string[]; boxes: BoxOffer[]; defaultPlace?: Place };
