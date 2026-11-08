@@ -69,7 +69,7 @@ for (const harness of ["pi", "claude-agent"]) {
     assert.ok(sent.includes(RULE), "the payload is in the run's input");
     assert.deepEqual(userEntries(data, fired.run_id), [{ text: sent, origin: { kind: "trigger", trigger_id: id, source: "webhook", owner: false } }], "the first input, as the model reads it, is the trigger's");
     assert.equal(rows.filter((r) => r.kind === "user_message").length, 0, `no "You:" row: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
-    assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => [r.kind, r.summary]), [["phase", `Trigger ${id}: Triage this event.`]]);
+    assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => [r.kind, r.summary]), [["phase", "Webhook on push: Triage this event."]]);
   });
 }
 
@@ -92,7 +92,7 @@ test("a webhook trigger's message to a run is the trigger's, owner false: the ru
   assert.match(entries[1].text, /^A new event came in\./, "the model reads the firing's text");
   assert.deepEqual(entries[1].origin, { kind: "trigger", trigger_id: id, source: "webhook", owner: false });
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Say hello."]);
-  assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => r.summary), [`Trigger ${id}: A new event came in.`]);
+  assert.deepEqual(rows.filter((r) => r.origin === "trigger").map((r) => r.summary), ["Webhook inbox: A new event came in."]);
 });
 
 test("a schedule's runs take their input as the trigger's, owner true: fired on time and fired by hand", { timeout: 120_000 }, async (t) => {
@@ -115,6 +115,29 @@ test("a schedule's runs take their input as the trigger's, owner true: fired on 
     await follow(api, firing.run_id, ["completed"]);
     assert.deepEqual(userEntries(data, firing.run_id), [{ text: await inputOf(data, firing.run_id), origin: { kind: "trigger", trigger_id: id, source: "schedule", owner: true } }], `${firing.by}: the schedule's, its owner's words`);
   }
+});
+
+test("a schedule's run's first Timeline row names the schedule by its name, on a live page and in the final rows; once the trigger is deleted, by its id", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  await made(api, "clock");
+  const gate = join(await scratch(t), "go");
+  const created = await api("POST", "/triggers", { name: "utc-check", source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", agent_id: "clock", input: { content: `Tell me the time in UTC. Hold the answer until ${gate}.` }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id } = created.body;
+  const fired = await api("POST", `/triggers/${id}/fire`, undefined, { "idempotency-key": "by-hand-1" });
+  assert.ok(fired.status < 300, JSON.stringify(fired.body));
+  const [firing] = await firings(api, id, 1);
+  const named = (rows) => rows.filter((r) => r.origin === "trigger").map((r) => r.summary);
+  const live = await follow(api, firing.run_id, ["working"], { deadlineMs: 60_000 });
+  assert.equal(live.last.status, "working", "the page was read while the run still worked");
+  assert.deepEqual(named(live.rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "a live page names the schedule");
+  await writeFile(gate, "");
+  const { rows } = await follow(api, firing.run_id, ["completed"]);
+  assert.deepEqual(named(rows), [`Schedule utc-check: Tell me the time in UTC. Hold the answer until ${gate}.`], "the final rows name it");
+  assert.deepEqual(rows.find((r) => r.origin === "trigger").trigger, { id, source: "schedule", owner: true });
+  assert.equal((await api("DELETE", `/triggers/${id}`)).status, 204);
+  const after = (await api("GET", `/runs/${firing.run_id}/timeline`)).body.rows;
+  assert.deepEqual(named(after), [`Schedule ${id}: Tell me the time in UTC. Hold the answer until ${gate}.`], "a deleted trigger's row names it by its id");
 });
 
 test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000 }, async (t) => {
