@@ -41,14 +41,25 @@ export interface WorkflowRunSpec {
   readonly agentId: string;
   readonly revisionId: string;
   /** Builds the interpreter's host and the extensions to install before the Harness opens, exactly as the per-run process
-   *  did: model nodes on the run's models, call nodes on the tool table, decisions, the cap. Called once per start, so a
-   *  resume builds a fresh host over the resumed journal. */
-  readonly build: () => { readonly extensions: readonly Extension[]; readonly host: WorkflowTaskHost };
+   *  did: model nodes on the run's models, call nodes on the tool table, decisions, the cap. `hooks.park` parks the run
+   *  for a raise: a step the cap holds calls it and then lets its node's signal (which the loop aborts) end its wait, and
+   *  the loop parks the run for a later claim. Called once per start, so a resume builds a fresh host over the resumed
+   *  journal. */
+  readonly build: (hooks: WorkflowHostHooks) => { readonly extensions: readonly Extension[]; readonly host: WorkflowTaskHost };
   /** The end's cost and metrics beside its state, read when the end is written (the pi loop's endPatch, bounded the same).
    *  The outcome (completed or escalated) is the workflow's own, read from the journal, not this. */
   readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "costUsd" | "metrics">>;
   /** pi-durable's restart limit for the run's Harness. Absent: pi's own default. */
   readonly restartLimit?: number;
+}
+
+/** What the interpreter's host may ask of the loop while it runs. */
+export interface WorkflowHostHooks {
+  /** A step the cap holds for a raise lets go here: the run parks and a later claim resumes the workflow from its journal
+   *  (the held step was never admitted, so nothing is half done). `wakeAt` (epoch ms) makes it claimable again with no
+   *  command; a raise command wakes it sooner. `detail` is the refusal a reader shows as the run's pending (its words and
+   *  figures). The caller must let the node's signal, which the loop aborts, end the step's wait. */
+  park(info: { readonly wakeAt?: number; readonly detail?: unknown }): void;
 }
 
 /** Whether a revision runs on the workflow loop (the runner's dispatch picks it by the revision's kind): a workflow
@@ -67,8 +78,6 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
   let stopReason: StopReason | undefined;
   /** The claimed run's spec, once read: writeEnd reads the end's patch from it. */
   let spec: WorkflowRunSpec | undefined;
-  /** A cancel that came before the Harness opened: start() takes it once it has, before the workflow runs. */
-  let cancelEarly = false;
   let harnessClosed = false;
   let finished: Promise<LoopEnd> | undefined;
 
@@ -76,6 +85,19 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     if (!harness || harnessClosed) return;
     harnessClosed = true;
     await harness.close(BACKGROUND_CONTEXT).catch(() => undefined);
+  };
+
+  /** A person's cancel: the workflow's task is aborted, and the run ends stopped with the stop row taken in its end
+   *  commit (startWorkflowRevision's wait resolves with the cancelled outcome). A stop may arrive before the task is
+   *  created, so this retries briefly until it is live. */
+  const requestCancel = async (): Promise<void> => {
+    for (let tries = 0; tries < 200 && !harnessClosed; tries += 1) {
+      if (workflows && harness && runId) {
+        const stopped = await workflows.stop(harness, runId, "cancel", BACKGROUND_CONTEXT, "a person").catch(() => "not-live" as const);
+        if (stopped !== "not-live") return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   };
 
   /** One entry on the run's root, committed; `run` stages the run row's patch with it (keyed to this entry, its effect),
@@ -112,11 +134,17 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
 
   async function run(claim: Claim): Promise<LoopEnd> {
     runId = claim.runId;
-    const context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
+    // A step the cap holds parks the run: `park` aborts this controller, which ends the held step's wait (its node's
+    // signal) and the workflow's invocation, leaving the task pending for a later claim; the loop then writes the run
+    // parked instead of interrupted. The claim's own signal (a lost claim, a shutdown) aborts it too.
+    const parkController = new AbortController();
+    let parkRequested: { readonly wakeAt?: number; readonly detail?: unknown } | undefined;
+    const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
     spec = await specOf(claim);
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };
 
-    const { extensions, host } = spec.build();
+    const hooks: WorkflowHostHooks = { park: (info) => { parkRequested ??= info; parkController.abort(); } };
+    const { extensions, host } = spec.build(hooks);
     workflows = createWorkflowExtension(host);
     const registry = createRegistry();
     for (const extension of extensions) registry.install(extension);
@@ -124,8 +152,8 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     harness = await Harness.open(deps.journal(claim), { models: spec.models, registry, onReport: () => {}, ...(spec.restartLimit !== undefined ? { settings: { restartLimit: spec.restartLimit } } : {}) }, context);
     harnessClosed = false;
 
-    // A cancel the runner handed over before the Harness opened: taken now, before the workflow runs.
-    if ((cancelEarly || stopReason?.kind === "command") && workflows) await workflows.stop(harness, claim.runId, "cancel", context, "a person").catch(() => undefined);
+    // A cancel the runner handed over before the Harness opened: take it now the workflow is about to run.
+    if (stopReason?.kind === "command") void requestCancel();
 
     let outcome;
     try {
@@ -135,9 +163,16 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
         input: spec.input, tools: spec.tools,
       });
     } catch (error) {
+      await closeHarness();
+      if (parkRequested) {
+        // A step's spend cap held it and let go: the run parks, and a later claim resumes the workflow from its journal
+        // (the held step was never admitted, so nothing is half done), reading the raised cap.
+        const parkJournal = deps.journal(claim);
+        await append(parkJournal, BACKGROUND_CONTEXT, KINDS.workflowParked, { detail: parkRequested.detail ?? null }, { state: "parked" });
+        return { state: "parked", ...(parkRequested.wakeAt !== undefined ? { wakeAt: parkRequested.wakeAt } : {}) };
+      }
       // The Session failed at a storage error, or the claim's context aborted (a lost claim, a shutdown): nothing more is
       // written, and the next claim resumes the workflow from its journal.
-      await closeHarness();
       void error;
       return { state: "interrupted" };
     }
@@ -179,8 +214,9 @@ function workflowLoop(specOf: (claim: Claim) => WorkflowRunSpec | Promise<Workfl
     async stop(reason: StopReason): Promise<void> {
       stopReason ??= reason;
       if (reason.kind === "command") {
-        if (workflows && harness && !harnessClosed) await workflows.stop(harness, runId!, "cancel", BACKGROUND_CONTEXT, "a person").catch(() => undefined);
-        else cancelEarly = true;
+        // The run ends stopped when the cancel lands; requestCancel retries until the task is live, so a stop that beat
+        // the task's creation still takes.
+        void requestCancel();
       } else {
         // A lost claim or a shutdown: wind the run down where it can resume. The claim's signal aborts the in-flight work;
         // closing the Harness ends the task invocation, which stays pending for the next claim.
