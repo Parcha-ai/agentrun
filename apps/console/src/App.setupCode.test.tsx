@@ -89,4 +89,30 @@ describe("App, a first visit at a public address opened with no setup link", () 
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(p.host.querySelector('[role="alert"]')?.textContent).toBe("That setup code expired or was voided after too many wrong tries: a new one is in the server's log (on Render, the Logs tab).");
   });
+
+  it("takes a setup link opened while the session read is still on its way", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const sent: unknown[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") { await held; return json(200, { password_set: false, signed_in: false, setup_code: true }); }
+      if (path === "/v2/setup") { sent.push(JSON.parse(String(init?.body ?? "{}"))); return json(403, { error: { code: "forbidden", message: "x", retryable: false } }); }
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    history.replaceState(null, "", "/");
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    // The link lands before the server has answered who this is.
+    // Its one hashchange fires now (set without jsdom's own later event), while auth is still unknown.
+    await act(async () => { history.replaceState(null, "", "/#code=Early-Code_123"); window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    await act(async () => { release(); });
+    const end = Date.now() + 3000;
+    while (!host.querySelector("form") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const field = [...host.querySelectorAll("label")].find((l) => l.querySelector("span")?.textContent === "Setup code");
+    expect((field?.querySelector("input") as HTMLInputElement | null)?.value).toBe("Early-Code_123");
+    expect(location.hash).not.toContain("Early-Code_123");
+  });
 });
