@@ -36,7 +36,10 @@ export type ApprovalDecision = "allow" | "deny" | "withdrawn" | "canceled";
 
 /** A run's live moment, as the run view computes it (statusOf and the predicates in the old runs.ts), for the one acceptance
  *  decision each act makes. A writer reads nothing else of the run's live state; the facts a row holds (its state, its
- *  launch cap) it reads from the store itself. */
+ *  launch cap) it reads from the store itself.
+ *
+ *  TODO(switch): this type and the `momentOf` that builds it move to run-view.ts (E2v, branch untangle/cutover-e2s), beside
+ *  the status logic. Import it from there once E2v's sha lands; this local copy keeps the same fields until then. */
 export interface RunMoment {
   readonly id: string;
   readonly agentId: string;
@@ -118,6 +121,24 @@ export async function stop(store: RunsStore, runId: string): Promise<boolean> {
   if (!row || row.importedFrom) return false;
   try {
     await sendCommand(store, runId, { kind: "stop", body: {} });
+    return true;
+  } catch (error) {
+    if (error instanceof RunFinal) return false;
+    throw error;
+  }
+}
+
+/** Cancels the run: one cancel command row, which the run's runner reads and applies (it ends the run cancelled, aborting
+ *  the turn in flight and cancelling a tool call waiting for approval). Returns whether a cancel was requested — the old
+ *  cancel's checks and their result, verbatim: an imported run, or one already ended or ending, has none to cancel (false,
+ *  nothing written). A run's first end is its last, so a cancel that races the end is the runner's to drop. (The runner's
+ *  "cancel" command kind is tl-jobs'; this writes the row through the store directly until it is in runner/commands.ts.) */
+export async function cancel(store: RunsStore, moment: RunMoment): Promise<boolean> {
+  if (moment.importedSource !== undefined) return false;
+  // Already ended, or already ending (an outcome being written, or a cancel in flight): a run's first end is its last.
+  if (moment.terminal || moment.cancelled) return false;
+  try {
+    await store.command(moment.id, { kind: "cancel", body: {} });
     return true;
   } catch (error) {
     if (error instanceof RunFinal) return false;
@@ -273,9 +294,10 @@ export interface StartDeps {
   readonly documents?: string;
   /** What a run's box may reach, as the server resolved it, or "none". */
   readonly boxAllow?: readonly string[] | "none";
-  /** The run's model, pinned at start when the server resolves one (else absent: the runner resolves it from the revision
-   *  at its claim, as the per-run process did). */
-  modelOf?(entry: AgentEntry, revision: Revision): { provider: string; modelId: string } | undefined;
+  /** The run's model, pinned at start: resolved exactly as the old per-run process resolved it from the revision and agent
+   *  (app.ts's runModels / wireModels over revision.body.model on its harness). The runner reads launch.model alone, so one
+   *  resolution happens, here. Required. */
+  modelOf(entry: AgentEntry, revision: Revision): { provider: string; modelId: string } | undefined;
 }
 
 /** How a run is asked to start, beyond its create body: a trigger and its firing, an idempotency or firing origin, whether
@@ -302,8 +324,10 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
     throw deps.told(invalid(on ? await deps.explainRun(issues, body, on.revision) : issues));
   }
   if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
-  // Each a ready file, before anything starts: the runner copies them into the run's work/ at its claim.
-  if (Array.isArray(body.file_ids)) await deps.readyFiles(body.file_ids);
+  // Each a ready file, before anything starts: checked ready here, then named in the launch (in order) for the runner to
+  // copy into the run's work/inputs/ at its claim.
+  const fileIds = Array.isArray(body.file_ids) ? (body.file_ids as string[]) : [];
+  if (fileIds.length) await deps.readyFiles(fileIds);
   const pinned = await deps.pinnedOf(entry, body);
   if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
   const { revision } = pinned;
@@ -327,7 +351,8 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   // back, never the settings of that moment. (The old start wrote them to serve.json; now they ride the launch row.)
   const tooling = await toolingOf(revision);
   const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
-  const model = deps.modelOf?.(entry, revision);
+  // The run's model, resolved once, at start (the runner reads launch.model only).
+  const model = deps.modelOf(entry, revision);
   const launch: RunLaunch = {
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
@@ -340,6 +365,7 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
     ...(deps.approvers !== undefined ? { approvers: deps.approvers } : {}),
     ...(deps.documents !== undefined ? { documents: deps.documents } : {}),
     ...(deps.boxAllow !== undefined ? { boxAllow: deps.boxAllow } : {}),
+    ...(fileIds.length ? { files: fileIds } : {}),
     ...(trigger ? { trigger } : {}),
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),

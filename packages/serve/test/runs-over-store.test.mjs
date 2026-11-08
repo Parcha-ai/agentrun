@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { archiveRun, approve, message, raiseCap, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
+const { archiveRun, approve, cancel, message, raiseCap, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 
 const dirs = [];
@@ -310,6 +311,7 @@ const startDeps = (over = {}) => ({
   serverSecrets: () => [],
   toolSettings: () => ({}),
   planeEnv: () => ({}),
+  modelOf: () => ({ provider: "anthropic", modelId: "claude" }),
   ...over,
 });
 
@@ -325,6 +327,16 @@ test("startRun inserts a queued run and its launch body with the run's cap", asy
   assert.equal(launch.title, "hi");
   assert.deepEqual(launch.place, { mode: "runner" });
   assert.equal(launch.harness, "pi");
+  assert.deepEqual(launch.model, { provider: "anthropic", modelId: "claude" });
+});
+
+test("startRun names the run's ready files in its launch, in order, for the runner to copy", async () => {
+  const store = await freshStore();
+  const seen = [];
+  const deps = startDeps({ readyFiles: async (ids) => { seen.push(...ids); return ids; } });
+  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" }, file_ids: ["f-2", "f-1"] });
+  assert.deepEqual(seen, ["f-2", "f-1"]);
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).files, ["f-2", "f-1"]);
 });
 
 test("startRun takes the agent's default cap and cap mode when the body names none", async () => {
@@ -388,4 +400,56 @@ test("startRun under an origin key starts one run; a retry under the same key ge
   const again = await startRun(store, startDeps(), entryOf(), { input: { content: "hi" } }, { origin: { key: "firing-1" } });
   assert.equal(again.id, first.id);
   assert.equal((await store.runs.list({ agentId: "a1" })).length, 1);
+});
+
+// ---- cancel ---------------------------------------------------------------------------------------------------------
+
+test("cancel writes one cancel command and returns true for a live run", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  assert.equal(await cancel(store, moment()), true);
+  const rows = await commandsOf(store, id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "cancel");
+});
+
+test("cancel returns false and writes nothing for an imported run", async () => {
+  const store = await freshStore();
+  await store.importRun({
+    id: "run-1", agentId: "a1", revisionId: "r1", importedFrom: { source: "pi", session: "s1" },
+    launch: { body: { input: { content: "hi" }, title: "t", place: { mode: "runner" } } }, startedAt: Date.now(), transcript: [],
+  });
+  assert.equal(await cancel(store, moment({ importedSource: "pi" })), false);
+  assert.equal((await commandsOf(store, "run-1")).length, 0);
+});
+
+test("cancel returns false and writes nothing for a run already ended or ending", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  assert.equal(await cancel(store, moment({ terminal: true, terminalKind: "completed" })), false);
+  assert.equal(await cancel(store, moment({ cancelled: true })), false);
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+// ---- command shapes pinned against the runner's parser --------------------------------------------------------------
+
+test("every command this module writes is one the runner's parser accepts", async () => {
+  const store = await freshStore();
+  // The runner reads commands through sendCommand's parser (runner/commands.ts); each kind/body a writer here emits must
+  // pass it, so the runner takes exactly what we write. (cancel's kind is tl-jobs' to add; it is written through the store.)
+  await queuedRun(store, "steer-run");
+  await queuedRun(store, "steer-trg");
+  await queuedRun(store, "deny-run");
+  await queuedRun(store, "approve-run");
+  await queuedRun(store, "raise-run");
+  await queuedRun(store, "stop-run");
+  await sendCommand(store, "steer-run", { kind: "steer", body: { text: "hi" } });
+  await sendCommand(store, "steer-trg", { kind: "steer", body: { text: "hi", answers: false, origin: { kind: "trigger" } } });
+  await sendCommand(store, "deny-run", { kind: "deny", body: { approval: "call-1", note: "no" } });
+  await sendCommand(store, "approve-run", { kind: "approve", body: { approval: "call-1" } });
+  await sendCommand(store, "raise-run", { kind: "raise", body: { capUsd: 5 } });
+  await sendCommand(store, "stop-run", { kind: "stop", body: {} });
+  for (const id of ["steer-run", "steer-trg", "deny-run", "approve-run", "raise-run", "stop-run"]) {
+    assert.equal((await commandsOf(store, id)).length, 1);
+  }
 });

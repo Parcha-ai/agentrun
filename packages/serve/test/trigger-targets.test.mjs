@@ -41,6 +41,7 @@ const startDeps = (over = {}) => ({
   serverSecrets: () => [],
   toolSettings: () => ({}),
   planeEnv: () => ({}),
+  modelOf: () => ({ provider: "anthropic", modelId: "claude" }),
   ...over,
 });
 
