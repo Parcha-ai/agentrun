@@ -92,6 +92,12 @@ test("archilRunFolder with no object API given: the SDK's Archil client, every s
 		["putObject", `${folder.mount.folder}/b.txt`],
 	]);
 	await assert.rejects(archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, Archil }), (error) => /apiKey/.test(error.message) && !error.message.includes(TOKEN));
+	// The SDK is not this package's dependency: with none installed, the run folder refuses in words saying where it
+	// comes from (serve's dependency, installed by npm ci at the repository root), never with the key.
+	await assert.rejects(
+		archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, apiKey: KEY, s3BaseUrl: S3, sdkPackage: "agentrun-no-such-sdk-package" }),
+		(error) => /Archil's Node SDK/.test(error.message) && /npm ci/.test(error.message) && !error.message.includes(KEY),
+	);
 	const failing = class {
 		constructor() {
 			this.disks = { get: async () => Promise.reject(Object.assign(new Error(`401: bad key ${KEY}`), { status: 401 })) };
