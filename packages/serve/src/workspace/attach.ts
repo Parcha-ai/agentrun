@@ -195,6 +195,9 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       for (let attempt = 1; ; attempt++) {
         const before = await statOf(abs, rel);
         noLink(before, rel);
+        // What is there is checked before any chunk, so a read of no bytes still says a missing path or a folder.
+        if (before === undefined) throw new WorkspaceError("NOT_FOUND", `${JSON.stringify(rel)} is not there`, { path: rel });
+        if (before.type !== "file") throw new WorkspaceError("REFUSED", `${JSON.stringify(rel)} is ${before.type === "dir" ? "a directory" : "not a file"}`, { path: rel });
         const parts: Uint8Array[] = [];
         let got = 0;
         let calls = 0;
@@ -224,25 +227,24 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       noLink(existing, rel);
       if (existing !== undefined && existing.type !== "file") throw new WorkspaceError("REFUSED", `${JSON.stringify(rel)} is not a file`, { path: rel });
       // computerd replaces a file in place: the bytes go to a temporary file beside it, which a move puts in its place.
-      // Replacing a file, the temporary file is its owner's alone (0600) and writable until its last chunk, which sets
-      // the target's mode: a private file's new bytes are never readable by others on the way, and a read-only file
-      // replaced in many chunks takes every one. On a bind, its bytes are synced before the move, so the name never
-      // points at bytes a crash could lose.
+      // Replacing a file, the temporary file is its owner's alone (0600), readable and writable, while every chunk goes
+      // in and while a bind syncs its bytes on the host: a private file's new bytes are never readable by others on the
+      // way, a read-only file takes every chunk, and a write-only one can still be synced. Then a write of no bytes at
+      // its end sets the target's mode (computerd opens, sets the mode, then writes), and the move puts it in place, so
+      // the name never points at bytes a crash could lose.
       const tempRel = [...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/");
       const temp = `${MOUNT_AT}/${tempRel}`;
-      const mode = existing === undefined ? {} : { mode: existing.mode & 0o777 };
-      const firstMode = existing === undefined ? {} : { mode: 0o600 };
+      const mode = existing === undefined ? undefined : existing.mode & 0o777;
       try {
-        const parts = chunks(bytes);
         let written = 0;
-        for (const [i, part] of parts.entries()) {
-          const last = i === parts.length - 1;
+        for (const [i, part] of chunks(bytes).entries()) {
           await value(i === 0
-            ? call("files.write", { path: temp, data: base64(part), parents: true, ...(last ? mode : firstMode) })
-            : call("files.write", last && existing !== undefined ? { path: temp, data: base64(part), offset: written, ...mode } : { path: temp, data: base64(part), append: true }), rel);
+            ? call("files.write", { path: temp, data: base64(part), parents: true, ...(mode === undefined ? {} : { mode: 0o600 }) })
+            : call("files.write", { path: temp, data: base64(part), append: true }), rel);
           written += part.length;
         }
         await synced(tempRel, "file");
+        if (mode !== undefined && mode !== 0o600) await value(call("files.write", { path: temp, data: "", offset: written, mode }), rel);
         await value(call("files.move", { from: temp, to: abs, overwrite: true }), rel);
       } catch (error) {
         await call("files.remove", { path: temp }).catch(() => undefined);

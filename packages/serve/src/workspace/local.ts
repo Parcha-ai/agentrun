@@ -36,7 +36,7 @@ import {
   type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError, type WorkspaceErrorCode,
 } from "./workspace.js";
 
-const { O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR } = constants;
+const { O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY } = constants;
 const LINUX = process.platform === "linux";
 /** How a folder on the way is opened: as a folder, never through a link (a link there fails ENOTDIR or ELOOP). */
 const DIR_FLAGS = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
@@ -502,17 +502,24 @@ class LocalWorkspace implements Workspace {
   }
 
   /** What a computer changed at `path` in this folder made durable on the host: the entry itself when it is there (a
-   *  file or a folder, never through a link), then, unless `only` is "file", every folder from its own up to the root. */
+   *  file or a folder, never through a link), then, unless `only` is "file", every folder from its own up to the root.
+   *  A file this process may not read is synced through a write-only open; one it may neither read nor write (mode
+   *  0000, not ours) cannot be opened, and only its folders are synced. */
   async #syncUp(path: string, only?: "file"): Promise<void> {
     const segments = relativeSegments(path);
     await this.#in(path, segments, segments.length - 1, async (dir) => {
-      let handle: FileHandle;
-      try {
-        handle = await open(dir.at(segments.at(-1)!), O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
-      } catch (error) {
-        if (errno(error) === "ENOENT" || errno(error) === "ELOOP") return;
-        throw failed(error, path);
+      const at = dir.at(segments.at(-1)!);
+      let handle: FileHandle | undefined;
+      for (const flags of [O_RDONLY, O_WRONLY]) {
+        try {
+          handle = await open(at, flags | O_NOFOLLOW | O_NONBLOCK);
+          break;
+        } catch (error) {
+          if (errno(error) === "ENOENT" || errno(error) === "ELOOP") return;
+          if (errno(error) !== "EACCES") throw failed(error, path);
+        }
       }
+      if (handle === undefined) return;
       try { await handle.sync(); } finally { await handle.close(); }
     });
     if (only === "file") return;

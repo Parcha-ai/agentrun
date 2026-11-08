@@ -99,8 +99,9 @@ test("attached: a write goes to a temporary file beside the target, then a move;
   assert.deepEqual(writes, [
     { append: undefined, offset: undefined, mode: 0o600, bytes: COMPUTER_CHUNK },
     { append: true, offset: undefined, mode: undefined, bytes: COMPUTER_CHUNK },
-    { append: undefined, offset: COMPUTER_CHUNK * 2, mode: 0o640, bytes: 5 },
-  ], "the temporary file is its owner's alone (0600) and writable; the last chunk, at its offset, sets the kept mode");
+    { append: true, offset: undefined, mode: undefined, bytes: 5 },
+    { append: undefined, offset: COMPUTER_CHUNK * 2 + 5, mode: 0o640, bytes: 0 },
+  ], "the temporary file is its owner's alone (0600) for every chunk; a write of no bytes at its end then sets the kept mode");
   assert.equal(statSync(join(root, "notes/a.md")).mode & 0o777, 0o640);
   assert.ok(Buffer.from(await workspace.read("notes/a.md")).equals(big), "it reads back whole, across chunks");
 });
@@ -260,4 +261,28 @@ test("attached: a private file replaced in many chunks is never readable by othe
   assert.equal(seen.length, 3);
   assert.ok(seen.every((mode) => (mode & 0o077) === 0), `the temporary file was never open to others: ${seen.map((m) => m.toString(8)).join(", ")}`);
   assert.equal(statSync(join(root, "secret.txt")).mode & 0o777, 0o600);
+});
+
+test("attached on a bind: a write-only file is replaced, and synced on the host on the way", { skip: process.getuid?.() === 0 && "root reads a write-only file anyway" }, async () => {
+  const { root, workspace } = await attached();
+  writeFileSync(join(root, "drop.box"), "old");
+  chmodSync(join(root, "drop.box"), 0o200);
+  const big = Buffer.alloc(COMPUTER_CHUNK + 9, 4);
+  await workspace.write("drop.box", big);
+  assert.equal(statSync(join(root, "drop.box")).mode & 0o777, 0o200, "the target's mode is kept");
+  chmodSync(join(root, "drop.box"), 0o600);
+  assert.ok(readFileSync(join(root, "drop.box")).equals(big), "every byte landed");
+  await workspace.append("drop.box", "more");
+  chmodSync(join(root, "drop.box"), 0o200);
+  await workspace.append("drop.box", "and more");
+});
+
+test("attached: a read of no bytes still says a missing path, or a directory", async () => {
+  const { root, workspace } = await attached();
+  writeFileSync(join(root, "f"), "x");
+  mkdirSync(join(root, "d"));
+  await refused(workspace.read("missing", { length: 0 }), "NOT_FOUND");
+  await refused(workspace.read("d", { length: 0 }), "REFUSED", /directory/);
+  assert.equal((await workspace.read("f", { length: 0 })).length, 0);
+  assert.equal((await workspace.read("f", { offset: 5, length: 0 })).length, 0);
 });
