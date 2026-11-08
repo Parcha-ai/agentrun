@@ -45,11 +45,12 @@ const INSTALL_SCRIPT = [
  *  may move the deadline to. */
 const INIT_SCRIPT = [
 	"# agentrun-computer: init",
-	"d=$1; t=$2; w=$3; h=$4; r=$5; x=${6-}; m=${7-}",
+	// The display is v, not x: held() assigns x, and runs before the exec that reads it.
+	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}",
 	HELD,
 	'held "$d" >&2 || exit 6',
 	ROOT,
-	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${x:+DISPLAY="$x"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" \${m:+--max-deadline "$m"}`,
+	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" \${m:+--max-deadline "$m"}`,
 ].join("\n");
 
 /** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
