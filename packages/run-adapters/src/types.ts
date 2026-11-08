@@ -272,6 +272,10 @@ export interface AdapterSession {
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;
+  /** A person's message placed in the turn in flight, at its next boundary, for a harness that takes one mid-turn (pi).
+   *  `id`: the request id the placement carries (the host's command), so the host can tell the commit that placed it.
+   *  Absent when the harness takes no message mid-turn: the host refuses the steer in words. */
+  steer?(text: string, id?: string): Promise<void>;
   /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
    *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
    *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of

@@ -65,7 +65,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let gate: Gate | undefined;
   let harness: Harness | undefined;
   let root: Conversation | undefined;
-  let session: (AdapterSession & { steer?(text: string, id?: string): Promise<void> }) | undefined;
+  let session: AdapterSession | undefined;
   let context: Context = BACKGROUND_CONTEXT;
   const early: Command[] = [];
   let held: { detach(): void } | undefined;
@@ -133,7 +133,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }),
         }));
         const io: PiSessionIO = { writer, models: booking.models, signal: deps.signal, onEvent: () => {}, gate: gateOf };
-        session = (await spec.adapter.open({ ...spec.session, tools }, io)) as typeof session;
+        session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
         await reportHeld(harness, root.id);
         for (const command of early.splice(0)) void steer(command);

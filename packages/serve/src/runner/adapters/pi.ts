@@ -187,7 +187,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     async steer(text: string, id?: string) {
       await root.submit({ type: "input", content: text, whenBusy: "steer", ...(id ? { requestId: id } : {}) }, context);
     },
-  } as AdapterSession & { steer(text: string, id?: string): Promise<void> };
+  } satisfies AdapterSession;
 }
 
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text. */
