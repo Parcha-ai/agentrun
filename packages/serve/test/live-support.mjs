@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, Harness, hook, MemoryStorage, ToolTask } from "@earendil-works/pi-durable";
 import { watchEvents } from "@parcha/pi-durable-disk/internals";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
@@ -17,13 +17,15 @@ export const INPUT = "Follow the script.";
 
 /** The door's stream for `script` (what serve reads today): pi-durable-disk's watchEvents on a Harness that runs the
  *  script with the suite's read tool, attached before the input is sent, until the run ended and the input settled. */
-export async function doorStream(script) {
+export async function doorStream(script, options = {}) {
   const { models, model } = scriptedModel(script);
   const read = defineTool({
     name: "read", description: "The suite's read tool.", parameters: { type: "object", properties: {} }, replay: "safe",
     execute: async () => ({ output: [{ type: "text", text: "read" }] }),
   });
-  const kernel = defineExtension({ name: "agentrun-kernel", tools: [read] });
+  // `options.deny`: the gate refuses every call before its intent (pi's beforeTool block), so none runs.
+  const hooks = options.deny ? [hook(ToolTask, { beforeTool: async (call) => ({ block: `Permission denied: ${call.name} is set to deny.` }) })] : [];
+  const kernel = defineExtension({ name: "agentrun-kernel", tools: [read], hooks });
   const registry = createRegistry();
   registry.install(kernel);
   const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
@@ -78,7 +80,9 @@ export async function liveWorld(t) {
     const { createPiLoop } = await import("../dist/runner/loop.js");
     // `options.subject`: a conformance subject's loops instead of pi's (the reference loop writes a CLI run's entries).
     const setup = { script, tools: tools.tools, hooks: options.hooks ?? quiet };
-    const inner = options.subject ? options.subject.createLoop(setup) : createPiLoop(piSpec(setup));
+    // `options.deny`: the loop's gate refuses every call (none runs).
+    const spec = options.deny ? (claim) => ({ ...piSpec(setup)(claim), gate: () => "deny" }) : piSpec(setup);
+    const inner = options.subject ? options.subject.createLoop(setup) : createPiLoop(spec);
     // `options.journal` wraps the run's journal as the loop sees it (a slow store that makes pi group its commits).
     const wrapped = (deps) => inner(options.journal ? { ...deps, journal: (claim) => options.journal(deps.journal(claim)) } : deps);
     // `options.live`: the runner's held states go to run_live, one store write per tick for all its loops.
