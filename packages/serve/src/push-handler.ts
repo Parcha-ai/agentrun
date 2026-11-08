@@ -57,6 +57,8 @@ export type PushDeps = {
   adapters: readonly TriggerAdapter[];
   /** The source of trigger `id`, when it is a trigger of the pushed source `kind` that is on. */
   hooked(id: string, kind: string): Source | undefined;
+  /** A request trigger `id` ignored, under the key its event would have (triggers.ts ignored): kept for its day. */
+  ignored?(id: string, eventId: string): void;
   /** Its firing for the event, recorded (triggers.ts receive), with what the source says of it (`attrs`). */
   receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: unknown };
   /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
@@ -100,6 +102,7 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
   if (!Array.isArray(events)) {
     deps.say({ condition: "hook_ignored", source: adapter.id, route, ...(pathTrigger ? { trigger: pathTrigger } : {}), reason: events.ignored, ...(events.event ? { event: events.event } : {}) });
+    if (pathTrigger && events.key !== undefined) deps.ignored?.(pathTrigger, events.key);
     return { status: 200, body: { ok: "ignored" } };
   }
   if (!events.length) {

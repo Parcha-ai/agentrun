@@ -87,8 +87,10 @@ export type Push = {
    *  `{ok: "ignored"}`, and said. */
   parse(headers: Headers, body: Buffer, source?: Source): PushEvent[] | PushIgnored;
 };
-/** A verified request its trigger's source does not take: why (`ignored`), and the event it was, when it names one. */
-export type PushIgnored = { ignored: string; event?: string };
+/** A verified request its trigger's source does not take: why (`ignored`), the event it was, when it names one, and its
+ *  key (`key`, as its event would be keyed), which its trigger keeps for its day: the same request sent again under
+ *  another label (an unsigned event header) is then a duplicate, never a firing. */
+export type PushIgnored = { ignored: string; event?: string; key?: string };
 /** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
  *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
  *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */

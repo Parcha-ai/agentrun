@@ -84,7 +84,9 @@ export const webhook: TriggerAdapter = {
       const action = isObject(doc) && typeof doc.action === "string" ? doc.action : undefined;
       const rules = source?.accept as Rule[] | undefined;
       const ignored = rules && acceptRefusal(rules, event, doc);
-      if (ignored) return { ignored, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}) };
+      // Its key is kept too: GitHub signs the body, not X-GitHub-Event, so the same body sent again under an event a rule
+      // takes is the same delivery, not a new one.
+      if (ignored) return { ignored, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), key: asked.scheme.firingKeyOf(headers, body) };
       const delivery = asked.scheme.deliveryIdOf?.(headers);
       const attrs = { scheme: asked.name, ...(event !== undefined ? { event: event.slice(0, ATTR_CHARS) } : {}), ...(action !== undefined ? { action: action.slice(0, ATTR_CHARS) } : {}), ...(delivery !== undefined ? { delivery: delivery.slice(0, ATTR_CHARS) } : {}) };
       return [{ key: asked.scheme.firingKeyOf(headers, body), text, attrs }];
