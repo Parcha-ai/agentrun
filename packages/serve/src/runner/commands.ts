@@ -10,7 +10,7 @@ export interface CommandInput {
   readonly body?: Record<string, unknown>;
 }
 
-/** The store's insert: refuses a run that is final (RunEnded) in the insert itself, so it never races the run's end. */
+/** The store's insert: refuses a run that is final (RunFinal) in the insert itself, so it never races the run's end. */
 export interface CommandSink {
   command(runId: string, command: { kind: string; body: Record<string, unknown> }): Promise<Command>;
 }
@@ -36,7 +36,7 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
   }
 }
 
-/** Inserts a command row for a run, after checking its kind and body. Rejects RunEnded (from the store) when the run is
+/** Inserts a command row for a run, after checking its kind and body. Rejects RunFinal (from the store) when the run is
  *  final, and a TypeError for a kind or body no runner would take. */
 export async function sendCommand(store: CommandSink, runId: string, input: CommandInput): Promise<Command> {
   if (!COMMAND_KINDS.has(input.kind)) {

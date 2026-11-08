@@ -20,8 +20,9 @@ export interface RunnerStore<Journal extends object> {
   flush(): Promise<void>;
   /** Rows for the run with an id above `after`, oldest first. */
   commands(runId: string, after: number): Promise<Command[]>;
-  /** Marks a command refused (taken_at and the reason), fenced on the claim's epoch. */
-  take(claim: Claim, commandId: number, outcome: "refused", reason: string): Promise<void>;
+  /** Sets a command's taken_at (and `refused`, the reason, for a refusal) where it is untaken, fenced on the claim's
+   *  epoch. A loop's take goes in its journal commit instead (stage({ take })); the runner takes only refusals. */
+  take(claim: Claim, commandId: number, outcome: "taken" | "refused", reason?: string): Promise<void>;
 }
 
 /** The store's fence: a write under an epoch that moved. Matched by name, the same class A exports. */

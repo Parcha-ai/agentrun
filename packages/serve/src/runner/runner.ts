@@ -109,10 +109,12 @@ export function startRunner<Journal extends object>(options: RunnerOptions<Journ
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
         if (property !== "commit") return value.bind(target);
-        return (...args: unknown[]) => {
-          if (fence.lost) throw new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`);
-          return value.apply(target, args);
-        };
+        // pi's commit is async and pi chains on it (group commit, the publish queue): the refusal is a rejected promise,
+        // so it fails that commit on the path pi already handles, never a throw out of a caller that is not async.
+        return (...args: unknown[]) =>
+          fence.lost
+            ? Promise.reject(new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`))
+            : value.apply(target, args);
       },
     });
 

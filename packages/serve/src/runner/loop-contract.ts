@@ -7,8 +7,8 @@ export interface Claim {
   readonly runId: string;
   readonly runner: string;
   readonly epoch: number;
-  /** ISO time the claim runs out unless renewed. */
-  readonly until: string;
+  /** When the claim runs out unless renewed: ms since the epoch (the store's one time convention). */
+  readonly until: number;
 }
 
 /** A command row (commands table): a person's stop, steer, approve, deny or raise for one run. */
