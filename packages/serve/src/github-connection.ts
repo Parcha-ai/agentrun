@@ -128,6 +128,14 @@ export class GitHubConnection {
     settings.set(SCOPE, FIELDS.appId, app.id);
   }
 
+  /** The installation list as `list`, sorted; whether it changed. */
+  setInstallations(list: Installation[]): boolean {
+    const next = JSON.stringify([...list].sort((a, b) => a.id - b.id));
+    if (next === JSON.stringify(installationsIn(this.get(FIELDS.installations)))) return false;
+    this.settings!.set(SCOPE, FIELDS.installations, next);
+    return true;
+  }
+
   addInstallation(installation: Installation): void {
     this.settings!.set(SCOPE, FIELDS.installations, withInstallation(installationsIn(this.get(FIELDS.installations)), installation));
   }
@@ -279,10 +287,21 @@ export class GitHubConnect {
     const removes = action === "deleted" || action === "suspend";
     if (!adds && !removes) return noted;
     let answer: { status: number; json: unknown };
+    // GitHub out of reach (no answer, 429, 5xx) decides nothing: 503, so GitHub shows the delivery failed and it can be
+    // sent again; the next read of the connection repairs the list from GitHub's own meanwhile (reconcile).
+    const unavailable = (why: string) => {
+      this.options.say({ condition: "github_unavailable", action, installation: String(id), reason: why });
+      return new ApiError("unavailable", "GitHub could not be asked about this installation; send the delivery again.", { retry_after_ms: 60_000 }, { "retry-after": "60" });
+    };
     try {
       answer = await githubCall(this.options.api, `/app/installations/${id}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()) });
     } catch (error) {
-      this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: (error as Error).message });
+      throw unavailable((error as Error).message);
+    }
+    if (answer.status === 429 || answer.status >= 500) throw unavailable(`HTTP ${answer.status}`);
+    // Checked for the App connected when it came: one disconnected, or replaced, meanwhile takes nothing of it.
+    if (this.connection.view()?.app_id !== view.app_id) {
+      this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: "GitHub was disconnected or connected again while the event was checked" });
       return noted;
     }
     const found = isObject(answer.json) ? answer.json : {};
@@ -300,6 +319,45 @@ export class GitHubConnect {
     const off = left ? 0 : turnOff(`The GitHub App's last installation left, installation ${id} (${account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
     this.options.say({ condition: "github_installation_lost", installation: String(id), account, action, installations_left: String(left), triggers_off: String(off) });
     return noted;
+  }
+
+  /** When the list was last repaired from GitHub's (reconcile). */
+  private reconciled = 0;
+
+  /** The installation list repaired from GitHub's own (GET /app/installations with the App's JWT, every page; a suspended
+   *  one is not listed), at most once a minute unless `force`: a missed or refused installation event is put right at the
+   *  next read of the connection, and at the server's start. The same rule as an event's: a list that comes to hold none
+   *  turns every github trigger off (`turnOff`); one dropped only shrinks it. GitHub out of reach leaves it as it is. */
+  async reconcile(turnOff: (detail: string) => number, { force = false }: { force?: boolean } = {}): Promise<void> {
+    const now = this.options.now?.() ?? Date.now();
+    const view = this.connection.view();
+    const credentials = this.connection.credentials();
+    if (!view || !credentials || (!force && now - this.reconciled < 60_000)) return;
+    this.reconciled = now;
+    const found: Installation[] = [];
+    try {
+      for (let page = 1; page <= 20; page++) {
+        const answer = await githubCall(this.options.api, `/app/installations?per_page=100&page=${page}`, { jwt: appJwt(credentials.appId, credentials.pem, now) });
+        if (answer.status !== 200 || !Array.isArray(answer.json)) {
+          this.options.say({ condition: "github_unavailable", reason: `the App's installations: HTTP ${answer.status}` });
+          return;
+        }
+        for (const item of answer.json) {
+          if (!isObject(item) || !Number.isSafeInteger(item.id) || !isObject(item.account) || typeof item.account.login !== "string") continue;
+          if (item.suspended_at === null || item.suspended_at === undefined) found.push({ id: item.id as number, account: item.account.login.slice(0, 200) });
+        }
+        if (answer.json.length < 100) break;
+      }
+    } catch (error) {
+      this.options.say({ condition: "github_unavailable", reason: `the App's installations: ${(error as Error).message}` });
+      return;
+    }
+    // Read for the App connected when it was asked: one replaced meanwhile takes nothing of it.
+    if (this.connection.view()?.app_id !== view.app_id) return;
+    const before = this.connection.view()?.installations ?? [];
+    if (!this.connection.setInstallations(found)) return;
+    const off = !found.length && before.length ? turnOff("GitHub holds no installation of the App left (deleted or suspended there): install the App again, then turn the trigger on.") : 0;
+    this.options.say({ condition: "github_installations_repaired", installations: String(found.length), was: String(before.length), triggers_off: String(off) });
   }
 
   /** The App's installation tokens minted and not yet long past their hour, by token: every one is a secret this server

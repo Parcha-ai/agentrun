@@ -1182,6 +1182,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   });
   stops.push(async () => triggers.close());
   triggers.start();
+  // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down.
+  void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -2440,6 +2442,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, started, { "set-cookie": stateCookie(req.socket.localPort, started.state, overHttps(req)) });
       }
       case "getGitHubConnection": {
+        // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         const view = githubConnection();
         if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server: Connect GitHub in Settings.");
         return send(res, 200, view);

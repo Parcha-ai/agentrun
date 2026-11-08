@@ -1118,6 +1118,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/integrations/github": {
     get: {
       operationId: "getGitHubConnection", tags: ["local"], summary: "The server's GitHub App, if one is connected: its id, slug and installations, never a secret",
+      description: "Its installations are first repaired from GitHub's own (GET /app/installations with the App's JWT), at most once a minute: an installation event missed or not checked (GitHub out of reach answers that event 503) is put right here, and a list that comes to hold none turns every github trigger off (`connection_lost`). GitHub out of reach leaves the list as it is.",
       responses: { "200": json(GITHUB_CONNECTION, "The connection."), ...errors(401, 404, 429, 500) },
       ...GITHUB_MARK,
     },
@@ -1880,7 +1881,7 @@ function serverHooks(adapters: readonly TriggerAdapter[]): Record<string, Json> 
         requestBody: { required: true, content: { "*/*": { schema: {} } } },
         // A handshake's answer is any object but a firings one or the ignored answer, so each answer is exactly one of the
         // 200's shapes, and a handshake of the source's own, {ok: true} say, is one.
-        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, HOOK_IGNORED, { type: "object", not: { anyOf: [{ required: ["firings"] }, HOOK_IGNORED] }, description: "The source's handshake answer." }] } : { oneOf: [made, HOOK_IGNORED] }, "Nothing new: each event's firing as it stands (a key seen within its day whose firing is no longer kept, `{ok: \"duplicate\"}`), or none; or `{ok: \"ignored\"}`, a request the source's own filter does not take."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
+        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, HOOK_IGNORED, { type: "object", not: { anyOf: [{ required: ["firings"] }, HOOK_IGNORED] }, description: "The source's handshake answer." }] } : { oneOf: [made, HOOK_IGNORED] }, "Nothing new: each event's firing as it stands (a key seen within its day whose firing is no longer kept, `{ok: \"duplicate\"}`), or none; or `{ok: \"ignored\"}`, a request the source's own filter does not take."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500, 503) },
         ...TRIGGER_MARK,
       },
     };
