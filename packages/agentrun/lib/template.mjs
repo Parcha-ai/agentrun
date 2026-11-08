@@ -56,6 +56,13 @@ export const TEMPLATE_EVAL = {
       argv.push("--server", base);
       childEnv = { ...env, AGENTRUN_API_KEY: token };
     }
-    return spawnSync(launcher, argv, { stdio: "inherit", env: childEnv }).status ?? 1;
+    // A Ctrl-C reaches the eval too, which cancels its run and cleans up before it exits: this command waits for it.
+    const wait = () => undefined;
+    process.on("SIGINT", wait);
+    try {
+      return spawnSync(launcher, argv, { stdio: "inherit", env: childEnv }).status ?? 1;
+    } finally {
+      process.off("SIGINT", wait);
+    }
   },
 };

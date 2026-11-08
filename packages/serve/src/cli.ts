@@ -137,16 +137,30 @@ if (process.argv[2] === "eval-template") {
   if (given.server !== undefined && given.faux !== undefined) usage("--faux is the model of the server it starts itself, and --server names another server.");
   const token = given.server === undefined ? undefined : secret("AGENTRUN_API_KEY") || secret("AGENTRUN_TOKEN");
   if (given.server !== undefined && !token) usage("--server needs that server's token in AGENTRUN_API_KEY.");
+  // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
+  // left going would go on spending. A second one leaves at once.
+  const stop = new AbortController();
+  const onStop = () => {
+    if (stop.signal.aborted) process.exit(130);
+    console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)");
+    stop.abort();
+  };
+  process.on("SIGINT", onStop);
+  process.on("SIGTERM", onStop);
   try {
     const report = await evalTemplate({
       dir: resolve(positionals[0]!), cases: given.case, ...(given.runs !== undefined ? { runs: Number(given.runs) } : {}),
       ...(given.server !== undefined ? { server: { baseUrl: given.server, token: token! } } : {}), ...(given["grader-model"] !== undefined ? { graderModel: given["grader-model"] } : {}),
-      ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), log: (line) => console.error(line),
+      ...(given.faux !== undefined ? { serve: { faux: resolve(given.faux) } } : {}), log: (line) => console.error(line), signal: stop.signal,
     });
     if (given.report !== undefined) writeFileSync(resolve(given.report), `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(markdownReport(report));
     process.exit(report.pass ? 0 : 1);
   } catch (error) {
+    if (stop.signal.aborted) {
+      console.error("agentrun-serve eval-template: stopped; no report.");
+      process.exit(130);
+    }
     if (!(error instanceof PackageError || error instanceof CaseError)) throw error;
     console.error(error.message);
     process.exit(2);

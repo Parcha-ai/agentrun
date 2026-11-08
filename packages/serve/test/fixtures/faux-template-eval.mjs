@@ -8,13 +8,15 @@
 //   `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned), and
 //   `{{flaky:<a>|<b>}}` <a> the first time any run of this server answers it and <b> after (a count kept in the file
 //   AGENTRUN_TEST_EVAL_COUNTER names).
+// - `Hold until released.`: the answer waits until the file AGENTRUN_TEST_EVAL_HOLD names exists (when it is set), or the
+//   turn is stopped.
 // The end-of-run learning turn is answered "No notes.".
 //
 // The grader agent (its instructions are template-eval.ts GRADER_INSTRUCTIONS) passes a run when every line of its
 // rubric that says `Pass if the answer contains "<text>".` holds of the <answer> it was given (or of the <target>, when it
 // was given one), and answers one fenced json block, {pass, reason}. Each grader input is appended to the file
 // AGENTRUN_TEST_EVAL_GRADER_LOG names, as a line of JSON, so a test reads what the grader saw.
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 /** A small price, so each run's and each grade's cost is known and above zero: $1 per million tokens each way. */
 export const cost = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
@@ -62,6 +64,13 @@ export default function reply(context, faux) {
   });
   const results = context.messages.filter((m) => m.role === "toolResult");
   if (results.length < steps.length) return faux.message(faux.toolCall(...steps[results.length]), { stopReason: "toolUse" });
+  const hold = process.env.AGENTRUN_TEST_EVAL_HOLD;
+  if (input.includes("Hold until released.") && hold && !existsSync(hold)) {
+    return new Promise((resolve) => {
+      const timer = setInterval(() => existsSync(hold) && (clearInterval(timer), resolve(reply(context, faux))), 50);
+      faux.signal?.addEventListener("abort", () => (clearInterval(timer), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
+    });
+  }
   const at = input.indexOf("Answer:\n");
   const answer = at < 0 ? "Done." : input.slice(at + "Answer:\n".length);
   return faux.message(answer

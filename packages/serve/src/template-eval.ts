@@ -503,6 +503,8 @@ function apiOf(baseUrl: string, token: string): Api {
       method,
       headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": raw ? "text/markdown" : "application/json" }), ...headers },
       ...(body === undefined ? {} : { body: raw ? body : JSON.stringify(body) }),
+    }).catch((error: unknown) => {
+      throw new ApiFailure(`${method} ${path}: the server did not answer (${(error as Error).cause instanceof Error ? ((error as Error).cause as Error).message : (error as Error).message})`);
     });
     const text = await res.text();
     let json: unknown = text;
@@ -527,12 +529,16 @@ function expectOk(what: string, answered: Answered, ok: number[] = [200, 201, 20
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A run waited for: its rows until it ends (completed, failed, cancelled) or waits on a person (input_required), or
- *  `deadline` passes (then it is cancelled). */
-async function waitRun(api: Api, runId: string, deadline: number): Promise<{ status: string; rows: Json[]; waiting?: string }> {
+ *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. */
+async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<{ status: string; rows: Json[]; waiting?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
   for (;;) {
-    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=10000`));
+    if (signal?.aborted) {
+      await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+      signal.throwIfAborted();
+    }
+    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000`));
     if (page.reset) view.clear();
     for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
     for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
@@ -595,6 +601,9 @@ export type EvalOptions = {
   runTimeoutMs?: number;
   /** Told each step as one line (the CLI's stderr). */
   log?: (line: string) => void;
+  /** Stops the eval: the run in progress is cancelled, what the eval made is cleaned up as at its end, and the eval
+   *  throws the signal's reason (the CLI's Ctrl-C: a run left going would go on spending). */
+  signal?: AbortSignal;
 };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[] };
@@ -633,7 +642,10 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // directory of its own, gone when the eval is.
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
-    const serve = await startServe({ data: join(scratch!, "data"), port: 0, token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) });
+    const serve = await startServe({ data: join(scratch!, "data"), port: 0, token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
+      removeTree(scratch!);
+      throw error;
+    });
     close = () => serve.close();
     api = apiOf(serve.baseUrl, serve.token);
   }
@@ -642,6 +654,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const archive: string[] = [];
   try {
     for (const one of cases) {
+      options.signal?.throwIfAborted();
       log(`case ${one.name}: ${options.runs ?? one.runs} run${(options.runs ?? one.runs) === 1 ? "" : "s"}`);
       const result = await runCase(api, pkg, one, options, async () => {
         if (grader) return grader;
@@ -693,6 +706,7 @@ async function runCase(api: Api, pkg: Package, one: EvalCase, options: EvalOptio
       saved.push(name);
     }
     for (let n = 1; n <= total; n++) {
+      options.signal?.throwIfAborted();
       for (const fake of fakes) fake.calls.length = 0;
       const result = await runOnce(api, pkg, one, n, options, fakes, graderAgent, archive);
       log(`case ${one.name} run ${n}: ${result.status}, ${result.pass ? "pass" : "FAIL"}${result.cost_usd === null ? "" : ` (${usd(result.cost_usd)})`}`);
@@ -721,7 +735,7 @@ async function runOnce(api: Api, pkg: Package, one: EvalCase, n: number, options
   }
   const started = expectOk("starting the run", await api("POST", `/agents/${encodeURIComponent(agentId)}/runs`, { input: { content: one.input }, ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }));
   const runId = String(started.run_id);
-  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS));
+  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
   const view = expectOk(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
   // A run that waits on a person (a question, an approval, its cap) is graded as it stands, then cancelled.
   if (ended.status === "input_required") await api("POST", `/runs/${runId}/cancel`, {});
@@ -758,7 +772,7 @@ async function runOnce(api: Api, pkg: Package, one: EvalCase, n: number, options
 async function gradeLlm(api: Api, agentId: string, input: string, options: EvalOptions): Promise<{ pass: boolean; reason: string; cost_usd: number | null; run_id?: string }> {
   const started = expectOk("starting a grader run", await api("POST", `/agents/${encodeURIComponent(agentId)}/runs`, { input: { content: input } }));
   const runId = String(started.run_id);
-  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS));
+  const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal);
   const view = expectOk(`reading grader run ${runId}`, await api("GET", `/runs/${runId}`));
   if (ended.status === "input_required") await api("POST", `/runs/${runId}/cancel`, {});
   const cost = costOf(view);

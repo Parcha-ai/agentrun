@@ -173,8 +173,8 @@ test("a case passes only when every run passes: one failing run of two fails it"
   assert.notEqual(one.runs[0].agent_id, one.runs[1].agent_id, "each run its own agent");
   const report = await eval_();
   assert.equal(report.pass, false);
-  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["flaky", false], ["learned", true], ["mcp-match", true], ["mcp-mismatch", false]]);
-  assert.equal(report.passed, 3);
+  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["flaky", false], ["held", true], ["learned", true], ["mcp-match", true], ["mcp-mismatch", false]]);
+  assert.equal(report.passed, 4);
   assert.equal(report.cost_usd.total, Math.round((report.cost_usd.runs + report.cost_usd.graders) * 1e6) / 1e6);
   assert.equal(report.cost_usd.unknown, 0);
 });
@@ -205,6 +205,26 @@ test("on an owner's server it applies that server's package only when it is this
   const other = await evalTemplate({ dir, cases: ["learned"], server, runTimeoutMs: 90_000 });
   assert.equal(other.pass, false);
   assert.match(other.cases[0].error, /the server's evalpkg package is not this folder's/);
+});
+
+test("a stopped eval cancels the run in progress and cleans up what it made, as its end does", { timeout: 300_000 }, async (t) => {
+  // Set before the server starts, so its runs' processes hold the held case's answer until the file exists: never, here.
+  process.env.AGENTRUN_TEST_EVAL_HOLD = join(await scratch(t), "never");
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const stop = new AbortController();
+  const stopped = evalTemplate({ dir: PKG, cases: ["held", "learned"], server: { baseUrl, token }, signal: stop.signal, runTimeoutMs: 90_000 });
+  let runs = [];
+  for (let i = 0; !runs.some((run) => run.status === "working"); i++) {
+    assert.ok(i < 600, "the held run started");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    runs = (await api("GET", "/runs")).body.runs ?? [];
+  }
+  stop.abort();
+  await assert.rejects(stopped, { name: "AbortError" });
+  const [held] = runs;
+  assert.equal((await api("GET", `/runs/${held.run_id}`)).body.status, "cancelled", "the run in progress is cancelled");
+  assert.equal((await api("GET", "/agents")).body.agents.length, 0, "the agent it made is archived, and no other was made");
 });
 
 test("graders read the answer as written: the last fenced json block, a target field, and a grader's verdict", () => {
@@ -262,6 +282,19 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.equal(failed.code, 1, failed.err);
   assert.match(failed.out, /\| mcp-mismatch \| 0\/1 \| \*\*fail\*\* \|/);
   assert.equal(JSON.parse(readFileSync(join(dir, "fail.json"), "utf8")).passed, 1);
+
+  // A Ctrl-C cancels the run in progress, cleans up and exits 130 with no report.
+  const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: join(dir, "never") } });
+  let heldErr = "";
+  held.stderr.on("data", (chunk) => {
+    heldErr += chunk;
+    if (heldErr.includes("case held: 1 run")) setTimeout(() => held.kill("SIGINT"), 1_000);
+  });
+  held.stdout.resume();
+  const code = await new Promise((resolve) => held.on("close", resolve));
+  assert.equal(code, 130, heldErr);
+  assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
   for (const [args, said] of [
     [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],

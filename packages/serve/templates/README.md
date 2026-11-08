@@ -88,6 +88,8 @@ case's `max_cost_usd`, and each `llm` grade is a run of its own, capped at $0.50
 | `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does: no key, no network. |
 
 It exits 0 when every case passed, 1 when one failed, and 2 when nothing ran: a flag, the package or a case is wrong.
+A Ctrl-C cancels the run in progress and cleans up as the end does (a second one leaves at once), and exits 130 with no
+report.
 Before anything runs, every case named is read and checked whole: the prompt's front matter, `case.yaml` against the
 package (its parameters and grants as an apply checks them), each fake MCP server's fixture, each learned note as the
 learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a schema that
