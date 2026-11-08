@@ -12,7 +12,7 @@ export const HOOK_TOLERANCE_S = 300;
  *  sets its own floor, or none. */
 export const MIN_KEY_BYTES = 24;
 /** A webhook-id: printable ASCII with no space, as the spec's `msg_...` ids are; it goes into a firing's key and history. */
-const HOOK_ID = /^[\x21-\x7e]{1,255}$/;
+export const HOOK_ID = /^[\x21-\x7e]{1,255}$/;
 /** The longest `webhook-signature` list read: room for many keys during a rotation, never an unbounded loop. */
 const MAX_SIGNATURES_CHARS = 2048;
 

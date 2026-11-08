@@ -4,12 +4,13 @@
 // order, the same for every source: its headers, before a byte of the body is read; its body, cut at the source's
 // maxBodyBytes (413); its check against its key, or against the kernel's one decoy when there is none, so an unknown
 // trigger costs what a known one does; its handshake; its parse; its firing. Every refusal is the one 401, so nothing is
-// learned by asking. A request that passes its check and does not parse, or names no trigger of its source, is answered
-// 200 and said: the sender is who it says, and sending it again changes nothing.
+// learned by asking. A request that passes its check and does not parse, names no trigger of its source, or is an event
+// its trigger does not take (`{ok: "ignored"}`), is answered 200 and said: the sender is who it says, and sending it
+// again changes nothing.
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { ApiError } from "./errors.js";
-import type { Headers, PushEvent, TriggerAdapter } from "./trigger-adapter.js";
+import type { Headers, PushEvent, Source, TriggerAdapter } from "./trigger-adapter.js";
 import { ID } from "./validate.js";
 
 /** The kernel's one decoy key: what a request is checked against when it names no trigger, or one with no key. */
@@ -54,8 +55,10 @@ const REFUSED = "this route needs a request signed by the webhook trigger's secr
 
 export type PushDeps = {
   adapters: readonly TriggerAdapter[];
-  /** Whether `id` is a trigger of the pushed source `kind` that is on. */
-  hookable(id: string, kind: string): boolean;
+  /** The source of trigger `id`, when it is a trigger of the pushed source `kind` that is on. */
+  hooked(id: string, kind: string): Source | undefined;
+  /** A request trigger `id` ignored, under the key its event would have (triggers.ts ignored): kept for its day. */
+  ignored?(id: string, eventId: string): void;
   /** Its firing for the event, recorded (triggers.ts receive). */
   receive(id: string, event: PushEvent): { created: boolean; firing: unknown } | undefined;
   /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
@@ -87,15 +90,22 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   const early = push.headers?.(req.headers as Headers, now);
   if (early) throw refuse(early);
   const body = await readCapped(req, push.maxBodyBytes);
-  const pathTrigger = own ? undefined : ID.test(name) && deps.hookable(name, adapter.id) ? name : undefined;
+  const source = own || !ID.test(name) ? undefined : deps.hooked(name, adapter.id);
+  const pathTrigger = source ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
   // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.
-  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, Date.now());
+  const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, Date.now(), key ? source : undefined);
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
   const handshake = push.handshake?.(req.headers as Headers, body);
   if (handshake) return handshake;
   // The parse reads its settings' public fields alone (who a Slack app is), never a secret.
-  const events = push.parse(req.headers as Headers, body, (field) => (adapter.settings?.fields[field]?.public ? deps.setting(adapter.id, own ? "server" : pathTrigger!, field) : undefined));
+  const events = push.parse(req.headers as Headers, body, source, (field) => (adapter.settings?.fields[field]?.public ? deps.setting(adapter.id, own ? "server" : pathTrigger!, field) : undefined));
+  // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
+  if (!Array.isArray(events)) {
+    deps.say({ condition: "hook_ignored", source: adapter.id, route, ...(pathTrigger ? { trigger: pathTrigger } : {}), reason: events.ignored, ...(events.event ? { event: events.event } : {}) });
+    if (pathTrigger && events.key !== undefined) deps.ignored?.(pathTrigger, events.key);
+    return { status: 200, body: { ok: "ignored" } };
+  }
   if (!events.length) {
     deps.say({ condition: "hook_unparsed", source: adapter.id, route });
     return { status: 200, body: { firings: [] } };

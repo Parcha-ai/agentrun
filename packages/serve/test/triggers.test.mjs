@@ -189,7 +189,7 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "slack"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "slack"], targets: ["start_run", "message_run"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", signatures: ["standard", "github"], tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
 });
 
 test("a capped trigger on a workflow agent is taken, as one on an agentic agent is: a workflow run's spend is capped", { timeout: 120_000 }, async (t) => {

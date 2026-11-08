@@ -1,19 +1,21 @@
-// The owner watches a run's browser live. The run's process serves pi-browser's own viewer (createLiveView, read-only) on
-// an ephemeral loopback port of its own, for every provider: the vendors' own live-view URLs never leave that process.
+// The owner watches a run's browser live, and takes it over (browser-person.ts). The run's process runs pi-browser's own
+// viewer (createLiveView, take-over) on an ephemeral loopback port of its own, for every provider: the vendors' own live-view URLs never leave that process.
 // As each session launches, the process hands its viewer to the server in a file of that session's own, in a directory in
 // the run's directory, outside work/ (BROWSER_LIVE_DIR/<tag>.json, 0600 in 0700, written whole and renamed into place):
 // the port, the viewer's path id, its token, the session's tag and when. Its own file goes when the session is released,
 // and the token dies with it (pi-browser kills it then); a session's release never touches another's file, so an old
 // session's release that crosses a new one's launch (a relaunch) leaves the new one handed over.
 //
-// The server reads the newest for the owner alone (GET /v2/runs/{id}/browser) and proxies the viewer under the run's path
-// (/v2/runs/{id}/browser/live/*), HTTP and the WebSocket upgrade, to that port alone, and to nothing else: the viewer's
-// page under a CSP whose frame-ancestors is 'self' (the console's own origin), the upgrade only from this server's own
-// origin. The token is never in a record, a timeline row, a run's view, its files (work/ alone is served), the model's
+// The server reads the newest for the owner alone (GET /v2/runs/{id}/browser) and answers the viewer under the run's path
+// (/v2/runs/{id}/browser/live/*). The viewer's code (its page, script and style) is always this server's own, the files of
+// the pi-browser it has installed, never anything a run's port answers: a run's port only ever carries the viewer's
+// WebSocket, data and no code, proxied to that port alone and only from this server's own origin. The page is served
+// under a CSP whose frame-ancestors is 'self' (the console's own origin). The token is never in a record, a timeline row, a run's view, its files (work/ alone is served), the model's
 // context, a home, an export or an archive: only this file and the owner's answer hold it.
 import { randomBytes } from "node:crypto";
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -86,8 +88,16 @@ export async function readHandovers(runDir: string): Promise<LiveHandover[]> {
       if (!name.endsWith(".json") || !TAG.test(name.slice(0, -5))) continue;
       const file = join(dir, name);
       try {
-        if (!ownAlone(await lstat(file), false)) continue;
-        const value = JSON.parse(await readFile(file, "utf8")) as Partial<LiveHandover>;
+        // Opened without following a link, and checked on the handle it read: a name swapped meanwhile reads nothing.
+        const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+        let text: string;
+        try {
+          if (!ownAlone(await handle.stat(), false)) continue;
+          text = await handle.readFile("utf8");
+        } finally {
+          await handle.close();
+        }
+        const value = JSON.parse(text) as Partial<LiveHandover>;
         const ok = Number.isInteger(value.port) && value.port! > 0 && value.port! < 65_536 && VIEWER_ID.test(String(value.id)) && TOKEN.test(String(value.token)) && value.tag === name.slice(0, -5) && Number.isFinite(value.at);
         if (ok) found.push({ port: value.port!, id: value.id!, token: value.token!, tag: value.tag!, at: value.at! });
       } catch {
@@ -122,32 +132,18 @@ export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boole
   });
 }
 
-/** The viewer's page and files under the run's path: only `rest` ("/v/<id>", "/viewer.js", "/viewer.css") reaches the run's
- *  port, with no header of the owner's (no cookie, no Authorization); the answer carries this route's own CSP, framed by
- *  this server's own origin alone. */
+/** The viewer's page and files under the run's path ("/v/<id>", "/viewer.js", "/viewer.css"): this server's own copy of
+ *  pi-browser's viewer, never the run's port's answer, under this route's own CSP, framed by this server's own origin alone.
+ *  The page reads the viewer's id from its path and its token from the fragment, as pi-browser's own does. */
 export const LIVE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css)$/;
 export const liveRest = (rest: string): boolean => LIVE_REST.test(rest);
 
-export function proxyLiveHttp(req: IncomingMessage, res: ServerResponse, handover: LiveHandover, rest: string): Promise<void> {
-  return new Promise((resolve) => {
-    const upstream = httpRequest({ host: LOOPBACK, port: handover.port, method: req.method === "HEAD" ? "HEAD" : "GET", path: rest, headers: { host: `${LOOPBACK}:${handover.port}` }, timeout: 10_000 }, (answer) => {
-      const type = String(answer.headers["content-type"] ?? "text/plain");
-      res.writeHead(answer.statusCode ?? 502, { "content-type": type, "content-security-policy": LIVE_CSP, "referrer-policy": "no-referrer", "cache-control": "no-store", "x-content-type-options": "nosniff" });
-      answer.pipe(res);
-      answer.once("end", () => resolve());
-      answer.once("error", () => (res.destroy(), resolve()));
-    });
-    upstream.on("timeout", () => upstream.destroy());
-    // A client that leaves mid-answer takes the request to the run with it.
-    res.once("close", () => { if (!res.writableFinished) upstream.destroy(); });
-    upstream.on("error", () => {
-      if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain", "content-security-policy": LIVE_CSP, "cache-control": "no-store" });
-      res.end("the run's browser view did not answer\n");
-      resolve();
-    });
-    upstream.end();
-  });
+export async function serveViewerFile(req: IncomingMessage, res: ServerResponse, rest: string): Promise<void> {
+  const { viewerAssets } = await import("@parcha/pi-browser/live-view");
+  const [type, body] = rest === "/viewer.js" ? ["text/javascript; charset=utf-8", viewerAssets.js] : rest === "/viewer.css" ? ["text/css; charset=utf-8", viewerAssets.css] : ["text/html; charset=utf-8", viewerAssets.html];
+  res.writeHead(200, { "content-type": type, "content-length": Buffer.byteLength(body), "content-security-policy": LIVE_CSP, "referrer-policy": "no-referrer", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+  res.end(req.method === "HEAD" ? undefined : body);
 }
 
 /** How often an open viewer's session is checked again. A reset-password run in another process and a cookie past its end
@@ -209,6 +205,10 @@ export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buf
     upstream.destroy();
   });
   socket.on("error", end);
+  // A WebSocket is never half open: either side ending ends both, so a run's port that never closes its side keeps
+  // neither socket open.
+  socket.once("end", end);
+  upstream.once("end", end);
   socket.on("close", () => upstream.destroy());
   upstream.on("close", () => socket.destroy());
 }

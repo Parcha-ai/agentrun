@@ -45,6 +45,9 @@ export type TriggerAdapter = {
   firedBy?: string;
   /** Its shapes as JSON Schema, each a closed object with `kind` its id: the OpenAPI document's source oneOf. */
   schemas: ObjectSchema[];
+  /** Its shapes as a trigger's view sends them, when the server fills in fields a write may leave out (a schedule's zone
+   *  and start). Default `schemas`: a field the write left out stays out. */
+  sent?: ObjectSchema[];
   /** A source given at a create or a PATCH (`value.kind` is its id), checked: each issue added through `bad`, with its
    *  field under `source`. Undefined when it does not read. */
   parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
@@ -71,6 +74,9 @@ export type TriggerAdapter = {
    *  run's question, never an approval or a cap. Absent: whoever passed the check may start one (`sender`), and no one
    *  steers. */
   trust?: Trust;
+  /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
+   *  only the events it names). Default false: a firing while the last run is active is skipped. */
+  concurrent?(source: Source): boolean;
 };
 
 /** Who an event is from, as its source's parse says: `member`, a person of the source's own (a Slack workspace's);
@@ -83,22 +89,28 @@ export const SENDER_STARTS: Trust = { start: ["sender"], steer: [] };
 /** Request headers, as Node gives them. */
 export type Headers = Record<string, string | string[] | undefined>;
 /** How a pushed source's requests are taken, in this order: its headers, its body (at most maxBodyBytes), its check
- *  against its settings' `key`, its handshake, its parse. Every refusal is the one 401. */
+ *  against its settings' `key`, its handshake, its parse. Every refusal is the one 401. `source`: on a trigger's own path,
+ *  the trigger's source when it names one of this kind that is on; else undefined. */
 export type Push = {
   maxBodyBytes: number;
   /** The settings field it checks a request with. */
   key: string;
   /** Why the headers alone are refused, before a byte of the body is read. */
   headers?(headers: Headers, nowMs: number): string | undefined;
-  /** Why the request is not the sender's under `key`, or undefined when it is. */
-  verify(key: string, headers: Headers, body: Buffer, nowMs: number): string | undefined;
+  /** Why the request is not the sender's under `key`, or undefined when it is (and fits `source`, when given). */
+  verify(key: string, headers: Headers, body: Buffer, nowMs: number, source?: Source): string | undefined;
   /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
   handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
   /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
-   *  said). `own`: its settings' public fields for the request's scope (who a Slack app is; never a secret), to tell its
-   *  own messages from others'. */
-  parse(headers: Headers, body: Buffer, own: (field: string) => string | undefined): PushEvent[];
+   *  said). `ignored`: a request `source` does not take (its trigger's own filter), with why: answered 200
+   *  `{ok: "ignored"}`, and said. `own`: its settings' public fields for the request's scope (who a Slack app is; never
+   *  a secret), to tell its own messages from others'. */
+  parse(headers: Headers, body: Buffer, source?: Source, own?: (field: string) => string | undefined): PushEvent[] | PushIgnored;
 };
+/** A verified request its trigger's source does not take: why (`ignored`), the event it was, when it names one, and its
+ *  key (`key`, as its event would be keyed), which its trigger keeps for its day: the same request sent again under
+ *  another label (an unsigned event header) is then a duplicate, never a firing. */
+export type PushIgnored = { ignored: string; event?: string; key?: string };
 /** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
  *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
  *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it, named on the
