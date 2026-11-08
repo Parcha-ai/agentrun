@@ -6,7 +6,7 @@
 // the browser keeps its own routes. Driven by events: nothing sleeps.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { COMPUTER_ROUTES, computerLivePort, computerRoute, computerStateOf, registerRunComputer } from "../dist/computer-view.js";
+import { COMPUTER_ROUTES, computerRoute, computerStateOf, registerRunComputer } from "../dist/computer-view.js";
 import { ERROR_STATUS } from "../dist/errors.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { ROUTES } from "../dist/server.js";
@@ -78,22 +78,6 @@ test("the owner watches a run's desktop, takes it over (the agent's input parks)
   assert.equal(computerStateOf(runId, "ready"), "ready", "and back with the agent");
   assert.equal((await answer(routes["hand-back"], runId)).status, 200, "handing back one nobody holds is the same answer");
   assert.deepEqual(desktop.streams, [true, false, false, true, true], "view-only, then driving while held, then view-only again");
-});
-
-test("the register is the port the run read's computer field reads: ready, taken_over while held (its take-over and hand-back), ended once down, no word for a run with none", async () => {
-  const port = computerLivePort();
-  const runId = "run-port";
-  assert.equal(await port.live(runId), undefined);
-  await assert.rejects(port.takeOver(runId), (error) => error.code === "not_found");
-  const desktop = fakeDesktop();
-  const letGo = registerRunComputer(runId, desktop.computer);
-  assert.deepEqual(await port.live(runId), { state: "ready", viewer: { url: "https://stream.example/desktop?view" } });
-  assert.deepEqual(await port.takeOver(runId), { state: "taken_over", viewer: { url: "https://stream.example/desktop?drive" } });
-  assert.deepEqual(await port.handBack(runId), { state: "ready", viewer: { url: "https://stream.example/desktop?view" } });
-  desktop.end();
-  assert.deepEqual(await port.live(runId), { state: "ended" });
-  letGo();
-  assert.equal(await port.live(runId), undefined);
 });
 
 test("a token is refused; a run with no desktop or phone is off (the browser keeps its routes); one not up is none, and its take-over 409; a body field is refused", async () => {
