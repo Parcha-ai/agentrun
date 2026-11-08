@@ -88,9 +88,30 @@ export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	return found;
 }
 
-/** What a computer printed, with the token taken out and cut to a line's length. */
+/** The shortest run of a token's characters (in any of its forms) that scrub takes out. */
+const TOKEN_CHUNK = 8;
+
+/**
+ * What a computer printed, with the token taken out in every form it may be echoed in (as written, base64, base64url,
+ * URL-encoded, hex) and any run of TOKEN_CHUNK or more characters of one of them, then cut to a line's length.
+ */
 function scrub(text: string, token: string): string {
-	return (token === "" ? text : text.replaceAll(token, "[token]")).trim().slice(0, 500);
+	if (token.length < TOKEN_CHUNK) return (token === "" ? text : text.replaceAll(token, "[token]")).trim().slice(0, 500);
+	const bytes = Buffer.from(token);
+	const forms = [token, bytes.toString("base64"), bytes.toString("base64").replace(/=+$/, ""), bytes.toString("base64url"), encodeURIComponent(token), bytes.toString("hex")];
+	const windows = new Set<string>();
+	for (const form of forms) for (let at = 0; at + TOKEN_CHUNK <= form.length; at++) windows.add(form.slice(at, at + TOKEN_CHUNK));
+	// Every position a window of a form starts at is covered for the window's length; each covered run becomes one mark.
+	const covered = new Array<boolean>(text.length).fill(false);
+	for (let at = 0; at + TOKEN_CHUNK <= text.length; at++) {
+		if (windows.has(text.slice(at, at + TOKEN_CHUNK))) covered.fill(true, at, at + TOKEN_CHUNK);
+	}
+	let out = "";
+	for (let at = 0; at < text.length; at++) {
+		if (!covered[at]) out += text[at];
+		else if (at === 0 || !covered[at - 1]) out += "[token]";
+	}
+	return out.trim().slice(0, 500);
 }
 
 let shippedSha256: string | undefined;
