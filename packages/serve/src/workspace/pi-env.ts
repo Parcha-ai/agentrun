@@ -13,10 +13,10 @@
 // thresholds the whole output goes to .agentrun/output/<id> in the run's folder, which the model reads with read (and
 // the run's end sweeps). A program a signal ended answers 128 + its number, as pi's own environment does.
 import { randomBytes } from "node:crypto";
-import { constants as osConstants } from "node:os";
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
+import { exitCodeOf } from "@parcha/agentrun-kernel/kernel";
 import {
   type BinaryReader, err, ExecutionError, type ExecutionEnv, FileError, type FileErrorCode, type FileInfo, LineScanner, ok, type Result,
   type ShellExecOptions, type ShellExecResult, StreamDecoder,
@@ -241,8 +241,8 @@ export function piEnv(workspace: Workspace, options: PiEnvOptions): ExecutionEnv
       return err(timedOut);
     }
     if (spillError !== undefined) return err(new ExecutionError("unknown", `Failed to preserve complete shell output: ${(spillError as Error)?.message ?? String(spillError)}`, spillError as Error));
-    const signalled = ran!.signal === null ? undefined : (osConstants.signals as Record<string, number>)[ran!.signal];
-    const exitCode = ran!.code ?? (signalled === undefined ? 1 : 128 + signalled);
+    // The kernel's one rule: the code, or 128 + n for signal n; 1 when neither is known, as pi's own environment says.
+    const exitCode = exitCodeOf({ exitCode: ran!.code, signal: ran!.signal, timedOut: ran!.timedOut }) ?? 1;
     return ok({ exitCode, ...(spillPath === undefined ? {} : { spillPath }) });
   }
 
