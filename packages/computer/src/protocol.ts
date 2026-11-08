@@ -15,6 +15,8 @@ export const MAX_LIST_DEPTH = 16;
 export const MAX_LIST_ENTRIES = 1000;
 /** How much of each stream a process keeps: the last 8 MiB, read by byte offset. */
 export const PROCESS_RING_BYTES = 8 * 1024 * 1024;
+/** How much of a process's output its log file keeps: the first 16 MiB. */
+export const PROCESS_LOG_BYTES = 16 * 1024 * 1024;
 /** How many processes a daemon holds, running or ended; the oldest ended ones are dropped first. */
 export const MAX_PROCESSES = 256;
 /**
@@ -245,6 +247,20 @@ export interface ProcessStartParams {
 	pty?: PtySize;
 	/** Keep stdin open for process.write. Without it (and without a pty), stdin is /dev/null. */
 	stdin?: boolean;
+	/**
+	 * An absolute path for a new file the daemon writes the first PROCESS_LOG_BYTES of the output to, stdout and stderr
+	 * (or the terminal's) as they come, and read as the "log" stream. The daemon makes the missing directories and the
+	 * file itself (mode 0644, its own); a link at the path or at any directory on its way is refused as `denied`, a
+	 * file already there as `exists`, and nothing is started.
+	 */
+	log?: string;
+	/**
+	 * The process runs until its program and every process left in its process group (with a pty, its session) have
+	 * ended, and reports the program's own exit. A signal goes to what is left of the group once the program is gone.
+	 */
+	waitGroup?: boolean;
+	/** "keep": when the process ends, what it started outside it runs on, to the computer's end, instead of being ended. */
+	orphans?: "keep";
 }
 
 export interface ProcessStartResult {
@@ -254,11 +270,11 @@ export interface ProcessStartResult {
 	pid: number;
 }
 
-export type ProcessStream = "stdout" | "stderr" | "pty";
+export type ProcessStream = "stdout" | "stderr" | "pty" | "log";
 
 export interface ProcessReadParams {
 	id: string;
-	/** "stdout" or "stderr"; "pty" for a process started with one. */
+	/** "stdout" or "stderr"; "pty" for a process started with one; "log" for one started with a log. */
 	stream: ProcessStream;
 	/** Bytes since the process started. Pass the last read's nextOffset. */
 	offset: number;
@@ -279,6 +295,15 @@ export interface ProcessReadResult {
 	dropped: number;
 	/** The process has ended and nothing is left past nextOffset. */
 	exited: boolean;
+	/** The stream's bytes so far: every byte since the process started, kept in the ring or dropped. For "log", the log's. */
+	size: number;
+	/** "log" only: output came past the log's PROCESS_LOG_BYTES and was not written to it. */
+	capped?: boolean;
+	/**
+	 * "log" only: a write to the log failed or wrote short (a full disk), so the log stopped there for good and holds
+	 * only the output before it: why. Nothing after it is written, so the file stays a true prefix.
+	 */
+	logError?: string;
 }
 
 export interface ProcessWriteParams {

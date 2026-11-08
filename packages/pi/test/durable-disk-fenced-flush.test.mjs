@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { createRegistry } from '@earendil-works/pi-durable';
 import { FencedError, openClaimDir, openDurableRun } from '@parcha/pi-durable-disk';
 import { createWorkflowExtension } from '@parcha/agentrun-pi/durable';
@@ -90,7 +91,7 @@ async function runFenced({ fence }) {
   registry.install(flow.extension);
   const run = await openDurableRun({ disk: 'dsk-local', region: 'local', id: 'run-1' }, {
     acquire: async ({ ref }) => claimOf(directory)(ref), claimDir: (at) => openClaimDir(at),
-    harness: { registry, models: {} }, decorateStore,
+    harness: { registry, models: createModels() }, decorateStore,
     onFenced: (error) => { state.fenced.push(error); },
   });
   let settled;

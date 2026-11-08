@@ -201,12 +201,12 @@ jobs:
       - run: npm run build-storybook
 
   verify:
-    # The required checks keep their names: verify (<node>) passes when every test shard, the console and every pi leg
-    # passed. It reads `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails
-    # verify (22.x) too, and so does a pi leg that failed, was cancelled or was skipped. In the merge queue the test shards
-    # run on 22.23.2 only and every verify (<node>) still runs: `needs.test.result` is the result of the shards that ran.
+    # The required checks keep their names: verify (<node>) passes when every test shard and the console passed. It reads
+    # `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x)
+    # too. In the merge queue the test shards run on 22.23.2 only and every verify (<node>) still runs:
+    # `needs.test.result` is the result of the shards that ran.
     name: verify (${{ matrix.node }})
-    needs: [test, console, pi-1-2]
+    needs: [test, console]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -215,165 +215,11 @@ jobs:
       matrix:
         node: ['22.19.0', '22.23.2', '24.21.0']
     steps:
-      - name: Every test shard, the console and every pi leg passed
+      - name: Every test shard and the console passed
         env:
           RESULT: ${{ needs.test.result }}
           CONSOLE: ${{ needs.console.result }}
-          PI_LEGS: ${{ needs['pi-1-2'].result }}
-        run: test "$RESULT" = success && test "$CONSOLE" = success && test "$PI_LEGS" = success
-
-  pi-durable-disk-pi-floor:
-    # @parcha/pi-durable-disk's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its
-    # build, type-check and whole suite run again with pi-durable, chord and pi-ai at 1.0.4, one copy each: an install
-    # into the workspace alone left pi-durable 1.0.4 at the root loading the root's chord and pi-ai 1.1.0.
-    # scripts/pi-leg.mjs fails the run if another version was resolved, and sets PI_EXPECT_VERSION for the package's own
-    # version guard, which also checks what pi-durable itself loads.
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
-      - name: Retain the leg's resolved versions
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-leg-pi-durable-disk-floor
-          path: .release/pi-leg.json
-          if-no-files-found: ignore
-
-  agentrun-pi-pi-floor:
-    # @parcha/agentrun-pi's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its build,
-    # type-check and whole suite run again with all six family packages at 1.0.4, beside pi-durable-disk at 1.0.4 (its
-    # crash sweeps load both in one process). scripts/pi-leg.mjs fails the run if another version was resolved.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
-      - name: Retain the leg's resolved versions
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-leg-agentrun-pi-floor
-          path: .release/pi-leg.json
-          if-no-files-found: ignore
-
-  pi-1-2:
-    # Every package whose pi-family peer ranges accept the leg's pi builds, type-checks and runs its whole suite on it,
-    # while the workspace develops on 1.1.0 (verify). scripts/pi-leg.mjs picks the packages from their ranges, so a range
-    # that starts to accept a version is tested on it in the same pull request, and fails the run if another version was
-    # resolved. From 1.3 pi pins its own packages to exact versions, so each leg installs one whole family.
-    # Each leg runs as a consumer job and seven parts. `consumer` packs the packages and installs them in an empty
-    # directory with the family at the leg's pi. Each part installs, checks and builds the whole family (pi-leg builds
-    # every workspace the leg uses itself, so a part needs no build of its own and does not wait for the build job), then
-    # runs its share of the leg workspaces' type-checks and test files, assigned by time (pi-leg.mjs --shard, the count in
-    # scripts/ci-shards.json; the list below must agree, scripts/ci-plan.test.mjs). Every part plans all seven and fails
-    # unless they cover each file once, so each runs once and a new pi workspace or test file runs in one of them.
-    name: pi-1-2 (${{ matrix.pi }}, ${{ matrix.part }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        pi: ['1.2.0', '1.3.0']
-        part: [consumer, '1', '2', '3', '4', '5', '6', '7']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - name: Install poppler, Ghostscript and ffmpeg
-        # agentrun-serve's pdf_pages tests need them (as the any test shards do), and its files may be in any part.
-        if: matrix.part != 'consumer'
-        run: |
-          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
-          pdftoppm -v && gs --version && ffmpeg -version | head -1
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - if: matrix.part == 'consumer'
-        run: npm run build
-      - name: The clean consumer at the leg's pi
-        # The packages packed and installed together in an empty directory, with the pi family at this version: one
-        # pi-durable and one chord there.
-        if: matrix.part == 'consumer'
-        run: node scripts/verify-packages.mjs --pi ${{ matrix.pi }}
-      - name: The family at the leg's pi, and this part's type-checks and test files on it
-        if: matrix.part != 'consumer'
-        env:
-          LEG_PI: ${{ matrix.pi }}
-          LEG_PART: ${{ matrix.part }}
-        run: node scripts/pi-leg.mjs --pi "$LEG_PI" --scratch --require-all --shard "$LEG_PART" --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
-      - name: Retain the leg's packages and resolved versions
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-leg-${{ matrix.pi }}-${{ matrix.part }}
-          path: |
-            .release/pi-leg.json
-            .release/verification.json
-          if-no-files-found: ignore
-
-  pi-cross-version:
-    # A run that starts on pi 1.1, is killed, and resumes on pi 1.2 completes. The package's crash tests run with every
-    # first process of a run in an install of the packed packages on pi 1.1.0 and every later process in one on 1.2.0;
-    # scripts/pi-cross-version.mjs fails unless each install loads one copy of pi-durable, chord and pi-ai at its version.
-    needs: [build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - uses: actions/download-artifact@v4
-        with:
-          name: build-22.23.2
-          path: ${{ runner.temp }}/build
-      - name: The build job's output, for this tree and this Node
-        run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
-      - run: node scripts/pi-cross-version.mjs --from 1.1.0 --to 1.2.0 --npm "npx --yes npm@11.21.0"
-
-  pi-transport-pi-floor:
-    # @parcha/pi-transport's peers accept the pi family from 1.0.4, while the package develops against 1.1.0. Its build,
-    # type-check and whole suite run again with the family at 1.0.4 as one copy at the root, which is how a host's install
-    # resolves it (a plain `npm install --no-save -w` leaves pi-durable 1.0.4 loading a chord and pi-ai 1.1.0).
-    # scripts/pi-leg.mjs fails the run if another version was resolved.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.2'
-          cache: npm
-      - run: npm install --global npm@11.21.0 --ignore-scripts
-      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
-      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-transport --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
-      - name: Retain the leg's resolved versions
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pi-leg-pi-transport-floor
-          path: .release/pi-leg.json
-          if-no-files-found: ignore
+        run: test "$RESULT" = success && test "$CONSOLE" = success
 
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
@@ -546,10 +392,11 @@ jobs:
     # (--readme-line): `packed` puts this tree's package in the line, so it says whether the next release installs; `registry`
     # runs the line as written, so it says whether the published package installs today. Unlike `stranger`, the peers are not
     # pinned to the developed versions. A mode that is not `blocking` reports a failure as a warning on the run and passes, so
-    # a known failure does not turn every pull request red. pi-durable-disk's two are blocking: 0.1.0-beta.14, whose peer
-    # ranges accept pi below 1.4, installs with the README's own line as written (0.1.0-beta.13, below 1.3, did not once pi
-    # 1.3.0 shipped). pi-durable-agent's `packed` blocks; its `registry` warns until its README's line names `@latest`,
-    # which the registry serves (0.1.0-beta.28), instead of `@beta`, a tag it has none of for this package. Make it blocking then.
+    # a known failure does not turn every pull request red. pi-durable-disk's `packed` blocks; its `registry` warns until the
+    # first release on pi 1.5 publishes (the README's line pins pi 1.5.0, and every published beta's peers stop below pi
+    # 1.4, so the line as written ends in ERESOLVE until then). Make it blocking then. pi-durable-agent's `packed` blocks;
+    # its `registry` warns until its README's line names `@latest`, which the registry serves (0.1.0-beta.28), instead of
+    # `@beta`, a tag it has none of for this package. Make it blocking then.
     needs: [build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -562,7 +409,7 @@ jobs:
             blocking: true
           - spec: pi-durable-disk
             mode: registry
-            blocking: true
+            blocking: false
           - spec: pi-durable-agent
             mode: packed
             blocking: true

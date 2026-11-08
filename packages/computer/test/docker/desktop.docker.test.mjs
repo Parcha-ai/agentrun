@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../../dist/index.js";
-import { dockerConformance } from "../../dist/conformance/docker.js";
+import { createDriftedProvider, createProvider } from "../../dist/conformance/docker.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const DOCKERFILE = fileURLToPath(new URL("../fixtures/desktop/Dockerfile", import.meta.url));
@@ -23,7 +23,6 @@ const EXTENSION = ["screen", "input", "touch", "apps", "lifetime"];
 describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	let report;
 	let run;
-	let close = () => {};
 	let dir;
 	const made = new Set();
 
@@ -41,9 +40,8 @@ describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "se
 			env: { ...process.env, CGO_ENABLED: "0", GOOS: "linux", GOARCH: arch },
 			stdio: "inherit",
 		});
-		const conformance = dockerConformance({ desktop: {} });
-		const { provider, drifted } = conformance;
-		close = conformance.close;
+		const provider = await createProvider({ desktop: {} });
+		const drifted = () => createDriftedProvider({ desktop: {} });
 		const create = provider.create.bind(provider);
 		provider.create = async (spec, context) => {
 			run ??= spec.labels?.["agentrun.conformance"];
@@ -56,7 +54,6 @@ describe("the conformance suite on a Docker desktop", { skip: LIVE ? false : "se
 	});
 
 	after(() => {
-		close();
 		if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
 		for (const name of new Set([...made, ...(run ? labelled(run) : [])])) {
 			try {

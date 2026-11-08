@@ -24,10 +24,10 @@ const FENCE_APP = fileURLToPath(new URL("./fixtures/park-fence.ts", import.meta.
 /** The record a released run left in its store. */
 const recordOf = async (disk: LocalDisk): Promise<RunRecord> => (await readLocalRunStatus(disk.path(`runs/${REF.id}`)))!;
 
-function task(kind: string, checkpoint?: unknown, recordStatus = "running"): TaskInspection {
+function task(kind: string, checkpoint?: unknown, recordStatus = "running", until?: number): TaskInspection {
   return {
     record: { id: 1, kind: "pi.generation", state: { status: recordStatus, checkpoint } } as never,
-    state: (kind === "blocked" ? { kind, reason: "missing_task" } : kind === "waiting" ? { kind, on: [] } : { kind }) as never,
+    state: (kind === "blocked" ? { kind, reason: "missing_task" } : kind === "waiting" ? { kind, on: [] } : kind === "sleeping" ? { kind, until } : kind === "pending" ? { kind, migrates: false } : { kind }) as never,
   };
 }
 const inspection = (tasks: TaskInspection[], extra: Partial<HarnessInspection> = {}): HarnessInspection => ({ scheduling: "running", tasks, submissions: [], ...extra });
@@ -41,23 +41,34 @@ describe("the deadline reader and the classification", () => {
     }
   });
 
-  it("a running or ready task keeps the instance up unless it only sleeps past the threshold; the nearest deadline wins", () => {
+  it("a running or pending task keeps the instance up unless it only sleeps past the threshold; the nearest deadline wins", () => {
     const now = 1_000;
     assert.deepEqual(busyState(inspection([task("running", { phase: "request" })]), now, 100), { kind: "busy" });
-    assert.deepEqual(busyState(inspection([task("ready", { phase: "prepare" })]), now, 100), { kind: "busy" });
+    assert.deepEqual(busyState(inspection([task("pending", { phase: "prepare" })]), now, 100), { kind: "busy" });
     assert.deepEqual(busyState(inspection([task("running", { phase: "retry", until: 1_100 })]), now, 100), { kind: "busy" }, "a wait no longer than the threshold");
     assert.deepEqual(busyState(inspection([task("running", { phase: "retry", until: 1_101 })]), now, 100), { kind: "waiting", until: 1_101 });
     assert.deepEqual(
-      busyState(inspection([task("running", { phase: "retry", until: 9_000 }), task("ready", { phase: "poll", pollAt: 5_000 })]), now, 100),
+      busyState(inspection([task("running", { phase: "retry", until: 9_000 }), task("pending", { phase: "poll", pollAt: 5_000 })]), now, 100),
       { kind: "waiting", until: 5_000 },
     );
     assert.deepEqual(busyState(inspection([task("running", { phase: "retry", until: 9_000 }), task("running", { phase: "tools" })]), now, 100), { kind: "busy" });
   });
 
+  it("a sleeping task (pi 1.5's durable sleep) waits until its until: past the threshold it parks, within it or without a number it keeps the instance up", () => {
+    const now = 1_000;
+    assert.deepEqual(busyState(inspection([task("sleeping", { phase: "release", attempt: 1 }, "sleeping", 1_101)]), now, 100), { kind: "waiting", until: 1_101 });
+    assert.deepEqual(busyState(inspection([task("sleeping", { phase: "release" }, "sleeping", 1_100)]), now, 100), { kind: "busy" }, "a wait no longer than the threshold");
+    assert.deepEqual(busyState(inspection([task("sleeping", { phase: "release" }, "sleeping")]), now, 100), { kind: "busy" }, "no until");
+    assert.deepEqual(
+      busyState(inspection([task("sleeping", {}, "sleeping", 9_000), task("running", { phase: "retry", until: 5_000 })]), now, 100),
+      { kind: "waiting", until: 5_000 },
+    );
+  });
+
   it("waiting, completing and blocked tasks do not keep it up; unknown states, a closing Harness and orphan submissions do", () => {
     assert.deepEqual(busyState(inspection([task("waiting"), task("completing"), task("blocked")]), 0, 100), { kind: "idle" });
     assert.deepEqual(busyState(inspection([]), 0, 100), { kind: "idle" });
-    assert.deepEqual(busyState(inspection([task("sleeping", { phase: "retry", until: 9e9 })]), 0, 100), { kind: "busy" }, "a state a later pi adds");
+    assert.deepEqual(busyState(inspection([task("parked", { phase: "retry", until: 9e9 })]), 0, 100), { kind: "busy" }, "a state a later pi adds");
     assert.deepEqual(busyState(inspection([], { scheduling: "closing" }), 0, 100), { kind: "busy" });
     assert.deepEqual(busyState(inspection([], { submissions: [{ id: 1 as SubmissionId, conversationId: 0, type: "input", status: "queued" }] as never }), 0, 100), { kind: "busy" });
   });
