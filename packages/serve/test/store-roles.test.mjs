@@ -1,9 +1,10 @@
 // Who opens the store (the lead's ruling on processes): the server and each runner are separate processes with their own
 // connection, and SQLite serializes their writes. The server sets the schema up once at its start and holds the store's
 // owner lock: a second server on the same store is refused. A runner never sets anything up and refuses a schema version
-// it does not know, with a typed error.
+// it does not know, with a typed error. Both name only the data directory: the store picks its file in it, and nothing
+// outside the store names that file (scripts/store-sql-guard.test.mjs).
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -39,6 +40,29 @@ test("a runner refuses a store with no schema yet, and one of a schema version i
   raw.close();
   await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === 99 && error.known === 1);
   await assert.rejects(openSqliteStore({ file, role: "server" }), SchemaVersionUnknown, "nor does the server open a later build's store");
+});
+
+test("a server and a runner given the same data directory open the same store, whose file the store names; a second server on it is refused", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "store-roles-data-"));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const server = await openSqliteStore({ dataDir, role: "server" });
+  t.after(() => server.close());
+  await server.agents.create({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {} });
+  const runner = await openSqliteStore({ dataDir, role: "runner" });
+  t.after(() => runner.close());
+  assert.equal((await runner.agents.get("agent-1"))?.currentRevision, "rev-1", "the runner reads what the server wrote");
+  await assert.rejects(openSqliteStore({ dataDir, role: "server" }), StoreOwned);
+});
+
+test("a server makes its data directory when it is not there; a runner never does", async (t) => {
+  const parent = mkdtempSync(join(tmpdir(), "store-roles-parent-"));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  await assert.rejects(openSqliteStore({ dataDir: join(parent, "runner-first"), role: "runner" }));
+  assert.equal(existsSync(join(parent, "runner-first")), false, "the runner made nothing");
+  const server = await openSqliteStore({ dataDir: join(parent, "data"), role: "server" });
+  await server.close();
+  const runner = await openSqliteStore({ dataDir: join(parent, "data"), role: "runner" });
+  await runner.close();
 });
 
 test("a runner sets nothing up: its open leaves an empty file empty", async (t) => {

@@ -1,6 +1,7 @@
 // Only the store knows SQL, pragmas or a file (design 2.1): SQL and PRAGMA live in packages/serve/src/store/ and nowhere
 // else in the packages' and apps' source. Today's files that still hold SQL are listed by name; the cutover deletes or moves
-// each one, and the list only shrinks: a listed file with no SQL left fails until it is taken off the list.
+// each one, and the list only shrinks: a listed file with no SQL left fails until it is taken off the list. The same for
+// a .sqlite file name: only the store picks its file in the data directory it is given.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -33,6 +34,39 @@ const TODAY = [
   "packages/serve/src/server-lock.ts",
   "packages/serve/src/server.ts",
 ];
+/** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
+const SQLITE_FILE = /\.sqlite\b/;
+/** The files outside the store that named a .sqlite file when the store took its data directory. Each goes at the
+ *  cutover; the list only shrinks. */
+const TODAY_FILE = [
+  "packages/harness/src/assemble.ts",
+  "packages/harness/src/demo.ts",
+  "packages/pi-durable-agent/src/agent-store.ts",
+  "packages/pi-durable-agent/src/home.ts",
+  "packages/pi-durable-agent/src/pack-shared.ts",
+  "packages/pi-durable-agent/src/pack.ts",
+  "packages/pi-durable-agent/src/runs.ts",
+  "packages/pi-durable-agent/src/serve/store.ts",
+  "packages/pi-durable-agent/src/store.ts",
+  "packages/pi-durable-agent/src/unpack.ts",
+  "packages/pi-durable-agent/src/vault.ts",
+  "packages/pi-durable-disk/src/barriers.ts",
+  "packages/pi-durable-disk/src/confine.ts",
+  "packages/pi-durable-disk/src/run.ts",
+  "packages/pi-durable-disk/src/status.ts",
+  "packages/serve/src/agents.ts",
+  "packages/serve/src/app.ts",
+  "packages/serve/src/disk.ts",
+  "packages/serve/src/import.ts",
+  "packages/serve/src/run-db.ts",
+  "packages/serve/src/run-holder.ts",
+  "packages/serve/src/runs.ts",
+  "packages/serve/src/server.ts",
+  "packages/serve/src/stats.ts",
+  "packages/serve/src/tool-plane.ts",
+  "packages/serve/src/triggers.ts",
+  "packages/serve/src/webhooks.ts",
+];
 
 /** Every .ts/.mts/.js/.mjs file under `dir`, relative to the repository, skipping node_modules and dist. */
 function sources(dir) {
@@ -64,4 +98,19 @@ test("no SQL or PRAGMA outside the store, but for today's files on the list", ()
 
 test("the list only shrinks: a listed file with no SQL left is taken off it", () => {
   assert.deepEqual(TODAY.filter((file) => !withSql.includes(file)), [], "these hold no SQL now: take them off TODAY");
+});
+
+const withFile = roots.flatMap(sources).filter((file) => SQLITE_FILE.test(readFileSync(join(ROOT, file), "utf8")));
+
+test("the store names its own file: its SQLite adapter picks it in the data directory", () => {
+  assert.ok(withFile.includes(`${STORE}sqlite/store.ts`), `${STORE}sqlite/store.ts names the store's file (found: ${JSON.stringify(withFile.filter((file) => file.startsWith(STORE)))})`);
+});
+
+test("no .sqlite file named outside the store, but for today's files on the list", () => {
+  const outside = withFile.filter((file) => !file.startsWith(STORE));
+  assert.deepEqual(outside.filter((file) => !TODAY_FILE.includes(file)), [], "a .sqlite file named outside packages/serve/src/store/: pass the data directory to openSqliteStore instead");
+});
+
+test("the file list only shrinks: a listed file that names no .sqlite file is taken off it", () => {
+  assert.deepEqual(TODAY_FILE.filter((file) => !withFile.includes(file)), [], "these name no .sqlite file now: take them off TODAY_FILE");
 });
