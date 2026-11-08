@@ -41,7 +41,18 @@ const SHAPES = [
   [".idempotency.json", (dir) => file(join(dir, ".idempotency.json")), ".idempotency.json"],
   ["learning-usage.jsonl", (dir) => file(join(dir, "learning-usage.jsonl"), ""), "learning-usage.jsonl"],
   ["a home's sign-ins.json", (dir) => file(join(dir, "homes", "home-1", "sign-ins", "sign-ins.json")), join("homes", "home-1", "sign-ins", "sign-ins.json")],
+  // The per-run door's token: only an earlier version's runs had a door.
+  [".door-token", (dir) => file(join(dir, ".door-token"), "token"), ".door-token"],
 ];
+
+test("this version's own files beside its store open: .token, .server.json, and a leftover box-image.json the cutover stopped writing", async (t) => {
+  const dir = dataDir(t);
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  await store.close();
+  for (const name of [".token", ".server.json", "box-image.json"]) file(join(dir, name), "{}");
+  const again = await openSqliteStore({ dataDir: dir, role: "server" });
+  await again.close();
+});
 
 for (const [what, make, named] of SHAPES) {
   test(`the server refuses a data directory holding ${what}, by name, and changes nothing there`, async (t) => {
