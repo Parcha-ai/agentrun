@@ -15,5 +15,6 @@ export { localWorkspace, workspaceAt } from "./local.js";
 export { archilWorkspace, type ArchilWorkspaceOptions } from "./archil.js";
 export { archilDisk, type ArchilDisk, type ArchilDiskOptions, type ArchilImage } from "./archil-disk.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
-export { type RunComputer, runTools, type RunTools } from "./run-tools.js";
+export { type RunBrowser, type RunComputer, runTools, type RunTools } from "./run-tools.js";
+export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 export { layRevisionSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
