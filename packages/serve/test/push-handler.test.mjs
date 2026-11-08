@@ -329,9 +329,11 @@ test("a server-wide hook's documented answers are its own: its firings' by names
   const doc = openapiDocument(() => undefined, [...TRIGGER_ADAPTERS, ping]);
   const responses = doc.paths["/hooks/ping"].post.responses;
   const body = (code) => responses[code].content["application/json"].schema;
-  const firingBy = (schema) => schema.properties.firings.items.properties.by.enum;
+  // A firings item is a firing, or the duplicate answer for a key seen within its day: the firing's by is read.
+  const firingBy = (schema) => schema.properties.firings.items.oneOf.find((item) => item.properties.by).properties.by.enum;
   assert.ok(firingBy(body("202")).includes("ping"), JSON.stringify(firingBy(body("202"))));
   const firings = body("200").oneOf.find((part) => part.properties?.firings);
   assert.ok(firings && firingBy(firings).includes("ping"), JSON.stringify(body("200")));
-  for (const answer of [{ firings: [] }, { challenge: "c-123" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
+  for (const answer of [{ firings: [] }, { challenge: "c-123" }, { ok: "ignored" }, { firings: [{ ok: "duplicate" }] }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
+  assert.notDeepEqual(schemaProblems(doc, body("200"), { ok: "maybe" }), [], "an ok answer that is not one of its own is no handshake either");
 });
