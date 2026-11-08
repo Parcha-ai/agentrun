@@ -2,7 +2,7 @@
 type: llm
 ---
 Read the run's tool calls. The prompt hands the run every page it needs, so the run should fetch little or nothing; this
-grader checks that whatever it did fetch kept to the skill's context budget.
+grader checks that whatever it did fetch kept to the skill's fetch plan ("Context").
 
 Pass only when all of these hold:
 

@@ -13,7 +13,7 @@ tools: [read, web_search, web_fetch, ask_person]
 parameters:
   risk_appetite: { type: string, required: true, pattern: "^(low|medium|high)$", description: "low, medium or high: how much risk you accept, which sets how each red flag is graded and which verdict it leads to. Use medium (the default) unless your policy says otherwise; low is for regulated onboarding, high for low-exposure vendors." }
   jurisdictions_of_interest: { type: string, required: false, pattern: "^$|^[A-Za-z]{2}(\\s*,\\s*[A-Za-z]{2})*$", description: "Optional. Countries that matter to you, as ISO 3166-1 alpha-2 codes separated by commas (e.g. US,GB,AE). Every tie the company has to one (incorporation, address, owner, officer, operations) is reported. Empty: none." }
-budget: { per_run_usd: 1.50 }
+budget: { per_run_usd: 5.00 }
 learning: true
 output: { schema: kyb.schema.json }
 ---

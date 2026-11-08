@@ -49,7 +49,7 @@ async function problemsOf(t, change) {
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
-  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.1.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "low", { per_run_usd: 0.5 }, false]);
+  assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.1.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "low", { per_run_usd: 2 }, false]);
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/REVIEW.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
   assert.equal(review.skills["review/REVIEW.md"], file("rules/REVIEW.md"), "the rule ships beside the SKILL.md that reads it");
@@ -69,7 +69,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ edit }) => edit("version: 0.1.0", "version: 2"), /version is 2, a number: .*never as definition\.version, which is the agent's revision number/);
   await refused(({ edit }) => edit("learning: false", "learning: false\ndefinition: { version: 2 }"), /no field definition/);
   await refused(({ edit }) => edit("name: code-review", "name: review-code"), /name is the folder's name/);
-  await refused(({ edit }) => edit("budget: { per_run_usd: 0.50 }\n", 'triggers:\n  - name: nightly\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run }\n'), /budget is required when the package has triggers/);
+  await refused(({ edit }) => edit("budget: { per_run_usd: 2.00 }\n", 'triggers:\n  - name: nightly\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run }\n'), /budget is required when the package has triggers/);
   await refused(({ edit }) => edit("learning: false", "learning: false\ntriggers:\n  - source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run }"), /triggers\[0\] has no name/);
   await refused(({ edit }) => edit("learning: false", "learning: false\ntriggers:\n  - name: mine\n    source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run, agent_id: other }"), /target is a start_run with no agent_id/);
   await refused(({ edit }) => edit("${parameters.repo} with", "${parameters.repository} with"), /\$\{parameters\.repository\} names no parameter/);
@@ -184,7 +184,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   meets("/agents/{agent_id}", "get", "200", agent);
   const { definition } = agent;
-  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "low", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
+  assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "low", 2, false, ["review"]], "definition.version is the revision number, never the package's");
   assert.deepEqual([definition.tools, definition.tool_settings], [["read"], undefined], "no box and no GitHub MCP server here: its read alone, for the skill's rules");
   assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
   assert.match(definition.instructions, /clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
@@ -201,7 +201,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);
   const done = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.equal(done.cost.cap_usd, 0.5, "capped at the package's budget");
+  assert.equal(done.cost.cap_usd, 2, "capped at the package's budget");
   const block = [...done.result.final_answer.matchAll(/```json\n([\s\S]*?)\n```/g)].at(-1)?.[1];
   assert.ok(block, `a fenced json block: ${done.result.final_answer}`);
   const schema = JSON.parse(file("findings.schema.json"));

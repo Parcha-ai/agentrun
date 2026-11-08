@@ -24,7 +24,7 @@ parameters:
   slack_channel: { type: string, pattern: "^[CG][A-Z0-9]{8,12}$", description: "the ID of the Slack channel the brief is posted to when post_to is slack (C0123456789; the channel's details in Slack show it), never a name" }
   crm_score_property: { type: string, pattern: "^[a-z][a-z0-9_]{0,99}$", description: "the internal name of the HubSpot contact number property the fit score is written to when post_to is crm (e.g. lead_fit_score); empty: the note only" }
   competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
-budget: { per_run_usd: 0.40 }
+budget: { per_run_usd: 5.00 }
 learning: true
 triggers:
   - name: inbound-lead-webhook
