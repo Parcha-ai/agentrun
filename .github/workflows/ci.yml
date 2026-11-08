@@ -51,6 +51,13 @@ jobs:
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
+      # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds: in the
+      # output the test jobs unpack, so the packages shard's verify-packages finds them, as the release's does.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/computer/daemon/go.mod
+          cache: false
+      - run: npm run build:daemon -w @parcha/agentrun-computer
       - name: Pack what the build wrote
         run: node scripts/ci-build-output.mjs pack "$RUNNER_TEMP/build"
       - uses: actions/upload-artifact@v4
