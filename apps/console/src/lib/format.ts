@@ -69,17 +69,22 @@ export const soFar = (c: Cost | null | undefined): (Cost & { so_far_usd: number;
 
 /** Said beside a cost known so far: why it is not the whole cost (a charge with no price: a model request cut, stopped or
  *  still pending, a model with no price, a decision or a paid tool call whose cost is unknown). */
-export const soFarNote = (c: { unpriced: number }) =>
-  `The charges priced so far. ${c.unpriced} ${c.unpriced === 1 ? "charge has" : "charges have"} no price, so this is not the whole cost.`;
+export const soFarNote = (c: { unpriced: number }, { ended = false }: { ended?: boolean } = {}) =>
+  `The charges priced${ended ? "" : " so far"}. ${c.unpriced} ${c.unpriced === 1 ? "charge has" : "charges have"} no price, so this is not the whole cost.`;
+
+/** A run's status once it has ended: its cost is said as its whole, never "so far" (cost's `ended`). */
+const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
+export const runEnded = (status: string | undefined | null): boolean => typeof status === "string" && ENDED_STATUSES.has(status);
 
 /** A local estimate stays an estimate, and a cost the server does not know says so: the contract's "Null while unknown.
  *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
  *  no price). When the server says what is known so far, that is said ("so far $0.0123 · 1 not priced"), never as the
- *  whole cost. Never a billed amount, never an invented zero. */
-export function cost(c: Cost | null | undefined): string {
+ *  whole cost; a run that has ended (`ended`) says what is known without "so far" ("$0.0123 known · 1 not priced"), as its
+ *  usage row says its cost. Never a billed amount, never an invented zero. */
+export function cost(c: Cost | null | undefined, { ended = false }: { ended?: boolean } = {}): string {
   const known = soFar(c);
   const est = (x: Cost) => (isEstimate(x) ? " est." : "");
-  if (known) return `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
+  if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
   return `${dollars(c.usd)}${est(c)}`;
 }

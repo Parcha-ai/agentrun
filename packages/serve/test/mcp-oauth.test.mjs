@@ -17,7 +17,7 @@ import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { McpServers } from "../dist/mcp-servers.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, call, cookieOf, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, flowAgent, follow, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
@@ -915,4 +915,23 @@ test("pi: a start whose sign-in server never answers its token refresh answers w
   const took = Date.now() - at;
   assert.equal(made.status, 202, JSON.stringify(made.body));
   assert.ok(took < 10_000, `the start answered in ${took} ms`);
+});
+
+test("a workflow is granted no MCP tool, so a raise that opens a capped workflow has no MCP sign-in to refresh (a pin)", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const { mcp } = await fakes(t, { expiresIn: 60 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started)).status, 302);
+  const workflow = {
+    v: 2, name: "once",
+    schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } }, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } } },
+    input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+    root: { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "answer" },
+  };
+  // Its nodes bind no MCP tool (app.ts binds them for an agentic run alone): the grant is refused at the save, so no
+  // workflow run, raised or not, holds an MCP sign-in for its launch to refresh.
+  const saved = await api("POST", "/agents", flowAgent("mcp-flow", workflow, { tools: ["mcp:docs/add"] }));
+  assert.equal(saved.status, 422, JSON.stringify(saved.body));
+  assert.match(JSON.stringify(saved.body), /a workflow's nodes don't bind MCP tools here yet/);
 });

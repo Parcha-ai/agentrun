@@ -13,9 +13,9 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const PENDING = { kind: "approval" as const, id: "ap_0123456789abcdef", tool: "web_fetch", call_id: "call_1", args_preview: "{\"url\":\"http://public.example/\"}", requested_at: "2026-11-04T10:00:02.000Z" };
-const waiting: Run = {
+const waiting: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "run_1", agent_id: "fetcher", agent_version: 1, revision: "r1", kind: "agentic", status: "input_required", state: "waiting", title: "Read the page",
-  created_at: "2026-11-04T10:00:00.000Z", ended_at: null, result: null, error: null, cost: null, archived_at: null, pending: PENDING,
+  created_at: "2026-11-04T10:00:00.000Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING,
 };
 const movedOn: Run = { ...waiting, status: "working", state: "working", pending: null };
 const WORDS = "This call was already allowed, in another tab or by another answer. The run shows what happened next.";

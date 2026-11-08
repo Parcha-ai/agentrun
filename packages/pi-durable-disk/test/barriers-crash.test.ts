@@ -4,7 +4,7 @@
 // lost box leaves on its disk.
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -12,6 +12,7 @@ import { scratchRoot } from "./_run-support.ts";
 
 const SHIM_SRC = new URL("fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
 const WRITER = new URL("fixtures/fsync-snapshot/writer.ts", import.meta.url).pathname;
+const RUN_END = new URL("fixtures/fsync-snapshot/run-end.ts", import.meta.url).pathname;
 
 let shim: string | undefined;
 let shimDir: { root: string; remove(): void } | undefined;
@@ -113,6 +114,49 @@ describe("a run's store through a crash", () => {
       dir.remove();
     }
   });
+});
+
+type End = "done" | "sleeping" | "release";
+type NextView = { previous: { status: string; detail: unknown; wakeAt: string | null } | null; instructions: string | null };
+
+/** A run that ends the way named, then its box is lost the moment the end resolved; the next incarnation's view. */
+async function endThenLoseTheBox(root: string, end: End): Promise<NextView> {
+  const child = spawn(process.execPath, [RUN_END, root, end, "first", "1"], { env: { ...process.env, LD_PRELOAD: shim!, FSYNC_SNAPSHOT_DIR: join(root, "store") }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 60_000; !out.includes("ended\n"); await new Promise((resolve) => setTimeout(resolve, 20))) {
+    if (Date.now() > deadline || child.exitCode !== null) {
+      child.kill("SIGKILL");
+      throw new Error(`the run never ended: ${err.slice(-600)}`);
+    }
+  }
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+  loseTheBox(join(root, "store", "run.sqlite"));
+  const next = spawnSync(process.execPath, [RUN_END, root, end, "resume", "2"], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(next.status, 0, next.stderr.slice(-600));
+  return JSON.parse(next.stdout.trim().split("\n").pop()!);
+}
+
+describe("a run's ends through a box loss, at NORMAL (barriers.ts runStatus, runRelease)", () => {
+  const cases: { name: string; end: End; expected: NextView }[] = [
+    { name: "a done status (Run.setStatus)", end: "done", expected: { previous: { status: "done", detail: { ended: true }, wakeAt: null }, instructions: "kept through the end" } },
+    { name: "a sleeping status with its wake time (Run.setStatus, as a park writes it)", end: "sleeping", expected: { previous: { status: "sleeping", detail: { reason: "waiting" }, wakeAt: "2030-01-01T00:00:00.000Z" }, instructions: "kept through the end" } },
+    { name: "a release (DurableRun.release, its WAL kept)", end: "release", expected: { previous: { status: "paused", detail: null, wakeAt: null }, instructions: "kept through the end" } },
+  ];
+  for (const { name, end, expected } of cases) {
+    it(`${name} is in the store after a box loss, with every commit before it`, { skip: process.platform !== "linux" && "the shim preloads on Linux" }, async () => {
+      if (!shim) return void assert.ok(!process.env.CI, "the shim is required in CI");
+      const dir = scratchRoot(`crash-end-${end}`);
+      try {
+        assert.deepEqual(await endThenLoseTheBox(join(dir.root, "run"), end), expected);
+      } finally {
+        dir.remove();
+      }
+    });
+  }
 });
 
 process.on("exit", () => shimDir?.remove());

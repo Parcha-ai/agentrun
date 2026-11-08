@@ -293,8 +293,23 @@ export type ProcessSignal = "TERM" | "INT" | "KILL" | "HUP";
 
 export interface ProcessSignalParams {
 	id: string;
-	/** Sent to the program's process group. A signal to a process that has ended does nothing. */
+	/**
+	 * INT to a process started with a pty is ^C: it goes to the terminal's foreground process group (the job a shell
+	 * runs in the foreground, or the program when it runs none), and is refused as denied when that group is outside
+	 * the program's session. Every other signal, and INT without a pty, goes to the program's process group. A signal
+	 * to a process that has ended does nothing.
+	 */
 	signal: ProcessSignal;
+}
+
+export interface ProcessSignalResult {
+	/**
+	 * Set only for INT on a terminal: when it found no foreground group (the program let go of it, or is ending) and went
+	 * to the program's own group, or when the foreground group had no process left in the program's session by the time
+	 * the guard came to signal it (it ended, and its id may have gone to a group in another session) and INT was not
+	 * sent: why.
+	 */
+	note?: string;
 }
 
 export interface ProcessResizeParams extends PtySize {
@@ -387,9 +402,14 @@ export interface ScreenReadResult {
 
 /** The most actions one input.actions batch holds. */
 export const MAX_ACTIONS = 100;
-/** The most wait and hold one batch asks for, summed (Anthropic's 300 s cap). */
+/**
+ * The most time one batch asks for, summed over every action that names a duration: wait, hold, long_press, swipe and
+ * pinch (Anthropic's 300 s cap).
+ */
 export const MAX_BATCH_WAIT_MS = 300_000;
-/** The one canonical key table. The daemon's Go table mirrors it, and a test keeps them equal. */
+/** The most times one key action presses its keys. */
+export const MAX_KEY_REPEAT = 100;
+/** The one canonical key table. The daemon's Go table (daemon/internal/keys) mirrors it, and a Go test keeps them equal. */
 export const KEYS = [
 	"enter", "tab", "space", "backspace", "delete", "escape", "insert",
 	"up", "down", "left", "right", "home", "end", "pageup", "pagedown",
@@ -519,7 +539,7 @@ export interface DaemonMethods {
 	"process.start": { params: ProcessStartParams; result: ProcessStartResult };
 	"process.read": { params: ProcessReadParams; result: ProcessReadResult };
 	"process.write": { params: ProcessWriteParams; result: Empty };
-	"process.signal": { params: ProcessSignalParams; result: Empty };
+	"process.signal": { params: ProcessSignalParams; result: ProcessSignalResult };
 	"process.resize": { params: ProcessResizeParams; result: Empty };
 	"process.list": { params: ProcessListParams; result: ProcessListResult };
 	"process.wait": { params: ProcessWaitParams; result: ProcessExit };

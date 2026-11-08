@@ -144,7 +144,7 @@ export function resolvedFrom(dir, name) {
 /** The @earendil-works packages the installed `names` depend on that are not among `names`, as `<name>`s: pi-coding-agent
  *  imports pi-codemode and pi-mcp, which are released with it and change their exports in a minor, so a leg that installs the
  *  coding agent at a version installs them at that version too, not at whatever the lockfile holds. A family package no leg
- *  workspace declares (pi-codemode, unless pi-vision is in the leg) is one of them: the family pins only what is declared. */
+ *  workspace declares (pi-codemode) is one of them: the family pins only what is declared. */
 export function companionDependencies(dir, names) {
   const found = new Set();
   for (const name of names) {

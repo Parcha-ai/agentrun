@@ -72,7 +72,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       signal: ctl.signal,
       // A tool round can write files while the run stays working: re-read them when a call ends (its result row; with one
       // row per action, its own row stopping running).
-      onRows: (r) => { setRows(r); const seen = r.filter((x) => x.kind === APPROVAL_ROW).map((x) => `${x.id}\u0000${x.summary}`).join("\u0001"); if (seen !== approvals.current) { approvals.current = seen; void refresh(); } const n = r.filter((x) => x.kind === "tool_result" || (x.kind === "tool_use" && !!x.tool_status && x.tool_status !== "running")).length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
+      onRows: (r) => { setRows(r); const seen = r.filter((x) => x.kind === APPROVAL_ROW).map((x) => `${x.id}\u0000${x.summary}`).join("\u0001"); if (seen !== approvals.current) { approvals.current = seen; void refresh(); } const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) setFiles(f.files); }).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
       onPage: (p) => { const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });
@@ -136,7 +136,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} onMessage={message} onApprove={approve}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} readBrowser={() => v2.runBrowser(runId)} onMessage={message} onApprove={approve}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );

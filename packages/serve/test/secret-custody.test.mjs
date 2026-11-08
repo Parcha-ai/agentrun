@@ -22,6 +22,7 @@ import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
 import { copyStandInSync } from "../../run-adapters-codex/test/stand-in.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 // A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
 // (fixtures/custody-report.mjs), never from the answer.
 process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
@@ -412,7 +413,7 @@ const CUSTODY_HARNESS = new URL("./fixtures/faux-custody-harness.mjs", import.me
 function launchedWith(t, env) {
   const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
 const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
-const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(CUSTODY)}, fauxHarness: ${JSON.stringify(CUSTODY_HARNESS)} });
+const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(CUSTODY)}, harnessTable: ${JSON.stringify(fauxTable(CUSTODY_HARNESS))} });
 process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   const only = { ...Object.fromEntries([...SECRET_NAMES, ...MODEL_SETTINGS].map((name) => [name, undefined])), AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ...env };
   return launched(t, only, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);

@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, KEEPS, LEARN, learnedIn, learner, NOTHING_YET, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf, wholeIn } from "./learn-support.mjs";
 import { runDir, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FILE = "check-units.md";
 const NOTE = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -28,7 +29,7 @@ const readsOf = (rows, path) => {
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`on ${harness}, with no write tool, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, answers with a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it whole under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
     const data = join(await scratch(t), "learning data", "agents");
-    const { api } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: LEARN, data });
+    const { api } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(LEARN), data });
     const id = `loop-${harness}`;
     await made(api, learner(id, { harness, tools: ["read"], instructions: `Say your prompt.\nRead: ${JSON.stringify(READS)}`, plan: [[FILE, NOTE]], once: true }));
 

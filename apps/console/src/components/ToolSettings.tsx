@@ -3,7 +3,8 @@ import { Button } from "@/components/ui/button";
 import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/agentForm";
-import type { Permission, ToolSettings } from "@/lib/v2";
+import { grantOf, type McpServer } from "@/lib/mcp";
+import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
 
 /** One row of a tools table: a tool, with its provider choice (`choice`) where it has one and its permission (`gate`)
  *  where the server offers one. */
@@ -61,7 +62,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
               const own = settings[name]?.provider;
               const set = t !== undefined && own !== undefined && own !== fallback;
               const provider = set ? own : fallback;
-              const pick = (next: string | undefined) => onEdit((current) => withProvider(current, name, next, fallback));
+              const pick = (next: ToolSetting["provider"]) => onEdit((current) => withProvider(current, name, next, fallback));
               const gateFallback = gate ? permissionFallbackOf(gate) : "allow";
               const ownPermission = settings[name]?.permission;
               const permissionSet = gate !== undefined && ownPermission !== undefined && ownPermission !== gateFallback;
@@ -82,7 +83,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                     </td>}
                     {providers && <td className="px-3 py-2">
                       {t ? <>
-                        <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
+                        <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value as ToolSetting["provider"])}
                           className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
                           {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, name)}{p === fallback ? " (default)" : ""}</option>)}
                         </select>
@@ -120,7 +121,7 @@ export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORD
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
  *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], focus, callTools, value, issues, onChange }: {
+export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, focus, callTools, value, issues, onChange }: {
   agent: Agent | null;
   /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
@@ -129,6 +130,10 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   choices: readonly ToolChoice[];
   /** Each tool's permission on this server (capabilities'): the default of a granted tool's here. */
   gates?: readonly ToolGate[];
+  /** The saved MCP servers, as their read gives them: an MCP tool granted here and not saved yet takes its permission
+   *  (the server's in force, and those offered) from its server's read, which neither capabilities nor the agent's read
+   *  list. */
+  mcpServers?: readonly McpServer[];
   /** A tool to focus the permission of as this opens (a legacy name at its settings key's row). */
   focus?: string;
   /** A workflow agent's: the tools its call nodes call (callNodeTools). Its rows are those alone, each with a permission as
@@ -143,13 +148,24 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   const granted = new Set(tools);
   const offered = choices.filter((c) => granted.has(c.name) || !c.available);
   // Each granted tool's permission, the server's in force its default: as capabilities list it, else as the agent's read
-  // gave it (a catalog tool, monid.<tool> or mcp:<server>/<tool>, which capabilities don't list).
+  // gave it (a catalog tool, monid.<tool> or mcp:<server>/<tool>, which capabilities don't list), else, for an MCP tool
+  // granted and not saved yet, as its server's read gives it.
   const accountsOff = gates.some((g) => g.ask_needs === "password");
   const read = (name: string) => agent?.tools?.find((x) => x.name === name);
+  const listedTool = (name: string) => {
+    const grant = grantOf(name);
+    return grant ? mcpServers?.find((s) => s.name === grant.server)?.tools.find((t) => t.name === grant.tool) : undefined;
+  };
+  // The agent's own setting for every tool of an MCP server (`mcp:<server>/*`), which the server applies before its own
+  // (tool-gate.ts permissionFrom): an MCP tool's row falls back to it, so one set here is kept only where it differs.
+  const ownWildcard = (name: string) => {
+    const grant = grantOf(name);
+    return grant ? value[`mcp:${grant.server}/*`]?.permission : undefined;
+  };
   const permitted = callTools ? callTools.flatMap((name) => gates.filter((g) => g.name === name)) : [...new Set(tools)].flatMap((name): ToolGate[] => {
     const listed = gates.find((g) => g.name === name);
     if (listed) return [listed];
-    const x = read(name);
+    const x = read(name) ?? listedTool(name);
     if (!x?.permissions?.length || !x.default_permission) return [];
     return [{ name, permission: x.permission ?? x.default_permission, default_permission: x.default_permission, permissions: x.permissions, ...(accountsOff && x.permissions.includes("ask") ? { ask_needs: "password" as const } : {}) }];
   });
@@ -173,8 +189,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
       <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
-        // The server's permission for this agent when its read says it (GET /agents/{id}), else capabilities'.
-        permissionFallbackOf={(g) => read(g.name)?.default_permission ?? g.permission}
+        // The agent's own setting for every tool of its MCP server when the form has one; else the server's permission for
+        // this agent when its read says it (GET /agents/{id}), else capabilities' or the MCP server read's.
+        permissionFallbackOf={(g) => ownWildcard(g.name) ?? read(g.name)?.default_permission ?? g.permission}
         resolvesOf={(t) => {
           // The server's word holds only for what it was read for: the agent's, for its saved provider, harness and model;
           // capabilities', for the server's provider on each harness with the server's default model. A change of any of

@@ -5,13 +5,13 @@ import { RunHeader } from "./RunHeader";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 
 // The run header raises a capped run's spend cap too, so a working run with a cap is raised before it pauses: its
-// answer has resumed false and a note (its live process keeps the old cap until its next one), which is said. A run with
-// no cap, an ended run and a workflow run offer no raise.
+// answer has resumed false and a note (its live process keeps the old cap until its next one), which is said. A capped
+// workflow run offers one as an agentic run does; a run with no cap and an ended run offer none.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const run = (extra: Partial<Run> = {}): Run => ({
+const run = (extra: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Take your time.",
   created_at: "2026-11-05T00:00:00Z", ended_at: null, result: null, error: null, archived_at: null,
   cost: { usd: 0.01, basis: "estimate", charge_state: null, cap_usd: 10 }, ...extra,
@@ -66,8 +66,12 @@ describe("RunHeader's Raise the cap", () => {
     expect(value()).toBe("15");
   });
 
-  it("a run with no cap, an ended run and a workflow run offer no raise; nor does a page that gives no way to raise", () => {
-    for (const r of [run({ cost: { usd: 0.01, basis: "estimate", charge_state: null, cap_usd: null } }), run({ status: "completed", state: "idle", ended_at: "2026-11-05T00:01:00Z" }), run({ kind: "workflow" })]) {
+  it("a capped workflow run that has not ended offers a raise, as an agentic run does", () => {
+    expect(mount(run({ kind: "workflow" }), async () => { throw new Error("not raised here"); }).button("Raise the cap")).toBeDefined();
+  });
+
+  it("a run with no cap and an ended run offer no raise; nor does a page that gives no way to raise", () => {
+    for (const r of [run({ cost: { usd: 0.01, basis: "estimate", charge_state: null, cap_usd: null } }), run({ status: "completed", state: "idle", ended_at: "2026-11-05T00:01:00Z" })]) {
       const t = mount(r, async () => { throw new Error("no raise"); });
       expect(t.button("Raise the cap"), JSON.stringify([r.kind, r.status, r.cost?.cap_usd])).toBeUndefined();
       act(() => root?.unmount()); document.body.innerHTML = "";

@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, runDir, runRecordOf, scratch, serve, withEnv, writtenJson } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
@@ -39,7 +40,7 @@ const savedAnswer = (data, runId) => storeEntries(data, runId).find((e) => e.kin
 
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness} (A): a drain that cuts a turn after its answer entry, the turn still open in the session: the next open resumes it`, { timeout: 180_000 }, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, drainTimeout: "1s" });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "1s" });
     const dir = await scratch(t);
     const [go, held] = [join(dir, "go"), join(dir, "held")];
     assert.equal((await api("POST", "/agents", agent(`drained-${harness}`, { harness, instructions: `Answer, then hold until ${go} (signal ${held}), then end showing nothing.` }))).status, 201);
@@ -79,7 +80,7 @@ test("claude-agent (B): a server drain that cuts only the root's turn end, the s
   // SIGKILL past the drain) ends it there.
   await writeFile(arm, "0");
   await writeFile(go, "");
-  const options = { data, port: 0, faux: FAUX, fauxHarness: CUT, drainTimeout: "1s" };
+  const options = { data, port: 0, faux: FAUX, harnessTable: fauxTable(CUT), drainTimeout: "1s" };
   const one = await startServe(options);
   let closed = false;
   t.after(() => (closed ? undefined : one.close()));

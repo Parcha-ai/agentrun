@@ -8,12 +8,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { claudeModel, harnessModelKeys } from "../dist/adapters.js";
+import { harnessModelKeys } from "../dist/adapters.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 import { fileURLToPath } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { modelOn, providerFor } from "../dist/provider.js";
 /** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
 const fakeKey = (name) => ["not-a-secret", name].join("-");
 
@@ -72,7 +73,7 @@ test("behind a gateway, codex takes AGENT_MODEL as the gateway's own string, wha
 });
 
 test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway's: an OpenAI key gives it its default, and another provider's model is skipped for it", () => {
-  // OpenCode's model requests go where codex's do (adapters.ts' codexProvider): OpenAI with its key, OpenRouter with its
+  // OpenCode's model requests go where codex's do (provider.ts' providerFor): OpenAI with its key, OpenRouter with its
   // key, or the gateway.
   assert.equal(hostModel(keyed("anthropic", "openai"), "default", "opencode"), "openai/gpt-6.1-sol", "an OpenAI key's default");
   assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), "openai/gpt-6-sol", "OpenRouter's key alone: codex's route");
@@ -98,8 +99,8 @@ test("with no model here, the refusal says what a person does: a model key in Se
   assert.equal((await chooseModel({}, undefined)).why, none);
   assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast tier:"));
   assert.equal((await chooseModel({}, "openai/gpt-5")).why, "No OpenAI key here for openai/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts.");
-  assert.equal(claudeModel({}, undefined).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
-  for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-5")).why, claudeModel({}, undefined).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
+  assert.equal((await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
+  for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-5")).why, (await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
   const unknown = await chooseModel({ OPENAI_API_KEY: made() }, "openai/no-such-model");
   assert.deepEqual([unknown.needs, /no-such-model/.test(unknown.why)], ["model", true], "a model no catalog knows is named");
 });

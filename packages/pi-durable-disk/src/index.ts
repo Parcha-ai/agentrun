@@ -23,6 +23,8 @@ export type { ArchilStore, Fence, FencedDatabase, Profile, StoreFencedError, Syn
 // The barrier: what a site calls once a commit must be durable before the run goes on (barriers.ts).
 export { BARRIER, syncNow } from "./barriers.ts";
 export type { BarrierName, SyncTarget } from "./barriers.ts";
+// The run journal's `synchronous` level: with no store open to sync, a commit is durable only when it is FULL.
+export { JOURNAL_SYNCHRONOUS } from "./store.ts";
 
 // The app contract: what `--app` names.
 export { AppError } from "./app.ts";
@@ -31,7 +33,7 @@ export type { AppContext, AppModule, AppOptions } from "./app.ts";
 // Serve: one HTTP request runs one turn.
 export { MESSAGE_ORIGIN_KIND, ServeConfigError, serveRun } from "./serve.ts";
 export type { RunServer, ServeConfigErrorCode, ServeOptions } from "./serve.ts";
-export type { DoorContext, DoorEvent, DoorHook, DoorInput, DoorStatus, DoorTimeouts } from "./door.ts";
+export type { DoorContext, DoorEvent, DoorHook, DoorInput, DoorLog, DoorStatus, DoorTimeouts } from "./door.ts";
 export { doorKey, doorTook } from "./door-key.ts";
 
 // Places: where a run lives for a supervisor that kills it and brings it back (agentrun's reference place seam).

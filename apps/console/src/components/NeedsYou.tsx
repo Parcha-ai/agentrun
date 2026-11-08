@@ -96,7 +96,7 @@ export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; sug
  *  was stopped and the run waits for the next message. The two read differently on purpose. */
 export function NeedsYou({ waiting }: { waiting: TimelineRow | null }) {
   if (waiting) {
-    const question = (waiting.text ?? waiting.summary).replace(/^Waiting for you:\s*/, "");
+    const question = (waiting.text ?? waiting.summary ?? "").replace(/^Waiting for you:\s*/, "");
     return (
       <section className="border border-warning/50 bg-warning/5 p-4" aria-label="The agent asks">
         <p className="caps flex items-center gap-2 text-[11px] text-warning-text"><MessageCircleQuestion className="size-3.5" aria-hidden /> Input required</p>
