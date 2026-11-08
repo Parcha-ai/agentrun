@@ -69,6 +69,10 @@ const allowedExtraFiles = {
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
   // installer (skill.mjs) and its template package check (template.mjs).
+  // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
+  // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile, and the scripts that build it
+  // as a Daytona snapshot or a Modal image.
+  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py'],
   agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
