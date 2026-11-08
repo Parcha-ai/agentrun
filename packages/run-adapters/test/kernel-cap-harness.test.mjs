@@ -96,6 +96,12 @@ for (const [harness, shape] of Object.entries(SHAPES)) {
   });
 }
 
+test("a CLI request when the host's tool charges are unknown (null) is refused for good as an unknown spend, never judged on the runner's spend alone", async () => {
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => null });
+  const answer = await before({ key: "k", label: "k", model: SONNET.id, turn: 1, maxTurns: null, spentUsd: 0, inFlight: [], inputTokensMax: 1_000, outputTokensAsked: 1_024 });
+  assert.equal(answer.refuse, "spend_cap_reached: Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.");
+});
+
 test("a CLI request beside one in flight with no hold and no measured input is refused for good as unmeasured, never held at Infinity", async () => {
   const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
   const answer = await before({ key: "k", label: "k", model: SONNET.id, turn: 2, maxTurns: null, spentUsd: 0, inFlight: [{ turn: 1, model: SONNET.id }], inputTokensMax: 10, outputTokensAsked: 1_024 });
