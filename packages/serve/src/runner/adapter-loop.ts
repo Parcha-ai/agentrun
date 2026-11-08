@@ -115,15 +115,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const hooks = spec.hooks ?? quiet;
         const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
         const writer = await sessions.open(spec.session.key);
+        // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
+        // this session's alone: a cap is the run's. Its last refusal is kept: a turn it ended ends the run in its words.
+        const hostCheck = spec.beforeRequest ? runBooking(sessions, spec.beforeRequest) : undefined;
+        let refused: string | undefined;
+        const beforeRequest: BeforeRequest | undefined = hostCheck && (async (request) => {
+          const answer = await hostCheck(request);
+          if (answer && "refuse" in answer) refused = answer.refuse;
+          return answer;
+        });
         // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
         // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
         // makes that record and everything before it durable first (each send, a retry's included).
         const booking = await modelPortFor(writer, {
           key: spec.session.key,
           label: spec.session.label,
-          // The host's check is asked with the run's totals, every session of the run summed (the run's one booking), never
-          // this session's alone: a cap is the run's.
-          ...(spec.beforeRequest ? { beforeRequest: runBooking(sessions, spec.beforeRequest) } : {}),
+          ...(beforeRequest ? { beforeRequest } : {}),
           onEvent: async (event) => {
             if (event.type === "request_start") await deps.flush();
           },
@@ -193,7 +200,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         await harness.waitForIdle(context);
         const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
         if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
-        return await writeEnd(harness, root, gate, outcome.status === "completed" ? { state: "ended" } : { state: "failed", summary: `the run gave no answer (${outcome.status})` }, []);
+        // A turn the host's check refused ends the run in the check's own words (the cap's), never as a run with no answer.
+        return await writeEnd(harness, root, gate, outcome.status === "completed" ? { state: "ended" } : { state: "failed", summary: refused ?? `the run gave no answer (${outcome.status})` }, []);
       }
     } catch (error) {
       if (gate?.sealed || deps.signal.aborted) return await interrupted("its claim's signal aborted");
