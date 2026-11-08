@@ -158,7 +158,10 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                         <input type="checkbox" className="mt-1" checked={ticked.has(tool.tool)} onChange={() => setTicked((s) => { const n = new Set(s); if (n.has(tool.tool)) n.delete(tool.tool); else n.add(tool.tool); return n; })} />
                         <span className="min-w-0">
                           <span className="font-mono text-[13px]">{tool.name}</span> <span className="font-mono text-[11px] text-muted-foreground">{tool.tool}</span>
-                          <span className="block text-[12px] text-muted-foreground">{tool.asks === "allow" ? "The agent may call this without asking you." : "The agent asks you before each call."}</span>
+                          {/* A tick is a grant, and the server stores every granted tool as allow: that is what the tick says. What the
+                              template asks for is said apart. */}
+                          <span className="block text-[12px]">Allow: the agent may call this without asking you.</span>
+                          <span className="block text-[12px] text-muted-foreground">{tool.asks === "allow" ? "The template asks you to allow this." : "The template does not ask for this; unticked, it stays at your setting."}</span>
                         </span>
                       </label>
                       {index >= 0 && <Issues issues={at(`grants.${index}`)} />}
