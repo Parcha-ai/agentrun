@@ -316,10 +316,21 @@ class Origin:
     host: str
     port: int
 
-    def connect(self, timeout: float, context: Optional[ssl.SSLContext]) -> http.client.HTTPConnection:
-        if self.scheme == "https":
-            return http.client.HTTPSConnection(self.host, self.port, timeout=timeout, context=context)
-        return http.client.HTTPConnection(self.host, self.port, timeout=timeout)
+    def connect(self, clock: _Clock, context: Optional[ssl.SSLContext]) -> http.client.HTTPConnection:
+        """A connection made here, not by http.client: the TCP connect and then the TLS handshake each get what is left
+        of the try's one clock, so the two together never take longer than the try."""
+        connection = http.client.HTTPSConnection(self.host, self.port) if self.scheme == "https" else http.client.HTTPConnection(self.host, self.port)
+        sock = socket.create_connection((self.host, self.port), timeout=clock.left())
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if self.scheme == "https":
+                sock.settimeout(clock.left())
+                sock = (context or ssl.create_default_context()).wrap_socket(sock, server_hostname=self.host)
+        except BaseException:
+            sock.close()
+            raise
+        connection.sock = cast(Any, _Socket(sock, clock))
+        return connection
 
 
 class Failure(Exception):
@@ -342,11 +353,9 @@ def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[st
     """One request on a connection of its own, ended at `end` (on time.monotonic()), the key in its Authorization
     header: its answer with the head read, or Failure. The header's value is a Secret, so no frame's locals show it."""
     clock = _Clock(end)
-    connection = origin.connect(max(end - time.monotonic(), 0.001), context)
+    connection: Optional[http.client.HTTPConnection] = None
     try:
-        connection.connect()
-        if connection.sock is not None:
-            connection.sock = cast(Any, _Socket(connection.sock, clock))
+        connection = origin.connect(clock, context)
         connection.putrequest(method, target)
         for name, value in headers:
             connection.putheader(name, value)
@@ -356,6 +365,7 @@ def attempt(origin: Origin, method: str, target: str, headers: Sequence[Tuple[st
         connection.endheaders(body)
         answer = connection.getresponse()
     except Exception as error:  # noqa: BLE001 - every failure of a try is its outcome, as a code
-        connection.close()
+        if connection is not None:
+            connection.close()
         raise failure_of(error, clock.expired) from None
     return Response(connection, answer, clock)
