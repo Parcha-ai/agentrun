@@ -168,10 +168,17 @@ interface Case {
 
 /**
  * The resume after a crash, as runner-b's own events tell it: runner-b claimed the run once and released it once, with the
- * run ended, and nothing touched the row after that release (its epoch is runner-b's claim + 1). Not an absolute epoch:
+ * run ended, and nothing touched the row after its end (its end commit is its release, moving the epoch to runner-b's
+ * claim + 1 in that commit; runner-b's release after it is a no-op). Not an absolute epoch:
  * on a slow box the crashed runner may lose its own claim (a renew that missed) and retake the run before it dies, so the
  * epoch runner-b claims at counts the box's speed, not the resume.
  */
+/** Waits for runner-b to say it released the run. The run reads ended and released from its end commit (a write that makes
+ *  the run final is its release), which comes before the runner's own end of it says so: bounded, never a sleep. */
+async function saidReleased(events: readonly unknown[]): Promise<void> {
+  await until(() => events.some((event) => (event as { runner?: string; type?: string }).runner === "runner-b" && (event as { type?: string }).type === "released"), "runner-b says it released the run");
+}
+
 function resumedOnceByB(events: readonly unknown[], row: RunRow): void {
   // The whole claim history, every runner's (the crashed one's too, the process cases' read from its events file), in time
   // order: a failure here says what each runner did, not only that the epoch differed.
@@ -181,7 +188,7 @@ function resumedOnceByB(events: readonly unknown[], row: RunRow): void {
   const releases = ofB.filter((event) => event.type === "released");
   assert.equal(claims.length, 1, `runner-b claimed the run once: ${history}`);
   assert.deepEqual(releases.map((event) => [event.epoch, event.end]), [[claims[0].claim!.epoch, "ended"]], `runner-b released it once, ended, under its claim: ${history}`);
-  assert.equal(row.epoch, claims[0].claim!.epoch + 1, `nothing touched the run after runner-b's release: ${history}`);
+  assert.equal(row.epoch, claims[0].claim!.epoch + 1, `nothing touched the run after runner-b's end: ${history}`);
 }
 
 /** The crashed runner process's events, appended to `file` as JSON lines (child.ts): each one, or none when it wrote none. */
@@ -206,6 +213,7 @@ async function crashThenResume(subject: ConformanceSubject, t: { after(fn: () =>
   await until(() => holder.crashed, `the crash at ${point}`);
   await w.start("runner-b", { script, tools, hooks: quiet });
   const row = await w.ended("ended");
+  await saidReleased(w.events);
   resumedOnceByB(w.events, row);
   return { ...(await w.read()), ran };
 }
@@ -250,6 +258,7 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
   }
   await w.start("runner-b", { script: [{ call: tool }, { say: "done" }], tools, hooks: quiet });
   const row = await w.ended("ended");
+  await saidReleased(w.events);
   resumedOnceByB([...childEvents(eventsFile), ...w.events], row);
   return { ...(await w.read()), ran, events: childEvents(eventsFile) as { type?: string; at?: number; epoch?: number; name?: string; claim?: { epoch: number } }[], continuedAt };
 }

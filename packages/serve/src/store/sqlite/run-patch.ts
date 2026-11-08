@@ -5,6 +5,7 @@
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
 import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type RunPatch, type RunRow, type RunState } from "../store.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
+import { claimFence } from "../fence.js";
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
@@ -20,8 +21,9 @@ export const runOf = (r: RunRecord): RunRow => ({
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
- *  of it written once the caller rolls back, when the run's epoch is not the claim's. A final state with no `endedAt` is
- *  stamped `now`. */
+ *  of it written once the caller rolls back, when the run's epoch is not the claim's or the claim's lease ran out before
+ *  `now` (the store's clock, read in the transaction). A final state with no `endedAt` is stamped `now`, and releases the
+ *  run in the same statement. */
 export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number): Promise<RunRow> {
   const sets: string[] = [];
   const params: SqliteValue[] = [];
@@ -32,10 +34,19 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   if (patch.summary !== undefined) set("summary", patch.summary);
   if (patch.endedAt !== undefined) set("ended_at", patch.endedAt);
   else if (patch.state !== undefined && FINAL_STATES.includes(patch.state)) set("ended_at", now);
-  // Nothing to change still proves the claim: the row comes back only under it.
+  // A write that makes the run final is its release, in the same statement: no runner, no lease, the epoch moved on by one
+  // as release() moves it. From this commit the run reads ended and released at once, and a later release is a no-op.
+  const ending = patch.state !== undefined && FINAL_STATES.includes(patch.state);
+  if (ending) sets.push("runner = NULL", "claimed_until = NULL", "epoch = epoch + 1");
+  // Nothing to change still proves the claim: the row comes back only under it, its epoch the claim's and its lease not
+  // run out (claimed_until on this store's clock, the one that set it).
   const assignments = sets.length ? sets.join(", ") : "epoch = epoch";
-  const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE id = ? AND epoch = ? RETURNING ${RUN_COLUMNS}`, ...params, claim.runId, claim.epoch);
+  const fence = claimFence(claim, now);
+  const row = await tx.get<RunRecord>(`UPDATE runs SET ${assignments} WHERE ${fence.where} RETURNING ${RUN_COLUMNS}`, ...params, ...fence.params);
   if (!row) throw new Fenced(claim.runId, claim.epoch);
+  // Released, the run holds nothing a runner showed: its run_live row goes in the same transaction, so a run read ended
+  // never shows a running tool or a partial answer beside it.
+  if (ending) await tx.run("DELETE FROM run_live WHERE run_id = ?", claim.runId);
   for (const each of also) {
     switch (each.table) {
       case "channel_posts": {

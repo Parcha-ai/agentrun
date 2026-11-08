@@ -38,6 +38,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { PI_TABLE as T } from "../schema.js";
 import type { Connection } from "../sqlite/connection.js";
+import { claimFence } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
@@ -321,7 +322,10 @@ export class RunStorage implements Journal {
     // store close asked after this commit waits for it. The transaction holds the store's one connection: its work awaits
     // only its own statements, never a model or a tool.
     await this.#transaction(async (tx) => {
-      if ((await tx.runCounted("UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", this.#runId, this.#epoch)) === 0) {
+      // The claim's fence (store/fence.ts): its epoch, and its lease not run out on the store's clock, read here inside the
+      // transaction so the check and the commit are one.
+      const fence = claimFence({ runId: this.#runId, epoch: this.#epoch }, this.#now());
+      if ((await tx.runCounted(`UPDATE runs SET epoch = epoch WHERE ${fence.where}`, ...fence.params)) === 0) {
         throw new Fenced(this.#runId, this.#epoch);
       }
       const metadata = await this.#readMetadata(tx);

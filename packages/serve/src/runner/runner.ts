@@ -306,7 +306,14 @@ export function startRunner(options: RunnerOptions): Runner {
     }
     held.sealed = true;
     try {
-      if (killed || held.fence.lost) return;
+      if (killed) return;
+      if (held.fence.lost) {
+        // A loop that came back with a final end wrote it: its end commit landed, and a write that makes the run final is
+        // its release (the store's rule). A renew answered Fenced between that commit and here marked the claim lost, but
+        // the run was released by its end: said so, with nothing more written.
+        if (!threw && (end.state === "ended" || end.state === "stopped" || end.state === "failed")) emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
+        return;
+      }
       // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
       // one more try, and the run is claimable again after a backoff; after the last try that row is refused with why.
       // Never failed: a person can raise again or stop it (#1944-5, the lead's keep list).
