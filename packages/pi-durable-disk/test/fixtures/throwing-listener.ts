@@ -9,6 +9,7 @@ const inner = {
   run: async () => {
     throw Object.assign(new Error("disk I/O error"), { code: "ERR_SQLITE_ERROR", errcode: 778, errstr: "disk I/O error" });
   },
+  runCounted: async () => 0,
   get: async () => undefined,
   all: async () => [],
   transaction: async () => undefined as never,

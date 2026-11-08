@@ -1074,7 +1074,7 @@ describe("boxEnv: directories and watching", () => {
 							{ path: ".pi/skills", recursive: true },
 						],
 						(change) => {
-							if ("paths" in change) seen.push(...change.paths);
+							if (change.kind === "paths") seen.push(...change.paths);
 						},
 						context,
 					),
@@ -1089,7 +1089,7 @@ describe("boxEnv: directories and watching", () => {
 					await waitFor(() => seen.includes(join(workspace, "shown.txt")), HANG_GUARD_MS, "a plain file's change");
 					expect(seen.filter((path) => path.includes("node_modules") || path.endsWith(".hidden"))).toEqual([]);
 				} finally {
-					await watcher.close(context);
+					await watcher.stop(context);
 				}
 			},
 			{ watchIntervalMs: 100 },
@@ -1103,7 +1103,7 @@ describe("boxEnv: directories and watching", () => {
 				const watcher = getOrThrow(
 					await env.watch(
 						[{ path: "." }],
-						(change) => changes.push("error" in change ? "error" : change),
+						(change) => changes.push(change.kind === "failed" ? "error" : change),
 						context,
 					),
 				);
@@ -1111,7 +1111,7 @@ describe("boxEnv: directories and watching", () => {
 				await waitFor(() => changes.length > 0, HANG_GUARD_MS, "the watcher to report");
 				await sleep(400);
 				expect(changes).toEqual(["error"]);
-				await watcher.close(context);
+				await watcher.stop(context);
 			},
 			{ watchIntervalMs: 100 },
 		);

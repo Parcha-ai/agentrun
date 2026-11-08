@@ -21,6 +21,7 @@ function levels(inner: SqliteDatabase): { database: SqliteDatabase; commits: num
     database: {
       exec: (sql) => inner.exec(sql),
       run: (sql, ...params) => inner.run(sql, ...params),
+      runCounted: (sql, ...params) => inner.runCounted(sql, ...params),
       get: (sql, ...params) => inner.get(sql, ...params),
       all: (sql, ...params) => inner.all(sql, ...params),
       async transaction(callback) {

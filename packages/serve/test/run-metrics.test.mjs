@@ -55,7 +55,9 @@ test("a pi run's end writes its tokens, requests, tool calls and errors, model a
   const { rows } = await follow(api, runId, ["completed"]);
   const m = metricsOf(data, runId);
   assert.ok(m, "the run has metrics");
-  assert.ok(m.input > 0 && m.output > 0, `tokens counted: ${JSON.stringify(m)}`);
+  // pi-ai 1.5's faux provider keeps a simulated prompt cache per session: each prompt token is read from it or written
+  // to it, none plain input (providers/faux.js withUsageEstimate). The metrics keep each part apart.
+  assert.ok(m.input + m.cacheRead + m.cacheWrite > 0 && m.output > 0, `tokens counted: ${JSON.stringify(m)}`);
   assert.equal(m.requests, 3);
   assert.equal(m.requests, usageOf(rows).requests, "as many requests as the usage row says");
   assert.equal(m.unmetered, 0);
@@ -134,7 +136,8 @@ test("a follow-up on a completed run carries it back again with its counts updat
   const second = metricsOf(data, runId);
   assert.equal(second.requests, 2);
   assert.equal(second.requests, usageOf(rows).requests);
-  assert.ok(second.input > first.input && second.output > first.output, "the follow-up's tokens are added");
+  const prompt = (m) => m.input + m.cacheRead + m.cacheWrite;
+  assert.ok(prompt(second) > prompt(first) && second.output > first.output, "the follow-up's tokens are added");
   assert.ok(second.at > first.at, "written at the second end");
 });
 

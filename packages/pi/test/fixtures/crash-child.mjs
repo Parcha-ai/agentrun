@@ -6,6 +6,7 @@ import { openRecovery, withRecovery, RecoveryError } from '@parcha/agentrun-dsl/
 import { crossing } from '@parcha/agentrun-dsl/recovery/testing';
 import { documentStore } from '@parcha/agentrun-pi/durable';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { join } from 'node:path';
@@ -21,7 +22,7 @@ const workflow = {
 const say = (row) => console.log(JSON.stringify(row));
 
 // The store the driver writes through: an admission is a crossing before it is made.
-const harness = await Harness.open(await openNodeSqliteStorage(join(directory, 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
+const harness = await Harness.open(await openNodeSqliteStorage(join(directory, 'run.sqlite')), { registry: createRegistry(), models: createModels() }, ctx);
 const base = documentStore(harness, 'run-1');
 const store = { open: async (bound) => {
   const journal = await base.open(bound);
