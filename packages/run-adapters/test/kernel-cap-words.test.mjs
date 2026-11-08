@@ -39,6 +39,18 @@ test("a step after many fetched pages needs its input at a token per byte: the w
   assert.equal(refusal.message, "spend_cap_reached (out of budget): Not sent: this run has spent $0.07 of its $0.50 cap, and the next step needs at least $0.78 (its input, up to 442,374 tokens counted at a token per byte, 30,000 of them read from the cache, and an answer of at least 1,024 tokens). Raise the cap to at least $0.85 to continue.");
 });
 
+test("a step that thinks names its answer and its thinking apart, never the two together as an answer", async () => {
+  // Sonnet's thinking takes a budget beside the answer: its least is a 1,024-token answer and 1,024 of thinking.
+  const budgeted = await refusalOf(capOn(0.01, { mode: "strict" }).cap.admit(modelRequest(SONNET, 1_000, 4_096, { thinkingBudget: 8_000 })));
+  assert.match(budgeted.message, /, and an answer of at least 1,024 tokens and 1,024 tokens of thinking\)/);
+  // An API whose thinking shares the output limit keeps its whole budget in the least: a 1,024-token answer and 2,000 of thinking.
+  const shared = await refusalOf(capOn(0.01, { mode: "strict" }).cap.admit(modelRequest(SOL, 1_000, 8_192, { thinkingBudget: 2_000 })));
+  assert.match(shared.message, /, and an answer of at least 1,024 tokens and 2,000 tokens of thinking\)/);
+  // A least its request names itself (its body's) is no split the cap knows: said as an output.
+  const named = await refusalOf(capOn(0.01, { mode: "strict" }).cap.admit(modelRequest(SOL, 1_000, 8_192, { thinkingBudget: 2_000, outputTokensLeast: 3_000 })));
+  assert.match(named.message, /, and an output of at least 3,000 tokens\)/);
+});
+
 test("a step none of whose input the cache reads says so", async () => {
   const refusal = await refusalOf(capOn(0.1, { mode: "strict" }).cap.admit(modelRequest(SOL, 100_000, 4_096)));
   // 100,000 fresh at $2.50 a million and 1,024 out at $10: $0.26024, rounded up to the cent.
