@@ -115,6 +115,9 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   /** Every run this runner claimed whose loop has not settled, lost ones included (they still take a loop's place). */
   const runs = new Map<string, Held>();
+  /** A lost claim's loop that had not settled when its run was claimed again (its place in `runs` taken by the new one):
+   *  still counted against `loops` until it settles, so a loop that ignores its stop never lets the runner hold more. */
+  const replaced = new Set<Held>();
   let closed = false;
   let killed = false;
   let pollTimer: NodeJS.Timeout | undefined;
@@ -395,7 +398,7 @@ export function startRunner(options: RunnerOptions): Runner {
     if (polling || closed || killed) return;
     polling = true;
     try {
-      const free = loops - runs.size;
+      const free = loops - runs.size - replaced.size;
       if (free <= 0) return;
       // One store call claims the batch, each run at its own epoch + 1 (store.runs.claimMany): filling 300 loops, or
       // taking a dead runner's runs over, is one transaction, not 300.
@@ -410,6 +413,11 @@ export function startRunner(options: RunnerOptions): Runner {
           continue;
         }
         try {
+          // A lost claim's loop still running keeps its place until it settles.
+          if (before?.done) {
+            replaced.add(before);
+            void before.done.finally(() => replaced.delete(before));
+          }
           hold(claim, sentAt);
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
