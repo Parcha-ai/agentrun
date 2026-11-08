@@ -1462,7 +1462,10 @@ asked by default.
   refusal's. A call approved under ask is checked again before it is sent. A pin adds to a setting and is never a
   permission: the agent's pin and the server's both hold (an argument both pin takes what holds both), and where
   nothing holds both every call is refused, saying so. A template pins its sends' destinations to its parameters ([Templates](#templates)). A pin in
-  `tool-settings.json` that does not read refuses every call of its tool until a `PUT` sets it again. Until the agent
+  `tool-settings.json` that does not read refuses every call of its tool, and `GET /settings/tools` serves it as
+  `pin_broken: true`. A `PUT` that keeps the tool's key and sets no valid pin (the mark sent back as served, or the pin
+  left out) keeps it broken, so saving another tool's setting never lifts it; a valid pin repairs it, and leaving the
+  key out removes the setting. Until the agent
   store's cutover an agent's own pin (`definition.tool_settings.<tool>.pin`) is refused, `422 not_set_up_here`: the
   store this server writes today keeps no pin, so set it on the server meanwhile.
 - **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call

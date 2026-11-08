@@ -81,7 +81,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
   // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
   if (d.tool_settings !== undefined) {
-    const settings = settingsIssues(d.tool_settings, `${at}.tool_settings`);
+    const settings = settingsIssues(d.tool_settings, `${at}.tool_settings`, "agent");
     out.push(...settings);
     // An agent's own pin, once its store keeps one (AGENT_LAYER_PINS); until then a pin that is one is the server's to set.
     if (!AGENT_LAYER_PINS && isObject(d.tool_settings)) {

@@ -191,3 +191,48 @@ test("the one pin rule (pinIssues) and its one form (sortedPin): a one-of list i
   assert.equal(JSON.stringify(a), JSON.stringify(b), "equal meanings, one text");
   assert.equal(JSON.stringify(a), JSON.stringify({ [REVIEW]: { pin: { event: [null, "COMMENT"], method: ["create", "submit_pending"] } } }));
 });
+
+test("a broken pin survives a save of other keys and keeps refusing, until the owner sets a valid pin or removes the setting", async (t) => {
+  const data = await scratch(t);
+  const file = join(data, "tool-settings.json");
+  const broken = { channel_id: { any: true } };
+  await writeFile(file, JSON.stringify({ [SEND]: { permission: "allow", pin: broken }, web_search: { provider: "auto" } }));
+  const gate = new RunGate({ root: await scratch(t), work: await scratch(t), data, runId: "r1" });
+  const call = (channel = "C0123") => gate.enter(SEND, { channel_id: channel }, `c-${Math.random()}`, { commit: () => assert.fail("nothing parks") });
+  const settings = new ToolSettings(data, () => undefined);
+  // The answer says the tool's pin is broken, so the console can show it; the whole map it saves back carries that.
+  const served = withDefaults(settings.get());
+  assert.deepEqual(served[SEND], { permission: "allow", pin_broken: true });
+  assert.deepEqual(settingsIssues(served), [], "a save of the answer as served is taken");
+
+  // A console's whole-map save that changes another tool: still broken, in the file and at the gate.
+  settings.put({ ...served, web_search: { provider: "exa-keyless" } });
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8"))[SEND], { permission: "allow", pin: broken }, "the broken value is kept as written");
+  assert.match((await call()).text, /its pin in this server's tool settings does not read/);
+  // The key kept with its pin left out (no mark either): still broken.
+  settings.put({ [SEND]: { permission: "allow" }, web_search: { provider: "exa-keyless" } });
+  assert.deepEqual(withDefaults(settings.get())[SEND], { permission: "allow", pin_broken: true });
+  assert.match((await call()).text, /does not read/);
+  // A restart reads it broken still.
+  assert.equal(new ToolSettings(data, () => undefined).get()[SEND].brokenPin, true);
+
+  // Repaired with a valid pin: the call as pinned goes, another is refused by that pin.
+  settings.put({ [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } });
+  assert.deepEqual(withDefaults(settings.get())[SEND], { permission: "allow", pin: { channel_id: "C0123" } });
+  assert.equal(await call("C0123"), undefined);
+  assert.match((await call("C0EVIL")).text, /may only be called with channel_id = C0123/);
+
+  // Broken again, then the setting removed on purpose (its key left out): cleared, the tool takes its default.
+  await writeFile(file, JSON.stringify({ [SEND]: { permission: "allow", pin: broken } }));
+  const again = new ToolSettings(data, () => undefined);
+  again.put({});
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {});
+  assert.equal(gate.policy(SEND), "ask", "the default, no pin");
+});
+
+test("pin_broken is the server's mark: only `true` on an MCP tool's own key of the server's settings, never in an agent's", () => {
+  assert.deepEqual(settingsIssues({ [SEND]: { permission: "allow", pin_broken: true } }), []);
+  assert.deepEqual(settingsIssues({ [SEND]: { pin_broken: false } }).map((i) => [i.field, i.reason]), [[`${SEND}.pin_broken`, "not_an_option"]]);
+  assert.deepEqual(settingsIssues({ read: { pin_broken: true } }).map((i) => [i.field, i.reason]), [["read.pin_broken", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ [SEND]: { pin_broken: true } }, "definition.tool_settings", "agent").map((i) => [i.field, i.reason]), [[`definition.tool_settings.${SEND}.pin_broken`, "not_allowed"]]);
+});
