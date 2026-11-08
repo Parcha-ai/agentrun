@@ -1,0 +1,136 @@
+// The console's real-browser tests: the built server (packages/serve/dist, with the console it serves) started as a person
+// starts it, and headless Chrome driven through playwright-core, so the page loads with the server's real headers, its CSP,
+// its cookies and its redirects. jsdom sees none of those.
+//
+// A flow gets a server of its own on 127.0.0.1 with a fresh data dir and home, which it removes when it ends. Nothing waits
+// on a clock: every wait is on the server's output, a selector, or a response.
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright-core";
+
+/** The checkout these tests are in: the default target. */
+export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+/** A serve test fixture by its file name (packages/serve/test/fixtures), e.g. the faux model. */
+export const fixture = (name, checkout = ROOT) => join(checkout, "packages/serve/test/fixtures", name);
+
+/** A password no one uses anywhere: the owner's, for the flows that set one. */
+export const PASSWORD = "e2e-not-a-real-password";
+
+/** What a server's output may hold that must never be shown: its API key and any ar_ key. */
+const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>").replace(/\bar_[A-Za-z0-9_-]+/g, "ar_<redacted>");
+
+/** Starts the built server from `checkout` on 127.0.0.1, port chosen by the system, with a data dir and home of its own.
+ *  Its environment holds only PATH, HOME, TMPDIR and `env` (e.g. AGENTRUN_PUBLIC_URL), so nothing of this machine reaches
+ *  it. `faux`: the model fixture (the faux model by default). Resolves once its banner names its URL. Its output stays in
+ *  memory: `log()` gives it with keys redacted, `line(re)` waits for a line. */
+export async function startServer({ env = {}, faux = "faux-model.mjs", args = [], checkout = ROOT, timeoutMs = 30_000 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-e2e-"));
+  const home = join(dir, "home");
+  mkdirSync(home, { recursive: true });
+  const child = spawn(process.execPath, [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", "0", "--listen", "127.0.0.1", ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...args], {
+    env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const lines = [];
+  const waiters = new Set();
+  const take = (chunk) => {
+    for (const line of String(chunk).split(/\r?\n/)) {
+      if (!line) continue;
+      lines.push(line);
+      for (const w of [...waiters]) { const m = w.re.exec(line); if (m) { waiters.delete(w); w.resolve(m); } }
+    }
+  };
+  child.stdout.on("data", take);
+  child.stderr.on("data", take);
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+
+  /** The first line, already printed or to come, that `re` matches; refused when the server exits first or `ms` pass. */
+  const line = (re, ms = timeoutMs) => {
+    for (const l of lines) { const m = re.exec(l); if (m) return Promise.resolve(m); }
+    return new Promise((resolve, reject) => {
+      const w = { re, resolve: (m) => { clearTimeout(timer); resolve(m); } };
+      const timer = setTimeout(() => { waiters.delete(w); reject(new Error(`the server printed no line matching ${re} in ${ms} ms`)); }, ms);
+      waiters.add(w);
+      void exited.then(({ code, signal }) => { if (waiters.delete(w)) { clearTimeout(timer); reject(new Error(`the server exited (${signal ?? code}) before printing a line matching ${re}`)); } });
+    });
+  };
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      const late = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      await exited;
+      clearTimeout(late);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  };
+  try {
+    const [, baseUrl] = await line(/^agentrun-serve on (http:\/\/127\.0\.0\.1:\d+\/v2)\b/);
+    return { baseUrl, origin: baseUrl.replace(/\/v2$/, ""), line, log: () => lines.map(redact).join("\n"), stop };
+  } catch (error) {
+    await stop();
+    throw new Error(`${error.message}\n${lines.map(redact).join("\n")}`);
+  }
+}
+
+/** Headless Chrome: CHROME_PATH (CI's Chrome for Testing), else E2E_CHROME. */
+export async function launchBrowser() {
+  const executablePath = process.env.CHROME_PATH || process.env.E2E_CHROME;
+  if (!executablePath) throw new Error("Set CHROME_PATH (or E2E_CHROME) to a Chrome or Chrome for Testing binary.");
+  return chromium.launch({ executablePath, headless: true });
+}
+
+/** A browser context for one flow: only the server's own origin (and data:/blob:) is reached. Any other request is
+ *  aborted and recorded in `blocked`, except hosts a flow stubs itself (`allow`: a host name it routes, e.g. github.com). */
+export async function newContext(browser, origin, { allow = [] } = {}) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const blocked = [];
+  const own = new URL(origin).host;
+  await context.route("**/*", (route) => {
+    const url = new URL(route.request().url());
+    if (url.protocol === "data:" || url.protocol === "blob:" || url.host === own || allow.includes(url.hostname)) return route.fallback();
+    blocked.push(`${route.request().method()} ${url.origin}${url.pathname}`);
+    return route.abort();
+  });
+  return { context, blocked };
+}
+
+/** A page that records what went wrong in it: uncaught errors and console errors. */
+export async function newPage(context) {
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(`pageerror: ${String(e).slice(0, 300)}`));
+  page.on("console", (m) => { if (m.type() === "error") errors.push(`console: ${m.text().slice(0, 300)}`); });
+  return { page, errors };
+}
+
+/** The first visit's setup, with no public URL (the server is open to set up): the password twice, then the console. */
+export async function setUp(page, origin, password = PASSWORD) {
+  await page.goto(`${origin}/`);
+  await page.getByLabel("New password").fill(password);
+  await page.getByLabel("Password again").fill(password);
+  await page.getByRole("button", { name: "Set password and continue" }).click();
+  await signedIn(page);
+}
+
+/** Sign in with the owner's password, on a server already set up. */
+export async function signIn(page, origin, password = PASSWORD) {
+  await page.goto(`${origin}/`);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await signedIn(page);
+}
+
+/** The console's shell is up: its navigation is on the page and no password field is. */
+export async function signedIn(page) {
+  await page.getByRole("button", { name: "Mission Control" }).first().waitFor();
+  await page.waitForFunction(() => !document.querySelector('input[type="password"]'));
+}
+
+/** Throws with `what` unless `ok`. */
+export function check(ok, what) {
+  if (!ok) throw new Error(what);
+}
