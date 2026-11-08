@@ -47,10 +47,12 @@ export interface LoopDeps {
   flush(): Promise<void>;
   /** Aborted on claim loss, self-stop or shutdown: in-flight model and tool calls are cut at once. */
   signal: AbortSignal;
-  /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes;
-   *  `undefined` once there is nothing held. The runner's live ticker (runner/live-ticker.ts) writes it to the run's
-   *  run_live row, one store transaction per tick for all its loops, never into the journal. Absent: not reported. */
-  live?: (held: HeldState | undefined) => void;
+  /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes: a
+   *  reader of the newest held state (`undefined` once there is nothing held), called once per tick by the runner's live
+   *  ticker (runner/live-ticker.ts), never on every change, so a change costs the same however long the answer has grown.
+   *  The ticker writes it to the run's run_live row, one store transaction per tick for all its loops, never into the
+   *  journal. Absent: not reported. */
+  live?: (read: () => HeldState | undefined) => void;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored
