@@ -86,11 +86,19 @@ describe("a Docker computer whose daemon was installed under umask 077", { skip:
 		assert.equal(connected.ok, true, JSON.stringify(connected));
 		connection = connected.value;
 		assert.equal(connection.hello.os, "linux");
-		const ran = await connection.client.call("exec.run", { argv: ["sh", "-c", "id -u; stat -c '%u %a' /opt/agentrun/computerd; tr '\\0' ' ' < /proc/1/cmdline"], timeoutMs: 20_000 });
+		const script = "id -u; stat -c '%u %a' /opt/agentrun/computerd; test -x /opt/agentrun/computerd && echo runnable || echo not-runnable; tr '\\0' ' ' < /proc/1/cmdline";
+		const ran = await connection.client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 20_000 });
 		assert.equal(ran.ok, true, JSON.stringify(ran));
-		const [uid, daemon, init] = decode(ran.value.stdout).trim().split("\n");
+		const [uid, daemon, runnable, init] = decode(ran.value.stdout).trim().split("\n");
 		assert.equal(uid, USER);
-		assert.equal(daemon, `${process.getuid()} 755`, "the computer sees the copy's own owner and mode");
+		const [owner, mode] = daemon.split(" ");
+		assert.equal(mode, "755", "the computer sees the copy's own mode");
+		assert.equal(runnable, "runnable", `the computer's user ${USER} may run the copy`);
+		// A host that remaps ids (userns-remap, rootless Docker) shows the computer another uid for the copy's owner, so
+		// the owner is compared only where ids are not remapped: hostOf reads that from docker info's SecurityOptions.
+		const host = await provider.host();
+		assert.equal(host.ok, true, JSON.stringify(host));
+		if (host.value.remap === undefined) assert.equal(Number(owner), process.getuid(), "the computer sees the copy's own owner");
 		assert.match(init, /^\/opt\/agentrun\/computerd init --deadline /);
 	});
 });
