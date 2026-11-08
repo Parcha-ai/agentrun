@@ -225,7 +225,8 @@ export function startRunner(options: RunnerOptions): Runner {
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });
     } finally {
-      runs.delete(claim.runId);
+      // Only its own entry: a run this runner lost and claimed again holds a new one under the same id.
+      if (runs.get(claim.runId) === held) runs.delete(claim.runId);
     }
   };
 
@@ -303,26 +304,26 @@ export function startRunner(options: RunnerOptions): Runner {
     try {
       const free = loops - runs.size;
       if (free <= 0) return;
-      for (const runId of await store.runs.claimable({ limit: free })) {
-        if (closed || killed || runs.size >= loops) break;
-        if (runs.has(runId)) continue;
-        const sentAt = Date.now();
-        let claim: Claim | null;
-        try {
-          claim = await store.claim(runId, name, { leaseMs });
-        } catch (error) {
-          emit({ type: "error", runId, step: "claim", message: message(error) });
+      // One store call claims the batch, each run at its own epoch + 1 (store.runs.claimMany): filling 300 loops, or
+      // taking a dead runner's runs over, is one transaction, not 300.
+      const sentAt = Date.now();
+      const claims = await store.runs.claimMany(name, free, { leaseMs });
+      for (const claim of claims) {
+        const before = runs.get(claim.runId);
+        if (closed || killed || (before && !before.fence.lost)) {
+          // Closed while the batch was claimed (or a run this runner still holds, which a claim cannot be): given back.
+          if (before && !before.fence.lost) emit({ type: "error", runId: claim.runId, step: "claim", message: "claimed a run this runner still holds" });
+          await store.release(claim, {}).catch(() => {});
           continue;
         }
-        if (!claim || closed || killed) continue;
         try {
           hold(claim, sentAt);
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
-          emit({ type: "error", runId, step: "create loop", message: message(error) });
+          emit({ type: "error", runId: claim.runId, step: "create loop", message: message(error) });
           await store.runs.update(claim, { state: "failed", summary: message(error) }).catch(() => {});
           await store.flush().catch(() => {});
-          await store.release(claim).catch(() => {});
+          await store.release(claim, {}).catch(() => {});
         }
       }
     } catch (error) {

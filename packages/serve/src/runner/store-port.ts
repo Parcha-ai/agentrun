@@ -3,7 +3,7 @@
 import { Fenced, type Store } from "../store/store.js";
 
 export type RunnerStore = Pick<Store, "claim" | "renew" | "release" | "journal" | "flush" | "commands" | "take" | "retry"> & {
-  readonly runs: Pick<Store["runs"], "claimable" | "update">;
+  readonly runs: Pick<Store["runs"], "claimMany" | "update">;
 };
 
 /** The store's fence: a write under an epoch that moved. */
