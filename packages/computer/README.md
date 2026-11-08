@@ -1412,9 +1412,11 @@ leaves x11vnc listening on every interface (`dist/index.mjs:502`); this provider
 - `connect(ref)` refuses a paused computer without connecting, since E2B's connect resumes one; it gives E2B a timeout
   a little under what is left, and E2B moves a running sandbox's timer only to a longer one (`index.d.mts:10250`), so
   connecting never moves the end.
-- `release(ref, "delete")` kills (`index.mjs:5398-5410`; a sandbox E2B no longer has is done), never signalled, then
-  waits through `waitUntil` until `getInfo` answers not found (`index.mjs:5431`) and the label listing no longer shows
-  it, twice running, with pauses doubling from `pollMs` to 5 s, within `goneMs` (120 s) and the caller's signal.
+- `release(ref, "delete")` reads the sandbox back to check it is this provider's, then kills it (`index.mjs:5398-5410`;
+  a sandbox E2B no longer has is done), both never signalled, so a release whose signal aborted first still kills;
+  then it waits through `waitUntil` until `getInfo` answers not found (`index.mjs:5431`) and the label listing no
+  longer shows it, twice running, with pauses doubling from `pollMs` to 5 s, within `goneMs` (120 s) and the caller's
+  signal, which ends only this wait.
   `release(ref, "stop")` is refused in words.
 - Every SDK call has its own bound and takes the caller's signal; the paginator takes it per page (`Sandbox.list`
   itself takes none, `index.d.mts:10280`).

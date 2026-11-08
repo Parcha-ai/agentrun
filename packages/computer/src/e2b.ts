@@ -1376,16 +1376,17 @@ export class E2BProvider implements ComputerProvider {
 	}
 
 	/**
-	 * delete kills the sandbox (never signalled, so a release after an abort still sends it) and is idempotent: one E2B
-	 * no longer has is ok. E2B answers a kill before the sandbox is gone, so release then waits (#settle) until E2B
-	 * reads it gone and no longer lists it, within goneMs and the caller's signal.
+	 * delete reads the sandbox back to check it is this provider's, then kills it, both never signalled, so a release
+	 * after an abort, or one aborted during the read, still sends the kill; it is idempotent: one E2B no longer has is ok.
+	 * E2B answers a kill before the sandbox is gone, so release then waits (#settle) until E2B reads it gone and no longer
+	 * lists it, within goneMs and the caller's signal, the one step the signal ends.
 	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
 		if (how === "stop") return fail("unsupported", STOP);
-		const found = await this.#info(ref.id, signal);
+		const found = await this.#info(ref.id);
 		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
 		if (!ours(found.value.metadata, ref.name)) return fail("not_found", `no E2B computer is ${ref.name} (${ref.id}): the sandbox is not this provider's, so it is left as it is`);
 		const killed = await this.#kill(ref.id);
