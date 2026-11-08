@@ -72,8 +72,8 @@ import type {
 } from "@parcha/agentrun-computer";
 import { relativeSegments } from "./paths.js";
 import {
-  type Entry, type ExecOptions, type ExecResult, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError,
-  type WorkspaceErrorCode,
+  abortError, type Entry, EXEC_OUTPUT_MAX, type ExecOptions, type ExecResult, type GrepOptions, type GrepResult, READ_MAX, type Stat,
+  type Workspace, WorkspaceError, type WorkspaceErrorCode,
 } from "./workspace.js";
 
 /** Where every computer mounts a run's folder: D's WORKSPACE, checked against its type, so a change there fails here. */
@@ -116,6 +116,10 @@ export const COMPUTER_CHUNK = 512 * 1024;
 const READ_ATTEMPTS = 3;
 /** How long the computer's own sync of a file the host cannot open may take. */
 const SYNC_TIMEOUT_MS = 60_000;
+/** How long one process.read of exec's output waits for bytes or the end (computerd's MAX_READ_WAIT_MS is the most). */
+const EXEC_READ_WAIT_MS = 10_000;
+/** How long exec waits for the process's exit once both its streams have ended. */
+const EXEC_EXIT_WAIT_MS = 10_000;
 
 const CODES: Record<string, WorkspaceErrorCode> = {
   not_found: "NOT_FOUND", exists: "EXISTS", limit: "TOO_LARGE", timeout: "TIMEOUT",
@@ -288,6 +292,20 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       await synced(rel);
     },
 
+    async stat(path): Promise<Stat | undefined> {
+      const { rel, abs, segments } = at(path);
+      // A link on the way is ESCAPE, as the local backend's walk says; a folder on the way not there ends the walk.
+      await noLinkOnTheWay(segments, segments.length - 1, rel);
+      const result = await call("files.stat", { path: abs, follow: false });
+      if (!result.ok) {
+        // Nothing there, or a file in the place of a folder on the way: nothing is at the path.
+        if (result.error.code === "not_found" || result.error.code === "not_dir") return undefined;
+        return value(Promise.resolve(result), rel);
+      }
+      const { type, size, mtimeMs } = result.value;
+      return { kind: type === "symlink" ? "link" : type === "dir" ? "dir" : type === "file" ? "file" : "other", size: type === "dir" ? 0 : size, mtimeMs };
+    },
+
     async list(dir) {
       const { rel, abs } = at(dir);
       const entries: Entry[] = [];
@@ -330,21 +348,66 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       await synced(where.rel);
     },
 
+    // exec is a computerd process, not exec.run: exec.run keeps the head of each stream (360 KB at most) and answers
+    // once, at its end, where a caller (bash) needs the output as it comes and the end of a long one. The process is
+    // read as it comes (process.read, each stream from its own offset), every byte given to onOutput and the first
+    // maxOutput of each kept; at the deadline or an abort it is sent KILL (computerd's guard then ends everything it
+    // started), and once it ends its guard kills whatever it left, so nothing it started outlives it.
     async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {
-      if (options.stdin !== undefined) throw new WorkspaceError("REFUSED", "exec with stdin runs on the run's folder, not in a computer: computerd's exec.run takes no stdin");
+      if (options.stdin !== undefined) throw new WorkspaceError("REFUSED", "exec with stdin runs on the run's folder, not in a computer: a computer's exec takes no stdin");
+      const { timeoutMs, signal } = options;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new WorkspaceError("REFUSED", "exec's timeoutMs is a number above 0");
+      const cap = options.maxOutput ?? EXEC_OUTPUT_MAX;
+      if (!Number.isSafeInteger(cap) || cap < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
+      if (signal?.aborted) throw abortError(signal);
       const { abs, rel } = at(options.cwd ?? "");
-      const ran = await value(call("exec.run", {
-        argv: [...argv], cwd: abs, env: { ...options.env }, timeoutMs: options.timeoutMs, ...(options.maxOutput === undefined ? {} : { maxOutput: options.maxOutput }),
-      }), rel);
-      const stdout = Buffer.from(ran.stdout, "base64");
-      const stderr = Buffer.from(ran.stderr, "base64");
-      // exec.run answers once, at the end: each stream goes to onOutput once, whole.
-      if (options.onOutput) {
-        for (const [stream, data] of [["stdout", stdout], ["stderr", stderr]] as const) {
-          try { options.onOutput({ stream, data }); } catch { /* the caller's callback; its error is not the call's */ }
+      const { id } = await value(call("process.start", { argv: [...argv], cwd: abs, env: { ...options.env } }), rel);
+      let timedOut = false;
+      let aborted = false;
+      let truncated = false;
+      const kill = (): void => void call("process.signal", { id, signal: "KILL" }).catch(() => undefined);
+      const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
+      const onAbort = (): void => { aborted = true; kill(); };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const kept = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+      const readAll = async (stream: "stdout" | "stderr"): Promise<void> => {
+        let have = 0;
+        for (let offset = 0; ;) {
+          const page = await value(call("process.read", { id, stream, offset, waitMs: EXEC_READ_WAIT_MS }), rel);
+          const data = Buffer.from(page.data, "base64");
+          if (page.dropped > 0) truncated = true;
+          if (data.length > 0) {
+            if (options.onOutput) {
+              try { options.onOutput({ stream, data }); } catch { /* the caller's callback; its error is not the call's */ }
+            }
+            const room = cap - have;
+            if (data.length > room) truncated = true;
+            if (room > 0) {
+              const part = data.length > room ? data.subarray(0, room) : data;
+              kept[stream].push(part);
+              have += part.length;
+            }
+          }
+          offset = page.nextOffset;
+          if (page.exited) return;
         }
+      };
+      let exit: ProcessExit;
+      try {
+        await Promise.all([readAll("stdout"), readAll("stderr")]);
+        exit = await value(call("process.wait", { id, timeoutMs: EXEC_EXIT_WAIT_MS }), rel);
+      } catch (error) {
+        kill();
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
       }
-      return { stdout, stderr: stderr.toString("utf8"), code: ran.exitCode, timedOut: ran.timedOut, truncated: ran.truncated };
+      if (aborted) throw abortError(signal);
+      return {
+        stdout: Buffer.concat(kept.stdout), stderr: Buffer.concat(kept.stderr).toString("utf8"),
+        code: timedOut ? null : exit.exitCode, signal: timedOut ? "KILL" : exit.signal, timedOut, truncated,
+      };
     },
 
     mountSpec: () => base.mountSpec(),

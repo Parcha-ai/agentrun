@@ -280,7 +280,7 @@ export function suite(name, make) {
       assert.equal(err.truncated, true);
     });
 
-    test("exec: onOutput gets the output, joined per stream it is the result's (capped), and it comes as it is made", async () => {
+    test("exec: onOutput gets all the output, past the cap too, and it comes as it is made; the result keeps the cap's head", async () => {
       const { workspace } = await fresh();
       const seen = { stdout: [], stderr: [] };
       let firstAt;
@@ -290,14 +290,70 @@ export function suite(name, make) {
         firstAt ??= Date.now() - started;
         seen[stream].push(Buffer.from(data));
       } });
-      assert.ok(Buffer.concat(seen.stdout).equals(Buffer.from(out.stdout)), "stdout's pieces join to the result's stdout");
+      // onOutput gets all of it, the cap or not (a caller keeps the end of a long output from it); the result keeps the
+      // first maxOutput bytes of each stream.
+      const all = Buffer.concat(seen.stdout);
+      assert.equal(all.length, 6 + 5000, "onOutput gets every byte, past the cap too");
+      assert.equal(all.subarray(0, 6).toString(), "onetwo");
+      assert.ok(all.subarray(0, 1000).equals(Buffer.from(out.stdout)), "the result's stdout is the first maxOutput bytes of what onOutput got");
       assert.equal(Buffer.concat(seen.stderr).toString("utf8"), out.stderr, "stderr's pieces join to the result's stderr");
-      assert.equal(out.stdout.length, 1000, "both are cut at the cap");
-      assert.equal(Buffer.from(out.stdout).subarray(0, 6).toString(), "onetwo");
+      assert.equal(out.stdout.length, 1000, "the result is cut at the cap");
+      assert.equal(out.truncated, true);
       // A backend that streams gives the first piece before the program ends; one that cannot gives each stream once.
       const streams = seen.stdout.length > 1 || seen.stderr.length > 1;
       if (streams) assert.ok(firstAt < 900, `the first piece came as it was made (${firstAt} ms)`);
       else assert.deepEqual([seen.stdout.length, seen.stderr.length], [1, 1], "a backend that cannot stream calls it once per stream");
+    });
+
+    test("exec: a signal that ends it is said: code null and the signal's name; a deadline's kill is KILL; an exit has none", async () => {
+      const { workspace } = await fresh();
+      const termed = await workspace.exec(["bash", "-c", "kill -TERM $$"], { env: ENV, timeoutMs: 10_000 });
+      assert.deepEqual([termed.code, termed.signal, termed.timedOut], [null, "TERM", false]);
+      const slow = await workspace.exec(["sleep", "30"], { env: ENV, timeoutMs: 300 });
+      assert.deepEqual([slow.code, slow.signal, slow.timedOut], [null, "KILL", true]);
+      const exited = await workspace.exec(["bash", "-c", "exit 4"], { env: ENV, timeoutMs: 10_000 });
+      assert.deepEqual([exited.code, exited.signal], [4, null]);
+    });
+
+    test("exec: an abort kills the group and rejects with an AbortError; an aborted signal runs nothing", async () => {
+      const { workspace } = await fresh();
+      const controller = new AbortController();
+      const started = Date.now();
+      setTimeout(() => controller.abort(), 300);
+      await assert.rejects(
+        workspace.exec(["bash", "-c", "(sleep 1.5; echo alive > late) & sleep 30"], { env: ENV, timeoutMs: 20_000, signal: controller.signal }),
+        (error) => error?.name === "AbortError",
+      );
+      assert.ok(Date.now() - started < 5_000, "it returns at the abort");
+      await sleep(2_000);
+      await refused(workspace.read("late"), "NOT_FOUND", "the grandchild of an aborted exec was killed");
+      await assert.rejects(
+        workspace.exec(["bash", "-c", "echo ran > ran"], { env: ENV, timeoutMs: 10_000, signal: AbortSignal.abort() }),
+        (error) => error?.name === "AbortError",
+      );
+      await refused(workspace.read("ran"), "NOT_FOUND", "an exec given an aborted signal runs nothing");
+    });
+
+    test("stat says a file's or a folder's kind, size and time without following anything; nothing there is undefined", async () => {
+      const { workspace, root, outside } = await fresh();
+      const before = Date.now();
+      await workspace.write("sub/file.txt", "12345");
+      const file = await workspace.stat("sub/file.txt");
+      assert.deepEqual([file.kind, file.size], ["file", 5]);
+      assert.ok(Number.isFinite(file.mtimeMs) && file.mtimeMs >= before - 2_000, "a file's mtimeMs is its time");
+      const dir = await workspace.stat("sub");
+      assert.deepEqual([dir.kind, dir.size], ["dir", 0], "a folder's size is 0, as list says");
+      assert.equal((await workspace.stat("")).kind, "dir", "the root is a folder");
+      assert.equal(await workspace.stat("missing"), undefined);
+      assert.equal(await workspace.stat("missing/deeper"), undefined, "under a folder that is not there");
+      assert.equal(await workspace.stat("sub/file.txt/under"), undefined, "under a file");
+      symlinkSync(join(outside, "sentinel"), join(root, "filelink"));
+      symlinkSync(outside, join(root, "dirlink"));
+      assert.equal((await workspace.stat("filelink")).kind, "link", "a link as the last part is a link, never followed");
+      assert.equal((await workspace.stat("dirlink")).kind, "link");
+      await refused(workspace.stat("dirlink/sentinel"), "ESCAPE", "a link on the way");
+      for (const path of ["../x", "/etc/passwd", "a//b", "a/./b"]) await refused(workspace.stat(path), "ESCAPE", `stat ${path}`);
+      untouched(outside);
     });
 
     test("with no computer, every background call is REFUSED, cause no-computer", async () => {
