@@ -203,30 +203,6 @@ const archilToken = mount(
 );
 
 /**
- * Lists, as the computer's user, every unix socket with a path it can connect to: a network namespace does not cut a
- * path socket, so the run records them (the Archil sync socket is one, by design: it only syncs). With python3, the
- * image's; prints `connects <path>` or `refused <path>` a line each, or `no python3`.
- */
-const PATH_SOCKETS = [
-	"command -v python3 >/dev/null 2>&1 || { echo 'no python3'; exit 0; }",
-	"exec python3 -c '",
-	"import os, socket, stat",
-	"for top in (\"/run\", \"/tmp\", \"/var/run\", \"/var/tmp\", \"/dev/shm\", \"/workspace\", \"/work\", \"/home\", \"/opt\"):",
-	"    for root, dirs, files in os.walk(top):",
-	"        for name in dirs + files:",
-	"            path = os.path.join(root, name)",
-	"            try:",
-	"                if not stat.S_ISSOCK(os.lstat(path).st_mode): continue",
-	"            except OSError: continue",
-	"            s = socket.socket(socket.AF_UNIX)",
-	"            s.settimeout(2)",
-	"            try: s.connect(path); print(\"connects\", path)",
-	"            except OSError: print(\"refused\", path)",
-	"            finally: s.close()",
-	"'",
-].join("\n");
-
-/**
  * "isolated, and durable through the root side", on one Archil computer: a tool sees loopback alone and reaches neither a
  * vendor's agent nor any address; and a tool's write in /workspace, by a program (exec.run) and by files.write, is read
  * through the disk's file API right after the call returns, with no checkin. So the per-call sync goes out from the
@@ -238,12 +214,9 @@ const archilIsolatedDurable = mount(
 		const folder = await t.runFolder("archil");
 		const { ref } = await mounted(t, folder, EPOCH, "mount-archil-isolated-durable");
 		const connected = await t.connect(ref);
-		// isolation.vendor-agent's own check, on this Archil computer: lo alone, refused at the vendor's agent and outside.
+		// isolation.vendor-agent's own check, on this Archil computer: lo alone, refused at the vendor's agent and outside,
+		// and no path unix socket a tool connects to but the computer's own (computerd's, the sync socket).
 		await assertIsolated(t, connected.client);
-		// Recorded, not asserted: the path sockets a tool can connect to, which no network namespace cuts.
-		const sockets = await t.exec(["sh", "-c", PATH_SOCKETS], { timeoutMs: 60_000 }, connected.client);
-		const lines = sockets.out.split("\n").filter(Boolean);
-		t.observe(`path unix sockets a tool can connect to: ${lines.filter((line) => line.startsWith("connects ")).map((line) => line.slice(9)).join(", ") || (lines.includes("no python3") ? "not listed (no python3)" : "none")}${sockets.exitCode === 0 ? "" : ` (the listing exited ${sockets.exitCode}: ${sockets.err.trim().slice(0, 200)})`}`);
 		const nonce = randomBytes(6).toString("hex");
 		const ran = await t.exec(["sh", "-c", `printf '%s\\n' ${nonce} > exec-${nonce}.txt`], { cwd: WORKSPACE }, connected.client);
 		t.equal(ran.exitCode, 0, `a program's write at ${WORKSPACE}: its exit code (${ran.err.trim()})`);
