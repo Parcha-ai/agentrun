@@ -63,12 +63,13 @@ const allowedExtraFiles = {
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
-  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json'],
+  // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
+  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', 'package/templates/README.md', ...['agent.md', 'findings.schema.json', 'rules/REVIEW.md', 'skills/review/SKILL.md', 'evals/null-name/prompt.md', 'evals/null-name/graders/schema.md'].map((file) => `package/templates/code-review/${file}`)],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
-  // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs) and its skill's
-  // installer (skill.mjs).
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs'],
+  // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
+  // installer (skill.mjs) and its template package check (template.mjs).
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
