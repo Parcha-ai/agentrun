@@ -74,6 +74,10 @@ export interface PiRunSpec {
   /** The run's work folder, as its file tools resolve a path: what the end-of-run turn's refusal under work/.learning/
    *  reads an absolute path against. Absent: a relative path, or the box's, still counts. */
   readonly workRoot?: string;
+  /** Let the run's resources go once the loop writes nothing more: its tools' background processes ended and swept, its
+   *  Workspace (and any computer) closed. Called in run()'s finally, after the Session is closed; it never throws (a
+   *  cleanup failure is reported through the run's log channel, not raised). */
+  readonly release?: () => Promise<void>;
 }
 
 /** pi's own default restart limit (pi-durable 1.5.0 agent settings). */
@@ -475,6 +479,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
       held?.detach();
       deps.live?.(undefined);
       if (gate && harness) await closeBehindSeal(gate, harness);
+      await spec.release?.();
     }
   }
 
