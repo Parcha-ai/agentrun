@@ -57,6 +57,18 @@ export interface ModelCapRequest {
   readonly previous?: Previous;
   /** A side call (a title, a summary), never its turn's own. */
   readonly side?: boolean;
+  /** It carries the cap's wrap-up note (Cap.note) in its body, its bytes in `inputTokens`: told once it is answered. */
+  readonly noted?: boolean;
+}
+
+/** A verify decision about to be judged: held at its model's price for its input and output. "unreadable": its catalog
+ *  could not be read for a price. */
+export interface DecisionCapRequest {
+  readonly kind: "decision";
+  readonly id: string;
+  readonly model: CapModel | "unreadable";
+  readonly inputTokens: number;
+  readonly outputTokens: number;
 }
 
 /** A priced tool call about to be made: held at its quote, or its allowance, until it is charged. */
@@ -69,7 +81,7 @@ export interface ToolCapRequest {
   readonly basis: string;
 }
 
-export type CapRequest = ModelCapRequest | ToolCapRequest;
+export type CapRequest = ModelCapRequest | ToolCapRequest | DecisionCapRequest;
 
 /** A step the cap let go: what it is held at until it settles (a model request's expected cost at the output it may be
  *  sent with, its worst case under strict), the most a cache miss can add (`boundUsd`), its worst case, and for a model
@@ -121,4 +133,9 @@ export interface Cap {
   leastUsd(request: ModelCapRequest): number;
   spentUsd(): number | null;
   heldUsd(): number;
+  /** The wrap-up note for `request`, the run's next main-model request measured before the note is placed, when it is
+   *  due and not yet told; none for a side call, or when the request fits what is left only without the note's bytes. */
+  note(request: ModelCapRequest): { words: string; leftUsd: number } | undefined;
+  /** The run's own priced answers on `model`, the wrap-up's typical cost's costs. */
+  ownCosts(model: string): number[];
 }

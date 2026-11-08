@@ -11,13 +11,19 @@ export type StartMark = {
   readonly at: number;
   readonly heldUsd: number | null;
   readonly boundUsd?: number;
+  /** A model request's model: the wrap-up's typical cost counts the run's own model's answers only. */
+  readonly model?: string;
   readonly side?: true;
   readonly tool?: string;
   readonly refused?: true;
 };
 /** A step's end: what it was booked at (null: unknown), and the booking rule that gave it. */
 export type EndMark = { readonly kind: "end"; readonly id: string; readonly at: number; readonly usd: number | null; readonly rule?: string };
-export type CapMark = StartMark | EndMark;
+/** The wrap-up told, in the answered request `id`: once per run. */
+export type ToldMark = { readonly kind: "told"; readonly id: string; readonly at: number; readonly words: string; readonly leftUsd: number };
+/** A step that waits for a raise, by its path. */
+export type WaitMark = { readonly kind: "wait"; readonly path: string; readonly at: number };
+export type CapMark = StartMark | EndMark | ToldMark | WaitMark;
 
 export interface CapMarks {
   /** Writes `mark` durably (the journal: in the step's own commit). Rejects when it could not be written. */
