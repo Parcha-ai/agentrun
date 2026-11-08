@@ -108,11 +108,16 @@ const runFolder = (kind: MountKind): Case =>
 			// Outside in, while the computer holds the folder.
 			const outside = `outside-${nonce}.txt`;
 			const outsideText = `written outside the computer ${nonce}\n`;
-			await folder.write(outside, Buffer.from(outsideText));
-			const seen = await connected.client.call("files.read", { path: `${WORKSPACE}/${outside}` });
-			const seenText = seen.ok ? decode(seen.value.data) : undefined;
-			if (kind === "archil") t.observe(`outside in, while held: a file the file API wrote is ${seenText === outsideText ? "read at /workspace as written" : seen.ok ? "read at /workspace with other bytes" : `not read at /workspace (${seen.error.code})`}`);
-			else t.equal(seenText, outsideText, `files.read of ${WORKSPACE}/${outside}, a file written outside the computer`);
+			// An Archil computer holds the folder exclusively, so its disk may refuse the write (409, another client holds a
+			// write delegation): that is recorded, never a failure. A bind has no such hold, and its write must land.
+			const refused = kind === "archil" ? await folder.write(outside, Buffer.from(outsideText)).then(() => undefined, (error: unknown) => (error instanceof Error ? error.message : String(error))) : await folder.write(outside, Buffer.from(outsideText));
+			if (typeof refused === "string") t.observe(`outside in, while held: the file API's write was refused: ${refused.replace(/\s+/g, " ").slice(0, 300)}`);
+			else {
+				const seen = await connected.client.call("files.read", { path: `${WORKSPACE}/${outside}` });
+				const seenText = seen.ok ? decode(seen.value.data) : undefined;
+				if (kind === "archil") t.observe(`outside in, while held: a file the file API wrote is ${seenText === outsideText ? "read at /workspace as written" : seen.ok ? "read at /workspace with other bytes" : `not read at /workspace (${seen.error.code})`}`);
+				else t.equal(seenText, outsideText, `files.read of ${WORKSPACE}/${outside}, a file written outside the computer`);
+			}
 
 			// Inside out: a file files.write makes at /workspace is in the folder outside.
 			const inside = `inside-${nonce}.txt`;
