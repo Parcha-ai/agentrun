@@ -27,6 +27,8 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 	let arch;
 	let ref;
 	let connection;
+	/** The times just before and just after create, in ms: the deadline is lifetimeMs from a moment between them. */
+	let createdAt;
 
 	const exec = (argv, extra = {}) => connection.client.call("exec.run", { argv, timeoutMs: 20_000, ...extra });
 	const run = async (argv, extra) => {
@@ -54,9 +56,11 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 	});
 
 	it("creates a computer with no network and a 10-minute lifetime", async () => {
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "run-command" } });
-		assert.equal(created.ok, true, JSON.stringify(created));
-		ref = created.value;
+		const from = Date.now();
+		const result = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "run-command" } });
+		createdAt = { from, to: Date.now() };
+		assert.equal(result.ok, true, JSON.stringify(result));
+		ref = result.value;
 		made.push(ref.name);
 		assert.match(ref.name, /^computer-[0-9a-f]{12}$/);
 	});
@@ -87,8 +91,11 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 		const labels = inspected.Config.Labels;
 		assert.deepEqual(inspected.Config.Cmd, ["init", "--deadline", labels["agentrun.computer.deadline"]]);
 		assert.equal(labels["agentrun.computer"], "1");
+		// lifetimeMs from the moment create set it, however long docker run then took: a Docker host busy with another
+		// workload can hold every container start for a minute or more.
 		const deadline = Date.parse(labels["agentrun.computer.deadline"]);
-		assert.ok(deadline > Date.now() + 9 * 60_000 && deadline <= Date.now() + 10 * 60_000, labels["agentrun.computer.deadline"]);
+		const window = `${new Date(createdAt.from + 10 * 60_000).toISOString()} to ${new Date(createdAt.to + 10 * 60_000).toISOString()}`;
+		assert.ok(deadline >= createdAt.from + 10 * 60_000 && deadline <= createdAt.to + 10 * 60_000, `${labels["agentrun.computer.deadline"]} is not within ${window}`);
 	});
 
 	it("connects, and hello reports Docker's arch, exec, files and processes", async () => {
