@@ -15,7 +15,6 @@ import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionSpec,
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
-import { OPENCODE_VERSION } from "./binary.js";
 import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
 import type { ConfineChild } from "./host/server.js";
@@ -126,8 +125,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
 
   return {
     id: "opencode",
-    version: OPENCODE_VERSION,
-    capabilities: () => ({ fork: false }),
+    capabilities: () => ({}),
     check(spec) {
       const problems: string[] = [];
       if (spec.context === "fork") problems.push("OpenCode sessions cannot fork another session's transcript; declare context: \"fresh\"");

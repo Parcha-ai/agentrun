@@ -1,7 +1,10 @@
 import { ClientError } from "./client";
+import type { Permission } from "./v2";
 
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
-export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown };
+/** A tool as a server lists it; on a saved server's read, with its permission as this server applies it to an agent that
+ *  sets none (`permission`, under the server's tool settings), the owner's default and those it may be set to. */
+export type McpTool = { name: string; title?: string; description?: string; input_schema?: unknown; permission?: Permission; default_permission?: Permission; permissions?: Permission[] };
 export type McpAuthType = "none" | "bearer" | "headers" | "oauth";
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
  *  for one that takes none). `prices`, per tool in USD, only when the server meters them. */
