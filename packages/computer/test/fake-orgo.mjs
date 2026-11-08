@@ -133,13 +133,15 @@ export function markOf(argv) {
  *  - bridge: "ok" (default), or "timeout": every stdio fails as the terminal channel does when its marker never comes;
  *  - initDies: init is gone once the start's call returns (as when bash's end takes it), and its log says why;
  *  - rootPorts: the TCP ports root listens on in Orgo's own network (its agent, its VNC), as the ports script reads
- *    them (default 8231 and 5900).
+ *    them (default 8231 and 5900);
+ *  - sockets: the path sockets of Orgo's desktop the lockdown script makes root's alone, as it prints them (default
+ *    root's D-Bus buses, as live run 4 found them).
  * The status script answers what the computer holds: init running or not, its socket, its log's tail. The daemon holds
  * its programs to their own loopback when init was started with --own-network, and else shares Orgo's network.
  * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state, its
  * probes' targets in box.probes.
  */
-export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900] } = {}) {
+export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900], sockets = ["/run/dbus/system_bus_socket", "/tmp/dbus-3fd5ustF2v"] } = {}) {
 	const boxes = new Map();
 	const calls = [];
 	let waiting = notListening;
@@ -177,6 +179,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			}
 			if (mark?.kind === "orgo-labels-read") return box.labels === undefined ? done(1, `cat: ${mark.args[0]}: No such file or directory`) : done(0, box.labels);
 			if (mark?.kind === "orgo-ports") return done(0, rootPorts.map((port) => `${port}\n`).join(""));
+			if (mark?.kind === "orgo-lockdown") return done(0, sockets.map((path) => `locked ${path}\n`).join(""));
 			if (mark?.kind === "orgo-status") {
 				const up = box.init !== undefined;
 				return done(0, [`init ${up ? "running" : "not running"}`, `socket ${up ? "present" : "absent"}`, `log ${box.log ?? (up ? "computerd: init: listening" : "")}`].join("\n"));

@@ -93,7 +93,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
 		mount: [],
-		vendorAgentPorts: [5900, 6080],
+		vendorAgentPorts: [5999, 6080, 8080],
 	});
 	assert.equal(serves(provider.capabilities(), "desktop"), true);
 	assert.equal(kindOf(provider.capabilities()), "desktop");
@@ -143,12 +143,16 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.match(record.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3$/);
 	assert.deepEqual(record.asked, { workspace_id: WORKSPACE, name: record.name, os: "linux", ram: 4, cpu: 1, ends_in_hours: 1 });
 	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
-	assert.deepEqual(ops.slice(0, 7), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "start init", "stdio stdio"]);
+	assert.deepEqual(ops.slice(0, 8), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "run orgo-lockdown", "start init", "stdio stdio"]);
+	// Every path socket of Orgo's desktop is made root's alone before any tool runs, but the display's own: the tools reach
+	// the X server through it, and nothing else (live run 4 found root's D-Bus buses connectable by the tool user).
+	assert.deepEqual(channel.calls.find((call) => call.kind === "orgo-lockdown").argv.slice(4), ["/tmp/.X11-unix/X99"]);
+	assert.ok(created.value.notes.some((note) => /made root's alone: \/run\/dbus\/system_bus_socket, \/tmp\/dbus-3fd5ustF2v/.test(note)), JSON.stringify(created.value.notes));
 	// Init and its programs in a network of their own, loopback alone; the probe tries every port root listens on in
 	// Orgo's own network (its agent's, read at create) and the declared ones, on both loopbacks: all refused.
 	assert.match(channel.calls.find((call) => call.op === "start").argv.join(" "), /--own-network/);
 	const probed = channel.boxes.get(record.id).probes.at(-1);
-	for (const port of [8231, 5900, 6080]) for (const host of ["127.0.0.1", "[::1]"]) assert.ok(probed.includes(`${host}:${port}`), `the probe tries ${host}:${port}: ${probed.join(", ")}`);
+	for (const port of [8231, 5900, 5999, 6080, 8080]) for (const host of ["127.0.0.1", "[::1]"]) assert.ok(probed.includes(`${host}:${port}`), `the probe tries ${host}:${port}: ${probed.join(", ")}`);
 	assert.ok(created.value.notes.some((note) => /Orgo's own network listens on 5900, 8231/.test(note)), JSON.stringify(created.value.notes));
 	const upload = channel.calls[0];
 	assert.match(upload.path, /^\/tmp\/agentrun-computerd-[0-9a-f]{16}$/);
@@ -345,4 +349,13 @@ test("Orgo extend: Orgo's end moved in whole hours with an Idempotency-Key, then
 	assert.equal(past.ok, false);
 	assert.equal(past.error.code, "limit");
 	assert.equal(box.extended.length, 1, "nothing moved");
+	// An extend never moves the deadline earlier: one that would is refused in words, the deadline as it was (live run 4).
+	const extends_ = fakes.api.requests.filter((request) => request.path === `/computers/${ref.id}/extend`).length;
+	const earlier = await fakes.provider.extend(ref, 60_000);
+	assert.equal(earlier.ok, false, JSON.stringify(earlier));
+	assert.equal(earlier.error.code, "refused");
+	assert.match(earlier.error.message, /earlier/);
+	assert.equal(box.extended.length, 1, "init's deadline did not move");
+	assert.equal(JSON.parse(box.labels).deadline, extended.value.deadline.toISOString(), "nor the labels file");
+	assert.equal(fakes.api.requests.filter((request) => request.path === `/computers/${ref.id}/extend`).length, extends_, "nor Orgo's end");
 });
