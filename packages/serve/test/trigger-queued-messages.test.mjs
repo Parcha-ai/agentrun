@@ -55,8 +55,9 @@ test("a schedule ticking three times into a busy run queues one message; the two
   const { store, clock, make, commands } = await engineOn(t);
   const trigger = await make({ kind: "schedule", every_s: 600, start_at: new Date(T0 + 600_000).toISOString() });
   for (const n of [1, 2, 3]) {
-    // The engine's timer armed again (its last tick done) before the clock moves to the next time.
-    await until(async () => clock.timer !== null, `the timer armed before tick ${n}`);
+    // The engine's timer armed for this time (its last tick done) before the clock moves to it: a move made before it
+    // re-arms fires nothing.
+    await until(async () => clock.timer !== null && clock.timer.at <= T0 + n * 600_000, `the timer armed before tick ${n}`);
     clock.to(new Date(T0 + n * 600_000).toISOString());
     await until(async () => (await store.triggers.firings(trigger.id)).length === n && (await store.triggers.firings(trigger.id)).every((f) => f.status !== "due"), `tick ${n} settled`);
   }

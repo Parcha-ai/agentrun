@@ -16,6 +16,9 @@ async function until(check, what) {
   for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 5))) if (await check()) return;
   assert.fail(`never: ${what}`);
 }
+/** Until the engine's one timer is armed for `at` or sooner: its last turn done, so moving the fake clock to `at` fires it
+ *  (a move made before it re-arms fires nothing, and its tick would then wait for a move that never comes). */
+const armed = (clock, at) => until(async () => clock.timer !== null && clock.timer.at <= at, `the timer armed by ${new Date(at).toISOString()}`);
 
 /** The engine on a store with agent-1 and run-1, its deps recording each start and message; `act` answers them. */
 async function engineOn(t, act = {}) {
@@ -72,6 +75,7 @@ test("a firing a full server refused keeps its next try in the store: after a re
   await second.engine.start();
   await until(async () => true, "a turn");
   assert.equal(calls.start.length, 1, "not driven before its next try");
+  await armed(second.clock, T0 + 5_000);
   second.clock.to(new Date(T0 + 5_000).toISOString());
   await until(async () => (await store.triggers.firings(trigger.id))[0].status === "started", "started at its next try");
   assert.equal(calls.start.length, 2);
@@ -102,6 +106,7 @@ test("a retryable failure counts toward the streak too, and past the backoff tab
   for (const wait of [5_000, 15_000, 60_000, 300_000]) {
     const [due] = await store.triggers.firings(trigger.id);
     if (due.status !== "due") break;
+    await armed(clock, due.retryAt);
     clock.to(new Date(due.retryAt).toISOString());
     await until(async () => (await store.triggers.firings(trigger.id))[0].attempts > due.attempts || (await store.triggers.firings(trigger.id))[0].status !== "due", `the try after ${wait} ms`);
   }
@@ -123,12 +128,15 @@ test("past max_active_runs a firing waits, with no try counted; it starts once a
   assert.equal(first.status, "started");
   assert.deepEqual([second.status, second.attempts, second.retryAt, second.waitsOn], ["due", 0, null, first.runId], "waiting, no try counted");
   assert.equal((await store.triggers.get(trigger.id)).failuresInARow, 0, "a wait is no failure");
+  await armed(clock, T0 + 500);
   clock.to(new Date(T0 + 500).toISOString());
   await until(async () => true, "a turn");
   assert.equal(calls.start.length, 1, "still waiting while the first run has not ended");
   await end(first.runId);
   // Woken within two ticks of the run's end.
   for (const step of [2, 3]) {
+    if ((await store.triggers.firings(trigger.id))[0].status === "started") break;
+    await armed(clock, T0 + step * 500);
     clock.to(new Date(T0 + step * 500).toISOString());
     // The tick this step fires, given its time to read and drive (the clock moves no further meanwhile).
     for (const end = Date.now() + 2_000; Date.now() < end && (await store.triggers.firings(trigger.id))[0].status !== "started"; ) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -166,8 +174,7 @@ test("three hundred waiting firings are read with one store query a tick, never 
   assert.equal(calls.start.length, N, "each trigger's first firing started, its second waits");
   const before = { ...reads };
   for (const step of [1, 2, 3]) {
-    // The engine's timer armed again (its last tick done) before the clock moves to the next.
-    await until(async () => clock.timer !== null, `the timer armed before tick ${step}`);
+    await armed(clock, T0 + step * 500);
     clock.to(new Date(T0 + step * 500).toISOString());
     await until(async () => reads.waiting >= before.waiting + step, `tick ${step}`);
   }
