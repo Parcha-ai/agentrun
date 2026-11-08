@@ -15,7 +15,7 @@ function check(actual) {
 }
 
 test("the reference run: entries and events give the same committed rows, and the text matches the golden file", () => {
-  const recording = lines("test/fixtures/reference-job");
+  const recording = lines("reference-job");
   const stored = timelineOf(entriesOf(recording), { settled: true });
 
   const reducer = timelineReducer();
@@ -34,7 +34,7 @@ test("the reference run: entries and events give the same committed rows, and th
 });
 
 test("one batch or one event at a time, the live path gives the same rows", () => {
-  const events = eventsOf(lines("test/fixtures/reference-job"));
+  const events = eventsOf(lines("reference-job"));
   const whole = timelineReducer();
   whole.apply(events);
   const piecemeal = timelineReducer();
@@ -43,8 +43,8 @@ test("one batch or one event at a time, the live path gives the same rows", () =
 });
 
 test("the killed run gives the same rows, with the interruption notice in a result", () => {
-  const killed = timelineOf(entriesOf(lines("test/fixtures/ten-kills-seed21")), { settled: true });
-  const clean = timelineOf(entriesOf(lines("test/fixtures/reference-job")), { settled: true });
+  const killed = timelineOf(entriesOf(lines("ten-kills-seed21")), { settled: true });
+  const clean = timelineOf(entriesOf(lines("reference-job")), { settled: true });
   assert.deepEqual(killed.map((row) => [row.kind, row.tool_name]), clean.map((row) => [row.kind, row.tool_name]));
   assert.ok(killed.some((row) => /interruption/.test(row.tool_result_preview ?? "")));
 });

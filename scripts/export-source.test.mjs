@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/harness': {}, 'packages/agentrun': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -61,7 +61,7 @@ test('source archives exclude website files, build output, and private review st
 
 test('a *.local.* file is excluded and a source file named local.ts is archived', async t => {
   const f = await fixture(t);
-  // pi-transport's `./box/*` export resolves `./box/local` to src/box/local.ts, and @parcha/agentrun-harness imports it: a source
+  // pi-transport's `./box/*` export resolves `./box/local` to src/box/local.ts, and a host imports it: a source
   // archive without it does not build. Only a name with `.local` after something (`*.local.*`, `*.local`) is a machine's own file: a
   // directory named `local` and a name that merely starts with `.localhost` are source too.
   const archived = ['packages/pi-transport/src/box/local.ts', 'packages/dsl/src/local.mjs', 'packages/dsl/src/local/index.mjs', 'examples/foo.localhost.ts'];
@@ -251,7 +251,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -276,7 +276,7 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -303,9 +303,9 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
-  'packages/pi-vision': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
+  'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
   ...(requiredBy ? { [`packages/${requiredBy}`]: { dependencies: { 'test-runner': '1.0.0' } } } : {}),
   'node_modules/auth-lib': { version: '1.0.0', license: 'MIT', peerDependencies: { 'test-runner': '*', 'absent-peer': '*' }, peerDependenciesMeta: { 'test-runner': { optional: true }, 'absent-peer': { optional: true } } },
@@ -321,7 +321,7 @@ test('the dependency inventory leaves out an optional peer nothing requires at r
   const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
   assert.match(inventory, /\| auth-lib \| 1\.0\.0 \| MIT \| serve \| no \| 1 \|/);
   for (const name of ['test-runner', 'bundler', 'css-engine']) assert.doesNotMatch(inventory, new RegExp(`\\| ${name} \\|`), `${name} is not shipped`);
-  assert.match(inventory, /\| host-agent \| 1\.0\.0 \| MIT \| pi-vision \| no \| 1 \|/, 'a workspace package\'s own optional peer is followed');
+  assert.match(inventory, /\| host-agent \| 1\.0\.0 \| MIT \| pi-browser \| no \| 1 \|/, 'a workspace package\'s own optional peer is followed');
   assert.match(inventory, /No missing, restrictive, reciprocal, or unrecognized license identifiers/);
   assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: [^\n]*`absent-host`/, 'a workspace package\'s optional peer the lock does not record is named, not an error');
   assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: [^\n]*`absent-peer`/, 'an optional peer the lock does not record is still named');

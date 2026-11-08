@@ -19,6 +19,7 @@ import * as adapters from "../dist/adapters.js";
 import { findOpenCode } from "../dist/harness-opencode/binary.js";
 import { verifyOpenCodeBinary } from "../dist/harness-opencode/verify.js";
 import { harnessOffers } from "../dist/harness.js";
+import { modelOn, providerFor } from "../dist/provider.js";
 
 const pinned = verifyOpenCodeBinary(findOpenCode());
 const skip = pinned instanceof Error && env.AGENTRUN_OPENCODE_REQUIRE_BINARY !== "1" ? pinned.message : false;
@@ -65,7 +66,7 @@ test("an OpenCode that is not the pinned build is unavailable as that, with serv
 });
 
 test("with only OPENROUTER_API_KEY, opencode is offered on OpenAI's model through OpenRouter, and its run's requests go to OpenRouter's Responses API with the key as a bearer token and the model's whole id", { skip, timeout: 60_000 }, async (t) => {
-  // codex's route (adapters.ts' codexProvider and codexModel): opencode has no OpenRouter path of its own.
+  // codex's route (provider.ts' providerFor and modelOn): opencode has no OpenRouter path of its own.
   const KEY = `not-a-secret-${"openrouter"}`;
   assert.deepEqual(await opencodeOf({ OPENROUTER_API_KEY: KEY }), { id: "opencode", available: true, steer: false, default_model: "openai/gpt-6-sol", run_memory_mib: 704 }, "OpenRouter's default for opencode, as codex's");
   // The run, on the stand-in for `opencode serve`, through the adapter's real proxy to a fake upstream standing in for
@@ -89,7 +90,7 @@ test("with only OPENROUTER_API_KEY, opencode is offered on OpenAI's model throug
   const runEnv = { OPENROUTER_API_KEY: KEY, AGENTRUN_SERVE_OPENCODE_STANDIN: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
   const real = await import("../dist/harness-opencode/index.js");
   const load = async () => ({ ...real, openCodeAdapter: (options) => real.openCodeAdapter({ ...options, sessionsDir: join(dir, "sessions"), fetch: upstream }) });
-  const chosen = await adapters.codexModel(runEnv, undefined, "opencode");
+  const chosen = await (await modelOn("openai-responses", runEnv, undefined, "opencode"));
   assert.ok("model" in chosen, JSON.stringify(chosen));
   const adapter = await adapters.opencodeOf(runEnv, { model: chosen.model, models: { getModel: () => undefined } }, load);
   const doc = { v: 2, name: "route", schemas: { Out: { type: "object", required: ["answer"], properties: { answer: { type: "string" } }, additionalProperties: false } }, output: { schemaId: "Out", path: "final" }, root: { node: "agent", label: "task", instructions: "Answer.", out: "Out", as: "final" } };

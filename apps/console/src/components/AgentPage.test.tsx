@@ -90,12 +90,12 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage", () => {
-  it("shows a run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
+  it("shows an ended run's known cost and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null };
     const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, so_far_usd: 0.07, unpriced: 1 } }, { ...runs[1], cost: unknown }] });
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
-    expect(links[0].textContent).toContain("so far $0.07 est. · 1 not priced");
+    expect(links[0].textContent).toContain("$0.07 est. known · 1 not priced");
     expect(links[1].textContent).not.toMatch(/\$|Unknown|so far/);
   });
 

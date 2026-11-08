@@ -26,8 +26,9 @@ import { deref, explain } from "./explain.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_INSTALLS, HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstall, removeFlatInstall } from "./harness-install.js";
+import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
+import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
+import { HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstall, removeFlatInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -182,8 +183,9 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
    *  of Exa's MCP endpoint (exa-keyless.ts). */
   fauxExa?: string;
-  /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
-  fauxHarness?: string;
+  /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
+   *  stand-ins for the harnesses. */
+  harnessTable?: string;
   /** With `faux` only: a module whose default export, given the data root, is the box provider runs' Docker boxes come
    *  from (the tests' faux box, pi-transport's local box): docker is then available, and nothing asks Docker. */
   fauxBox?: string;
@@ -287,7 +289,7 @@ const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_E
 
 /** The test switches a run's process gets, each module path resolved: empty outside tests. */
 function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {};
+  const env: NodeJS.ProcessEnv = options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {};
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
@@ -669,6 +671,9 @@ async function oldLayout(data: string): Promise<string | undefined> {
 }
 
 export async function startServe(options: ServeOptions): Promise<Serve> {
+  // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
+  // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
+  delete process.env[HARNESS_TABLE_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
@@ -735,7 +740,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? [])];
   // Each webhook trigger's secret, made below once the environment is read; shown nowhere, as the server's own are not.
   let triggerSecrets: TriggerSecrets | undefined;
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
@@ -949,7 +954,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
   // of each at a time, which every run on that harness, and the save of an agent on it, waits for or starts; once one is
-  // in, the offers are probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
+  // in, the offers are probed again, so capabilities no longer say it installs on first use. Each is its table entry's
+  // `installs` (a test's stand-in has none).
   // Claude Code as an earlier build installed it, at the top of the harnesses directory itself (read-only): removed once,
   // before the first install, which then goes in beside nothing. Any other layout is left as it is.
   let flat: Promise<void> | undefined;
@@ -958,9 +964,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       (removed) => void (removed && log?.(logLine("harness_install_removed", { dir: harnessesOf(data), said: `removed the earlier Claude Code install at ${harnessesOf(data)}: it installs again under harnesses/claude-agent` }))),
       (error: unknown) => ((flat = undefined), Promise.reject(error)),
     ));
-  const installs: Record<string, HarnessInstall> = options.fauxHarness ? {} : Object.fromEntries(Object.values(HARNESS_INSTALLS).map((entry) => {
+  const installed = HARNESSES.flatMap((id) => {
+    const harness = harnessOf(base, id);
+    return harness?.installs && harness.pins ? [{ entry: harness.installs, pins: harness.pins }] : [];
+  });
+  const installs: Record<string, HarnessInstall> = Object.fromEntries(installed.map(({ entry, pins }) => {
     const lock = options.harnessLocks?.[entry.id];
-    const pins = () => import("./adapters.js").then((adapters) => adapters.harnessPins(entry.id));
     // npm past its SIGTERM's grace (it waits on a tarball once it writes): killed, and the line says so.
     const onKilled = () => log?.(logLine("harness_install_killed", { harness: entry.id, said: `npm did not stop within ${NPM_STOP_GRACE_MS / 1000} s of SIGTERM; killed` }));
     return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, async (entry, dir, pins, signal) => (await flatRemoved(), npmInstall(entry, dir, pins, { signal, onKilled, ...(lock ? { lock } : {}) })), (ms) => {

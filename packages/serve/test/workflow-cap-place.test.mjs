@@ -141,7 +141,9 @@ test("a raise whose launch fails after its place was taken (a pin that throws) l
 
 test("a raise on a server whose memory for runs another run holds starts no process past the memory limit: the run waits for a place, and starts once the memory frees", { timeout: 180_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
-  const { RUN_MIB } = await import("../dist/harness.js");
+  // pi's one run's memory, as the harness table holds it (its entry's runMib, as admission.test.mjs reads it).
+  const { builtinHarness } = await import("../dist/harness-table.js");
+  const RUN_MIB = { pi: builtinHarness("pi").runMib };
   const { SERVER_MIB } = await import("../dist/host.js");
   // Room for one pi run and half another: the memory, not the count, is the limit.
   const MiB = 2 ** 20;

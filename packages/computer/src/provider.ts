@@ -31,6 +31,12 @@ export interface ComputerCapabilities {
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
 	network: Array<"none" | "open" | "allow">;
+	/**
+	 * Whether network() reads the policy back from outside the computer, from the vendor's own report of it. false: the
+	 * vendor has no read-back, so only a probe from inside the computer stands for one, and an allowlist counts only
+	 * once the live bypass cases pass (ruling 9).
+	 */
+	networkReadBack?: boolean;
 	isolation: "container" | "gvisor" | "microvm" | "vm" | "machine";
 	os: ComputerOs;
 	daemon: DaemonMode;
@@ -40,6 +46,11 @@ export interface ComputerCapabilities {
 	maxLifetimeMs: number;
 	/** What spec.user may ask for instead of the non-root default: root ("0"), another uid. Absent: neither. */
 	user?: Array<"root" | "uid">;
+	/**
+	 * How release may end a computer. "stop" keeps it, listed as stopped, until it is deleted; a provider that does not
+	 * declare it refuses release(ref, "stop") in words and leaves the computer as it was.
+	 */
+	release: Array<"stop" | "delete">;
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
@@ -152,7 +163,7 @@ export interface ComputerProvider {
 	network(ref: ComputerRef, policy?: NetworkSpec, context?: CallContext): Promise<Result<NetworkPolicy>>;
 	/** Checks hello against this provider's version, kind and groups, and refuses on a mismatch. */
 	connect(ref: ComputerRef): Promise<Result<ComputerConnection>>;
-	/** Idempotent: a computer already gone is ok. */
+	/** Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. */
 	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>>;
 	/**
 	 * Sets the deadline to now + ttlMs: never earlier than the current deadline, never past created + maxLifetimeMs. A

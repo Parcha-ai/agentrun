@@ -154,6 +154,9 @@ export type TimelineOptions = {
   caps?: Partial<typeof CAPS>;
   /** Nothing is running: a call with no result is interrupted. */
   settled?: boolean;
+  /** The run has ended (completed, failed, cancelled): its usage row says its cost ("Cost: …"), never what it has cost
+   *  "so far". A run settled and not ended (paused, its process let go) keeps "Cost so far". */
+  ended?: boolean;
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
@@ -887,7 +890,7 @@ function createProjector(options: TimelineOptions) {
     const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
-      summary: requests === 0 && !charges ? "no model request sent" : `Cost so far: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+      summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
       usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}) },
     });
@@ -904,6 +907,17 @@ function createProjector(options: TimelineOptions) {
     rows: () => rows,
     conv: () => current,
   };
+}
+
+/** The usage row's label: a run that has ended says its cost, one still going (or paused) what it has cost so far. */
+export const COST_SO_FAR = "Cost so far";
+export const COST_ENDED = "Cost";
+export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** `row` as an ended run's: a usage row made while it ran ("Cost so far: …") says its cost ("Cost: …"); any other row as
+ *  it is. For a host that keeps rows read before the run ended. */
+export function endedUsage<T extends { kind: string; summary?: string | null }>(row: T): T {
+  const head = `${COST_SO_FAR}: `;
+  return row.kind === "usage" && typeof row.summary === "string" && row.summary.startsWith(head) ? { ...row, summary: `${COST_ENDED}: ${row.summary.slice(head.length)}` } : row;
 }
 
 /** Rows of a stored conversation, in log order. Pure: the same entries give the same rows. */

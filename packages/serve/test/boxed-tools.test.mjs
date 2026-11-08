@@ -14,6 +14,7 @@ import { startServe } from "../dist/index.js";
 import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
 import { client, flowAgent, follow, jsonLines, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
@@ -57,7 +58,7 @@ const until = async (done, what, ms = 20_000) => {
 
 async function boxed(t, extra = {}) {
   withEnv(t, SENTINELS);
-  const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX, fauxHarness: FAUX_HARNESS, ...extra });
+  const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX, harnessTable: fauxTable(FAUX_HARNESS), ...extra });
   return server;
 }
 

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { agent, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 
@@ -14,7 +15,7 @@ for (const harness of ["claude-agent", "codex"]) {
   test(`${harness}: a run that completes closes its harness session once its process lets the run go`, { timeout: 120_000 }, async (t) => {
     const closedFile = join(await scratch(t), "closed.txt");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_CLOSED: closedFile });
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     assert.equal((await api("POST", "/agents", agent(`closing-${harness}`, { harness, instructions: "Answer the question." }))).status, 201);
     const run = await api("POST", `/agents/closing-${harness}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -29,7 +30,7 @@ test("a run whose process is stopped while its harness session is still opening 
   const closedFile = join(await scratch(t), "closed.txt");
   // The session takes 3 s to open (the faux adapter ignores the stop's signal, as a slow harness start does).
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_CLOSED: closedFile, AGENTRUN_TEST_FAUX_HARNESS_OPEN_DELAY_MS: "3000" });
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("slow-open", { harness: "claude-agent", instructions: "Answer the question." }))).status, 201);
   const run = await api("POST", "/agents/slow-open/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -51,7 +52,7 @@ test("a session that lands after the stop and takes its time to close is closed 
   const closedFile = join(await scratch(t), "closed.txt");
   // The session takes 3 s to open and 1 s to close (told closed only at the end of it), well within the door's 5 s bound.
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_CLOSED: closedFile, AGENTRUN_TEST_FAUX_HARNESS_OPEN_DELAY_MS: "3000", AGENTRUN_TEST_FAUX_HARNESS_CLOSE_DELAY_MS: "1000" });
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("slow-close", { harness: "claude-agent", instructions: "Answer the question." }))).status, 201);
   const run = await api("POST", "/agents/slow-close/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -70,7 +71,7 @@ test("a session that lands after the stop and takes its time to close is closed 
 test("a late session whose close fails is logged once by the door, with its harness: never a failure the run's process swallows", { timeout: 120_000 }, async (t) => {
   // The session takes 3 s to open; its close takes 0.5 s and then fails.
   withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPEN_DELAY_MS: "3000", AGENTRUN_TEST_FAUX_HARNESS_CLOSE_DELAY_MS: "500", AGENTRUN_TEST_FAUX_HARNESS_CLOSE_ERROR: "the harness would not stop" });
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("bad-close", { harness: "codex", instructions: "Answer the question." }))).status, 201);
   const run = await api("POST", "/agents/bad-close/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));

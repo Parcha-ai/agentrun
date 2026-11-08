@@ -1,9 +1,9 @@
 // `npm run conformance -w @parcha/agentrun-computer -- --provider docker | ./module.js [--image <image>] [--only <groups>] [--json]`
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one.
-import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { conformanceCases } from "./cases/index.js";
 import { dockerConformance } from "./docker.js";
@@ -158,7 +158,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	}
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isCommand(import.meta)) {
 	const controller = new AbortController();
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop);
