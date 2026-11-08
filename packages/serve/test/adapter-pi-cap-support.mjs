@@ -15,6 +15,10 @@ export const cap = await import("../../run-adapters/dist/kernel/cap/index.js");
 export const { beforeRequestOf } = cap;
 
 export const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+/** capRun's one runner: a lease no stall of a loaded machine outlasts. A claim lost mid-request would be retaken and its
+ *  request read with no answer (held, not booked), which these money checks do not read; the runs end themselves. The
+ *  short TIMING stays for the cases that kill a runner and wait for its lease to run out. */
+export const STEADY = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 export const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 /** The suite's model as the cap prices it: Sonnet's list price. */
 export const SONNET = Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
@@ -48,7 +52,7 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, du
       return answer;
     },
   }), { restartLimit: MAX_RESTARTS });
-  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });
   // `during(server)`: what a test does while the run runs (a person's stop once a request is out), awaited before the read.
   const acting = during ? during(server) : undefined;
   acting?.catch(() => undefined);
