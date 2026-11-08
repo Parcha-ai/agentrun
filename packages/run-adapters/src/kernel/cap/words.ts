@@ -59,6 +59,18 @@ export function paidRefusal(cap: number, spent: number, held: number, name: stri
   };
 }
 
+/** An amount rounded up to the cent, so "at most" holds. */
+const centsUp = (usd: number): string => money(Math.ceil(usd * 100 - 1e-9) / 100);
+
+/** The over-cap row's words, after the usage row whose booked cost `spentUsd` passed `capUsd`: by how much; when it passed
+ *  by no more than `boundUsd` (the bound of the requests since the cost last fit), a cache miss did it, and the most it
+ *  could have. None at or under the cap, with no cap, or with no known cost. */
+export function overCapWords(spentUsd: number | null, capUsd: number | undefined, boundUsd = 0): string | undefined {
+  if (capUsd === undefined || typeof spentUsd !== "number" || spentUsd <= capUsd + FIT_TOLERANCE) return undefined;
+  const byMiss = boundUsd > 0 && spentUsd - capUsd <= boundUsd + FIT_TOLERANCE;
+  return byMiss ? `Went ${centsUp(spentUsd - capUsd)} over its cap on a cache miss (at most ${centsUp(boundUsd)}).` : `Spent ${centsMoney(spentUsd)}, ${centsUp(spentUsd - capUsd)} over the run's cap of ${centsMoney(capUsd)}`;
+}
+
 export const unmeasured = (cap: number): string => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 export const noPrice = (cap: number): string => `${SPEND_CAP_REACHED}: Not sent: the next model request's model has no price here, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
 export const noCeiling = (cap: number): string => `${SPEND_CAP_REACHED}: Not sent: the next model request's model has no output ceiling here and its output is priced, so what a request may cost has no bound and the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;
