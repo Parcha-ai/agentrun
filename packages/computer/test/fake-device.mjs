@@ -320,7 +320,8 @@ export function fakeDevices({
 				deadline: new Date(created + spec.lifetimeMs),
 				files: new Map(),
 				processes: new Map(),
-				apps: new Map(),
+				// A phone comes with its stock Settings app, which apps.launch-terminate drives.
+				apps: new Map(kind === "android" ? [["com.android.settings", { id: "com.android.settings", name: "Settings" }]] : []),
 				foreground: null,
 				cursor: [0, 0],
 				held: new Set(),
