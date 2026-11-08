@@ -12,7 +12,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const PLACES: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "bwrap", available: false, reason: "fixture: bwrap is not here" }, { id: "docker", available: true }] };
-const TOOLS: ToolOffer[] = [{ name: "read", available: true }, { name: "bash", available: true, sandbox_only: true }];
+const TOOLS: ToolOffer[] = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }];
 
 function mount(props: { value?: Place; saved?: unknown; picked?: string[]; places?: Places }) {
   const changes: { place: Place; tools?: string[] }[] = [];

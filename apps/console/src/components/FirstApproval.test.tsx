@@ -55,7 +55,7 @@ describe("the call's arguments", () => {
 describe("a tool's description in the agent editor", () => {
   const LONG = "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time.";
   const agent: Agent = { agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
-  const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_fetch", available: true, summary: LONG }], thinking: [] };
+  const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_fetch", available: true, summary: LONG, harnesses: ["pi"] }], thinking: [] };
   it("is clamped to two lines (no display override), with more to show it whole", async () => {
     const host = mount(createElement(AgentEditor, { agent, caps, step: "tools", onSave: async () => null }));
     await settle();

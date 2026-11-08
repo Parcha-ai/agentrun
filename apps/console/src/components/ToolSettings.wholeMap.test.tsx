@@ -95,7 +95,7 @@ describe("the agent editor saves the agent's whole tool_settings, changed in one
     const saves: AgentFields[] = [];
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true })), thinking: [] };
+    const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true, harnesses: ["pi"] })), thinking: [] };
     act(() => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: toolChoices(RAW), permissionGates: toolGates(RAW), step: "tools", onSave: async (f: AgentFields) => { saves.push(f); return null; } })));
     await settle();
     const scope = host.querySelector("section[aria-label='Tool settings']")!;

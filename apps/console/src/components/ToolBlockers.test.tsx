@@ -119,7 +119,7 @@ describe("a workflow agent's tool permissions in its editor", () => {
     { name: "bash", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
     { name: "web_fetch", available: true, permission: "ask", default_permission: "allow", permissions: ALL, providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel", resolves: { pi: "kernel" } },
   ];
-  const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true, nodes: true })), thinking: [] };
+  const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name }) => ({ name, available: true, nodes: true, harnesses: ["pi"] })), thinking: [] };
   async function open(agent: Agent, focus?: string) {
     const saves: AgentFields[] = [];
     const host = document.body.appendChild(document.createElement("div"));

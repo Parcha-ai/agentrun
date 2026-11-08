@@ -120,7 +120,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   };
 
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
-  // open. A server without the route gives the run's other views only.
+  // open. A read refused for good (a run the server doesn't know) gives the run's other views only.
   const graph = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId, enabled: run?.kind === "workflow" });
   const noGraph = !graph.data && isPermanent(graph.error);
   if (!run) {

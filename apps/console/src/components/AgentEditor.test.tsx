@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 
-const tools = [{ name: "read", available: true }, { name: "write", available: true }, { name: "web_fetch", available: true }];
+const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "web_fetch", available: true, harnesses: ["pi"] }];
 const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }], tools, thinking: ["low"] };
 
 // Tools are on by default: a new agent starts with what its harness runs here ticked, and says when it can't reach the web.
@@ -19,7 +19,7 @@ describe("AgentEditor, a new agent's tools", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: noWeb, step: "tools" }));
     expect(html).toContain("can&#x27;t reach the web");
   });
-  const webFetch = { name: "web_fetch", available: true, summary: "Read one public web page through Parallel's extract." };
+  const webFetch = { name: "web_fetch", available: true, summary: "Read one public web page through Parallel's extract.", harnesses: ["pi"] };
   const withWebFetch = { ...caps, tools: [...tools.filter((t) => t.name !== "web_fetch"), webFetch] };
   it("an agent whose only tool is web_fetch reaches the web: no notice", () => {
     const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["web_fetch"] } };
@@ -110,7 +110,7 @@ describe("AgentEditor, tools a person chose by hand", () => {
     const checked = () => [...host.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].filter((i) => i.checked).map((i) => i.value);
     return { host, click, checked, done: () => act(() => root.unmount()) };
   };
-  const both = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], tools: [...tools, { name: "ask_person", available: true }] };
+  const both = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], tools: [...tools, { name: "ask_person", available: true, harnesses: ["pi"] }] };
 
   it("keeps a hand-picked set when the harness changes", async () => {
     const { host, click, checked, done } = await setup({ agent: null, caps: both, step: "tools" });

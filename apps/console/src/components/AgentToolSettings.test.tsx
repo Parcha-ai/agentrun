@@ -11,7 +11,7 @@ import { toolChoices } from "@/lib/toolSettings";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const tools = [{ name: "read", available: true }, { name: "web_search", available: true }, { name: "web_fetch", available: true }];
+const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "web_search", available: true, harnesses: ["pi"] }, { name: "web_fetch", available: true, harnesses: ["pi"] }];
 const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }], tools, thinking: ["low"] };
 // capabilities.tools' choices: the server picks exa-keyless for web_search; web_fetch is at its default.
 const SEARCH = { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native" } };

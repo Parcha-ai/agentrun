@@ -9,7 +9,7 @@ import type { Agent, SaveWarning } from "@/lib/agentForm";
 // A save the server took can still say what this host lacks to run it (`warnings`): the editor shows each one, above
 // the form and beside the field it names, so nothing the server said is hidden.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true }], thinking: ["low"] };
+const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }], thinking: ["low"] };
 const MODEL: SaveWarning = { field: "definition.model", reason: "not_set_up_here", message: "No key for openai is set on this server: set OPENAI_API_KEY." };
 const PLACE: SaveWarning = { field: "definition.place", reason: "not_set_up_here", message: "The place shared-1 is not set up on this server." };
 const agentAt = (revision: string, warnings?: SaveWarning[]): Agent => ({

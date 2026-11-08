@@ -105,26 +105,24 @@ export function capOf(text: string | undefined): { ok: true; value: number | und
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
  *  (`summary`), and, when the server says, which harnesses run it. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; reason?: string; harnesses?: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
+export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; reason?: string; harnesses: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
     const { name, available, summary, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
     return [{
-      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), ...(harnesses ? { harnesses } : {}),
+      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), harnesses: Array.isArray(harnesses) ? harnesses : [],
       ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
     }];
   });
 }
 
-/** The tools a harness runs here. The server says per tool when it can (`harnesses`); until it does, its own rule
- *  (serve's runnable.ts): pi binds every tool, another harness only the file tools, and any other tool refuses its run. */
-const FILE_TOOLS = ["read", "write", "edit"];
+/** The tools a harness runs here: the server says per tool which harnesses run it (`capabilities.tools[].harnesses`). */
 export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
   // A call-only tool (capabilities' `call_only`) runs only in a workflow's call node: no harness binds it, and no
   // revision names it in its tools.
-  return offers.filter((t) => !t.call_only && (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
+  return offers.filter((t) => !t.call_only && t.harnesses.includes(harness));
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
@@ -155,6 +153,11 @@ export const WEB_TOOLS: readonly string[] = ["web_fetch", "web_search"];
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
+/** A harness by the name the Harness step shows ("Claude" for claude-agent); one the console doesn't name, by its id. */
+export const harnessLabel = (id: string): string => (LABEL as Record<string, string>)[id] ?? id;
+/** Why a tool the form's harness doesn't run here can't be ticked: the harnesses that do, by their names. */
+export const harnessReason = (tool: Pick<ToolOffer, "harnesses">, harness: string): string =>
+  `Runs on ${tool.harnesses.map(harnessLabel).join(" and ")} here, not on ${harnessLabel(harness)}`;
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
 /** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), each one the

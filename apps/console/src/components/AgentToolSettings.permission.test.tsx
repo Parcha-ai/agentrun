@@ -18,7 +18,7 @@ const RAW = [
   { name: "bash", available: true, permission: "deny", default_permission: "allow", permissions: ALL },
   SEARCH,
 ];
-const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available })), thinking: [] };
+const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available, harnesses: ["pi", "claude-agent", "codex", "opencode"] })), thinking: [] };
 const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], over: Partial<Agent> = {}): Agent => ({
   agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "bash", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },

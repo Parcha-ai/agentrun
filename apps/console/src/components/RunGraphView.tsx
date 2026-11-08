@@ -38,7 +38,7 @@ export function useRunGraph(load: (signal: AbortSignal) => Promise<RunGraph>, { 
         setError(e);
         const retry = e as { retryable?: boolean; retryAfterMs?: number };
         if (retry.retryable) { timer = setTimeout(tick, Math.min(everyMs, retry.retryAfterMs ?? 500)); return; }
-        // A permanent refusal (a server without the route, a run it does not know) is not asked again.
+        // A permanent refusal (a run it does not know) is not asked again.
         if (isPermanent(e)) return;
       }
       timer = setTimeout(tick, everyMs);

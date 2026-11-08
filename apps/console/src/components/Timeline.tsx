@@ -90,7 +90,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
   );
 }
 
-/** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
+/** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, its call and its result folded;
  *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
 export function Timeline({ rows, live, fold = 6, asking }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string }) {

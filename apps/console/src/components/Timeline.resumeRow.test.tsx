@@ -14,7 +14,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 const at = (s: number) => `2026-11-06T19:00:0${s}.000Z`;
-const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
+const row = (seq: number, over: Partial<TimelineRow>): TimelineRow => ({ created_at: at(seq), agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, id: `row_${seq}`, seq, kind: "phase", summary: "", text: null, timestamp: at(seq), tool_name: null, ...over });
 const CALL = "toolu_01AbCdEfGhIjKlMnOpQrStUv";
 const rowsWith = (resume: Partial<TimelineRow>): TimelineRow[] => [
   row(0, { kind: "user_message", summary: "You: Pay for ada", text: "Pay for ada" }),
