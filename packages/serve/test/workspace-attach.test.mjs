@@ -1,12 +1,13 @@
-// Attach (serve/src/workspace/attach.ts): a run's Workspace reached inside a computer, tested with a fake Computer that
-// records every call (workspace-fake-computer.mjs), so the delegation is shown without module D. Also: the mount a
-// local Workspace asks for, the read-back attach checks, and the background surface with no computer.
+// Attach (serve/src/workspace/attach.ts): a run's Workspace reached inside a computer, tested with a fake computerd
+// client that records every call (workspace-fake-computer.mjs), so the delegation is shown without the computer
+// module's daemon. Also: the mount a local Workspace asks for, the read-back attach checks, and the background surface
+// with no computer.
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { attachedWorkspace, BACKGROUND_REFUSAL, checkMount, COMPUTER_CHUNK, localWorkspace } from "../dist/workspace/index.js";
+import { attachedWorkspace, checkMount, COMPUTER_CHUNK, localWorkspace, NO_COMPUTER } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 const dirs = [];
@@ -35,24 +36,28 @@ async function attached(options = {}) {
   computer.clear();
   return { root, base, computer, workspace };
 }
+const text = (base64) => Buffer.from(base64, "base64").toString("utf8");
 
-test("a local Workspace asks for a bind of its folder's real path; with no computer, every background call is refused in words", async () => {
+test("a local Workspace asks for a bind of its folder's real path; with no computer, every background call is REFUSED, cause no-computer", async () => {
   const root = scratch();
   const workspace = localWorkspace(root);
   assert.deepEqual(await workspace.mountSpec(), { kind: "bind", path: realpathSync(root) });
-  assert.equal(BACKGROUND_REFUSAL, "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).");
+  assert.equal(NO_COMPUTER, "no-computer");
   for (const call of ["start", "read", "write", "signal", "wait", "list"]) {
-    await refused(workspace.process[call]({ id: "p1", argv: ["sleep", "1"], stream: "stdout", offset: 0, signal: "TERM", timeoutMs: 0 }), "REFUSED", /^Background programs need a computer: run this agent with place sandbox \(Docker in Mode 1, or a remote computer in Mode 2\)\.$/);
+    await assert.rejects(workspace.process[call]({ id: "p1", argv: ["sleep", "1"], stream: "stdout", offset: 0, signal: "TERM", timeoutMs: 0 }), (error) => {
+      assert.deepEqual([error.name, error.code, error.cause], ["WorkspaceError", "REFUSED", "no-computer"], call);
+      assert.doesNotMatch(error.message, /place sandbox/, "the words a person reads are the background tool's, not the port's");
+      return true;
+    });
   }
 });
 
-test("attach checks the computer's read-back: anything but this run's folder at /workspace is refused, and nothing else is called", async () => {
+test("attach checks the computer's read-back: anything but this run's folder is refused, and nothing else is called", async () => {
   const root = scratch();
   const base = localWorkspace(root);
   const cases = [
-    [{ kind: "bind", at: "/workspace", path: "/somewhere/else" }, "REFUSED", /binds \/somewhere\/else, not /],
-    [{ kind: "bind", at: "/work", path: root }, "REFUSED", /its mount is at \/work/],
-    [{ kind: "archil", at: "/workspace", source: "disk:/agents/a/runs/r/work", exclusive: true, epoch: 3 }, "REFUSED", /mounts archil, not a bind/],
+    [{ kind: "bind", path: "/somewhere/else" }, "REFUSED", /binds \/somewhere\/else, not /],
+    [{ kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" }, "REFUSED", /mounts archil, not a bind/],
     [{ ok: false, error: { code: "gone", message: "the computer went away" } }, "UNAVAILABLE", /did not say what it mounts at \/workspace: the computer went away/],
   ];
   for (const [readBack, code, words] of cases) {
@@ -60,14 +65,14 @@ test("attach checks the computer's read-back: anything but this run's folder at 
     await refused(base.attach(computer), code, words);
     assert.deepEqual(computer.methods(), ["readBack"], "only the read-back was asked for");
   }
-  const archil = { kind: "archil", disk: "dsk", region: "us-east-1", folder: "agents/a/runs/r/work", token: "secret-token" };
-  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/a/runs/r/work", exclusive: false, epoch: 1 } }), archil), "REFUSED", /not exclusive/);
-  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/b/runs/r/work", exclusive: true, epoch: 1 } }), archil), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work/);
-  await checkMount(fakeComputer(root, { readBack: { kind: "archil", at: "/workspace", source: "dsk:/agents/a/runs/r/work", exclusive: true, epoch: 1 } }), archil);
-  await assert.rejects(checkMount(fakeComputer(root, { readBack: { kind: "bind", at: "/workspace", path: "/x" } }), archil), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
+  const archil = { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work", token: "secret-token" };
+  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/b/runs/r/work" } }), archil), "REFUSED", /not dsk:\/agents\/a\/runs\/r\/work in r1/);
+  await refused(checkMount(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r2", folder: "agents/a/runs/r/work" } }), archil), "REFUSED", /in r2, not/);
+  await checkMount(fakeComputer(root, { readBack: { kind: "archil", disk: "dsk", region: "r1", folder: "agents/a/runs/r/work" } }), archil);
+  await assert.rejects(checkMount(fakeComputer(root, { readBack: { kind: "bind", path: "/x" } }), archil), (error) => !error.message.includes("secret-token"), "a refusal never carries the token");
 });
 
-test("attached: a write goes to a temporary file beside the target, then a move; a big one in chunks; the file's mode is kept", async () => {
+test("attached: a write goes to a temporary file beside the target, then a move; a big one in chunks, the kept mode on the last", async () => {
   const { root, computer, workspace } = await attached();
   await workspace.write("notes/a.md", "hello");
   assert.equal(readFileSync(join(root, "notes/a.md"), "utf8"), "hello", "it landed in the bound folder");
@@ -75,17 +80,20 @@ test("attached: a write goes to a temporary file beside the target, then a move;
   assert.deepEqual(stat, ["files.stat", { path: "/workspace/notes/a.md", follow: false }]);
   assert.equal(write[0], "files.write");
   assert.match(write[1].path, /^\/workspace\/notes\/\.workspace-[0-9a-f]{16}\.tmp$/);
-  assert.equal(write[1].parents, true);
-  assert.equal(Buffer.from(write[1].data).toString(), "hello");
+  assert.deepEqual([write[1].parents, text(write[1].data)], [true, "hello"]);
   assert.deepEqual(move, ["files.move", { from: write[1].path, to: "/workspace/notes/a.md", overwrite: true }]);
   assert.equal(computer.calls.length, 3);
   computer.clear();
   chmodSync(join(root, "notes/a.md"), 0o640);
   const big = Buffer.alloc(COMPUTER_CHUNK * 2 + 5, 7);
   await workspace.write("notes/a.md", big);
-  assert.deepEqual(computer.methods(), ["files.stat", "files.write", "files.append", "files.write", "files.move"]);
-  assert.deepEqual([computer.calls[1][1].mode, computer.calls[3][1].offset, computer.calls[3][1].mode], [undefined, COMPUTER_CHUNK * 2, 0o640], "the last chunk, at its offset, sets the kept mode");
-  assert.equal(statSync(join(root, "notes/a.md")).mode & 0o777, 0o640, "an existing file's mode is kept");
+  const writes = computer.calls.filter(([method]) => method === "files.write").map(([, p]) => ({ append: p.append, offset: p.offset, mode: p.mode, bytes: Buffer.from(p.data, "base64").length }));
+  assert.deepEqual(writes, [
+    { append: undefined, offset: undefined, mode: undefined, bytes: COMPUTER_CHUNK },
+    { append: true, offset: undefined, mode: undefined, bytes: COMPUTER_CHUNK },
+    { append: undefined, offset: COMPUTER_CHUNK * 2, mode: 0o640, bytes: 5 },
+  ], "the temporary file stays writable; the last chunk, at its offset, sets the kept mode");
+  assert.equal(statSync(join(root, "notes/a.md")).mode & 0o777, 0o640);
   assert.ok(Buffer.from(await workspace.read("notes/a.md")).equals(big), "it reads back whole, across chunks");
 });
 
@@ -96,8 +104,9 @@ test("attached: read, ranged and chunked, from /workspace/<path>; append in chun
   assert.deepEqual(computer.calls.at(-1), ["files.read", { path: "/workspace/f.txt", offset: 2, length: 5 }]);
   computer.clear();
   await workspace.append("logs/run.log", Buffer.alloc(COMPUTER_CHUNK + 1, 1));
-  assert.deepEqual(computer.methods(), ["files.stat", "files.append", "files.append"]);
-  assert.deepEqual(computer.calls.slice(1).map(([, p]) => [p.path, p.data.length, p.parents]), [["/workspace/logs/run.log", COMPUTER_CHUNK, true], ["/workspace/logs/run.log", 1, true]]);
+  assert.deepEqual(computer.calls.slice(1).map(([method, p]) => [method, p.path, Buffer.from(p.data, "base64").length, p.append, p.parents]), [
+    ["files.write", "/workspace/logs/run.log", COMPUTER_CHUNK, true, true], ["files.write", "/workspace/logs/run.log", 1, true, true],
+  ]);
   await workspace.mkdir("z/y");
   assert.deepEqual(computer.calls.at(-1), ["files.mkdir", { path: "/workspace/z/y", parents: true }]);
   computer.plant.file("/workspace/b.txt", "bb");
@@ -106,7 +115,7 @@ test("attached: read, ranged and chunked, from /workspace/<path>; append in chun
   assert.deepEqual(await workspace.list(""), [
     { name: "b.txt", kind: "file", size: 2 }, { name: "f.txt", kind: "file", size: 10 }, { name: "logs", kind: "dir", size: 0 }, { name: "z", kind: "dir", size: 0 },
   ], "files and folders, sorted, a link left out");
-  assert.deepEqual(computer.calls.map(([, p]) => p.offset), [0, 2, 4], "every page was read");
+  assert.deepEqual(computer.calls.map(([, p]) => [p.depth, p.offset]), [[1, 0], [1, 2], [1, 4]], "one level, every page");
   computer.clear();
   await workspace.remove("logs", { recursive: true });
   assert.deepEqual(computer.calls, [["files.stat", { path: "/workspace/logs", follow: false }], ["files.remove", { path: "/workspace/logs", recursive: true }]]);
@@ -125,6 +134,7 @@ test("attached: a path that leaves the root is ESCAPE and never reaches the comp
     await refused(workspace.list(path), "ESCAPE");
     await refused(workspace.exec(["true"], { env: {}, timeoutMs: 1000, cwd: path }), "ESCAPE");
     await refused(workspace.process.start({ argv: ["sleep", "9"], cwd: path }), "ESCAPE");
+    await refused(workspace.process.start({ argv: ["sleep", "9"], log: path }), "ESCAPE");
   }
   assert.deepEqual(computer.calls, [], "nothing reached the computer");
   computer.plant.link("/workspace/link");
@@ -151,20 +161,23 @@ test("attached: exec is the computer's exec.run in /workspace/<cwd>; onOutput ge
   await refused(workspace.exec(["cat"], { env: {}, timeoutMs: 1000, stdin: Buffer.from("x") }), "REFUSED", /stdin/);
 });
 
-test("attached: process is the computer's, start's cwd taken relative to the run's folder; grep searches the mounted folder; attach again is refused", async () => {
+test("attached: process is the computer's, start's cwd and log taken relative to the run's folder, the rest passed through; grep searches the mounted folder", async () => {
   const { root, computer, workspace } = await attached();
-  assert.deepEqual(await workspace.process.start({ argv: ["npm", "run", "dev"], cwd: "app", env: { A: "1" }, stdin: true }), { ok: true, value: { id: "p1", pid: 42 } });
-  assert.deepEqual(computer.calls.at(-1), ["process.start", { argv: ["npm", "run", "dev"], cwd: "/workspace/app", env: { A: "1" }, stdin: true }]);
+  const params = { argv: ["npm", "run", "dev"], cwd: "app", env: { A: "1" }, stdin: true, log: "background/p1/output.log", waitGroup: true, orphans: "keep" };
+  assert.deepEqual(await workspace.process.start(params), { ok: true, value: { id: "p1", pid: 42 } });
+  assert.deepEqual(computer.calls.at(-1), ["process.start", { ...params, cwd: "/workspace/app", log: "/workspace/background/p1/output.log" }]);
   await workspace.process.start({ argv: ["top"] });
-  assert.equal(computer.calls.at(-1)[1].cwd, "/workspace", "the run's folder by default");
-  const read = await workspace.process.read({ id: "p1", stream: "stdout", offset: 0, waitMs: 100 });
-  assert.equal(Buffer.from(read.value.data).toString(), "out");
-  await workspace.process.write({ id: "p1", data: Buffer.from("q\n"), close: true });
+  assert.deepEqual(computer.calls.at(-1)[1], { argv: ["top"], cwd: "/workspace" }, "the run's folder by default, and no log unless asked");
+  const read = await workspace.process.read({ id: "p1", stream: "log", offset: 0, waitMs: 100 });
+  assert.equal(text(read.value.data), "out");
+  await workspace.process.write({ id: "p1", data: "cQo=", close: true });
   await workspace.process.signal({ id: "p1", signal: "TERM" });
   await workspace.process.wait({ id: "p1", timeoutMs: 0 });
   await workspace.process.list({});
-  assert.deepEqual(computer.methods().slice(-5), ["process.read", "process.write", "process.signal", "process.wait", "process.list"]);
-  assert.deepEqual(computer.calls.slice(-5).map(([, p]) => p), [{ id: "p1", stream: "stdout", offset: 0, waitMs: 100 }, { id: "p1", data: Buffer.from("q\n"), close: true }, { id: "p1", signal: "TERM" }, { id: "p1", timeoutMs: 0 }, {}], "passed through unchanged");
+  assert.deepEqual(computer.calls.slice(-5), [
+    ["process.read", { id: "p1", stream: "log", offset: 0, waitMs: 100 }], ["process.write", { id: "p1", data: "cQo=", close: true }],
+    ["process.signal", { id: "p1", signal: "TERM" }], ["process.wait", { id: "p1", timeoutMs: 0 }], ["process.list", {}],
+  ], "passed through unchanged");
   computer.clear();
   writeFileSync(join(root, "found.md"), "a needle\n");
   assert.deepEqual((await workspace.grep("needle")).matches, [{ path: "found.md", line: 1, text: "a needle" }]);
@@ -177,7 +190,7 @@ test("attached: a computer's error comes back as the Workspace's code, in its wo
   const { computer, workspace } = await attached();
   const codes = [["not_found", "NOT_FOUND"], ["exists", "EXISTS"], ["limit", "TOO_LARGE"], ["timeout", "TIMEOUT"], ["denied", "REFUSED"], ["is_dir", "REFUSED"], ["gone", "UNAVAILABLE"], ["docker", "UNAVAILABLE"]];
   for (const [given, code] of codes) {
-    computer.exec.run = async () => ({ ok: false, error: { code: given, message: `said ${given}` } });
+    computer.overrides["exec.run"] = { result: { ok: false, error: { code: given, message: `said ${given}` } } };
     await refused(workspace.exec(["true"], { env: {}, timeoutMs: 1000 }), code, new RegExp(`said ${given}`));
   }
 });
@@ -205,15 +218,13 @@ test("attached: a read of many chunks never joins two versions: a file replaced 
 });
 
 test("attached: a read-only file replaced in many chunks keeps its mode, and every chunk lands", { skip: process.getuid?.() === 0 && "root writes a read-only file anyway" }, async () => {
-  const { root, computer, workspace } = await attached();
+  const { root, workspace } = await attached();
   writeFileSync(join(root, "ro.bin"), "old");
   chmodSync(join(root, "ro.bin"), 0o444);
   const big = Buffer.alloc(COMPUTER_CHUNK * 2 + 7, 9);
   await workspace.write("ro.bin", big);
   assert.ok(readFileSync(join(root, "ro.bin")).equals(big), "every chunk landed");
   assert.equal(statSync(join(root, "ro.bin")).mode & 0o777, 0o444, "the target's mode is kept");
-  const writes = computer.calls.filter(([method]) => method === "files.write" || method === "files.append");
-  assert.deepEqual(writes.map(([method, params]) => [method, params.mode]), [["files.write", undefined], ["files.append", undefined], ["files.write", 0o444]], "the mode comes with the last chunk");
 });
 
 test("attached on a bind: a write's temporary file is synced on the host before the move, then the target and its folders", async () => {

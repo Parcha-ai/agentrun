@@ -45,10 +45,11 @@
 //
 // How C meets it here. A Workspace gives its MountSpec (`mountSpec()`): the caller puts it in ComputerSpec.mount, D
 // mounts it, and `attach(computer)` checks D's read-back against it before it hands back the ATTACHED Workspace. That
-// one delegates its file calls and exec to the computer, each relative path turned into /workspace/<path>, and
-// passes the computer's process calls through (`process`): the background tools call those, through the Workspace.
-// A Workspace with no computer refuses every process call in words (BACKGROUND_REFUSAL). C depends only on the
-// `Computer` interface below; D implements it over computerd.
+// one delegates its file calls and exec to the computer's computerd client (D's ComputerClient), each relative path
+// turned into /workspace/<path>, and passes the computer's process calls through (`process`, start's cwd and log taken
+// relative to the run's folder): the background tools call those, through the Workspace. A Workspace with no computer
+// refuses every process call with WorkspaceError REFUSED, cause NO_COMPUTER ("no-computer"); the words a person reads
+// are the background tool's. Every computerd type here is D's (@parcha/agentrun-computer), imported, never copied.
 //
 // In the computer, the mount is the boundary: a path is still checked by the relative-path rule (no absolute path, no
 // "..", no empty segment), but a link inside /workspace is the computer's to follow, as its own programs do. grep is
@@ -57,8 +58,14 @@
 //
 // Durable on return, with a bind (lead, 11-08): a bind mount syncs nothing in the computer, so after each delegated
 // file call that changes the folder (write, append, mkdir, remove) the local backend fsyncs the target and every
-// folder from its own up to the root, on the host. exec's own writes are not covered, the same as with no computer.
+// folder from its own up to the root, on the host; a write's temporary file is synced before the move. exec's own
+// writes are not covered, the same as with no computer.
 import { randomBytes } from "node:crypto";
+import type {
+  ComputerClient, DaemonMethod, DaemonMethods, Empty, FileStat, ProcessExit, ProcessListParams, ProcessListResult, ProcessReadParams,
+  ProcessReadResult, ProcessSignalParams, ProcessSignalResult, ProcessStartParams, ProcessStartResult, ProcessWaitParams, ProcessWriteParams,
+  Result,
+} from "@parcha/agentrun-computer";
 import { relativeSegments } from "./paths.js";
 import {
   type Entry, type ExecOptions, type ExecResult, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError,
@@ -68,87 +75,46 @@ import {
 /** Where every computer mounts a run's folder. */
 export const MOUNT_AT = "/workspace";
 
-/** What a computer mounts at /workspace: the run's folder on this host (the local Docker computer only), or the
+// MountSpec and MountReadBack are D's (its mount module): these two stand in until that lands, then go.
+/** What a computer mounts at /workspace: the run's folder on this host (a local computer only), or the
  *  run's folder on the owner's disk. The token goes to D's root helper on fd 0 and nowhere else. */
 export type MountSpec =
   | { readonly kind: "bind"; readonly path: string }
   | { readonly kind: "archil"; readonly disk: string; readonly region: string; readonly folder: string; readonly token: string };
-
-/** What D reads back of a computer's /workspace mount. An archil read-back is fuse.archil with source <disk>:/<folder>,
- *  exclusive, under the run's epoch (from the computer's labels); it never holds the token. */
+/** What D reads back of a computer's /workspace mount; never the token. */
 export type MountReadBack =
-  | { readonly kind: "bind"; readonly at: string; readonly path: string }
-  | { readonly kind: "archil"; readonly at: string; readonly source: string; readonly exclusive: boolean; readonly epoch: number };
+  | { readonly kind: "bind"; readonly path: string }
+  | { readonly kind: "archil"; readonly disk: string; readonly region: string; readonly folder: string };
 
-/** A computer call's error, as D reports computerd's (and its provider's) refusals. */
-export type ComputerErrorCode =
-  | "gone" | "refused" | "timeout" | "aborted" | "not_found" | "invalid" | "unsupported" | "denied" | "limit" | "exists"
-  | "not_dir" | "is_dir" | (string & {});
-/** An expected outcome of a computer call: a value, or an error in words (D's Result). */
-export type ComputerResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: { readonly code: ComputerErrorCode; readonly message: string } };
-
-export type ComputerFileType = "file" | "dir" | "symlink" | "other";
-export type ComputerStat = { readonly type: ComputerFileType; readonly size: number; readonly mode: number; readonly mtimeMs: number };
-export type ProcessStream = "stdout" | "stderr" | "pty";
-export type ProcessSignal = "TERM" | "INT" | "KILL" | "HUP";
-export type ProcessExit = { readonly running: boolean; readonly exitCode: number | null; readonly signal: string | null };
-export type ProcessInfo = ProcessExit & {
-  readonly id: string; readonly pid: number; readonly argv: readonly string[]; readonly pty: boolean; readonly startedAt: number; readonly endedAt: number | null;
-};
-
-/** A computer's background processes (computerd's process.*): what the background tools call, through the Workspace.
- *  Paths are the computer's own here, apart from start's `cwd`, which the attached Workspace takes relative to the
- *  run's folder. */
-export interface Processes {
-  start(params: { readonly argv: readonly string[]; readonly cwd?: string; readonly env?: Readonly<Record<string, string>>; readonly pty?: { readonly cols: number; readonly rows: number }; readonly stdin?: boolean }): Promise<ComputerResult<{ readonly id: string; readonly pid: number }>>;
-  read(params: { readonly id: string; readonly stream: ProcessStream; readonly offset: number; readonly maxBytes?: number; readonly waitMs?: number }): Promise<ComputerResult<{ readonly data: Uint8Array; readonly nextOffset: number; readonly dropped: number; readonly exited: boolean }>>;
-  write(params: { readonly id: string; readonly data?: Uint8Array; readonly close?: boolean }): Promise<ComputerResult<Record<string, never>>>;
-  signal(params: { readonly id: string; readonly signal: ProcessSignal }): Promise<ComputerResult<{ readonly note?: string }>>;
-  wait(params: { readonly id: string; readonly timeoutMs: number }): Promise<ComputerResult<ProcessExit>>;
-  list(params: { readonly from?: number }): Promise<ComputerResult<{ readonly processes: readonly ProcessInfo[]; readonly truncated: boolean; readonly next: number }>>;
-}
-
-/**
- * What module D's attached computer offers C: its files, exec and processes as computerd calls (absolute paths in the
- * computer, bytes as Uint8Array), and the read-back of its /workspace mount. D implements it; C depends on nothing else.
- */
-export interface Computer {
-  /** The computer's ref (its provider's id for it). */
+/** A computer as attach takes it: its ref, its computerd client, and D's read-back of what it mounts at /workspace. */
+export interface AttachableComputer {
   readonly id: string;
-  readonly files: {
-    /** At most `length` bytes from `offset` (D's chunk cap applies); `eof` once the file's end is in. */
-    read(params: { readonly path: string; readonly offset?: number; readonly length?: number }): Promise<ComputerResult<{ readonly data: Uint8Array; readonly eof: boolean; readonly size: number }>>;
-    /** The file replaced by `data` (in place), or written at `offset`; parents made with `parents`. */
-    write(params: { readonly path: string; readonly data: Uint8Array; readonly offset?: number; readonly mode?: number; readonly parents?: boolean }): Promise<ComputerResult<{ readonly size: number }>>;
-    /** `data` added at the end; the file, and with `parents` its folders, made when absent. */
-    append(params: { readonly path: string; readonly data: Uint8Array; readonly parents?: boolean }): Promise<ComputerResult<{ readonly size: number }>>;
-    /** One level of a directory, a page from `offset`; `truncated` when more follow. */
-    list(params: { readonly path: string; readonly offset?: number }): Promise<ComputerResult<{ readonly entries: readonly (ComputerStat & { readonly path: string })[]; readonly truncated: boolean }>>;
-    mkdir(params: { readonly path: string; readonly parents?: boolean }): Promise<ComputerResult<Record<string, never>>>;
-    move(params: { readonly from: string; readonly to: string; readonly overwrite?: boolean }): Promise<ComputerResult<Record<string, never>>>;
-    /** A link is removed, never followed. */
-    remove(params: { readonly path: string; readonly recursive?: boolean }): Promise<ComputerResult<Record<string, never>>>;
-    stat(params: { readonly path: string; readonly follow?: boolean }): Promise<ComputerResult<ComputerStat>>;
-  };
-  readonly exec: {
-    /** argv, never a shell line; env is added over the computer's minimal default (PATH, HOME, USER, LOGNAME). */
-    run(params: { readonly argv: readonly string[]; readonly cwd?: string; readonly env?: Readonly<Record<string, string>>; readonly timeoutMs: number; readonly maxOutput?: number }): Promise<ComputerResult<{ readonly exitCode: number | null; readonly stdout: Uint8Array; readonly stderr: Uint8Array; readonly timedOut: boolean; readonly truncated: boolean }>>;
-  };
-  readonly process: Processes;
-  /** What is mounted at /workspace, as D reads it back. */
-  readBack(): Promise<ComputerResult<MountReadBack>>;
+  readonly client: ComputerClient;
+  readBack(): Promise<Result<MountReadBack>>;
 }
 
-/** What every background call answers on a Workspace with no computer. */
-export const BACKGROUND_REFUSAL = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
+/** A computer's background processes, computerd's process calls: what the background tools call, through the
+ *  Workspace. With a computer, start's `cwd` and `log` are taken relative to the run's folder. */
+export interface Processes {
+  start(params: ProcessStartParams): Promise<Result<ProcessStartResult>>;
+  read(params: ProcessReadParams): Promise<Result<ProcessReadResult>>;
+  write(params: ProcessWriteParams): Promise<Result<Empty>>;
+  signal(params: ProcessSignalParams): Promise<Result<ProcessSignalResult>>;
+  wait(params: ProcessWaitParams): Promise<Result<ProcessExit>>;
+  list(params: ProcessListParams): Promise<Result<ProcessListResult>>;
+}
 
-const refuseBackground = async (): Promise<never> => { throw new WorkspaceError("REFUSED", BACKGROUND_REFUSAL); };
-/** The background surface of a Workspace with no computer: every call is REFUSED, in BACKGROUND_REFUSAL's words. */
+/** The cause of the REFUSED every background call gets on a Workspace with no computer. */
+export const NO_COMPUTER = "no-computer";
+const refuseBackground = async (): Promise<never> => {
+  throw new WorkspaceError("REFUSED", "this workspace has no computer, and background programs run on one", { cause: NO_COMPUTER });
+};
+/** The background surface of a Workspace with no computer: every call is REFUSED, cause NO_COMPUTER. */
 export const noProcesses: Processes = {
   start: refuseBackground, read: refuseBackground, write: refuseBackground, signal: refuseBackground, wait: refuseBackground, list: refuseBackground,
 };
 
-/** The most bytes one computer read or write call moves (computerd's chunk). */
+/** The most bytes one computerd read or write call moves (its MAX_CHUNK_BYTES). */
 export const COMPUTER_CHUNK = 512 * 1024;
 /** How many times a read of more than one chunk starts again when the file changed under it. */
 const READ_ATTEMPTS = 3;
@@ -159,13 +125,14 @@ const CODES: Record<string, WorkspaceErrorCode> = {
 };
 
 /** A computer call's value, or its error as a WorkspaceError (one D did not name is UNAVAILABLE). */
-async function value<T>(call: Promise<ComputerResult<T>>, path: string): Promise<T> {
+async function value<T>(call: Promise<Result<T>>, path: string): Promise<T> {
   const result = await call;
   if (result.ok) return result.value;
   throw new WorkspaceError(CODES[result.error.code] ?? "UNAVAILABLE", `${JSON.stringify(path === "" ? "." : path)}: ${result.error.message}`, { path });
 }
 
 const bytesOf = (data: Uint8Array | string): Uint8Array => (typeof data === "string" ? Buffer.from(data, "utf8") : data);
+const base64 = (bytes: Uint8Array): string => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 const chunks = (bytes: Uint8Array): Uint8Array[] => {
   const out: Uint8Array[] = [];
   for (let at = 0; at < bytes.length; at += COMPUTER_CHUNK) out.push(bytes.subarray(at, at + COMPUTER_CHUNK));
@@ -174,14 +141,15 @@ const chunks = (bytes: Uint8Array): Uint8Array[] => {
 
 /**
  * The attached Workspace: `base` (the run's folder, as the computer mounts it) reached inside `computer`. File calls
- * and exec go to the computer at /workspace/<path>; grep goes to `base`; `process` is the computer's, with start's
- * cwd taken relative to the run's folder. attach() checks the mount before it makes one of these. `synced(path)`, when
- * given, runs after each file call that changed `path` (write, append, mkdir, remove): a bind mount's backend makes the
- * change durable on the host there, since nothing in the computer syncs a bind. With "file" it syncs only that file's
- * bytes (a write's temporary file, before the move).
+ * and exec go to its computerd client at /workspace/<path>; grep goes to `base`; `process` is the computer's.
+ * attach() checks the mount before it makes one of these. `synced(path)`, when given, runs after each file call that
+ * changed `path` (write, append, mkdir, remove): a bind mount's backend makes the change durable on the host there,
+ * since nothing in the computer syncs a bind. With "file" it syncs only that file's bytes (a write's temporary file,
+ * before the move).
  */
-export function attachedWorkspace(base: Workspace, computer: Computer, options: { readonly synced?: (path: string, only?: "file") => Promise<void> } = {}): Workspace {
+export function attachedWorkspace(base: Workspace, computer: AttachableComputer, options: { readonly synced?: (path: string, only?: "file") => Promise<void> } = {}): Workspace {
   const synced = options.synced ?? (async () => undefined);
+  const call = <M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"]): Promise<Result<DaemonMethods[M]["result"]>> => computer.client.call(method, params);
   const at = (path: string): { rel: string; abs: string; segments: string[] } => {
     const segments = relativeSegments(path);
     const rel = segments.join("/");
@@ -193,22 +161,26 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
     return where;
   };
   /** What is at `abs`, never following a link there; undefined when nothing is. */
-  const statOf = async (abs: string, rel: string): Promise<ComputerStat | undefined> => {
-    const result = await computer.files.stat({ path: abs, follow: false });
+  const statOf = async (abs: string, rel: string): Promise<FileStat | undefined> => {
+    const result = await call("files.stat", { path: abs, follow: false });
     if (result.ok) return result.value;
     if (result.error.code === "not_found") return undefined;
     return value(Promise.resolve(result), rel);
   };
-  const noLink = (stat: { type: ComputerFileType } | undefined, rel: string): void => {
+  const noLink = (stat: FileStat | undefined, rel: string): void => {
     if (stat?.type === "symlink") throw new WorkspaceError("ESCAPE", `${JSON.stringify(rel)} is a symbolic link, and a workspace follows none`, { path: rel });
   };
 
   const processes: Processes = {
-    ...computer.process,
     start: async (params) => {
-      const { abs } = at(params.cwd ?? "");
-      return computer.process.start({ ...params, cwd: abs });
+      const log = params.log === undefined ? {} : { log: below(params.log, "a log file").abs };
+      return call("process.start", { ...params, cwd: at(params.cwd ?? "").abs, ...log });
     },
+    read: (params) => call("process.read", params),
+    write: (params) => call("process.write", params),
+    signal: (params) => call("process.signal", params),
+    wait: (params) => call("process.wait", params),
+    list: (params) => call("process.list", params),
   };
 
   return {
@@ -222,7 +194,7 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
         throw new WorkspaceError("REFUSED", "a read's offset and length are whole numbers, 0 or more", { path: rel });
       }
       if (length !== undefined && length > READ_MAX) throw new WorkspaceError("TOO_LARGE", `a read returns at most ${READ_MAX} bytes`, { path: rel });
-      // One computer read is one version of the file. A read of more chunks than one checks the file's size and time
+      // One computerd read is one version of the file. A read of more chunks than one checks the file's size and time
       // before and after, and starts again when a write replaced it in between, so it never joins two versions.
       for (let attempt = 1; ; attempt++) {
         const before = await statOf(abs, rel);
@@ -233,13 +205,14 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
         for (let next = offset; ;) {
           const want = length === undefined ? COMPUTER_CHUNK : Math.min(COMPUTER_CHUNK, length - got);
           if (want === 0) break;
-          const chunk = await value(computer.files.read({ path: abs, offset: next, length: want }), rel);
+          const chunk = await value(call("files.read", { path: abs, offset: next, length: want }), rel);
           calls++;
           if (length === undefined && chunk.size - offset > READ_MAX) throw new WorkspaceError("TOO_LARGE", `${JSON.stringify(rel)} is ${chunk.size} bytes; a read returns at most ${READ_MAX} (read it in ranges)`, { path: rel });
-          parts.push(chunk.data);
-          got += chunk.data.length;
-          next += chunk.data.length;
-          if (chunk.eof || chunk.data.length === 0) break;
+          const data = Buffer.from(chunk.data, "base64");
+          parts.push(data);
+          got += data.length;
+          next += data.length;
+          if (chunk.eof || data.length === 0) break;
         }
         if (calls <= 1) return Buffer.concat(parts);
         const after = await statOf(abs, rel);
@@ -267,16 +240,14 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
         for (const [i, part] of parts.entries()) {
           const last = i === parts.length - 1;
           await value(i === 0
-            ? computer.files.write({ path: temp, data: part, parents: true, ...(last ? mode : {}) })
-            : last && existing !== undefined
-              ? computer.files.write({ path: temp, data: part, offset: written, ...mode })
-              : computer.files.append({ path: temp, data: part }), rel);
+            ? call("files.write", { path: temp, data: base64(part), parents: true, ...(last ? mode : {}) })
+            : call("files.write", last && existing !== undefined ? { path: temp, data: base64(part), offset: written, ...mode } : { path: temp, data: base64(part), append: true }), rel);
           written += part.length;
         }
         await synced(tempRel, "file");
-        await value(computer.files.move({ from: temp, to: abs, overwrite: true }), rel);
+        await value(call("files.move", { from: temp, to: abs, overwrite: true }), rel);
       } catch (error) {
-        await computer.files.remove({ path: temp }).catch(() => undefined);
+        await call("files.remove", { path: temp }).catch(() => undefined);
         throw error;
       }
       await synced(rel);
@@ -285,7 +256,7 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
     async append(path, data) {
       const { rel, abs } = below(path, "a file");
       noLink(await statOf(abs, rel), rel);
-      for (const part of chunks(bytesOf(data))) await value(computer.files.append({ path: abs, data: part, parents: true }), rel);
+      for (const part of chunks(bytesOf(data))) await value(call("files.write", { path: abs, data: base64(part), append: true, parents: true }), rel);
       await synced(rel);
     },
 
@@ -293,7 +264,7 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
       const { rel, abs } = at(dir);
       const entries: Entry[] = [];
       for (let offset = 0; ;) {
-        const page = await value(computer.files.list({ path: abs, offset }), rel);
+        const page = await value(call("files.list", { path: abs, depth: 1, offset }), rel);
         for (const entry of page.entries) {
           const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
           if (entry.type === "file") entries.push({ name, kind: "file", size: entry.size });
@@ -308,7 +279,7 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
     async mkdir(dir) {
       const { rel, abs, segments } = at(dir);
       if (segments.length === 0) return;
-      await value(computer.files.mkdir({ path: abs, parents: true }), rel);
+      await value(call("files.mkdir", { path: abs, parents: true }), rel);
       await synced(rel);
     },
 
@@ -325,23 +296,25 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
         throw new WorkspaceError("NOT_FOUND", `${JSON.stringify(where.rel)} is not there`, { path: where.rel });
       }
       noLink(existing, where.rel);
-      await value(computer.files.remove({ path: where.abs, ...(options.recursive ? { recursive: true } : {}) }), where.rel);
+      await value(call("files.remove", { path: where.abs, ...(options.recursive ? { recursive: true } : {}) }), where.rel);
       await synced(where.rel);
     },
 
     async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {
       if (options.stdin !== undefined) throw new WorkspaceError("REFUSED", "exec with stdin runs on the run's folder, not in a computer: computerd's exec.run takes no stdin");
       const { abs, rel } = at(options.cwd ?? "");
-      const ran = await value(computer.exec.run({
-        argv, cwd: abs, env: options.env, timeoutMs: options.timeoutMs, ...(options.maxOutput === undefined ? {} : { maxOutput: options.maxOutput }),
+      const ran = await value(call("exec.run", {
+        argv: [...argv], cwd: abs, env: { ...options.env }, timeoutMs: options.timeoutMs, ...(options.maxOutput === undefined ? {} : { maxOutput: options.maxOutput }),
       }), rel);
+      const stdout = Buffer.from(ran.stdout, "base64");
+      const stderr = Buffer.from(ran.stderr, "base64");
       // exec.run answers once, at the end: each stream goes to onOutput once, whole.
       if (options.onOutput) {
-        for (const [stream, data] of [["stdout", ran.stdout], ["stderr", ran.stderr]] as const) {
+        for (const [stream, data] of [["stdout", stdout], ["stderr", stderr]] as const) {
           try { options.onOutput({ stream, data }); } catch { /* the caller's callback; its error is not the call's */ }
         }
       }
-      return { stdout: ran.stdout, stderr: Buffer.from(ran.stderr).toString("utf8"), code: ran.exitCode, timedOut: ran.timedOut, truncated: ran.truncated };
+      return { stdout, stderr: stderr.toString("utf8"), code: ran.exitCode, timedOut: ran.timedOut, truncated: ran.truncated };
     },
 
     mountSpec: () => base.mountSpec(),
@@ -352,19 +325,19 @@ export function attachedWorkspace(base: Workspace, computer: Computer, options: 
   };
 }
 
-/** `computer`'s read-back checked against `spec`, the mount the Workspace asked for: anything else is REFUSED in words. */
-export async function checkMount(computer: Computer, spec: MountSpec): Promise<void> {
+/** `computer`'s read-back checked against `spec`, the mount the Workspace asked for: anything else is REFUSED in words
+ *  (never with the token). */
+export async function checkMount(computer: AttachableComputer, spec: MountSpec): Promise<void> {
   const read = await computer.readBack();
   if (!read.ok) throw new WorkspaceError("UNAVAILABLE", `the computer ${computer.id} did not say what it mounts at ${MOUNT_AT}: ${read.error.message}`);
   const got = read.value;
   const refuse = (why: string): never => { throw new WorkspaceError("REFUSED", `the computer ${computer.id} does not hold this run's folder at ${MOUNT_AT}: ${why}`); };
-  if (got.at !== MOUNT_AT) refuse(`its mount is at ${got.at}`);
   if (spec.kind === "bind") {
     if (got.kind !== "bind") refuse(`it mounts ${got.kind}, not a bind of the run's folder`);
     else if (got.path !== spec.path) refuse(`it binds ${got.path}, not ${spec.path}`);
     return;
   }
   if (got.kind !== "archil") return refuse(`it mounts ${got.kind}, not the run's folder on the disk`);
-  if (got.source !== `${spec.disk}:/${spec.folder}`) refuse(`its source is ${got.source}, not ${spec.disk}:/${spec.folder}`);
-  if (!got.exclusive) refuse("the mount is not exclusive");
+  const want = `${spec.disk}:/${spec.folder} in ${spec.region}`;
+  if (`${got.disk}:/${got.folder} in ${got.region}` !== want) refuse(`it mounts ${got.disk}:/${got.folder} in ${got.region}, not ${want}`);
 }

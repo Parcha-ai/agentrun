@@ -11,7 +11,7 @@
 // - The port does not serialize. Two calls on one path race as two processes would; callers own their ordering (the
 //   learning queue keeps one per agent, with git's update-ref compare-and-swap as its fence).
 
-import type { Computer, MountSpec, Processes } from "./attach.js";
+import type { AttachableComputer, MountSpec, Processes } from "./attach.js";
 
 /** Why a workspace call failed. */
 export type WorkspaceErrorCode =
@@ -134,11 +134,12 @@ export interface Workspace {
    *  killed. A nonzero exit is a result, not an error; a program that is not there is NOT_FOUND. */
   exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult>;
   /** Background programs: the computer's process calls, which the background tools make through the Workspace. With
-   *  no computer attached, every call is REFUSED in words (attach.ts BACKGROUND_REFUSAL). */
+   *  no computer attached, every call is REFUSED with cause "no-computer" (attach.ts NO_COMPUTER); the words a person
+   *  reads are the background tool's. */
   readonly process: Processes;
   /** What a computer mounts at /workspace to hold this Workspace's folder: the caller puts it in the computer's spec. */
   mountSpec(): Promise<MountSpec>;
   /** This Workspace inside `computer`, once the computer's read-back shows it mounts mountSpec() at /workspace: file
-   *  calls and exec go to the computer, and `process` is the computer's (attach.ts). */
-  attach(computer: Computer): Promise<Workspace>;
+   *  calls and exec go to its computerd client, and `process` is the computer's (attach.ts). */
+  attach(computer: AttachableComputer): Promise<Workspace>;
 }

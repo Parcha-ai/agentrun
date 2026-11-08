@@ -3,10 +3,9 @@
 // writer onto it.
 export * from "./workspace.js";
 export {
-  attachedWorkspace, BACKGROUND_REFUSAL, checkMount, COMPUTER_CHUNK, type Computer, type ComputerErrorCode, type ComputerFileType,
-  type ComputerResult, type ComputerStat, MOUNT_AT, type MountReadBack, type MountSpec, noProcesses, type ProcessExit, type Processes,
-  type ProcessInfo, type ProcessSignal, type ProcessStream,
+  type AttachableComputer, attachedWorkspace, checkMount, COMPUTER_CHUNK, MOUNT_AT, type MountReadBack, type MountSpec, NO_COMPUTER, noProcesses,
+  type Processes,
 } from "./attach.js";
 export { agentDirName, agentFolder, agentLearningFolder, DISK_DIR, relativePath, relativeSegments, runFolder } from "./paths.js";
-export { type Available, type Place, PROVIDERS, type ProviderId, type Resolved, resolvePlace } from "./place.js";
+export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
 export { localWorkspace } from "./local.js";

@@ -300,11 +300,11 @@ export function suite(name, make) {
       else assert.deepEqual([seen.stdout.length, seen.stderr.length], [1, 1], "a backend that cannot stream calls it once per stream");
     });
 
-    test("with no computer, every background call is REFUSED in words", async () => {
+    test("with no computer, every background call is REFUSED, cause no-computer", async () => {
       const { workspace } = await fresh();
       for (const call of ["start", "read", "write", "signal", "wait", "list"]) {
         await refused(workspace.process[call]({ id: "p1", argv: ["sleep", "1"] }), "REFUSED", `process.${call}`);
-        await assert.rejects(workspace.process[call]({ id: "p1" }), /^WorkspaceError: Background programs need a computer: run this agent with place sandbox \(Docker in Mode 1, or a remote computer in Mode 2\)\.$/);
+        await assert.rejects(workspace.process[call]({ id: "p1" }), (error) => error.cause === "no-computer", `process.${call}: cause no-computer`);
       }
     });
   });
