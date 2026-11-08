@@ -6,9 +6,11 @@
 // <agent> is the id in lower case, a dash, and 16 hex digits of the id's SHA-256, so ids that differ only in case never
 // share a folder on a disk that folds case.
 //
-// A Workspace takes paths relative to its root only. relativeSegments is the rule both backends check them by.
+// A Workspace takes paths relative to its root only. relativeSegments is the rule both backends check them by. A tool
+// call's path (absolute, or relative to the folder's name the model knows) becomes one by portPath: the one mapping
+// from a model's path to the port's, for the tools (pi-env.ts) and the tool gate alike.
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { ID } from "../validate.js";
 import { WorkspaceError } from "./workspace.js";
 
@@ -56,3 +58,22 @@ export function relativeSegments(path: string): string[] {
 
 /** `path` checked by relativeSegments and joined again: "" for the root. */
 export const relativePath = (path: string): string => relativeSegments(path).join("/");
+
+/** Where every computer mounts a run's folder, and so the name a model in one knows it by. */
+export const COMPUTER_ROOT = "/workspace";
+
+/**
+ * `given`, a path a tool call gave, as the port's relative path ("" for the folder itself), or undefined when it leaves
+ * the folder. `names` are the folder's absolute names: the first is the working directory a relative path is resolved
+ * against (lexically, posix: no link is read), and each names the same folder (the folder's path here, COMPUTER_ROOT in a
+ * computer). `~` and a `file:` URL leave it.
+ */
+export function portPath(given: string, names: readonly string[]): string | undefined {
+  if (typeof given !== "string" || names.length === 0 || /^(~|file:)/.test(given) || given.includes("\0")) return undefined;
+  const abs = posix.resolve(names[0]!, given);
+  for (const name of names.map((name) => posix.resolve(name))) {
+    if (abs === name) return "";
+    if (abs.startsWith(`${name}/`)) return abs.slice(name.length + 1);
+  }
+  return undefined;
+}

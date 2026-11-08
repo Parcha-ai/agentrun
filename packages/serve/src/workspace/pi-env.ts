@@ -22,7 +22,7 @@ import {
   type ShellExecOptions, type ShellExecResult, StreamDecoder,
 } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { relativePath } from "./paths.js";
+import { portPath, relativePath } from "./paths.js";
 import { type Stat, type Workspace, WorkspaceError } from "./workspace.js";
 
 /** Where a long bash output is spilled whole, in the run's folder. */
@@ -69,25 +69,20 @@ export function piEnv(workspace: Workspace, options: PiEnvOptions): ExecutionEnv
   const cwd = posix.resolve(options.cwd);
   const names = [cwd, ...(options.aliases ?? []).map((alias) => posix.resolve(alias))];
 
-  /** `path` as the model's absolute path (under `cwd`), or the refusal of one outside the run's folder. */
-  const absolute = (path: string): Result<string, FileError> => {
-    if (/^(~|file:)/.test(path)) return err(new OutsideWorkspace(path));
-    const abs = posix.resolve(cwd, path);
-    for (const name of names) {
-      if (abs === name) return ok(cwd);
-      if (abs.startsWith(`${name}/`)) return ok(`${cwd}${abs.slice(name.length)}`);
-    }
-    return err(new OutsideWorkspace(path));
-  };
-  /** `path` relative to the run's folder, for the port. */
+  /** `path` relative to the run's folder, for the port, or the refusal of one outside it. */
   const relative = (path: string): Result<string, FileError> => {
-    const abs = absolute(path);
-    if (!abs.ok) return abs;
+    const port = portPath(path, names);
+    if (port === undefined) return err(new OutsideWorkspace(path));
     try {
-      return ok(relativePath(posix.relative(cwd, abs.value)));
+      return ok(relativePath(port));
     } catch {
       return err(new OutsideWorkspace(path));
     }
+  };
+  /** `path` as the model's absolute path (under `cwd`), or the refusal of one outside the run's folder. */
+  const absolute = (path: string): Result<string, FileError> => {
+    const rel = relative(path);
+    return rel.ok ? ok(rel.value === "" ? cwd : `${cwd}/${rel.value}`) : rel;
   };
   /** A port failure as pi's FileError, naming the path as the model named it. */
   const failure = (error: unknown, path: string): FileError => {
