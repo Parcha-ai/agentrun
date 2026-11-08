@@ -82,7 +82,7 @@ test("toolsFor() gives a kind's tools whose groups the capabilities declare, and
 test("the registry names, per kind, provider ids the registry holds; sandbox is every one of today's", () => {
 	assert.deepEqual(Object.keys(KIND_PROVIDERS), KINDS);
 	assert.deepEqual([...KIND_PROVIDERS.sandbox].sort(), ["daytona", "docker", "e2b", "modal"]);
-	assert.deepEqual([...KIND_PROVIDERS.desktop].sort(), ["docker", "e2b"], "the Docker and E2B desktops declare screen and input today");
+	assert.deepEqual([...KIND_PROVIDERS.desktop].sort(), ["docker", "e2b", "orgo"], "the Docker, E2B and Orgo desktops declare screen and input");
 	assert.deepEqual(KIND_PROVIDERS.none, []);
 	for (const kind of KINDS) for (const id of KIND_PROVIDERS[kind]) assert.ok(providerIds.includes(id), `${kind}: ${id} is a registry id`);
 });
