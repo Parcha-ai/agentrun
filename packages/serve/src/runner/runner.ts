@@ -41,6 +41,9 @@ export interface RunnerOptions {
   resumeTries?: number;
   /** The wait after a resume's first failed try; each later one waits twice the one before. */
   resumeBackoffMs?: number;
+  /** The wait before a run whose loop ended interrupted on its own (no stop asked of it: its Session closed itself) is
+   *  claimable again; each such end of the run in a row waits twice the one before, up to 64 times this. */
+  interruptBackoffMs?: number;
   /** How long a run's end waits for a command still with its loop before it writes its end; an answer after that is
    *  dropped (nothing written, nothing said). */
   endWaitMs?: number;
@@ -100,6 +103,7 @@ export function startRunner(options: RunnerOptions): Runner {
     commandPollMs = 500,
     resumeTries = 3,
     resumeBackoffMs = 5_000,
+    interruptBackoffMs = 1_000,
     endWaitMs = 5_000,
     onEvent = () => {},
   } = options;
@@ -118,6 +122,8 @@ export function startRunner(options: RunnerOptions): Runner {
   /** A lost claim's loop that had not settled when its run was claimed again (its place in `runs` taken by the new one):
    *  still counted against `loops` until it settles, so a loop that ignores its stop never lets the runner hold more. */
   const replaced = new Set<Held>();
+  /** Each run's ends in a row, on this runner, as interrupted on its own: its next release's backoff doubles with them. */
+  const interruptedInARow = new Map<string, number>();
   let closed = false;
   let killed = false;
   let pollTimer: NodeJS.Timeout | undefined;
@@ -279,6 +285,8 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   const finish = async (held: Held, end: LoopEnd, threw: boolean) => {
+    // Whether the runner asked the loop to stop before it ended (only stopLoop sets this).
+    const stoppedBefore = held.stopping;
     held.ending = true;
     clearTimeout(held.deadline);
     const { claim } = held;
@@ -316,7 +324,17 @@ export function startRunner(options: RunnerOptions): Runner {
         }
       }
       await store.flush();
-      await store.release(claim, end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt } : {});
+      // A loop that ended interrupted with no stop asked of it (its Session closed itself) is released with a backoff that
+      // doubles each time in a row, so a Harness that keeps closing is not claimed again every poll. A stopped loop (a
+      // shutdown, a lost claim) is released at once, for another runner to take over.
+      const closedItself = end.state === "interrupted" && !stoppedBefore;
+      const inARow = closedItself ? (interruptedInARow.get(claim.runId) ?? 0) + 1 : 0;
+      if (inARow > 0) interruptedInARow.set(claim.runId, inARow);
+      else interruptedInARow.delete(claim.runId);
+      await store.release(claim,
+        end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
+        : inARow > 0 ? { backoffUntil: Date.now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
+        : {});
       emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });

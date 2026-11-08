@@ -25,7 +25,8 @@ import type { ConformanceCase, ConformanceSetup, ConformanceSubject, KernelHooks
 /** node:test's test(), as the suite registers its cases with it. */
 export type TestFunction = (name: string, options: { skip?: string | boolean; timeout?: number }, fn: (t: { after(fn: () => unknown): void }) => Promise<void>) => unknown;
 
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// interruptBackoffMs at the suite's scale: a run whose Session closes itself (the fault cases) is claimed again after it.
+const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30, interruptBackoffMs: 20 };
 /** The most times a kernel restarts a faulting task before the run fails: every harness's bound is at most this. */
 export const MAX_RESTARTS = 5;
 /** The suite's runner timing, for its runner process too (child.ts). */
