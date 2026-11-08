@@ -88,9 +88,11 @@ async function versionOf(db: Connection): Promise<number | null> {
   return (await db.get<{ schema_version: number }>("SELECT schema_version FROM store_meta WHERE singleton = 1"))?.schema_version ?? null;
 }
 
-/** The settings files an earlier version kept at a data directory's top: its MCP servers, triggers, tool keys, trigger
- *  secrets, webhook and its outbox, kept idempotency answers and learning's usage ledger. */
-const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl"];
+/** The files only an earlier version kept at a data directory's top: its MCP servers, triggers, tool keys, trigger
+ *  secrets, webhook and its outbox, kept idempotency answers, learning's usage ledger, and the per-run door's token.
+ *  This version's own (.token, .server.json beside the store and its lock) and a leftover box-image.json are not among
+ *  them: a directory holding those opens. */
+const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl", ".door-token"];
 
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
  *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
