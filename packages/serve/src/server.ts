@@ -768,6 +768,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   };
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
+  mcpServers.toolSettings = () => settings.get();
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
   // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
   // CLI's package and pins, codex's binary hashed); and `caps`, the capabilities document made from both under the tool
