@@ -227,7 +227,13 @@ async function fly(docker: string, source: Source, timeoutMs: number, flight: Om
 			source.kind === "image"
 				? await call(["pull", "--quiet", source.tag])
 				: await call(["build", "--quiet", "--label", `${RECIPE_LABEL}=${source.hash}`, "--tag", source.tag, "-"], source.recipe);
-		if (made.code === 0 || (typeof made.code === "number" && ready(await inspect()))) return ok(source.tag);
+		if (made.code === 0) return ok(source.tag);
+		if (typeof made.code === "number") {
+			const again = await inspect();
+			if (ready(again)) return ok(source.tag);
+			// The bound, or every caller's abort, stopped the second inspect: that is the answer, not the failure before it.
+			if (again.code === "timeout" || again.code === "aborted") return inspectFailure(docker, source.tag, again, timeoutMs);
+		}
 		return source.kind === "image" ? pullFailure(docker, source.tag, made, timeoutMs) : buildFailure(docker, source, made, timeoutMs);
 	} finally {
 		clearTimeout(timer);
