@@ -67,3 +67,16 @@ test("every other call waits for an open transaction, and its handle takes nothi
   assert.deepEqual(order, ["tx wrote", "tx ends", "outside wrote"]);
   await assert.rejects(handle.run("INSERT INTO notes (text) VALUES (?)", "late"), /transaction is over/);
 });
+
+test("a commit that fails (a deferred foreign key) is rolled back, and the next write goes", async (t) => {
+  const db = await connected(t);
+  await db.exec("CREATE TABLE parent (id INTEGER PRIMARY KEY); CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent (id))");
+  await assert.rejects(db.transaction(async (tx) => {
+    await tx.exec("PRAGMA defer_foreign_keys = ON");
+    await tx.run("INSERT INTO child (parent_id) VALUES (?)", 99);
+  }), /FOREIGN KEY/);
+  await db.run("INSERT INTO notes (text) VALUES (?)", "after");
+  await db.transaction(async (tx) => tx.run("INSERT INTO notes (text) VALUES (?)", "a transaction after"));
+  assert.deepEqual((await db.all("SELECT text FROM notes ORDER BY id")).map((r) => r.text), ["after", "a transaction after"]);
+  assert.deepEqual(await db.all("SELECT id FROM child"), [], "nothing of the failed commit is kept");
+});

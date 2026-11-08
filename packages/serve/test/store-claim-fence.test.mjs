@@ -4,8 +4,33 @@
 // and of two claimers at once exactly one wins. Times are epoch ms.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { Fenced } from "../dist/store/store.js";
 import { queued, storeOn } from "./store-helpers.mjs";
+
+/** Another process's write holding the store's writer lock until the clock has moved `ms`; it lets go then. */
+function holdWriter(file, clock, ms) {
+  const other = new DatabaseSync(file);
+  other.exec("BEGIN IMMEDIATE");
+  setTimeout(() => {
+    clock.now += ms;
+    other.exec("COMMIT");
+    other.close();
+  }, 200);
+}
+
+test("a claim and a renew that wait for the writer lock run their lease from when they hold it, never come back expired", async (t) => {
+  const { store, clock, file } = await storeOn(t);
+  await queued(store);
+  holdWriter(file, clock, 5_000);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 1_000 });
+  assert.equal(claim?.until, clock.now + 1_000, "the lease starts once the claim holds the lock");
+  assert.equal((await store.runs.get("run-1")).claimedUntil, clock.now + 1_000);
+  holdWriter(file, clock, 5_000);
+  const renewed = await store.renew(claim, { leaseMs: 1_000 });
+  assert.equal(renewed.until, clock.now + 1_000, "and so does a renew's");
+  assert.equal((await store.runs.get("run-1")).claimedUntil, clock.now + 1_000);
+});
 
 test("a claim moves the run's epoch up by one and holds it running until claimed_until", async (t) => {
   const { store, clock } = await storeOn(t);
