@@ -113,8 +113,8 @@ const CPU_FOR_RAM: Record<number, number> = { 4: 1, 8: 2, 16: 4, 32: 6 };
 /** The vCPUs a computer may ask for on its own (8 needs Orgo to set the account up). */
 const CPUS = [0.5, 1, 2, 4, 6];
 const NAME_MAX = 80;
-/** A name of this provider's making: computer-<12 hex>, the run label's hash, the epoch label. */
-const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?$/;
+/** A name of this provider's making: computer-<12 hex>, the run label's hash, the epoch label, the deadline (base 36 s). */
+const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?(?:-d([0-9a-z]{1,11}))?$/;
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 /** The base image, no template. */
@@ -237,20 +237,38 @@ function runHash(run: string): string {
 
 /**
  * The name of a computer with these labels: computer-<hex>, then -r<the run label's hash> and -e<the epoch label> when
- * the labels carry a run and an epoch that is one. Only those two: a name is no place for a label's value.
+ * the labels carry a run and an epoch that is one, then -d<the deadline> when given: whole seconds since the epoch,
+ * rounded up (never before init's own), in base 36, the janitor's deadline. Only those: a name is no place for a label's
+ * value. Everything but the deadline is the name's stable part, which a rename on extend keeps.
  */
-export function orgoName(labels: Record<string, string>, hex: string): string {
+export function orgoName(labels: Record<string, string>, hex: string, deadline?: Date): string {
 	const run = labels[RUN_LABEL];
 	const epoch = labels[EPOCH_LABEL];
-	return `computer-${hex}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
+	const stable = `computer-${hex}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
+	return deadline === undefined ? stable : withDeadline(stable, deadline);
 }
 
-/** What a name of this provider's making says, or undefined for any other name. */
-function nameParts(name: unknown): { hex: string; run?: string; epoch?: string } | undefined {
+/** A name's stable part with this deadline. */
+function withDeadline(stable: string, deadline: Date): string {
+	return `${stable}-d${Math.ceil(deadline.getTime() / 1000).toString(36)}`;
+}
+
+/** What a name of this provider's making says, or undefined for any other name: its stable part, and its deadline. */
+function nameParts(name: unknown): { hex: string; run?: string; epoch?: string; stable: string; deadline?: Date } | undefined {
 	const match = typeof name === "string" ? NAME.exec(name) : null;
 	if (match === null) return undefined;
-	return { hex: match[1] as string, ...(match[2] ? { run: match[2] } : {}), ...(match[3] !== undefined ? { epoch: match[3] } : {}) };
+	const seconds = match[4] === undefined ? Number.NaN : Number.parseInt(match[4], 36);
+	return {
+		hex: match[1] as string,
+		...(match[2] ? { run: match[2] } : {}),
+		...(match[3] !== undefined ? { epoch: match[3] } : {}),
+		stable: (name as string).replace(/-d[0-9a-z]+$/, ""),
+		...(Number.isSafeInteger(seconds) ? { deadline: new Date(seconds * 1000) } : {}),
+	};
 }
+
+/** Whether two names are one computer's: their stable parts are the same (the deadline moves with extend). */
+const sameComputer = (a: string, b: string) => nameParts(a)?.stable !== undefined && nameParts(a)?.stable === nameParts(b)?.stable;
 
 function labelProblem(key: string, value: unknown): string | undefined {
 	if (typeof value !== "string") return `the label ${key} must be a string`;
@@ -342,15 +360,16 @@ export class OrgoProvider implements ComputerProvider {
 	}
 
 	/**
-	 * daemon child: Orgo's own agent is the VM's first process, and init is a command it ran. lifetime vendor: Orgo
-	 * deletes the computer at ends_in_hours, whole hours from create; init holds the exact deadline inside. network none
-	 * alone, read back by the probe from inside (Orgo reads no policy back). release delete alone: Orgo's stop freezes
-	 * a computer, which nothing here needs.
+	 * daemon child: Orgo's own agent is the VM's first process, and init is a command it ran. lifetime janitor: Orgo ends
+	 * a computer only in whole hours (ends_in_hours, the backstop), so the janitor deletes it at its exact deadline, which
+	 * its name carries (list() reads it with nothing run inside); init ends its programs at that deadline inside. network
+	 * none alone, read back by the probe from inside (Orgo reads no policy back). release delete alone: Orgo's stop
+	 * freezes a computer, which nothing here needs.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
 			kind: "desktop",
-			lifetime: "vendor",
+			lifetime: "janitor",
 			network: ["none"],
 			networkReadBack: false,
 			isolation: "vm",
@@ -402,11 +421,12 @@ export class OrgoProvider implements ComputerProvider {
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");
 		const labels = { ...spec.labels };
-		const name = orgoName(labels, randomBytes(6).toString("hex"));
-		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
 		const now = Date.now();
 		const deadline = new Date(now + spec.lifetimeMs).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
+		// The janitor's deadline is in the name, so list() and the sweep read it with nothing run inside.
+		const name = orgoName(labels, randomBytes(6).toString("hex"), new Date(deadline));
+		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
 		const ram = spec.memoryMb === undefined ? 4 : spec.memoryMb / 1024;
 		const cpu = spec.cpus ?? (CPU_FOR_RAM[ram] as number);
 		const body = {
@@ -635,7 +655,8 @@ export class OrgoProvider implements ComputerProvider {
 
 	/** Whether Orgo's record is a computer of this provider: its name's shape, in this workspace. */
 	#ours(record: OrgoComputer, name?: string): boolean {
-		return nameParts(record.name) !== undefined && (record.workspace_id ?? record.project_id) === this.#workspaceId && (name === undefined || record.name === name) && record.status !== "deleted";
+		// A ref's name matches by its stable part: extend renames the computer with its new deadline.
+		return nameParts(record.name) !== undefined && (record.workspace_id ?? record.project_id) === this.#workspaceId && (name === undefined || sameComputer(record.name, name)) && record.status !== "deleted";
 	}
 
 	/** This provider's computer for ref, as Orgo reads it, or why not. */
@@ -751,7 +772,7 @@ export class OrgoProvider implements ComputerProvider {
 		const found: string[] = [];
 		const parts = nameParts(record.name) as { run?: string; epoch?: string };
 		const { labels } = file.value;
-		if (file.value.name !== record.name) found.push(`name: Orgo's is ${record.name}, the labels file's ${show(file.value.name)}`);
+		if (typeof file.value.name !== "string" || !sameComputer(file.value.name, record.name)) found.push(`name: Orgo's is ${record.name}, the labels file's ${show(file.value.name)}`);
 		const run = labels[RUN_LABEL];
 		if ((parts.run ?? "") !== (typeof run === "string" && run !== "" ? runHash(run) : "")) found.push(`run: the name's run hash ${show(parts.run)} is not the labels file's run ${show(run)}`);
 		if ((parts.epoch ?? "") !== (labels[EPOCH_LABEL] ?? "")) found.push(`epoch: the name says ${show(parts.epoch)}, the labels file ${show(labels[EPOCH_LABEL])}`);
@@ -814,14 +835,15 @@ export class OrgoProvider implements ComputerProvider {
 				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : {}),
 				...(parts.epoch !== undefined ? { [EPOCH_LABEL]: parts.epoch } : {}),
 			};
-			let deadline: Date | undefined = typeof record.ends_at === "string" ? new Date(record.ends_at) : undefined;
+			// The janitor's deadline is the name's; a name of an older make has none, and Orgo's end stands for it.
+			let deadline: Date | undefined = parts.deadline ?? (typeof record.ends_at === "string" ? new Date(record.ends_at) : undefined);
 			if (others.length > 0) {
 				if (record.status !== "running") continue;
 				const file = await this.#readLabels(ref, signal);
 				if (!file.ok) continue;
 				if (!others.every((key) => file.value.labels[key] === labels[key])) continue;
 				read = { ...file.value.labels };
-				deadline = new Date(file.value.deadline);
+				deadline = parts.deadline ?? new Date(file.value.deadline);
 			}
 			infos.push({ ref, labels: read, deadline, state: running ? "running" : "stopped", network: "none" });
 		}
@@ -895,19 +917,24 @@ export class OrgoProvider implements ComputerProvider {
 			const moved = await this.#rest.request("POST", `/computers/${encodeURIComponent(ref.id)}/extend`, { body: { hours }, headers: { "idempotency-key": randomUUID() }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
 			if (!moved.ok) return fail(moved.error.code, `Orgo's end did not move, so nothing did: ${moved.error.message}`);
 		}
+		// The janitor's deadline next, in the name (a rename, its stable part kept), then init's: a step that fails leaves
+		// the computer ending earlier than asked, never later.
+		const name = withDeadline((nameParts(found.value.name) as { stable: string }).stable, new Date(target));
+		const renamed = await this.#rest.request("PATCH", `/computers/${encodeURIComponent(ref.id)}`, { body: { name }, timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
+		if (!renamed.ok) return fail(renamed.error.code, `Orgo's end moved, and the deadline in ${found.value.name} did not: ${renamed.error.message}`);
 		const opened = await this.#open(ref, signal);
-		if (!opened.ok) return fail(opened.error.code, `Orgo's end moved, and init's deadline did not: ${opened.error.message}`);
+		if (!opened.ok) return fail(opened.error.code, `Orgo's end and the name's deadline moved, and init's deadline did not: ${opened.error.message}`);
 		let took: Date;
 		try {
 			const at = new Date(target).toISOString();
 			const extended = await opened.value.client.call("deadline.extend", { at }, { signal: this.#bounded(this.#timeouts.helloMs, signal) });
-			if (!extended.ok) return fail(extended.error.code, `Orgo's end moved, and init's deadline did not: ${extended.error.message}`);
+			if (!extended.ok) return fail(extended.error.code, `Orgo's end and the name's deadline moved, and init's deadline did not: ${extended.error.message}`);
 			const answered = Date.parse(extended.value.at);
 			took = new Date(Number.isNaN(answered) ? at : answered);
 		} finally {
 			await opened.value.close();
 		}
-		const written = await this.#writeLabels(ref, { ...file.value, deadline: took.toISOString() }, signal);
+		const written = await this.#writeLabels(ref, { ...file.value, name, deadline: took.toISOString() }, signal);
 		if (!written.ok) return fail(written.error.code, `init's deadline moved to ${took.toISOString()}, and the labels file did not: ${written.error.message}`);
 		return ok({ deadline: took });
 	}

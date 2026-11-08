@@ -28,7 +28,7 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 60 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"orgo: a Linux desktop on Orgo with computerd inside, on Orgo's own X display :99, its tools as 2510:2510; every computer ends within 1 h (Orgo deletes it at ends_in_hours 1); network none is init's own namespace, probed from inside, since Orgo has no egress control; no mount.",
+	"orgo: a Linux desktop on Orgo with computerd inside, on Orgo's own X display :99, its tools as 2510:2510; janitor-ended at the exact deadline its name carries, and within 1 h whatever happens (Orgo deletes it at ends_in_hours 1, the backstop); network none is init's own namespace (--own-network), probed from inside at the outside and at every port root listens on, since Orgo has no egress control; the desktop's path sockets are root's alone but the display's; no mount.",
 ];
 
 export interface OrgoModuleOptions {
