@@ -2,16 +2,18 @@
 // so the workspace is tested against a fake (test/fixtures/archil-fake.mjs) and runs on Archil's Node SDK, the npm
 // package `disk`, pinned at 1.12.0. What the SDK does, read from its shipped types and source:
 // - Credentials: one account API key, sent as `Authorization: Bearer <key>` both to the control plane (disks.get, grep,
-//   exec) and to the disk's S3-compatible endpoint (objects). The region picks both hosts. The key is read here from
-//   the environment by its variable's NAME, when the first call is made; it is never logged, returned or put in an
-//   error.
+//   exec) and to the disk's S3-compatible endpoint (objects). The key is read here from the environment by its
+//   variable's NAME, when the first call is made; it is never logged, returned or put in an error.
+// - Endpoints: the region names the control plane. The S3 endpoint is given here explicitly (the setting
+//   AGENTRUN_ARCHIL_S3_URL), because no public part of the SDK says which it is: the same URL goes to the SDK's public
+//   `s3BaseUrl` option and to the ranged read below, so both talk to one endpoint.
 // - Objects: putObject is one PUT up to 16 MiB, above it a multipart upload that appears whole when it completes;
 //   appendObject takes at most 1 MiB a call and the SDK never retries it (a retry could append twice); deleteObject is
 //   idempotent; listObjects is ListObjectsV2, one level under a "/" delimiter unless recursive, in pages. The disk is a
 //   filesystem, so "a/" is a directory: putting an empty "a/" makes one. There is no rename, copy or link call.
-// - A ranged read is the S3 Range header, which the SDK has no option for: it goes through the SDK's own S3 request (its
-//   credential, endpoint, transport and retries) with that one header. That request is internal to the SDK; the pin
-//   holds it, and a missing one fails in words.
+// - A ranged read is the S3 Range header, which the SDK has no option for: it is a plain GET of
+//   <S3 endpoint>/<disk>/<key> with the same Bearer key and a Range header, tried again on a 429, a 5xx or a failed
+//   connection, as the SDK does its own reads.
 // - grep: ripgrep's regex, a directory, recursive or not, a deadline of at most 30 s, 1,000 results by default; when it
 //   stops early its matches are a sample, not the first ones.
 // - exec: Archil.exec({ disks, command }) runs one shell line in a fresh container with each disk mounted at
@@ -42,7 +44,7 @@ export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: str
 
 /**
  * An Archil disk, keys relative to its root. A failed call rejects with an error carrying the HTTP `status` when there
- * was an answer (the SDK's ArchilS3Error and ArchilApiError do).
+ * was an answer (the SDK's ArchilS3Error and ArchilApiError do, and so does the ranged read here).
  */
 export interface ArchilDisk {
   readonly id: string;
@@ -64,64 +66,97 @@ export interface ArchilDisk {
 export type ArchilDiskOptions = {
   /** The disk's id, dsk-<16 hex digits>. */
   readonly disk: string;
-  /** Its region, e.g. aws-us-east-1. */
+  /** Its region, e.g. aws-us-east-1: it names the control plane. */
   readonly region: string;
   /** The NAME of the environment variable that holds the account API key. */
   readonly keyEnv: string;
-  /** Other endpoints than the region's (a test's loopback server). */
+  /** The disk's S3-compatible endpoint (the setting AGENTRUN_ARCHIL_S3_URL), e.g. https://s3.<…>.archil.com. */
+  readonly s3BaseUrl: string;
+  /** Another control plane than the region's (a test's loopback server). */
   readonly baseUrl?: string;
-  readonly s3BaseUrl?: string;
 };
 
-/** The SDK's own S3 request (Disk#_s3Request in 1.12.0), which the ranged read needs for its one header. */
-type S3Request = (method: "GET", key: string, options: { readonly extraHeaders: Record<string, string> }) =>
-  Promise<{ readonly ok: boolean; readonly status: number; readonly statusText: string; readonly body: Uint8Array }>;
-
-/** A failed ranged read: the status, and the gateway's words. */
+/** A failed ranged read: the status, and the gateway's code. */
 class RangeReadError extends Error {
   readonly status: number;
-  constructor(status: number, statusText: string, body: Uint8Array) {
-    const code = /<Code>([^<]*)<\/Code>/.exec(Buffer.from(body).toString("utf8"))?.[1];
+  readonly code: string | undefined;
+  constructor(status: number, statusText: string, body: string) {
+    const code = /<Code>([^<]*)<\/Code>/.exec(body)?.[1];
     super(`S3 GetObject (ranged) failed: ${status}${code === undefined ? "" : ` ${code}`} ${statusText}`.trim());
     this.name = "RangeReadError";
     this.status = status;
+    this.code = code;
   }
 }
+
+const RANGE_TRIES = 3;
+const transient = (status: number): boolean => status === 429 || status >= 500;
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 class SdkArchilDisk implements ArchilDisk {
   readonly id: string;
   readonly #options: ArchilDiskOptions;
+  readonly #s3: string;
   #ready: Promise<{ readonly client: ArchilClient; readonly disk: SdkDisk }> | undefined;
 
   constructor(options: ArchilDiskOptions) {
+    if (typeof options.s3BaseUrl !== "string" || !/^https?:\/\/[^/]+/.test(options.s3BaseUrl)) {
+      throw new Error("an Archil disk needs its S3 endpoint (AGENTRUN_ARCHIL_S3_URL), an http(s) URL");
+    }
     this.#options = options;
+    this.#s3 = options.s3BaseUrl.replace(/\/+$/, "");
     this.id = options.disk;
   }
 
-  /** The client and the disk, made once: the key read by name, the disk looked up once. */
+  /** The key, read from the variable named keyEnv. */
+  #key(): string {
+    const apiKey = process.env[this.#options.keyEnv];
+    if (apiKey === undefined || apiKey === "") throw new Error(`the Archil API key's variable ${this.#options.keyEnv} is not set`);
+    return apiKey;
+  }
+
+  /** The client and the disk, made once: the disk looked up once (disks.get). */
   #sdk(): Promise<{ readonly client: ArchilClient; readonly disk: SdkDisk }> {
     if (this.#ready !== undefined) return this.#ready;
     const ready = (async () => {
-      const { keyEnv, region, baseUrl, s3BaseUrl } = this.#options;
-      const apiKey = process.env[keyEnv];
-      if (apiKey === undefined || apiKey === "") throw new Error(`the Archil API key's variable ${keyEnv} is not set`);
+      const apiKey = this.#key();
+      const { region, baseUrl } = this.#options;
       const { Archil } = await import("disk");
-      const client = new Archil({ apiKey, region, ...(baseUrl === undefined ? {} : { baseUrl }), ...(s3BaseUrl === undefined ? {} : { s3BaseUrl }) });
+      const client = new Archil({ apiKey, region, s3BaseUrl: this.#s3, ...(baseUrl === undefined ? {} : { baseUrl }) });
       return { client, disk: await client.disks.get(this.id) };
     })();
-    // A failed start (no key, the disk not found) is tried again by the next call.
+    // A failed start (no key, the key refused, the disk not found) is tried again by the next call.
     ready.catch(() => { if (this.#ready === ready) this.#ready = undefined; });
     this.#ready = ready;
     return ready;
   }
 
+  /** The client made and the disk looked up: one disks.get. A key of the wrong kind fails here (401 or 403). */
+  async ready(): Promise<void> {
+    await this.#sdk();
+  }
+
   async getRange(key: string, range: string): Promise<{ readonly status: number; readonly body: Uint8Array }> {
-    const { disk } = await this.#sdk();
-    const request = (disk as unknown as { _s3Request?: S3Request })._s3Request;
-    if (typeof request !== "function") throw new Error("this version of the Archil SDK has no S3 request for a ranged read (pinned: disk 1.12.0)");
-    const answer = await request.call(disk, "GET", key, { extraHeaders: { Range: range } });
-    if (answer.ok || answer.status === 416) return { status: answer.status, body: answer.ok ? answer.body : new Uint8Array(0) };
-    throw new RangeReadError(answer.status, answer.statusText, answer.body);
+    const url = `${this.#s3}/${encodeURIComponent(this.id)}/${key.replace(/^\//, "").split("/").map(encodeURIComponent).join("/")}`;
+    const headers = { Authorization: `Bearer ${this.#key()}`, Range: range };
+    for (let attempt = 1; ; attempt++) {
+      let response: Response;
+      try {
+        response = await fetch(url, { method: "GET", headers });
+      } catch (error) {
+        if (attempt >= RANGE_TRIES) throw error;
+        await pause(100 * 2 ** attempt);
+        continue;
+      }
+      if (response.ok) return { status: response.status, body: new Uint8Array(await response.arrayBuffer()) };
+      const body = await response.text().catch(() => "");
+      if (response.status === 416) return { status: 416, body: new Uint8Array(0) };
+      if (transient(response.status) && attempt < RANGE_TRIES) {
+        await pause(100 * 2 ** attempt);
+        continue;
+      }
+      throw new RangeReadError(response.status, response.statusText, body);
+    }
   }
 
   async putObject(key: string, body: Uint8Array): Promise<void> {
@@ -164,4 +199,4 @@ class SdkArchilDisk implements ArchilDisk {
 }
 
 /** Disk `options.disk` through Archil's SDK, its key read from the variable named `options.keyEnv` at the first call. */
-export const archilDisk = (options: ArchilDiskOptions): ArchilDisk => new SdkArchilDisk(options);
+export const archilDisk = (options: ArchilDiskOptions): ArchilDisk & { ready(): Promise<void> } => new SdkArchilDisk(options);

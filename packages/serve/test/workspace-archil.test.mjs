@@ -226,7 +226,7 @@ test("archil-disk: the SDK seam reads its key by name, sends a ranged read as a 
     request.on("data", (c) => chunks.push(c));
     request.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
-      seen.push({ method: request.method, url: request.url, range: request.headers.range, auth: request.headers.authorization, body });
+      seen.push({ method: request.method, url: request.url, range: request.headers.range, auth: request.headers.authorization, agent: request.headers["user-agent"], body });
       const json = (status, value) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
       if (request.method === "GET" && request.url === "/api/disks/dsk-0000000000000001") {
         return json(200, { success: true, data: { id: "dsk-0000000000000001", name: "dev", organization: "o", status: "ready", provider: "aws", region: "aws-us-east-1", createdAt: "2026-11-08T00:00:00Z" } });
@@ -245,11 +245,14 @@ test("archil-disk: the SDK seam reads its key by name, sends a ranged read as a 
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     delete process.env.AGENTRUN_TEST_ARCHIL_KEY;
-    const options = { disk: "dsk-0000000000000001", region: "aws-us-east-1", keyEnv: "AGENTRUN_TEST_ARCHIL_KEY", baseUrl: base, s3BaseUrl: base };
+    const options = { disk: "dsk-0000000000000001", region: "aws-us-east-1", keyEnv: "AGENTRUN_TEST_ARCHIL_KEY", baseUrl: base, s3BaseUrl: `${base}/` };
+    assert.throws(() => archilDisk({ ...options, s3BaseUrl: undefined }), /S3 endpoint \(AGENTRUN_ARCHIL_S3_URL\)/);
     await assert.rejects(archilDisk(options).getRange("agents/a/runs/r/work/x.txt", "bytes=2-5"), /AGENTRUN_TEST_ARCHIL_KEY is not set/);
+    await assert.rejects(archilDisk(options).ready(), /AGENTRUN_TEST_ARCHIL_KEY is not set/);
     assert.deepEqual(seen, [], "no call without a key");
     process.env.AGENTRUN_TEST_ARCHIL_KEY = "loopback-dummy";
     const disk = archilDisk(options);
+    await disk.ready();
     const got = await disk.getRange("agents/a/runs/r/work/x.txt", "bytes=2-5");
     assert.deepEqual([got.status, text(got.body)], [206, "2345"]);
     const ran = await disk.exec({ mount: "work", checkoutPaths: ["agents/a/runs/r/work"], queueMs: 1_000, command: "true" });
@@ -260,6 +263,10 @@ test("archil-disk: the SDK seam reads its key by name, sends a ranged read as a 
       ["POST", "/api/exec", null],
     ]);
     assert.ok(seen.every((r) => r.auth === "Bearer loopback-dummy"), "the key, as a bearer token, on every call");
+    assert.match(seen[0].agent, /^archil-js\//, "disks.get is the SDK's");
+    assert.doesNotMatch(seen[1].agent ?? "", /archil-js/, "the ranged read is this module's own fetch, not the SDK's request");
+    const source = readFileSync(new URL("../dist/workspace/archil-disk.js", import.meta.url), "utf8");
+    assert.doesNotMatch(source, /\._[a-zA-Z]/, "no private field of the SDK is used");
     assert.deepEqual(JSON.parse(seen[2].body), {
       disks: { work: { disk: "dsk-0000000000000001", readOnly: false, conditional: false, queueMs: 1_000, checkoutPaths: ["agents/a/runs/r/work"] } },
       command: "true",
