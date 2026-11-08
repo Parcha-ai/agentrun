@@ -646,6 +646,37 @@ class Rules(unittest.TestCase):
         assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
         self.assertEqual((stalled.cause, len(held)), ("timeout", 1))
 
+    def test_a_slow_connect_and_a_stalled_handshake_share_the_tries_one_timeout(self) -> None:
+        listening = socket.socket()
+        listening.bind(("127.0.0.1", 0))
+        listening.listen(8)
+        self.addCleanup(listening.close)
+        held: list[socket.socket] = []
+
+        def accept() -> None:
+            while True:
+                try:
+                    held.append(listening.accept()[0])
+                except OSError:
+                    return
+
+        threading.Thread(target=accept, daemon=True).start()
+        self.addCleanup(lambda: [connection.close() for connection in held])
+        real = socket.create_connection
+
+        def slow(*args: Any, **kwargs: Any) -> socket.socket:
+            time.sleep(0.3)  # a connect that takes most of the try's time
+            return real(*args, **kwargs)
+
+        client = AgentRun(base_url=f"https://127.0.0.1:{listening.getsockname()[1]}/v2", api_key=KEY)
+        began = time.monotonic()
+        with mock.patch("socket.create_connection", slow):
+            stalled = self.thrown(client.agents.list, timeout=0.5)
+        took = time.monotonic() - began
+        assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
+        self.assertEqual((stalled.cause, len(held)), ("timeout", 1))
+        self.assertLess(took, 0.5 + 0.15, "the handshake had what the connect left of the try, not a timeout of its own")
+
     def test_nothing_but_an_agentrun_error_escapes_a_host_idna_refuses_is_a_usage_error_and_a_lone_surrogate_in_a_query_is_sent_as_u_fffd(self) -> None:
         self.assertIsInstance(self.thrown(AgentRun, base_url=f"http://{'a' * 64}.example/v2", api_key=KEY), AgentRunUsage)
         server = Listener(self, lambda request, reply: json_answer(200, {"agents": [], "next_cursor": None}))
