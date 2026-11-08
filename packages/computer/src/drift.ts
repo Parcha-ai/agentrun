@@ -136,7 +136,7 @@ export interface HelloExpected {
 }
 
 export interface DriftExpected extends HelloExpected {
-	/** The daemon binary on the host, as it was mounted. */
+	/** The daemon file on the host the computer binds, as it was mounted: for DockerProvider, its copy of the daemon. */
 	daemonPath: string;
 	/** The deadline label's value, as it was set. */
 	deadline: string;

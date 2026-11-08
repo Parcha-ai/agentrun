@@ -463,12 +463,19 @@ await docker.release(made.value, "delete");
   `--security-opt no-new-privileges`, `--ipc private --cgroupns private` (never the daemon's defaults, which a host can
   set to `shareable` or, on cgroup v1, the host's cgroup namespace), `--network none` or `bridge`, serve's sizes unless the spec gives its own (2
   CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
-  the same; 1024 pids), and the daemon bind-mounted read-only at `/opt/agentrun/computerd` as
+  the same; 1024 pids), and the daemon (its copy, next) bind-mounted read-only at `/opt/agentrun/computerd` as
   the entrypoint, `computerd init --deadline <time>`, which is PID 1, holds every process and reaps orphans. The label
   `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it ends every
   process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline.
   Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running after its
   start is removed.
+- **A computer binds the provider's own copy of the daemon, never `daemonPath`.** `daemonPath` may have any mode this
+  process can read (npm installs it 0700 under `umask 077`). `create` copies it to `computerd-<sha256 of its bytes>`,
+  mode 0755, in `daemonCache` (default `agentrun-computer` under `XDG_CACHE_HOME`, else `~/.cache`), so every computer
+  user may run it, and binds that copy. The copy is written to a temporary file and renamed into place, then hashed
+  again before each bind. The directory is made 0700 if missing and is never changed: a link, another user's
+  directory, a mode other than 0700, or a directory above it another user may write is refused in words. The drift
+  check and `attach` compare the copy's path, which the same daemon bytes give in every process.
 - **A computer runs as a non-root user by default; root must be asked for in the spec.** `user` is a uid or uid:gid
   in numbers (a name is refused: the image may not have it; a uid alone is its own gid). The spec's `user` wins, then
   the provider's `user` option, then this process's uid:gid, or `1000:1000` when this process's uid or gid is 0. The
