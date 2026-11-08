@@ -1,0 +1,226 @@
+// A workflow's decisions and steps under its spend cap, at the mechanism (decision-cap.ts, budget.ts):
+//  - OpenRouter's catalog down for a moment mid-run: the price is read again and the decision goes; down for good, the
+//    request fails unsent as a connection error and the decision node fails (decision nodes have no attempts loop), never
+//    a stop of the cap's that ends the run spend_cap_reached;
+//  - a decision an earlier process asked and never saw answered is escalated unsent by the driver: it holds nothing and
+//    never waits for a raise;
+//  - a model node's failure takes a refusal kept with no path of its own only while that node runs alone.
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { budgetPausedIn, budgetWaits, CapStop, writeRaisedCap } from "../dist/budget.js";
+import { useSpend } from "../dist/cap.js";
+import * as decisionCap from "../dist/decision-cap.js";
+
+const { cappedDecisions } = decisionCap;
+const PRICE = { promptUsd: 0, completionUsd: 0, requestUsd: 0.001, imageUsd: 0, maxCompletionTokens: null };
+const params = (extra = {}) => ({ label: "coi", kind: "judge", executionPath: "/root", decisionId: "d-1", model: "liquid/d1", provider: "openrouter", state: { doc: "x" }, questions: { is_coi: { type: "noul" } }, ...extra });
+/** The run's waits, as a fake: what stopped the run and what waited for a raise. */
+function fakeWaits() {
+  const seen = { stops: [], waits: [] };
+  return { seen, waits: { stop: (refusal) => { seen.stops.push(refusal.words); throw new CapStop(refusal, undefined); }, record: () => undefined } };
+}
+/** `before`'s outcome for `request`: sent (the next judge was asked) or what it threw. */
+const outcome = (judge, request) => judge(request).then((value) => ["sent", value], (error) => ["threw", error?.name, error?.code ?? null]);
+
+test("OpenRouter's catalog down for a moment mid-run: the price is read again and the decision is sent, never stopped by the cap", { timeout: 30_000 }, async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  let down = 1;
+  const openrouter = { id: "openrouter", priceOf: async () => { if (down-- > 0) throw new Error("catalog 503"); return PRICE; } };
+  const { seen, waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
+  const judge = capped.before(async () => "answered", () => false);
+  assert.deepEqual([await outcome(judge, params()), seen.stops], [["sent", "answered"], []]);
+});
+
+test("OpenRouter's catalog down for good mid-run: the decision fails unsent as a connection error, failing its decision node (no attempts loop), never a stop of the cap's", { timeout: 30_000 }, async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  let reads = 0;
+  const openrouter = { id: "openrouter", priceOf: async () => { reads += 1; throw new Error("catalog 503"); } };
+  const { seen, waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
+  const judge = capped.before(async () => "answered", () => false);
+  assert.deepEqual([await outcome(judge, params()), seen.stops], [["threw", "DecisionProviderError", "connection"], []]);
+  assert.equal(reads, decisionCap.CATALOG_TRIES, "read again before it fails");
+});
+
+test("a decision an earlier process asked and never saw answered holds nothing and never waits for a raise: the driver escalates it unsent; one that failed is held again", { timeout: 30_000 }, async (t) => {
+  t.after(() => useSpend(undefined));
+  const waited = [];
+  // Parallel's $0.001 does not fit what is left of a $0.0005 cap: a request held here waits for a raise.
+  useSpend({ cap: 0.0005, spent: () => 0, add: () => undefined, wait: async (refusal) => (waited.push(refusal.words), false) });
+  const parallel = { id: "parallel" };
+  const { waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { parallel }, default: "parallel" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
+  const driver = (status) => ({ routeDecision: () => undefined, decisionRequests: () => ({ "d-1": { status } }) });
+  const asked = (status) => (request) => decisionCap.askedBefore?.(driver(status), request) ?? false;
+  const requested = await outcome(capped.before(async () => "escalated", asked("requested")), params({ provider: "parallel", model: undefined }));
+  assert.deepEqual([requested, waited.length], [["sent", "escalated"], 0], "asked before: no hold, no wait");
+  const failed = await outcome(capped.before(async () => "answered", asked("failed")), params({ provider: "parallel", model: undefined }));
+  assert.deepEqual([failed[0], waited.length], ["threw", 1], "failed before: held again, and waits for a raise");
+});
+
+test("a model node's failure takes a refusal kept with no path of its own only while that node runs alone", (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cap-stop-alone-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { letGo: () => undefined });
+  waits.record({ words: "Not sent: what the run has spent is unknown, so its cap of $1 cannot be kept: the run is out of budget.", room: false, capUsd: 1 }, undefined);
+  assert.deepEqual([waits.stopped("/root/steps/1", false) instanceof CapStop, waits.stopped("/root/steps/1", true) instanceof CapStop], [false, true]);
+});
+
+test("a map's items wait for a raise at paths of their own: holding item 0 leaves item 1's held time at 0, and item 0's wait ending never stops item 1's clock", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "item-held-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { letGo: () => undefined });
+  const refusal = { words: "Not sent: the call could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  const [zero, one] = ["/root/steps/0/items/0/body", "/root/steps/0/items/1/body"];
+  const first = new AbortController();
+  const second = new AbortController();
+  const held0 = waits.wait(refusal, first.signal, { label: "fetch", path: zero });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual([waits.held(one), waits.held(zero) >= 300], [0, true], "item 0 held, item 1 untouched");
+  const held1 = waits.wait(refusal, second.signal, { label: "fetch", path: one });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  first.abort();
+  await held0;
+  const before = waits.held(one);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.ok(waits.held(one) >= before + 300, `item 1's clock runs on after item 0's wait ended: ${before} then ${waits.held(one)}`);
+  second.abort();
+  await held1;
+});
+
+test("a request the driver escalates without asking keeps no hold; one its provider refuses unbilled is booked at $0 after its hold; a hold that cannot be kept sends nothing", async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  const { DecisionProviderError } = await import("@parcha/agentrun-dsl");
+  const seen = [];
+  const { waits } = fakeWaits();
+  const make = (keep) => cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected",
+    book: async (data) => void seen.push(["book", data.decision, data.usd]), keep });
+  const keeping = async (data) => void seen.push(["keep", data.decision, data.usd]);
+  // Escalated by the driver (asked by an earlier process): the settling judge is never asked, so nothing is kept or booked.
+  const escalating = make(keeping);
+  assert.deepEqual(await outcome(escalating.before(async () => "escalated", () => false), params({ provider: "parallel", model: undefined })), ["sent", "escalated"]);
+  assert.deepEqual(seen.splice(0), []);
+  // Refused unbilled by its provider: kept, then booked at $0, so no later process counts the hold.
+  const refusing = make(keeping);
+  const judge = refusing.settling(async () => { throw new DecisionProviderError("rate_limited", "too many"); });
+  assert.deepEqual(await outcome(refusing.before(judge, () => false), params({ provider: "parallel", model: undefined })), ["threw", "DecisionProviderError", "rate_limited"]);
+  assert.deepEqual(seen.splice(0), [["keep", "d-1", 0.001], ["book", "d-1", 0]]);
+  // A hold that cannot be kept: nothing is sent.
+  let sent = 0;
+  const full = make(async () => { throw new Error("disk full"); });
+  const unsent = await outcome(full.before(full.settling(async () => ((sent += 1), { answers: {}, cost_usd: 0.001 })), () => false), params({ provider: "parallel", model: undefined }));
+  assert.deepEqual([unsent, sent, seen], [["threw", "DecisionProviderError", "connection"], 0, []]);
+});
+
+test("a decision's hold is kept only once the driver has admitted its request, right before the send, so a crash before the admission leaves no hold for the next process to count", async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  const seen = [];
+  const { waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { parallel: { id: "parallel" } }, default: "parallel" }, waits, mode: "expected",
+    book: async () => void seen.push("book"), keep: async () => void seen.push("keep") });
+  const judge = capped.settling(async () => (seen.push("send"), { answers: {}, cost_usd: 0.001 }));
+  // The driver's admission sits between `before` and the settling judge (dsl with-recovery): admit, flush, then ask.
+  const driven = capped.before(async (request) => (seen.push("admit"), judge(request)), () => false);
+  await driven(params({ provider: "parallel", model: undefined }));
+  assert.deepEqual(seen, ["admit", "keep", "send", "book"]);
+});
+
+test("a step whose nested decision waits for a raise counts once, as waiting: the paused process lets go after the hold, as with no nesting", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "nested-wait-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent: the decision could cost up to $2. Raise the cap to at least $2 to continue.", room: true, capUsd: 1 };
+  const stop = new AbortController();
+  // A model node (the outer step) whose verification decision (a step of its own, run inside it) waits for a raise.
+  const decision = waits.step(async () => waits.wait(refusal, stop.signal, { label: "review", path: "/root/steps/0/verify" }));
+  const node = waits.step(async () => decision());
+  const running = node();
+  for (const end = Date.now() + 2_000; gone === 0 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 50));
+  stop.abort();
+  await running;
+  assert.equal(gone, 1, "let go once the hold had passed");
+});
+
+test("a step still working beside one that waits keeps the process: nothing lets go while work is under way (a pin)", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "busy-beside-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let gone = 0;
+  const waits = budgetWaits(root, { cap: 1, spent: () => 0, add: () => undefined }, { holdMs: 100, letGo: () => void (gone += 1) });
+  const refusal = { words: "Not sent.", room: true, capUsd: 1 };
+  const stop = new AbortController();
+  let release;
+  const busy = waits.step(() => new Promise((resolve) => (release = resolve)));
+  const waiting = waits.step(async () => waits.wait(refusal, stop.signal, { label: "a", path: "/root/steps/1" }));
+  const both = [busy(), waiting()];
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(gone, 0);
+  stop.abort();
+  release();
+  await Promise.all(both);
+});
+
+test("mid-run, OpenRouter's catalog answering 200 with no list of models is a catalog that cannot be read: the decision fails unsent as a connection error, never a stop of the cap's", { timeout: 30_000 }, async (t) => {
+  t.after(() => useSpend(undefined));
+  useSpend({ cap: 1, spent: () => 0, add: () => undefined });
+  const { openrouterProvider } = await import("@parcha/agentrun-decisions");
+  const openrouter = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }) });
+  const { seen, waits } = fakeWaits();
+  const capped = cappedDecisions({ providers: { providers: { openrouter }, default: "openrouter" }, waits, mode: "expected", book: async () => undefined, keep: async () => undefined });
+  assert.deepEqual([await outcome(capped.before(async () => "answered", () => false), params()), seen.stops], [["threw", "DecisionProviderError", "connection"], []]);
+});
+
+test("concurrent waits and a raise too small for one of them: the step refused again under the raised cap leaves the pause's mark at that cap and its words, never the old cap's", { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "stale-mark-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const spend = { cap: 0.12, spent: () => 0, add: () => undefined, raise: (usd) => void (spend.cap = usd) };
+  const waits = budgetWaits(root, spend, { holdMs: 60_000, letGo: () => undefined });
+  const refusedAt = (cap) => ({ words: `Not sent: the next step does not fit the $${cap} cap. Raise the cap to continue.`, room: true, capUsd: cap });
+  const stop = new AbortController();
+  // Two items of a map waiting at the $0.12 cap, their polls apart.
+  const a = waits.wait(refusedAt(0.12), stop.signal, { label: "each", path: "/root/steps/0/items/0/body" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const b = waits.wait(refusedAt(0.12), stop.signal, { label: "each", path: "/root/steps/0/items/1/body" });
+  assert.equal(budgetPausedIn(root)?.cap_usd, 0.12);
+  writeRaisedCap(root, 0.15);
+  assert.equal(await a, true);
+  // a's step, judged again under $0.15, is refused again (the raise was not enough) and waits, before b has seen the raise.
+  const again = waits.wait(refusedAt(0.15), stop.signal, { label: "each", path: "/root/steps/0/items/0/body" });
+  assert.equal(await b, true);
+  const mark = budgetPausedIn(root);
+  stop.abort();
+  await again;
+  assert.deepEqual({ cap_usd: mark?.cap_usd, words: mark?.words }, { cap_usd: 0.15, words: refusedAt(0.15).words }, "the pause is at the cap that refused it last: a let-go run is not opened again by the raise it already has (finishRaise reads the mark's cap)");
+});
+
+test("after a raise too small for one of the waits, finishRaise opens nothing on the raise the run already has, and a raise that covers every wait takes the pause's mark away", { timeout: 30_000 }, async (t) => {
+  const { raiseFinishes } = await import("../dist/budget.js");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "no-reopen-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const spend = { cap: 0.12, spent: () => 0, add: () => undefined, raise: (usd) => void (spend.cap = usd) };
+  const waits = budgetWaits(root, spend, { holdMs: 60_000, letGo: () => undefined });
+  const refusedAt = (cap) => ({ words: `Not sent: the next step does not fit the $${cap} cap. Raise the cap to continue.`, room: true, capUsd: cap });
+  const a = waits.wait(refusedAt(0.12), undefined, { label: "each", path: "/root/steps/0/items/0/body" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const b = waits.wait(refusedAt(0.12), undefined, { label: "each", path: "/root/steps/0/items/1/body" });
+  writeRaisedCap(root, 0.15);
+  assert.equal(await a, true);
+  const again = waits.wait(refusedAt(0.15), undefined, { label: "each", path: "/root/steps/0/items/0/body" });
+  assert.equal(await b, true);
+  // The run let go here, its serve.json at the $0.15 it was raised to: finishRaise reads the mark, and opens nothing.
+  assert.deepEqual([raiseFinishes(0.15, budgetPausedIn(root)), raiseFinishes(0.12, budgetPausedIn(root))], [false, false], "no reopen at the raise the run already has, nor under it");
+  // The next raise, above $0.15, would open it.
+  assert.equal(raiseFinishes(1, budgetPausedIn(root)), true);
+  // A raise that covers the one wait left takes the mark away: nothing paused, nothing to finish.
+  writeRaisedCap(root, 1);
+  assert.equal(await again, true);
+  assert.deepEqual([budgetPausedIn(root), raiseFinishes(1, budgetPausedIn(root))], [undefined, false], "the mark is gone once every wait is covered");
+});

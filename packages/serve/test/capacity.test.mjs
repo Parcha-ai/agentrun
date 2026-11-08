@@ -33,10 +33,10 @@ async function held(api, path, body, key) {
 
 test("the default cap on how many runs at once is pi's: the host's memory less the server's own, at a pi run's size, never under 1", async () => {
   const { defaultMaxRuns } = await import("../dist/index.js");
-  const { RUN_MIB } = await import("../dist/harness.js");
+  const { builtinHarness } = await import("../dist/harness-table.js");
   const { SERVER_MIB } = await import("../dist/host.js");
   assert.equal(typeof defaultMaxRuns, "function");
-  for (const mib of [512, 1024, 8 * 1024]) assert.equal(defaultMaxRuns(mib * MiB), Math.floor((mib - SERVER_MIB) / RUN_MIB?.pi), `${mib} MB`);
+  for (const mib of [512, 1024, 8 * 1024]) assert.equal(defaultMaxRuns(mib * MiB), Math.floor((mib - SERVER_MIB) / builtinHarness("pi").runMib), `${mib} MB`);
   assert.equal(defaultMaxRuns(100 * MiB), 1, "never under 1");
 });
 

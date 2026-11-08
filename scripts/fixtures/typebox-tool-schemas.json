@@ -260,17 +260,5 @@
    }
   },
   "additionalProperties": false
- },
- "harness": {
-  "type": "object",
-  "required": [
-   "code"
-  ],
-  "properties": {
-   "code": {
-    "type": "string",
-    "description": "The script."
-   }
-  }
  }
 }

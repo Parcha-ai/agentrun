@@ -1,6 +1,7 @@
 // The seam between AgentRun's hosts and an agent harness that is not Pi, starting with Codex. It is harness-neutral.
 // One interface serves both hosts: a DSL host's `runNode` (createHarnessRunner) and serve's runs. Nothing here
 // imports a host.
+import type { ProviderPolicy } from "./host/proxy.js";
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { Ended } from "./booking.js";
 
@@ -241,7 +242,7 @@ export type AdapterEvent =
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
   | { type: "request_start"; turn: number; model: string }
-  | { type: "request_end"; turn: number; usage: ModelUsage }) & { key: string; label: string; executionPath?: string };
+  | { type: "request_end"; turn: number; usage: ModelUsage; ended?: Ended }) & { key: string; label: string; executionPath?: string };
 
 export type TurnStatus = "completed" | "interrupted" | "failed";
 
@@ -278,6 +279,51 @@ export interface AdapterSession {
   port?(label: string): SessionPort | undefined;
 }
 
+/** The API a harness's model proxy speaks: what its provider, its keys and its catalog follow from. */
+export type Wire = "anthropic-messages" | "openai-responses";
+
+/** What a harness is, as its adapter states it: the host reads these and never branches on a harness's name. They
+ *  describe the harness; none renames or reshapes what its model sees, and none turns its own built-ins, sandbox or
+ *  session machine on. */
+export interface AdapterFacts {
+  /** The harness's id ("claude-agent", "codex", "opencode"). */
+  readonly id: string;
+  /** Its name in a sentence ("Claude", "Codex", "OpenCode"). */
+  readonly label: string;
+  /** The API its model proxy speaks. */
+  readonly wire: Wire;
+  /** Whether it takes a message mid-turn (else a message waits for the turn's end). */
+  readonly steer: boolean;
+  /** What one run of it holds in memory, in MiB: the host admits runs by it. */
+  readonly runMib: number;
+  /** Whether it binds a session's remote MCP servers (its own MCP client, at the session's gateway). */
+  readonly mcp: boolean;
+  /** The thinking levels it takes, lowest first: a run's level above its highest runs at that highest. */
+  readonly thinking: readonly ("low" | "medium" | "high" | "xhigh" | "max")[];
+  /** Its own web search, when the provider runs it: `native`, the provider's search through the session's proxy (its
+   *  input read at an allowance); `live`, the harness's own live search, booked per call. None: it has no search of
+   *  its own. */
+  readonly webSearch?: "native" | "live";
+  /** Its model is its own, chosen on its own wire's settings, never the host's default for the other harnesses. */
+  readonly ownModel: boolean;
+  /** The model as the harness names it (Anthropic's id has no dot). */
+  normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
+  /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its
+   *  own setup errors carry when installing (`install`) or the pinned build (`pins`) is the fix. */
+  readonly install: { npmLine: string; spec: string; codes: { install: string; pins: string } };
+  /** The problems its own MCP client has with a tool's input schema (`tool` as it names it, `mcp__<server>__<tool>`):
+   *  shapes it drops or retypes, measured on its pinned build, so a grant of that tool would offer the model another
+   *  tool than the one granted. None: its client takes any schema the kernel's check does. */
+  schemaProblems?(tool: string, schema: Record<string, unknown>): string[];
+  /** A name its client calls a session's MCP tool by beside `mcp__<server>__<tool>` (OpenCode's `<server>_<tool>`). */
+  readonly toolAlias?: RegExp;
+  /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
+   *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
+  readonly nativeTools?: Readonly<Record<string, string>>;
+  /** The policy its model proxy applies, for a host that serves the same route itself (a test's faux harness). */
+  policy(options: { model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
+}
+
 /** A session's model proxy, as the host reaches it for its own requests beside the harness's (AdapterSession.port). */
 export interface SessionPort {
   /** The proxy's origin, on the loopback interface with a port of its own (ModelProxy.url). */
@@ -291,8 +337,6 @@ export interface SessionPort {
 }
 
 export interface AdapterCapabilities {
-  /** Whether the adapter can start a session from another's transcript. */
-  fork: boolean;
   /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
    *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
   mcpClient?: McpClient;
@@ -307,8 +351,6 @@ export interface McpClient {
 
 export interface AgentAdapter {
   readonly id: string;
-  /** The harness version the adapter is pinned to. */
-  readonly version: string;
   capabilities(): AdapterCapabilities;
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];

@@ -108,6 +108,13 @@ describe("a cost known so far (so_far_usd, unpriced)", () => {
     expect([0.07, 0.012, 0.5, 0.00004, 0].map((usd) => cost({ ...unknown, so_far_usd: usd, unpriced: 1 }))).toEqual(
       ["so far $0.07 · 1 not priced", "so far $0.012 · 1 not priced", "so far $0.50 · 1 not priced", "so far <$0.0001 · 1 not priced", "so far $0.00 · 1 not priced"]);
   });
+  it("an ended run's cost says what is known, never \"so far\"; a run still going keeps it", () => {
+    const partial = { ...unknown, basis: "estimate", so_far_usd: 0.0084, unpriced: 1 } as Cost;
+    expect(cost(partial, { ended: true })).toBe("$0.0084 est. known · 1 not priced");
+    expect(cost({ ...unknown, so_far_usd: 0.0123, unpriced: 2 }, { ended: true })).toBe("$0.0123 known · 2 not priced");
+    expect(cost(partial, { ended: false })).toBe("so far $0.0084 est. · 1 not priced");
+    expect(cost(partial)).toBe("so far $0.0084 est. · 1 not priced");
+  });
   it("says est. when the charges priced so far are a local estimate, as a priced run does", () => {
     expect(cost({ ...unknown, basis: "estimate", so_far_usd: 0.0123, unpriced: 1 })).toBe("so far $0.0123 est. · 1 not priced");
   });

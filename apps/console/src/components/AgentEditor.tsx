@@ -129,9 +129,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
     let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
-    // The default cap, an agentic revision's only: the field's number. Emptied, an edit clears a saved cap with an explicit
-    // 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
-    if (!workflow && !starting) {
+    // The default cap, an agentic revision's or a workflow's: the field's number. Emptied, an edit clears a saved cap with an
+    // explicit 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
+    if (!starting) {
       const cap = capOf(f.maxCostText);
       if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
       // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
@@ -281,7 +281,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
                   one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
               {(
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} mcpServers={Array.isArray(mcpServers) ? mcpServers : undefined} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
@@ -344,7 +344,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
               )}
-              {!workflow && !starting && (
+              {!starting && (
                 <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" className={input} />
                 </Field>

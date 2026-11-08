@@ -23,12 +23,14 @@ test("capabilities: a linux container with computerd as PID 1, whose lifetime th
 		kind: "linux",
 		lifetime: "janitor",
 		network: ["none", "open"],
+		networkReadBack: true,
 		isolation: "container",
 		os: "linux",
 		daemon: "pid1",
 		groups: ["exec", "files", "processes"],
 		maxLifetimeMs: 30 * 24 * 60 * 60 * 1000,
 		user: ["root", "uid"],
+		release: ["stop", "delete"],
 	});
 	assert.equal(provider.extend, undefined, "no extend(): the deadline is a label, which cannot change after create");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -520,4 +522,78 @@ test("create() on a host with AppArmor expects Docker's default profile", async 
 	assert.match(result.error.message, /AppArmorProfile/);
 	assert.match(result.error.message, /PidMode/);
 	assert.deepEqual(drifted.names(), []);
+});
+
+const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
+const XVFB = ["Xvfb", ":0", "-screen", "0", "1280x800x24", "-nolisten", "tcp"];
+
+test("desktop: a desktop computer declares kind desktop and the display's groups; the default stays linux", () => {
+	const { provider } = fakeDocker({ desktop: {} });
+	const caps = provider.capabilities();
+	assert.deepEqual([caps.kind, caps.daemon, caps.groups], ["desktop", "pid1", DESKTOP_GROUPS]);
+	assert.equal(fakeDocker().provider.capabilities().kind, "linux");
+	assert.throws(() => fakeDocker({ desktop: { display: "0" } }), /display "0" .*such as :0/);
+	assert.throws(() => fakeDocker({ desktop: { server: [] } }), /server .*program/);
+});
+
+test("desktop: create() gives the daemon DISPLAY, starts the X server through the daemon, and checks hello once the display is up", async () => {
+	const { provider, calls, started } = fakeDocker({ desktop: {} });
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, true, JSON.stringify(result));
+	const run = runOf(calls());
+	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work", "DISPLAY=:0"]);
+	assert.deepEqual(run.slice(-4, -2), ["debian:bookworm-slim", "init"], "computerd is still the first process; it starts nothing itself");
+	assert.deepEqual(started(), [{ argv: XVFB }], "the X server is one process in the daemon's table, started as any program is");
+	const connected = await provider.connect(result.value);
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	assert.deepEqual([connected.value.hello.kind, connected.value.hello.groups], ["desktop", DESKTOP_GROUPS]);
+	await connected.value.close();
+});
+
+test("desktop: the display and the X server's argv are options", async () => {
+	const server = ["Xvfb", ":5", "-screen", "0", "800x600x24", "-nolisten", "tcp"];
+	const { provider, calls, started } = fakeDocker({ desktop: { display: ":5", server } });
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.deepEqual(valuesOf(runOf(calls()), "--env"), ["HOME=/work", "DISPLAY=:5"]);
+	assert.deepEqual(started(), [{ argv: server }]);
+});
+
+test("desktop: create() deletes a computer whose X server ends, with the server's own words", async () => {
+	const { provider, names } = fakeDocker({ desktop: {}, display: "exits" });
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.match(result.error.message, /X server/);
+	assert.match(result.error.message, /no screens found/);
+	assert.deepEqual(names(), []);
+});
+
+test("desktop: create() keeps to its bound when the daemon stops answering once the X server starts", async () => {
+	const { provider, names } = fakeDocker({ desktop: { timeoutMs: 300 }, display: "stalls" });
+	// The test's own bound: a create that outwaits the desktop's is aborted at 20 s, so it fails here instead of hanging.
+	const controller = new AbortController();
+	const stop = setTimeout(() => controller.abort(), 20_000);
+	const began = Date.now();
+	const result = await provider.create(SPEC, { signal: controller.signal });
+	clearTimeout(stop);
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "timeout", result.error.message);
+	assert.match(result.error.message, /display :0 .*not up within 0\.3 s/);
+	assert.ok(Date.now() - began < 10_000, `create took ${Date.now() - began} ms on a 300 ms bound`);
+	assert.deepEqual(names(), []);
+});
+
+test("desktop: create() deletes a computer whose display never comes up, after its bound", async () => {
+	const { provider, names } = fakeDocker({ desktop: { timeoutMs: 300 }, display: "never" });
+	const result = await provider.create(SPEC);
+	assert.equal(result.ok, false);
+	assert.match(result.error.message, /display :0 .*not up within 0\.3 s/);
+	assert.deepEqual(names(), []);
+});
+
+test("desktop: a timeoutMs a timer cannot hold is refused when the provider is made, before any computer exists", () => {
+	const daemonPath = fakeDocker().daemonPath;
+	for (const timeoutMs of [2 ** 31, 2 ** 32, Number.MAX_SAFE_INTEGER]) {
+		assert.throws(() => new DockerProvider({ daemonPath, desktop: { timeoutMs } }), /the desktop's timeoutMs must be .* at most 2147483647/, String(timeoutMs));
+	}
+	assert.doesNotThrow(() => new DockerProvider({ daemonPath, desktop: { timeoutMs: 2 ** 31 - 1 } }));
 });

@@ -8,14 +8,13 @@ WORKDIR /src
 COPY . .
 # The console (apps/console, its own lockfile) builds first, so the server's build copies it into its dist; then its
 # sources and dependencies go: the image keeps the built files alone.
-# The reference harness is not part of the server: it is removed from the image after the workspace build. So are the
-# coding-agent CLIs the adapters develop against (dev dependencies, so npm ci installs them): the Claude Agent SDK with
-# its platform packages (they hold the Claude CLI) and the Codex CLI with its platform packages (they hold its binary),
-# with their bin links. Each installs itself on first use into the data's harnesses (src/harness-install.ts):
-# docker/image-check.sh names them. Never `npm prune --omit=dev`: the pi packages the server loads are dev dependencies too.
+# The coding-agent CLIs the adapters develop against (dev dependencies, so npm ci installs them) are removed from the
+# image after the workspace build: the Claude Agent SDK with its platform packages (they hold the Claude CLI) and the
+# Codex CLI with its platform packages (they hold its binary), with their bin links. Each installs itself on first use
+# into the data's harnesses (src/harness-install.ts): docker/image-check.sh names them. Never `npm prune --omit=dev`:
+# the pi packages the server loads are dev dependencies too.
 RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && npm run build) \
  && npm run build && test -f packages/serve/dist/console/index.html && rm -rf apps \
- && rm -rf packages/harness node_modules/@parcha/agentrun-harness \
  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
       node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \
       node_modules/@openai/codex node_modules/@openai/codex-* node_modules/.bin/codex \

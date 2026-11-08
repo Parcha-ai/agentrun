@@ -13,6 +13,18 @@ const ABSOLUTE = /(?:^|[\s`'"(\[])\/[^\s/]/m;
 /** A note's block, as the prompt asks for one. */
 const block = (file, text = note(), fence = "```") => `${fence}note ${file}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}`;
 
+test("the prompt says a rule for every reply applies whatever the job is and is kept as a note, and steps or a format for one kind of job, named by when it applies, are a skill", () => {
+  const prompt = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"] }).replace(/\s+/g, " ");
+  assert.ok(prompt.includes("A rule for every reply applies whatever the job is. Keep it as a note, which every later run reads. Steps or a format for one kind of job, named by when it applies (\"whenever I ask for a weekly summary\", \"when you open a PR\"), are a skill."), prompt);
+  // Beside it, a skill's job still needs no note.
+  assert.ok(prompt.includes("A job you keep a skill for needs no note beside it."));
+});
+
+test("the prompt says a note holds its own lesson and never repeats another note's rule, so a retired rule stays retired", () => {
+  const prompt = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"] }).replace(/\s+/g, " ");
+  assert.ok(prompt.includes("A note holds its own lesson: never repeat another note's rule in it, so a retired rule stays retired."), prompt);
+});
+
 test("the prompt asks for the notes in the answer, one ```note block each, in the note format, with no tool; it says only the answer counts, names the folder, supersede and never reuse a name, and that nothing is fine", () => {
   const prompt = reflectPrompt({ dir: DIR, active: 3 });
   assert.ok(prompt.includes("```note refund-policy-path.md\n---\nname: A short title\ndescription: One line that says when it applies\ntype: user, feedback, project or reference\n---\nThe memory itself, in a few lines.\n```\n"));

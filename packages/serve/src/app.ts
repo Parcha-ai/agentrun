@@ -17,15 +17,18 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
 import { type AppContext, type AppOptions, BARRIER, type BeforeResume, type DurableRun, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capModeOf, capOf, costsIn, spentIn, wrapUpSentIn } from "./cap.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { BUDGET_HOLD_ENV, BUDGET_HOLD_MS, budgetWaits, type StepAt } from "./budget.js";
+import { capBefore, capModels, capModeOf, capOf, costsIn, type CapRefusal, capRefusals, DECISION_COST, DECISION_HOLD, decisionSpentIn, runSpendNow, spentIn, wrapUpSentIn } from "./cap.js";
+import { askedBefore, cappedDecisions } from "./decision-cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { dataOfRun, FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudePriceModel, codexModel, type ConfineChild, openRouterOnly, skillCheckOf, thinkingFor } from "./adapters.js";
+import { adapterFor, type ConfineChild, thinkingFor } from "./adapters.js";
 import { PORT_PROVIDER, portModels } from "./port-models.js";
 import type { SessionPort } from "@parcha/agentrun-kernel";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
+import { type HarnessEntry, harnessOf } from "./harness-table.js";
 import { adapterRun } from "./harness-app.js";
 import { MCP_PIN, mcpGateway, mcpNameOf, type McpPin, mcpRegistrations } from "./mcp-gateway.js";
 import { pinnedWorkflows, readPin, withLearned } from "./learning.js";
@@ -33,7 +36,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.j
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { EFFORT_ENV, FAUX_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, providerModels, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
@@ -53,6 +56,9 @@ export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 
 /** A call node's tool failure, as the value its effect completed with (runEffect below). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
+/** A call node's effect its cap refused (cap.ts capRefusals): completed as held, with the refusal, sending nothing. The
+ *  call waits for a raise past the driver (`failing`) and goes again as a new effect, never as the tool's own failure. */
+const CAP_HELD = "agentrun_serve_cap_held";
 
 /** A run's own commit of `kind` to its root, outside any one call's turn: a workflow call node's ledger, and every
  *  request's settle (paid-calls.ts settleIn). */
@@ -76,18 +82,12 @@ async function markResumed({ harness, context, generation, previous }: BeforeRes
   await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
 }
 
-/** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
-async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
-  const choice = claudeModel(env, ref);
-  if ("why" in choice) throw new Error(choice.why);
-  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
-}
-
-/** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
- *  OpenAI key needed); anywhere else, the run's usual models (runModels). */
-async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harness: "codex" | "opencode" = "codex") {
-  if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
-  const choice = await codexModel(env, ref, harness);
+/** The run's model and pi-ai's catalog that prices it, where its harness's model is chosen on its wire's own settings (its
+ *  entry's onWire: claude-agent's, never the gateway's; an OpenAI model reached through OpenRouter alone, which needs no
+ *  OpenAI key: provider.ts modelOn). Anywhere else, the run's usual models (runModels). */
+async function wireModels(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string | undefined) {
+  const choice = await entry.model(env, ref, true);
+  if (!choice) throw new Error(`${entry.id} does not run here.`);
   if ("why" in choice) throw new Error(choice.why);
   return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
@@ -110,10 +110,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
-  // claude-agent's own model, as in production; on the faux harness too unless pi's faux model stands in (runnable.ts).
-  const fauxModels = Boolean(env[FAUX_HARNESS_ENV] && env[FAUX_ENV]);
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !fauxModels ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  // The run's harness, resolved once (harness-table.ts): its model as a save resolves it (runnable.ts harnessModel).
+  const entry = revision.kind === "agentic" ? harnessOf(env, revision.body.harness) : undefined;
+  const chosen = revision.kind !== "agentic" ? await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList))) : entry?.onWire(env) ? await wireModels(entry, env, revision.body.model) : await runModels(env, revision.body.model, ["default"], revision.body.harness);
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -123,19 +122,26 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // search), on the session's booking under the run's one cap (port-models.ts, harness-app.ts). The run's models are the
   // session's port then; on pi they are the run's own, each request marked as it leaves (request-start.ts) inside the cap:
   // a request the cap refuses never leaves, and gets a start mark of its own, which its error entry answers.
-  const onHarness = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
-  // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
-  const priced = onHarness && revision.body.harness === "claude-agent" && !fauxModels ? claudePriceModel(env, model!) : model;
+  const onHarness = entry?.facts !== undefined;
+  // A run on an adapter is capped at the price of whoever bills it (its entry's priceModel: providerFor's), as its adapter
+  // prices it.
+  const priced = onHarness && model ? entry!.priceModel(env, model) : model;
   /** The session's port, once the harness's run is made (adapterRun): read at each request. */
   let sessionPort: ((label: string) => SessionPort | undefined) | undefined;
   const marked = onHarness ? undefined : await markRequests(chosen.models, cancelledIn(where.root));
   // The wrap-up on pi (cap.ts WrapUp): near its cap the run's own model is told once, under this cap, to finish. Not on
-  // another harness: its guard tells the harness's model (harness-app.ts).
+  // another harness: its guard tells the harness's model (harness-app.ts). Nor on a workflow run, whose model nodes each
+  // deliver a record their node's instructions ask for: a step its cap has no room for waits for a raise instead (budget.ts).
   const storeFile = join(where.store, RUN_STORE_FILE);
-  const wrapUp = cap === undefined || onHarness || !model ? undefined : { model: model.modelId, costs: costsIn(storeFile, model.modelId), sent: wrapUpSentIn(storeFile, cap), record: marked!.wrapUp };
+  const wrapUp = cap === undefined || onHarness || !model || revision.kind === "workflow" ? undefined : { model: model.modelId, costs: costsIn(storeFile, model.modelId), sent: wrapUpSentIn(storeFile, cap), record: marked!.wrapUp };
+  // A workflow's decisions are its spend too, as the cap counted each in an earlier process (decision-cap.ts).
+  const spentBefore = (() => {
+    const spent = spentIn(storeFile);
+    return spent === null || revision.kind !== "workflow" ? spent : spent + decisionSpentIn(storeFile);
+  })();
   const models = onHarness
     ? await portModels(() => sessionPort?.(LEARNED_WORKFLOW_TOOL), priced ? (chosen.models.getModel(priced.provider, priced.modelId) as never) : undefined)
-    : cap === undefined ? marked!.models : await capModels(marked!.models, cap, spentIn(storeFile), { unpriced: chosen.unpriced, refused: marked!.refused, mode, ...(wrapUp ? { wrapUp } : {}) });
+    : cap === undefined ? marked!.models : await capModels(marked!.models, cap, spentBefore, { unpriced: chosen.unpriced, refused: marked!.refused, mode, ...(wrapUp ? { wrapUp } : {}) });
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
   // on another harness, the session's port, for a learned workflow's call node.
   searchOn(models as never);
@@ -184,16 +190,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
   const guidance = effortGuidance(process.env[EFFORT_ENV]);
-  if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
+  if (revision.kind === "agentic" && revision.body.harness && entry?.facts) {
     const harness = revision.body.harness;
-    // claude-agent, codex and opencode load the skills their adapter takes itself (skillCheckOf), and the prompt keeps only
-    // the ones it would refuse; a faux harness's prompt names each skill and its file when the run reads its files (it
-    // reads the SKILL.md when it fits), else keeps every skill whole (skills.ts).
-    const check = !env[FAUX_HARNESS_ENV] ? await skillCheckOf(harness) : undefined;
+    const facts = entry.facts;
+    // A harness that loads the skills its adapter takes itself (its entry's skillCheck: claude-agent's Skill tool, codex's
+    // and opencode's skill lists) keeps in its prompt only the ones it would refuse; any other's prompt (a test's stand-in)
+    // names each skill and its file when the run reads its files (it reads the SKILL.md when it fits), else keeps every
+    // skill whole (skills.ts).
+    const check = await entry.skillCheck?.();
     const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(facts, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own; the MCP tools
     // are the harness's own client's, at the session's proxy.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL && !mcpNameOf(name));
@@ -308,6 +316,53 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const live = liveView(where.root, [...earlier]);
   // The `llm` tool's one completion: on the run's models (capped and marked as a model node's), its tier's model.
   const complete = completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default"), thinkingLevel);
+  // Under a cap: where a step the cap refuses for room waits for a raise (budget.ts), and the step each wait is for (a
+  // model node's request knows no node of its own: it waits inside the node's step, `steps`).
+  const spend = runSpendNow();
+  const steps = new AsyncLocalStorage<StepAt>();
+  /** The model nodes running: a model request whose step its async context lost waits as the one running, when one is. */
+  const running = new Set<StepAt>();
+  const stepNow = (): StepAt | undefined => steps.getStore() ?? (running.size === 1 ? [...running][0] : undefined);
+  const holdMs = Number(process.env[BUDGET_HOLD_ENV]);
+  const waits = spend ? budgetWaits(where.root, spend, { holdMs: Number.isFinite(holdMs) && holdMs > 0 ? holdMs : BUDGET_HOLD_MS, letGo: () => void process.kill(process.pid, "SIGTERM") }) : undefined;
+  if (spend && waits) {
+    spend.wait = (refusal, signal) => waits.wait(refusal, signal, stepNow());
+    spend.stopped = (refusal) => waits.record(refusal, stepNow());
+  }
+  /** `fn`, a step of the run (a node, a call, a decision) named by its params, counted in flight for the pause's let-go. */
+  const stepped = <F,>(fn: F, model = false): F => {
+    if (!fn) return fn;
+    const counted = waits ? waits.step(fn as never) : (fn as (params: unknown) => Promise<unknown>);
+    return (async (params: { label?: string; node?: { label?: string }; executionPath?: string }) => {
+      const at = { label: String(params?.label ?? params?.node?.label ?? ""), path: params?.executionPath ?? null };
+      if (model) running.add(at);
+      try {
+        return await steps.run(at, () => counted(params as never));
+      } finally {
+        running.delete(at);
+      }
+    }) as F;
+  };
+  /** A model node that failed on a refusal no raise fixes (its model with no price, a spend no one knows: capModels
+   *  recorded it, spend.stopped) fails as CapStop, as a call or a decision does, never as the node's own failure, which a
+   *  collecting map would take for an item's and go on. */
+  const capStopped = <F,>(fn: F): F => (fn && waits ? (async (params: { executionPath?: string }) => {
+    try {
+      return await (fn as (params: unknown) => Promise<unknown>)(params);
+    } catch (error) {
+      // A refusal kept with no path of its own is this node's only while it runs alone (stepped counts it running).
+      throw waits.stopped(params?.executionPath, running.size === 1) ?? error;
+    }
+  }) as F : fn);
+  // Each decision's hold under the cap, before its request is admitted, and its charge once it answers (decision-cap.ts).
+  const capped = waits && decisionProviders ? cappedDecisions({
+    providers: decisionProviders, waits, mode,
+    book: async (data) => void (runHarness && (await rootRecordOf(runHarness)(DECISION_COST, data))),
+    keep: async (data) => {
+      if (!runHarness) throw new Error("the run's store is not open");
+      await rootRecordOf(runHarness)(DECISION_HOLD, data);
+    },
+  }) : undefined;
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. Its
    *  input and output go to the node log, and its paid requests are booked under the node's own call (its execution
    *  path, and its item in a map). */
@@ -327,7 +382,15 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // is booked as on a first run.
       const harness = runHarness;
       const ledger = harness ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(harness) } : undefined;
-      const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
+      // A refusal of the cap inside the effect (a paid request's, the `llm` call's) is the call's: it sent nothing, and
+      // whatever the tool made of it, the effect completes as held (CAP_HELD), never as the tool's answer or failure.
+      let refused: CapRefusal | undefined;
+      const output = await capRefusals.run((refusal) => void (refused ??= refusal), () => effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) }))
+        .catch((error: unknown) => { if (refused && !signal.aborted) return undefined; throw error; });
+      if (refused) {
+        log({ t: "effect.end", ...at, status: "failed", error: `spend cap: ${refused.words}`.slice(0, 65_536), at: new Date().toISOString() });
+        return { [CAP_HELD]: { ...refused, heldAt: Date.now() } };
+      }
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
     } catch (error) {
@@ -342,11 +405,26 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     }
   };
   /** `runEffect` past the driver: a tool's failure the driver recorded as its effect's outcome is thrown here, on the
-   *  first run and on a resume that answers it from the receipt alike. */
-  const failing = (run: (params: never) => Promise<unknown>) => async (params: never) => {
-    const value = await run(params);
-    if (isObject(value) && typeof value[TOOL_FAILED] === "string") throw new EffectFailure(value[TOOL_FAILED], null, { code: null });
-    return value;
+   *  first run and on a resume that answers it from the receipt alike. A call its cap held (CAP_HELD) waits here, past
+   *  the driver's admission, for a raise, and goes again as the driver's next effect at its path; held by a refusal no
+   *  raise fixes, the run stops (CapStop). A resume answers each held effect from its receipt the same way, and a cap
+   *  raised since sends the call at once. */
+  const failing = (run: (params: never) => Promise<unknown>, holdPoll?: (executionPath: string, ms: number, hold: string) => void) => async (params: never) => {
+    for (;;) {
+      const value = await run(params);
+      if (isObject(value) && typeof value[TOOL_FAILED] === "string") throw new EffectFailure(value[TOOL_FAILED], null, { code: null });
+      if (!(isObject(value) && isObject(value[CAP_HELD]))) return value;
+      const refusal = value[CAP_HELD] as unknown as CapRefusal;
+      const { node, executionPath, signal } = params as { node: { label: string }; executionPath?: string; signal?: AbortSignal };
+      const at = { label: node.label, path: executionPath ?? null };
+      if (!waits) throw new Error(`call node "${node.label}": ${refusal.words}`);
+      if (!refusal.room) waits.stop(refusal, at);
+      if (!(await waits.wait(refusal, signal, at))) throw signal?.reason ?? new Error(`call node "${node.label}" was not sent: its wait for a raise ended`);
+      // What it waited, from its refusal (a resume's included), is the call's own no more: its poll window moves back by
+      // it (the driver's durable clock, once per hold), as its attempt's deadline does (deps.held).
+      const heldAt = (value[CAP_HELD] as { heldAt?: unknown }).heldAt;
+      if (typeof heldAt === "number" && executionPath) holdPoll?.(executionPath, Date.now() - heldAt, String(heldAt));
+    }
   };
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
   const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
@@ -373,7 +451,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       const decisions = decisionRecovery({ key, runtime, context });
       live.driver(driver);
       const deps = withRecovery(driver, {
-        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(decisionProviders ? { runJudge: judgeFromProviders({ ...decisionProviders, loadImage }) as never, decisionProviders } : {}),
+        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never,
+        ...(decisionProviders ? { runJudge: (capped ? capped.settling(judgeFromProviders({ ...decisionProviders, loadImage })) : judgeFromProviders({ ...decisionProviders, loadImage })) as never, decisionProviders } : {}),
         recordDecision: async (receipt: Parameters<typeof decisions.recordDecision>[0], exchange: Parameters<typeof decisions.recordDecision>[1]) => {
           await decisions.recordDecision(receipt, exchange);
           live.receipt(receipt as unknown as Record<string, unknown>);
@@ -386,7 +465,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // while paused leaves nothing half asked.
       const gate = <F,>(fn: F): F => (fn ? gated(where.root, fn as never) : fn) as F;
       const resume = gated(where.root, (args: Parameters<typeof recovery.resume>) => recovery.resume(...args));
-      return { deps: { ...deps, runEffect: deps.runEffect && (failing(deps.runEffect as never) as never), runNode: gate(deps.runNode), runJudge: gate(deps.runJudge), onEvent, recovery: { ...recovery, resume: (...args: Parameters<typeof recovery.resume>) => resume(args), decision: decisions.decision } } };
+      // Under a cap, each decision is held before the driver admits it (a route the driver answers from what it decided
+      // sends nothing), each step counts in flight, and a call node's deadline leaves out what it waited for a raise.
+      // A request the driver answers from what an earlier process did (a route it decided, a request it admitted and that
+      // did not fail, which escalates unsent) holds nothing and never waits for a raise (askedBefore).
+      const judge = capped && deps.runJudge ? capped.before(deps.runJudge, (params) => askedBefore(driver as never, params)) : deps.runJudge;
+      return { deps: {
+        ...deps, runEffect: stepped(deps.runEffect && (failing(deps.runEffect as never, (path, ms, hold) => driver.holdPoll(path, ms, hold)) as never)), runNode: stepped(gate(capStopped(deps.runNode)), true), runJudge: stepped(gate(judge)), onEvent,
+        ...(waits ? { held: (path: string) => waits.held(path) } : {}),
+        recovery: { ...recovery, resume: (...args: Parameters<typeof recovery.resume>) => resume(args), decision: decisions.decision },
+      } };
     },
   });
   registry.install(nodes.extension as unknown as Extension);

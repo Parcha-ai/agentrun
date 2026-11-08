@@ -79,8 +79,6 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 - **Recovery or durable behaviour** (the driver, the journal, reconcile, effects, `./durable`): the PR
   body carries a kill-storm proof on the head: seeds, kills, every outside call applied once, every
   record equal to the uncut run's, no stop. Cost: $0 (scripted providers).
-- **Recording format:** a change to what `./durable` exports for `agentrun.recording/1` validates
-  with `apps/viewer`'s `validate` on a fresh recording.
 
 ### `@parcha/pi-browser`
 
@@ -94,7 +92,6 @@ required, the command, the pass rule and the cost. Its lead owns that section.
   ```bash
   npm ci --ignore-scripts && npm run build
   npm run test:chrome -w @parcha/pi-browser
-  node scripts/check-reference-chrome.mjs
   npm test -w @parcha/pi-browser
   ```
 
@@ -156,51 +153,6 @@ end, and fails if a box is left. All three run from the repository root at the h
   (the package never depends on it). No credential enters a box, a log or the pull request.
 - **Cost:** Docker $0. Daytona under $0.05 a run (about 60 short one-vCPU boxes, seconds each). Modal sandbox and VM
   under $0.10 a run; the T4 kind adds about $0.05 when asked for. Estimates from list prices.
-
-### `@parcha/pi-vision`
-
-Two live checks. Both run from the repository root at the head, after `npm ci --ignore-scripts && npm run build`.
-
-**1. Programs on this machine** (ffmpeg, ffprobe, poppler, LibreOffice: the versions a host really has, not CI's).
-
-- **When:** the diff touches `packages/pi-vision/src/core/{read,readers,video,pdf,office,derive,image}.ts`,
-  `packages/pi-vision/src/providers/**`, `packages/pi-vision/src/node.ts`, `packages/pi-vision/test/binaries/**` or
-  `packages/pi-vision/package.json`.
-- **Command:**
-
-  ```bash
-  npm run test:binaries -w @parcha/pi-vision
-  ```
-
-- **Pass:** exit code 0 and `# fail 0` in its summary. A skip is allowed only for a program the machine does not
-  have, and the body names it (for example "LibreOffice absent: 1 skipped"). A missing ffmpeg, ffprobe or poppler is a
-  fail, not a skip.
-- **Needs:** ffmpeg and ffprobe, poppler-utils, optionally LibreOffice (`soffice`) on PATH. No key. Cost: $0.
-
-**2. Real eyes** (a few paid looks through pi-ai, the path no fake covers).
-
-- **When:** the diff touches `packages/pi-vision/src/eyes/**`, `src/core/guard.ts`, `src/core/evidence.ts`,
-  `src/core/limits.ts`, `src/core/see.ts`, `src/core/plan.ts`, `src/durable.ts`, or the `@earendil-works/*` peer or
-  dev ranges in `packages/pi-vision/package.json`.
-- **Command:**
-
-  ```bash
-  node packages/pi-vision/test/live/eyes.mjs
-  ```
-
-  It reads `PI_VISION_LIVE_EYES` (`<provider>/<model id>`, the public id pi-ai's catalog uses) and that provider's
-  key from the variable pi-ai itself reads; `PI_VISION_LIVE_BASE_URL` points it at a gateway when the machine has one
-  (a machine fact: it goes in `local.md`). It refuses to run without them. It makes four checks, each printed as a
-  numbered line: `scanned letter` (a synthetic scan built by `./testing`, whose identifier the eyes must read exactly);
-  `page 2` (a two-page PDF through `read` with `page`); `vision.see` (the same letter asked by path through the
-  code-mode global: exact identifier, one look filed, a price above 0); and `receipts` (every paid look has `cost_usd`
-  as a number and tokens above 0, and a forced no-eyes miss has `cost_usd: 0`).
-- **Pass:** exit code 0 and a last stdout line that starts with `ok: pi-vision live eyes passed`. Anything else
-  blocks: a non-zero exit, a last line `not ok: <step>: <reason>`, or no last line. Put the summary it prints (model,
-  read rate, tokens, dollars) in the pull request body.
-- **Needs:** one key for an eyes route that takes images. Use a model that reads identifiers reliably; the package's
-  eyes bench measured some routes dropping digits, and this check would then fail as designed.
-- **Cost:** about $0.01 a run.
 
 ## Step 5: CI and threads
 

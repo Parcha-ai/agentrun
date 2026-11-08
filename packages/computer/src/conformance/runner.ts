@@ -194,6 +194,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				return `the provider declares lifetime "${capabilities.lifetime}", not ${need}`;
 			} else if (need.startsWith("user:") && !capabilities.user?.includes(need.slice("user:".length) as "root")) {
 				return `the provider does not declare ${need}`;
+			} else if (need === "release:stop" && !(Array.isArray(capabilities.release) && capabilities.release.includes("stop"))) {
+				return `the provider does not declare ${need}`;
 			}
 		}
 		return undefined;

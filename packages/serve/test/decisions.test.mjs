@@ -545,7 +545,7 @@ test("an ended workflow run whose decisions cannot be read after the server rest
   const twinRows = await timeline(again, twin);
   const usage = twinRows.findLast((row) => row.kind === "usage");
   assert.equal(typeof keptRows.findLast((row) => row.kind === "usage")?.usage?.usd, "number", "the readable run's usage row has its known total");
-  assert.deepEqual([usage?.usage?.usd, /^Cost so far: unknown /.test(usage?.summary ?? "")], [null, true], `the twin's usage row: ${JSON.stringify(usage)}`);
+  assert.deepEqual([usage?.usage?.usd, /^Cost: unknown /.test(usage?.summary ?? "")], [null, true], `the twin's usage row: ${JSON.stringify(usage)}`);
   assert.deepEqual(twinRows.filter((row) => row.kind !== "usage").map((row) => row.kind), keptRows.filter((row) => row.kind !== "usage" && row.kind !== "decision").map((row) => row.kind), "every row but the decisions' is served");
 });
 
@@ -599,8 +599,19 @@ test("a judge's and a route's decisions are timeline rows: the judge's node, pro
   const usage = rows.findLast((row) => row.kind === "usage");
   assert.equal(usage.usage.usd, estimate + estimate, "the model node is free under the fake, so the run's usage is the decisions' estimates, unrounded");
   assert.equal(usage.usage.usd, (await api("GET", `/runs/${runId}`)).body.cost.usd, "the usage row and the run's cost agree");
-  assert.match(usage.summary, /^Cost so far: <\$0\.0001 /, "a cost above zero never reads $0.0000");
+  assert.match(usage.summary, /^Cost: <\$0\.0001 /, "a cost above zero never reads $0.0000");
   assert.equal(usage.usage.requests, 3, "the branch's model node request and the two decisions'");
+});
+
+test("a workflow followed live through its end: the usage row its cursor last reads says the run's cost, never \"so far\"", async (t) => {
+  await withCanary(t);
+  const { api } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [judge, probe()]);
+  // Followed as a client follows a run: every page after the last one's cursor, until a final page.
+  const { rows, last } = await follow(api, runId, ["completed", "failed"]);
+  assert.deepEqual([last.status, last.final], ["completed", true]);
+  const usage = rows.findLast((row) => row.kind === "usage");
+  assert.match(usage?.summary ?? "", /^Cost: /, `the followed usage row: ${JSON.stringify(usage)}`);
 });
 
 test("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {

@@ -47,5 +47,4 @@ goes on. `runs timeline RUN_ID --follow` prints the timeline as it changes, one 
 `rows` by `id`, delete its `drop` ids, and drop everything first on a page with `reset: true`. It resumes a dropped
 connection where it left off and ends when the run ends, 0 completed, 1 failed or cancelled.
 
-The TypeScript SDK for the hosted AgentRun API is published as `@parcha/agentrun` 0.2.x, from its own repository; this
-package starts with 0.3.0, so a dependency on `^0.2` keeps the SDK.
+The TypeScript client for this server is `@parcha/agentrun-client` (packages/client).

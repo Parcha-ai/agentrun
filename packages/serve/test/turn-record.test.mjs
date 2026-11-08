@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
@@ -83,7 +84,7 @@ for (const [what, follow_up] of [["only a thinking block", "Now answer only by t
 
 for (const harness of ADAPTERS) {
   test(`${harness}: a follow-up whose turn ends with nothing to show (a /compact) completes the run at once, its answer ""`, { timeout: 90_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const runId = await start(api, harness, "The second turn answers nothing.", { input: "hi" });
     await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
@@ -97,7 +98,7 @@ for (const harness of ADAPTERS) {
 
 for (const harness of ADAPTERS) {
   test(`${harness}: a cancel after the turn's answer is in, before the turn is over, ends the run cancelled; it reads cancelled from the 202 on, never completed`, { timeout: 90_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const signal = join(await scratch(t), "admitted");
     const runId = await start(api, harness, `Answer, then hold a request unanswered (signal ${signal}).`, { input: "hi" });
     await until("the second request is admitted", async () => existsSync(signal));
@@ -117,7 +118,7 @@ for (const harness of ADAPTERS) {
     const dir = await scratch(t);
     const [signal, gate] = [join(dir, "admitted"), join(dir, "gate")];
     withEnv(t, { EXIT_GATE: gate });
-    const { api } = await serve(t, { fauxHarness: HELD_EXIT });
+    const { api } = await serve(t, { harnessTable: fauxTable(HELD_EXIT) });
     const runId = await start(api, harness, `Answer, then hold a request the cancel cuts and books (signal ${signal}).`, { input: "hi", max_cost_usd: 0.001 });
     await until("the second request is admitted", async () => existsSync(signal));
     await until("the answer's row is in, under the cap", async () => (await rowsOf(api, runId)).some((r) => r.kind === "final_answer" && r.text === "Done."));
@@ -154,7 +155,7 @@ test("pi: a cancel while a turn holds on a tool ends the run cancelled from the 
 
 for (const harness of ALL) {
   test(`${harness}: a turn whose two parallel calls fail and that then stops with no text ends the run, never working for good`, { timeout: 90_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     // On claude-agent the answer's cost comes in after its calls ran, as the Claude CLI's does: results before calls.
     const phrase = harness === "claude-agent" ? "Fetch two pages at once and both fail (booked late), then stop." : "Fetch two pages at once and both fail, then stop.";
     const runId = await start(api, harness, phrase);
@@ -169,7 +170,7 @@ for (const harness of ALL) {
 
 for (const harness of ADAPTERS) {
   test(`${harness}: a turn the harness ends interrupted with no stop or cancel waits for the person (input_required), never working for good; a message goes on`, { timeout: 90_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const runId = await start(api, harness, "The turn ends interrupted.", { input: "hi", tools: ["read"] });
     const { seen } = await watch(api, runId, (view) => view.status === "input_required" || terminal(view), "the interrupted turn moves the run");
     assert.equal(seen.at(-1), "input_required", seen.join(" > "));
@@ -185,7 +186,7 @@ for (const harness of ADAPTERS) {
 // failed turn stays in its timeline as history, as an error in a chat followed by a good answer does.
 for (const harness of ADAPTERS) {
   test(`${harness}: a turn that fails with a message queued behind it, whose own turn then completes, ends the run completed with that turn's answer; the failure stays in the timeline`, { timeout: 90_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: WEB_HOLD });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: WEB_HOLD });
     const go = join(await scratch(t), "go");
     const runId = await start(api, harness, `Fail a turn held until ${go}, with a follow-up behind it.`, { input: "hi", tools: ["web_fetch"] });
     // Held on its fetch until `go` exists: the follow-up waits its place behind it.
@@ -207,7 +208,7 @@ for (const harness of ADAPTERS) {
 
 for (const harness of ALL) {
   test(`${harness}: a run working through a long tool phase shows its last progress, advancing as the turn writes, and none once it ends`, { timeout: 90_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: WEB_HOLD });
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: WEB_HOLD });
     const dir = await scratch(t);
     const [one, two] = [join(dir, "one"), join(dir, "two")];
     const runId = await start(api, harness, `Fetch the pages held until ${one} and ${two}.`, { tools: ["web_fetch"] });
@@ -240,7 +241,7 @@ test("claude-agent: a turn the server's restart drains mid-way is resumed by the
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const go = join(dir, "go");
-  const options = { data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "2s" };
+  const options = { data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "2s" };
   const one = await startServe(options);
   let closed = false;
   t.after(() => (closed ? undefined : one.close()));

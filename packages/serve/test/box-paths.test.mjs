@@ -209,7 +209,7 @@ test("the egress parent's limit holds the proxy's longest socket path, the tempo
   // The run's proxy itself there: it listens on a temporary socket (`.egress-<12 hex>.sock`, its longest name) and links
   // it to egress.sock, by the whole path. Node cuts a socket path past 107 bytes without a word, so only the link and the
   // file's name show it whole.
-  const { startEgressProxy } = await import("@parcha/agentrun-kernel/host");
+  const { startEgressProxy } = await import("../dist/egress-proxy.js");
   const socketPath = join(dir, "egress.sock");
   const proxy = await startEgressProxy({ socketPath, maxTunnels: 1, maxConnections: 1, log: () => {}, allow: ["pypi.org"] });
   t.after(() => proxy.close());
