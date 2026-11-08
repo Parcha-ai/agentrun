@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-sdk.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 006-fake-sdk-script, 012-fake-sdk-lists-tools, 014-fake-sdk-system-prompt
+// Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { ClaudeAgentSdk } from '../harness.js';
