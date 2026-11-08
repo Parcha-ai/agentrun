@@ -353,12 +353,14 @@ export interface TriggerSettings {
 
 /** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, the PKCE
  *  verifier sealed (store/seal.ts, AAD mcp_oauth_pending|<state>|verifier) as bytes the store never opens, the cookie it is
- *  bound to, and when it expires (ms). */
+ *  bound to, the non-secret working state the callback needs (`working`: the client, discovery, kind, scope, resource and
+ *  url, plain JSON — not sealed), and when it expires (ms). */
 export interface McpOauthPendingRow {
   readonly state: string;
   readonly server: string;
   readonly verifierSealed: Uint8Array;
   readonly cookieBinding: string;
+  readonly working: unknown;
   readonly expiresAt: number;
 }
 

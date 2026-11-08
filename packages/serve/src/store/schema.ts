@@ -227,6 +227,7 @@ export const STORE_DDL: readonly string[] = [
     server TEXT NOT NULL,
     verifier_sealed BLOB NOT NULL,
     cookie_binding TEXT NOT NULL,
+    ${json("working", true)},
     expires_at INTEGER NOT NULL
   ) STRICT`,
   `CREATE TABLE IF NOT EXISTS mcp_pins (
