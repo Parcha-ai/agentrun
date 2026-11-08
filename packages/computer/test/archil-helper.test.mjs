@@ -339,3 +339,37 @@ test("the helper runs no firewall program and names none", () => {
   const source = readFileSync(HELPER, "utf8");
   for (const word of ["iptables", "ip6tables", "getent", "CAP_NET_ADMIN", "netlock"]) assert.ok(!source.includes(word), `the helper names ${word}`);
 });
+
+/** Regions, and whether the one rule takes each: a provider, a dash and its region, lowercase letters, digits and dashes. */
+const REGIONS = [
+  ["aws-us-east-1", true],
+  ["gcp-us-central1", true],
+  ["aws-eu-west-2", true],
+  [`a-${"b".repeat(63)}`, true],
+  [`a-${"b".repeat(64)}`, false],
+  ["useast1", false],
+  ["aws-", false],
+  ["-aws-us-east-1", false],
+  ["aws--us", false],
+  ["AWS-us-east-1", false],
+  ["aws_us_east_1", false],
+  ["us east", false],
+  ["--force", false],
+  ["", false],
+];
+
+test("the region has one rule, ARCHIL_REGION, which archilRefusals and the helper apply alike: each takes and refuses the same table", async (t) => {
+  // Review (#1994, P2-5): the helper took any lowercase run of letters, digits and dashes, archilRefusals one with a dash.
+  const { ARCHIL_REGION, archilRefusals } = await import("../dist/mount-archil.js");
+  assert.equal(typeof ARCHIL_REGION, "string", "the rule is a pattern string, so the helper's grep -Ex and the TypeScript RegExp read the same text");
+  assert.ok(readFileSync(HELPER, "utf8").includes(`matches "$region" '${ARCHIL_REGION}'`), "the helper checks the region with ARCHIL_REGION, as written");
+  const spec = (region) => ({ image: "x", lifetimeMs: 60_000, network: "none", labels: { "agentrun.run": "r1", "agentrun.epoch": "3" }, mount: { kind: "archil", disk: DISK, region, folder: FOLDER, token: TOKEN } });
+  for (const [region, taken] of REGIONS) {
+    const refused = archilRefusals(spec(region)).some((r) => r.field === "mount" && /region/.test(r.message));
+    assert.equal(refused, !taken, `archilRefusals ${taken ? "takes" : "refuses"} ${JSON.stringify(region)}`);
+    const b = await box(t);
+    const ran = b.run(["mount", DISK, region, FOLDER]);
+    assert.equal(ran.status, taken ? 0 : 2, `the helper ${taken ? "takes" : "refuses"} ${JSON.stringify(region)}: ${ran.stderr}`);
+    if (!taken) assert.deepEqual(ran.calls, [], `nothing ran for ${JSON.stringify(region)}`);
+  }
+});
