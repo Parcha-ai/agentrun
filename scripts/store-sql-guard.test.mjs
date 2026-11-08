@@ -156,7 +156,8 @@ test("the list only shrinks: a listed file with no SQL left is taken off it", ()
 
 const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSync(join(ROOT, file), "utf8"), file).length > 0);
 /** The files outside the store that took a SQLite driver when the guard began reading imports. Each goes at the cutover;
- *  the list only shrinks. */
+ *  the list only shrinks. One file joined it after: pi/src/durable/readers.ts loads node:sqlite through createRequire,
+ *  which the guard first saw when it learnt that form. */
 const TODAY_DRIVER = [
   "packages/pi-durable-agent/src/agent-store.ts",
   "packages/pi-durable-agent/src/home.ts",
@@ -167,6 +168,7 @@ const TODAY_DRIVER = [
   "packages/pi-durable-disk/src/run.ts",
   "packages/pi-durable-disk/src/status.ts",
   "packages/pi-durable-disk/src/store.ts",
+  "packages/pi/src/durable/readers.ts",
   "packages/pi/src/signin/store.ts",
   "packages/serve/src/agents.ts",
   "packages/serve/src/import.ts",
