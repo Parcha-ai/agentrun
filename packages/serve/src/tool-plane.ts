@@ -284,17 +284,21 @@ export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, 
   })) as Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }>;
 }
 
-const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}) => ({
+// The permission a provider resolves under is the one the gate holds the tool to: under approvals "never", an ask with no
+// deny or unread setting behind it is an allow (permissionOf), so a harness's own search is not held to an ask it never
+// meets.
+const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}, approvals: "ask" | "never" = "ask") => ({
   ...(overrides[name]?.provider ? { override: overrides[name]!.provider } : {}),
   ...(settings[name]?.provider ? { pick: settings[name]!.provider } : {}),
-  permission: permissionOf(name, settings, overrides),
+  permission: permissionOf(name, settings, overrides, approvals),
 });
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
  *  its search asks (the one the resolution read). */
 export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string };
 /** The facts of a pinned revision its run's tools resolve from. */
-export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true };
+/** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
+export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true; approvals?: "never" };
 
 /** The run's process's description of its tools' providers: JSON of its Plane. */
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
@@ -313,7 +317,7 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const granted = tooling.tools;
   for (const name of PICKABLE) {
     if (!granted.includes(name)) continue;
-    const chosen = picked(name, settings, tooling.overrides);
+    const chosen = picked(name, settings, tooling.overrides, tooling.approvals ?? "ask");
     plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: ownSearchViaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
@@ -362,7 +366,7 @@ export const browserKeyRow = (picked: string | undefined, resolution: string | u
  *  under ask, so a deny lifted while that process lives is lifted at the next call. */
 export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
   const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
-  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}) });
+  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}, tooling?.approvals ?? "ask") });
   return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
 }
 
@@ -562,7 +566,7 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
   const plane = planeFor(env, agent, settings);
   const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
-    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never);
+    const { permission, from } = permissionFrom(name, settings as never, (agent.overrides ?? {}) as never, agent.approvals ?? "ask");
     const gate = { permission, permission_from: from, default_permission: permissionOf(name, settings as never), permissions: [...permissionsOf(name)] };
     // One short line for people (tool-blurbs.ts), as capabilities serves it.
     const blurb = blurbOf(name);

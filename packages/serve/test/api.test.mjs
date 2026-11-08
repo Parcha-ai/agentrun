@@ -126,6 +126,21 @@ test("a token given in place of the data directory's is the one required, and no
   await assert.rejects(startServe({ data: join(data, "other"), port: 0, token: `${token} spaced` }), /no whitespace/);
 });
 
+test("a token given on a data directory that has a .token from an earlier start removes that file, so nothing reads a token this server refuses", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data });
+  const old = first.token;
+  await first.close();
+  const token = `given_${createHash("sha256").update("another token").digest("hex")}`;
+  const given = await serve(t, { data, token });
+  assert.equal((await client(given.baseUrl, old)("GET", "/agents")).status, 401, "the earlier token is refused");
+  await assert.rejects(stat(join(data, ".token")), { code: "ENOENT" }, "and the file that held it is gone");
+  await given.close();
+  const again = await serve(t, { data });
+  assert.notEqual(again.token, old, "a start without one makes a new token and file");
+  assert.equal((await stat(join(data, ".token"))).mode & 0o777, 0o600);
+});
+
 test("an agent is created from a definition and skills, read back with its ETag, and listed newest first, page by page", async (t) => {
   const { api, data } = await serve(t);
   const created = await api("POST", "/agents", { ...agent("reporter", { description: "Writes reports.", skills: ["cite"], model: "faux/faux-1", thinking: "high" }), skills: { "cite/SKILL.md": "# Cite\n" } });
@@ -138,7 +153,7 @@ test("an agent is created from a definition and skills, read back with its ETag,
   assert.match(created.body.revision, /^[0-9a-f]{64}$/);
   assert.equal(created.body.revisions, 1);
   assert.equal(created.body.home_etag, `"${created.body.revision}"`, "the ETag is the current revision");
-  assert.deepEqual(created.body.definition, { id: "reporter", version: 1, name: "reporter", description: "Writes reports.", instructions: "Answer.", model: "faux/faux-1", thinking: "high", harness: "pi", skills: ["cite"], tools: [] });
+  assert.deepEqual(created.body.definition, { id: "reporter", version: 1, name: "reporter", description: "Writes reports.", instructions: "Answer.", model: "faux/faux-1", thinking: "high", harness: "pi", skills: ["cite"], tools: [], approvals: "ask" });
   const read = await api("GET", "/agents/reporter");
   assert.equal(read.status, 200);
   assert.equal(read.headers.get("etag"), read.body.home_etag);
