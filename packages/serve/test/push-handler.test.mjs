@@ -315,3 +315,52 @@ test("a server-wide hook's documented answers are its own: its firings' by names
   assert.ok(firings && firingBy(firings).includes("ping"), JSON.stringify(body("200")));
   for (const answer of [{ firings: [] }, { challenge: "c-123" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
 });
+
+test("a source whose settings are the server's is set through one route, driven by its settings' fields: GET shows its public fields and which secrets are set, never a secret; a source whose settings its own flow writes refuses PUT and DELETE; a source with no such settings is 404", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  const checked = [];
+  const desk = { ...ping, id: "desk", settings: { scope: "server", fields: { token: {}, workspace: { public: true }, region: { public: true, given: true } } }, check: async (values) => (checked.push(values), { workspace: "W1" }) };
+  const owned = { ...ping, id: "owned", settings: { scope: "server", managed: "its Connect flow", fields: { token: {} } } };
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, desk, owned] });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  assert.deepEqual((await api("GET", "/settings/sources/desk")).body, { source: "desk", configured: false, managed: null, values: { workspace: null, region: null }, secrets: { token: false } });
+  const missing = await api("PUT", "/settings/sources/desk", { region: "eu" });
+  assert.deepEqual([missing.status, missing.body.error.fields.map((f) => f.field)], [422, ["token"]]);
+  const extra = await api("PUT", "/settings/sources/desk", { token: "not-a-secret-desk", workspace: "W9" });
+  assert.deepEqual([extra.status, extra.body.error.fields.map((f) => f.field)], [422, ["workspace"]], "a public field its check fills is not given");
+  const saved = await api("PUT", "/settings/sources/desk", { token: "not-a-secret-desk", region: "eu" });
+  assert.deepEqual([saved.status, saved.body], [200, { source: "desk", configured: true, managed: null, values: { workspace: "W1", region: "eu" }, secrets: { token: true } }]);
+  assert.deepEqual(checked, [{ token: "not-a-secret-desk", region: "eu" }], "checked before it is kept");
+  assert.ok(!JSON.stringify((await api("GET", "/settings/sources/desk")).body).includes("not-a-secret-desk"), "never shown");
+  assert.equal((await api("DELETE", "/settings/sources/desk")).status, 204);
+  assert.equal((await api("GET", "/settings/sources/desk")).body.configured, false);
+  for (const [method, body] of [["PUT", { token: "not-a-secret-owned" }], ["DELETE", undefined]]) {
+    const refused = await api(method, "/settings/sources/owned", body);
+    assert.deepEqual([refused.status, refused.body.error.code], [409, "settings_managed"], method);
+    assert.match(refused.body.error.message, /its Connect flow/);
+  }
+  assert.equal((await api("GET", "/settings/sources/owned")).body.managed, "its Connect flow");
+  assert.equal((await api("GET", "/settings/sources/schedule")).status, 404, "no settings of the server's");
+  assert.equal((await api("GET", "/settings/sources/nosuch")).status, 404);
+});
+
+test("a pushed source's parse reads its own settings' public fields alone: a secret field answers it nothing", { timeout: 60_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  const seen = [];
+  const peek = {
+    ...ping, id: "peek",
+    settings: { scope: "server", fields: { signing: { minBytes: MIN_KEY_BYTES }, workspace: { public: true } } },
+    check: async () => ({ workspace: "W1" }),
+    push: { ...ping.push, parse: (_headers, _body, own) => (seen.push({ signing: own("signing"), workspace: own("workspace") }), []) },
+  };
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, peek] });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  assert.equal((await api("PUT", "/settings/sources/peek", { signing: secret })).status, 200);
+  assert.equal((await post(server.baseUrl, "/hooks/peek", "{}", { secret })).status, 200);
+  assert.deepEqual(seen, [{ signing: undefined, workspace: "W1" }]);
+});
