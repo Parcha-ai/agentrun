@@ -179,7 +179,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The schedules' names, for the chip on a run a schedule started: read where the server has schedules, again on each
   // page change (a schedule made or renamed shows by its name on its runs).
   const scheduling = caps?.features?.triggers?.routes === true;
-  const [scheduleNames, setScheduleNames] = useState<ReadonlyMap<string, string>>(new Map());
+  const [scheduleNames, setScheduleNames] = useState<ReadonlyMap<string, string> | null>(null);
   useEffect(() => {
     if (!scheduling) return;
     let live = true;
