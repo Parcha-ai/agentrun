@@ -63,19 +63,12 @@ export interface DockerProviderOptions {
 	user?: string;
 }
 
-/** The environment fromEnv reads, by name. */
-export const ENV = {
-	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
-	daemon: "COMPUTER_DOCKER_DAEMON",
-	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
-	user: "COMPUTER_DOCKER_USER",
-} as const;
-
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
 export const MOUNT: readonly MountKind[] = ["bind"];
 
-export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
-	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */
+/** What create() takes: the provider's options, the daemon optional. */
+export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
+	/** The longest `docker version` may take, when create asks Docker its architecture; default 30 s. */
 	timeoutMs?: number;
 }
 
@@ -83,7 +76,7 @@ export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
  * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
  * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
  */
-export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerFromEnvOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
+export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerCreateOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
 			if (!error) return resolve(stdout.trim());
@@ -95,19 +88,18 @@ export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<Docke
 }
 
 /**
- * A DockerProvider from COMPUTER_DOCKER_* alone. Without COMPUTER_DOCKER_DAEMON it asks Docker its architecture and takes
- * this package's daemon for it, and says when that daemon is not built. Options win over the environment.
+ * A DockerProvider from its options alone; it reads no environment. Without options.daemonPath it asks Docker its
+ * architecture and takes this package's daemon for it, and says when that daemon is not built.
  */
-export async function fromEnv(env: Record<string, string | undefined> = process.env, options: DockerFromEnvOptions = {}): Promise<DockerProvider> {
+export async function create(options: DockerCreateOptions = {}): Promise<DockerProvider> {
 	const { timeoutMs, ...given } = options;
-	const user = env[ENV.user] || undefined;
-	let daemonPath = given.daemonPath ?? (env[ENV.daemon] || undefined);
+	let daemonPath = given.daemonPath || undefined;
 	if (daemonPath === undefined) {
 		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
 		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 	}
-	return new DockerProvider({ ...(user === undefined ? {} : { user }), ...given, daemonPath });
+	return new DockerProvider({ ...given, daemonPath });
 }
 
 /** The conformance CLI's module for Docker: the drifted twin. */
