@@ -72,6 +72,10 @@ export type SnapLearned = {
   oid: string; bytes: number;
   order: number;
   history: SnapHistory;
+  /** Past SNAPSHOT.md v1, additive, present only when there are some: the paths of the tracked symbolic links (git mode
+   *  120000) in the item's folder. A seed never lays such a skill (seed-check.ts readSeed's `refused`); `files` names
+   *  regular files alone. */
+  links?: string[];
 };
 export type SnapChange = { commit: string; at: string; by: { run: string } | { user: true; via?: string }; reason: string; files: string[] };
 export type Snapshot = {
@@ -255,7 +259,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
   const historyOf = (path: string) => history.get(path) ?? { at };
   const index = tree.find((entry) => entry.path === INDEX_FILE && regular(entry));
   const notes: SnapNote[] = [];
-  const folders = new Map<string, { kind: "skill" | "workflow"; name: string; files: SnapFile[] }>();
+  const folders = new Map<string, { kind: "skill" | "workflow"; name: string; files: SnapFile[]; links: string[] }>();
   for (const entry of tree) {
     if (!entry.path.includes("/")) {
       const text = regular(entry) && entry.bytes <= FILE_CAP ? textOf(blobs.get(entry.oid)) : undefined;
@@ -264,14 +268,16 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
       continue;
     }
     const folder = folderOf(entry.path);
-    if (!folder || entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) continue;
+    if (!folder || entry.type !== "blob") continue;
     const key = `${folder.kind}/${folder.name}`;
-    (folders.get(key) ?? folders.set(key, { ...folder, files: [] }).get(key)!).files.push({ path: entry.path, oid: entry.oid, bytes: entry.bytes });
+    const known = folders.get(key) ?? folders.set(key, { ...folder, files: [], links: [] }).get(key)!;
+    if (entry.mode === "120000") known.links.push(entry.path);
+    else if (entry.mode === "100644" || entry.mode === "100755") known.files.push({ path: entry.path, oid: entry.oid, bytes: entry.bytes });
   }
   const skills: SnapLearned[] = [];
   const workflows: SnapLearned[] = [];
-  for (const { kind, name, files } of folders.values()) {
-    const item = learnedItem(kind, name, files, (path) => {
+  for (const { kind, name, files, links } of folders.values()) {
+    const item = learnedItem(kind, name, files, links, (path) => {
       const entry = tree.find((one) => one.path === path);
       return entry && regular(entry) && entry.bytes <= FILE_CAP ? textOf(blobs.get(entry.oid)) : undefined;
     }, {
@@ -287,7 +293,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
 /** A learned item from its folder's files: listed when its folder is well named, its key file (SKILL.md, a draft's
  *  README.md) is there and reads, and a draft has its workflow.json too, each of those a regular file under FILE_CAP
  *  (only those are given their texts by `text`). */
-function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"] }): SnapLearned | undefined {
+function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"] }): SnapLearned | undefined {
   if (!learnedName(kind, name)) return undefined;
   const key = files.find(({ path }) => path === keyFile(kind, name));
   const shown = files.find(({ path }) => path === viewFile(kind, name));
@@ -298,7 +304,7 @@ function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[]
     if (body === undefined) return undefined;
     fields = { description: learnedFront(body)?.description ?? "", status: learnedStatus(body) };
   }
-  return { name, file: key.path, description: fields.description, status: fields.status, run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history };
+  return { name, file: key.path, description: fields.description, status: fields.status, run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history, ...(links.length ? { links: [...links].sort(byBytes) } : {}) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -382,7 +388,9 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
       }
       const key = keyFile(kind, name);
       const keyText = writes.get(key)?.text;
-      const item = learnedItem(kind, name, [...files.values()], (path) => writes.get(path)?.text, {
+      // A link the change writes a file over, or deletes, is a link no more.
+      const links = (old?.links ?? []).filter((path) => !writes.has(path) && !deletes.has(path));
+      const item = learnedItem(kind, name, [...files.values()], links, (path) => writes.get(path)?.text, {
         order: 0,
         history: touched.has(key) ? foldNewer(old?.history, commit, key) : (old?.history ?? { at: commit.at }),
         run: runId && touched.has(viewFile(kind, name)) ? runId : (old?.run ?? null),

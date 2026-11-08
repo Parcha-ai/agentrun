@@ -54,7 +54,7 @@ function shaped(snapshot) {
     history(one.history);
   }
   for (const one of [...snapshot.skills, ...snapshot.workflows]) {
-    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"]);
+    keys(one, ["name", "file", "description", "status", "run", "files", "oid", "bytes", "order", "history"], ["links"]);
     for (const file of one.files) keys(file, ["path", "oid", "bytes"]);
     history(one.history);
   }
