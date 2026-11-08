@@ -14,6 +14,8 @@ import { providerFromEnv, providerIds, providerModule, providers } from "../dist
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SRC = new URL("../src/", import.meta.url);
+/** The registry's ids as an unknown id's refusal lists them: "docker, modal, ...", in registry order. */
+const KNOWN = new RegExp(providerIds.join(", "));
 const dir = mkdtempSync(join(tmpdir(), "computer-registry-"));
 const DAEMON = join(dir, "computerd");
 writeFileSync(DAEMON, "a stand-in for computerd\n");
@@ -50,8 +52,9 @@ function providerFiles() {
 	return found;
 }
 
-test("the registry is one line per computer: docker, modal and daytona, each a lazy import of its provider file", () => {
-	assert.deepEqual(providerIds, ["docker", "modal", "daytona"]);
+test("the registry is one line per computer, one per provider file, each a lazy import of that file", () => {
+	// The provider files decide the ids, not a list here: a new provider is its file and its registry line, nothing else.
+	assert.deepEqual([...providerIds].sort(), providerFiles().map((f) => f.id).sort(), "one registry id per provider file, under the id it reports");
 	assert.deepEqual(Object.keys(providers), providerIds);
 	for (const id of providerIds) assert.equal(typeof providers[id], "function", `${id} is () => import(...)`);
 	assert.deepEqual(registryLines(), providerIds.map((id) => ({ id, file: id })), "each line is id: () => import(\"./<file>.js\")");
@@ -95,17 +98,17 @@ test("providerFromEnv() names the known ids for an id it does not know", async (
 	for (const id of ["nope", "constructor", "__proto__", "toString", ""]) {
 		await assert.rejects(providerFromEnv(id, {}), (error) => {
 			assert.match(error.message, new RegExp(`unknown computer provider ${JSON.stringify(id).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
-			assert.match(error.message, /docker, modal, daytona/);
+			assert.match(error.message, KNOWN);
 			return true;
 		});
 	}
-	await assert.rejects(providerModule("nope"), /docker, modal, daytona/);
+	await assert.rejects(providerModule("nope"), KNOWN);
 });
 
 test("providerFromEnv() reads COMPUTER_<VENDOR>_* only: a bare vendor variable is never a fallback", async () => {
-	await assert.rejects(providerFromEnv("daytona", { DAYTONA_API_KEY: "prod-key-must-not-be-used" }), (error) => {
+	await assert.rejects(providerFromEnv("daytona", { DAYTONA_API_KEY: "fake-test-key" }), (error) => {
 		assert.match(error.message, /COMPUTER_DAYTONA_API_KEY/);
-		assert.doesNotMatch(error.message, /prod-key-must-not-be-used/);
+		assert.doesNotMatch(error.message, /fake-test-key/);
 		return true;
 	});
 	await assert.rejects(providerFromEnv("modal", { MODAL_TOKEN_ID: "prod-id-must-not-be-used", MODAL_TOKEN_SECRET: "prod-token-must-not-be-used", COMPUTER_MODAL_APP: "computers" }), (error) => {
@@ -152,7 +155,7 @@ test("the conformance CLI's usage names every registry id, and an unknown id is 
 	const err = sink();
 	assert.equal(await main(["--provider", "nope"], { stdout: sink(), stderr: err, cwd: HERE }), 2);
 	assert.match(err.text(), /unknown computer provider "nope"/);
-	assert.match(err.text(), /docker, modal, daytona/);
+	assert.match(err.text(), KNOWN);
 	assert.match(err.text(), /usage: npm run conformance/);
 });
 
