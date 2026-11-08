@@ -21,6 +21,9 @@ export const KINDS = {
   answer: "agentrun.answer",
   /** On the root conversation: a CLI adapter's session key and the conversation that holds its resume log. */
   sessionKey: "agentrun.session.key",
+  /** The loop's end commit: how the run ended (ended, stopped, failed). Its commit carries the run row's patch and any
+   *  command it takes; neither a call nor a message, so the reader passes over it. */
+  end: "agentrun.end",
 } as const;
 
 export interface CallStartData {
@@ -54,6 +57,11 @@ export interface AskData {
 export interface AnswerData {
   readonly callId: string;
   readonly approved: boolean;
+}
+
+export interface EndData {
+  readonly state: "ended" | "stopped" | "failed";
+  readonly summary?: string;
 }
 
 export interface SessionKeyData {
