@@ -1,13 +1,16 @@
-// `npm run conformance -w @parcha/agentrun-computer -- --provider <id> | ./module.js [--image <image>] [--only <groups>] [--json]`
+// `npm run conformance -w @parcha/agentrun-computer -- --provider <id> | ./module.js [--image <image>] [--only <groups> | --kind <kind>] [--json]`
 // An id is resolved through the provider registry (../providers.ts) and nothing else, so a new computer needs no edit here.
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
-// that ran passed: a partial run is never a Core pass, so no script reads its exit code as one.
+// that ran passed: a partial run is never a Core pass, so no script reads its exit code as one. With --kind it exits on
+// the kind's verdict alone: 0 when the provider passes the kind, 1 when it does not.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
+import { type Kind, KINDS } from "../kinds.js";
 import { conformanceCases } from "./cases/index.js";
+import { kindRunProblem } from "./kind.js";
 import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
 import type { Case, CaseResult, ConformanceOptions } from "./types.js";
@@ -36,7 +39,7 @@ export interface CliIo {
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               fromEnv(), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
@@ -44,10 +47,13 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
               apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
+  --kind      run a kind's cases (sandbox, desktop, phone) and exit on its verdict: the provider passes the kind only
+              when it serves it and every case of each required group passes; not with --only
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
   --json      print the report as JSON
-exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed`;
+exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
+      0 the provider passes the kind, 1 it does not`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
 
 class Usage extends Error {}
@@ -56,6 +62,7 @@ interface Args {
 	provider: string;
 	image?: string;
 	only?: string[];
+	kind?: Kind;
 	fixture?: string;
 	json: boolean;
 	help: boolean;
@@ -73,13 +80,20 @@ function parse(argv: string[], cases: Case[]): Args {
 		if (flag === "--provider") args.provider = value();
 		else if (flag === "--image") args.image = value();
 		else if (flag === "--only") args.only = value().split(",").map((part) => part.trim()).filter(Boolean);
-		else if (flag === "--fixture") args.fixture = value();
+		else if (flag === "--kind") {
+			const kind = value();
+			if (!(KINDS as readonly string[]).includes(kind)) throw new Usage(`--kind: ${JSON.stringify(kind)} is not a kind (${KINDS.join(", ")})`);
+			const problem = kindRunProblem(kind as Kind);
+			if (problem !== undefined) throw new Usage(`--kind ${kind}: ${problem}`);
+			args.kind = kind as Kind;
+		} else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--json") args.json = true;
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
 	}
 	if (args.help) return { provider: "", json: false, help: true };
 	if (args.provider === undefined) throw new Usage("--provider is required");
+	if (args.kind !== undefined && args.only !== undefined) throw new Usage("--kind and --only go apart: a kind runs its own cases");
 	const groups = [...new Set(cases.map((c) => c.group))];
 	for (const name of args.only ?? []) {
 		if (!groups.includes(name as Case["group"]) && !cases.some((c) => c.id === name)) {
@@ -90,6 +104,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		provider: args.provider,
 		...(args.image === undefined ? {} : { image: args.image }),
 		...(args.only ? { only: args.only } : {}),
+		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
 		json: args.json,
 		help: false,
@@ -201,6 +216,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(target.notes && target.notes.length > 0 ? { notes: target.notes } : {}),
 		cases,
 		...(args.only ? { only: args.only } : {}),
+		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
@@ -208,6 +224,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(onResult ? { onResult } : {}),
 	});
 	await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
+	if (report.kindVerdict) return report.kindVerdict.verdict === "pass" ? 0 : 1;
 	return report.core === "pass" ? 0 : report.core === "partial" ? 3 : 1;
 }
 

@@ -38,7 +38,7 @@ async function sandboxRun({ cases, groups } = {}) {
 	const { provider } = fakeComputers(groups ? { groups } : {});
 	const run = cases ?? [pass("exec.ok", ["exec"]), pass("files.ok", ["files"]), pass("process.ok", ["processes"]), pass("health.ok", [])];
 	const report = await runConformance(provider, { image: IMAGE, kind: "sandbox", cases: run });
-	return { report, verdict: kindVerdict("sandbox", provider.capabilities(), report) };
+	return { report, verdict: kindVerdict("sandbox", provider.capabilities(), report, run) };
 }
 
 test("a provider passes a kind when it serves it and every case of each required group passes; the report carries the verdict", async () => {

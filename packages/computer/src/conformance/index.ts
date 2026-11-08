@@ -2,6 +2,7 @@ export * from "./types.js";
 export { runConformance } from "./runner.js";
 export { formatReport } from "./report.js";
 export { conformanceCases } from "./cases/index.js";
+export { kindCases, kindRunProblem, kindVerdict, type KindVerdict } from "./kind.js";
 export {
 	FIXTURE_APK_PATH,
 	FIXTURE_APP_ID,

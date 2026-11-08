@@ -3,7 +3,9 @@ import type { MountKind, MountSpec } from "../mount.js";
 import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
+import type { Kind } from "../kinds.js";
 import type { StartedFixture } from "./fixture.js";
+import type { KindVerdict } from "./kind.js";
 
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
@@ -177,8 +179,10 @@ export interface ConformanceReport {
 	daemon: { version: string; os: string; arch: string } | null;
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
-	/** When only was given: the Core cases it left out, which did not run. */
+	/** When only or kind was given: the Core cases it left out, which did not run. */
 	coreNotRun?: string[];
+	/** When the run was by kind: whether the provider passes it, and why not. */
+	kindVerdict?: KindVerdict;
 	results: CaseResult[];
 	/**
 	 * pass when every Core case ran and passed, but those skipped for an optional group the computer does not declare,
@@ -213,6 +217,11 @@ export interface ConformanceOptions {
 	image: string;
 	/** Run only these groups or case ids. */
 	only?: string[];
+	/**
+	 * Run a kind's cases (kindCases) and give its verdict (report.kindVerdict); not with only. A kind with no computerd
+	 * cases (none, browser) is refused, in words.
+	 */
+	kind?: Kind;
 	signal?: AbortSignal;
 	/** The cases to run; default every case of the suite. */
 	cases?: Case[];
