@@ -85,6 +85,11 @@ export async function watchRun(store: LiveStore, runId: string, options: WatchRu
   const poll = async () => {
     if (ended || !listener) return;
     const to = listener;
+    // The row before the commits: a row final here was made final in its end commit's own transaction, so the drain
+    // below reads that commit. Read after the drain, the row could be final from a commit the drain missed, and the
+    // stream would end without what that commit holds (a CLI run's answer).
+    const now = await store.runs.get(runId);
+    const final = now !== undefined && FINAL_STATES.includes(now.state);
     for (;;) {
       const page = await journal.commitsAfter(seq, PAGE, context);
       for (const commit of page.commits) {
@@ -95,8 +100,6 @@ export async function watchRun(store: LiveStore, runId: string, options: WatchRu
       }
       if (page.next === undefined || page.commits.length === 0) break;
     }
-    const now = await store.runs.get(runId);
-    const final = now !== undefined && FINAL_STATES.includes(now.state);
     if (!final) {
       const [held] = await store.live.read([runId]);
       const events = heldEvents(held?.state as HeldState | undefined);
