@@ -1780,7 +1780,7 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | | Browserbase (`browserbase.ts`) | Kernel (`kernel.ts`) |
 | --- | --- | --- |
 | a computer is | a session (`POST /v1/sessions`, `keepAlive: true`) | a browser (`POST /browsers`) |
-| labels ride | the session's `userMetadata` | the browser's `tags` |
+| labels ride | the session's `userMetadata`, each key's dots written as `_` (Browserbase refuses a dot in a metadata key), so a label key is letters, digits and dots | the browser's `tags` |
 | lifetime | the session's `timeout`, 60 s to 6 h, wall clock | `timeout_seconds`, 10 s to 72 h, an idle timeout: no wall clock, so list reads no deadline |
 | groups (`CAPABILITIES`) | `cdp`, `stream` | `cdp`, `stream` |
 | test connection | one `GET /v1/sessions?status=RUNNING` | one `GET /browsers?status=active` page |
