@@ -38,7 +38,7 @@ import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
-import { readWorkText } from "./workspace.js";
+import { type Entry, isWorkspaceError, type Workspace, WorkspaceError } from "./workspace/index.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
  *  default: a run learns when its agent's definition says `learning: true`. `off`: no run this server starts does. */
@@ -829,15 +829,16 @@ function servedIndex(seed: Seed): string | undefined {
   return seed.index.split("\n").filter((entry) => !linkedFiles(entry).some((file) => held.has(file) && !Object.hasOwn(seed.notes, file))).join("\n");
 }
 
-/** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. The index names the active notes
- *  alone (servedIndex), and each file is cut of the host's secrets (`shown`), the index a line at a time. */
-export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise<void> {
-  await rm(dir, { recursive: true, force: true });
-  await mkdir(dir, { mode: 0o700 });
+/** Lays `seed`'s index and active notes in the run's `.learning/`, through its Workspace, made fresh: whatever was there
+ *  goes. The index names the active notes alone (servedIndex), and each file is cut of the host's secrets (`shown`), the
+ *  index a line at a time. */
+export async function layLearned(work: Workspace, seed: Seed, shown: Shown): Promise<void> {
+  await work.remove(LEARNED_DIR, { recursive: true, force: true });
+  await work.mkdir(LEARNED_DIR);
   const files = Object.entries(seed.notes).map(([file, text]): [string, string] => [file, shown.text(text)]);
   const index = servedIndex(seed);
   if (index !== undefined) files.unshift([INDEX_FILE, linesShown(index, shown)]);
-  for (const [file, text] of files) await writeFile(join(dir, file), text, { flag: "wx" });
+  for (const [file, text] of files) await work.write(`${LEARNED_DIR}/${file}`, text);
 }
 
 /** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
@@ -897,43 +898,46 @@ function learnedParts(seed: Seed, options: LearnedOptions): { section: string | 
   return { section: [whole.length ? SOME_INTRO : INDEX_INTRO, shownIndex, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n"), given };
 }
 
-/** `rel`, a folder of the run's `work`, made where absent by a plain `mkdir` (which follows no link), then checked by
- *  `lstat`: a symbolic link there, or anything but a folder, throws, and nothing is written through it. */
-async function workFolder(work: string, rel: string): Promise<void> {
-  const path = join(work, rel);
-  await mkdir(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "EEXIST") throw error;
-  });
-  const stats = await lstat(path);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error(`the run's ${rel} is not a folder, and the host never writes through a link`);
+/** The run's skills folder, `.agents/skills`, as its Workspace names it. */
+const SKILLS_PATH = RUN_SKILLS.join("/");
+
+/** The names in the run's `.agents/skills/`: none when it is not there. A link on the way, or anything else that keeps
+ *  it from being listed, throws. */
+async function runSkillNames(work: Workspace): Promise<Set<string>> {
+  try {
+    return new Set((await work.list(SKILLS_PATH)).map((entry) => entry.name));
+  } catch (error) {
+    if (isWorkspaceError(error, "NOT_FOUND")) return new Set();
+    throw error;
+  }
 }
 
-/** Lays each of `skills` in the run's `work/.agents/skills/<name>/`, a folder made new for it (one already there
- *  throws), every folder on the way checked (workFolder). Each name goes in `made` once its folder is, so a caller that
- *  fails takes back what was laid. */
-async function laySkills(work: string, skills: readonly LearnedSkill[], made: string[]): Promise<void> {
+/** Lays each of `skills` in the run's `.agents/skills/<name>/` through its Workspace, a folder made new for it (one
+ *  already there throws EXISTS); a link on the way is ESCAPE, and nothing is written through it. Each name goes in
+ *  `made` once its folder is, so a caller that fails takes back what was laid. */
+async function laySkills(work: Workspace, skills: readonly LearnedSkill[], made: string[]): Promise<void> {
   if (!skills.length) return;
-  for (let depth = 1; depth <= RUN_SKILLS.length; depth++) await workFolder(work, RUN_SKILLS.slice(0, depth).join("/"));
+  const there = await runSkillNames(work);
   for (const { name, files = {} } of skills) {
-    await mkdir(join(work, ...RUN_SKILLS, name));
+    if (there.has(name)) throw new WorkspaceError("EXISTS", `the run's ${SKILLS_PATH}/${name} is there already`, { path: `${SKILLS_PATH}/${name}` });
+    await work.mkdir(`${SKILLS_PATH}/${name}`);
     made.push(name);
-    for (const [path, text] of Object.entries(files)) {
-      const parts = path.split("/");
-      for (let depth = 1; depth < parts.length; depth++) await workFolder(work, [...RUN_SKILLS, name, ...parts.slice(0, depth)].join("/"));
-      // A SKILL.md as a harness is given it: its name and description alone in its front matter (servedSkill).
-      await writeFile(join(work, ...RUN_SKILLS, name, ...parts), path === "SKILL.md" ? servedSkill(text) : text, { flag: "wx" });
+    // A SKILL.md as a harness is given it: its name and description alone in its front matter (servedSkill).
+    for (const [path, text] of Object.entries(files)) await work.write(`${SKILLS_PATH}/${name}/${path}`, path === "SKILL.md" ? servedSkill(text) : text);
+  }
+}
+
+/** Takes the learned skills `names` back out of the run's work: each `.agents/skills/<name>/`, unless a folder on the
+ *  way is a link (or no folder), when nothing is touched. */
+async function takeSkills(work: Workspace, names: Iterable<string>): Promise<void> {
+  for (const name of names) {
+    try {
+      await work.remove(`${SKILLS_PATH}/${name}`, { recursive: true, force: true });
+    } catch (error) {
+      if (isWorkspaceError(error, "ESCAPE") || isWorkspaceError(error, "NOT_FOUND") || isWorkspaceError(error, "REFUSED")) return;
+      throw error;
     }
   }
-}
-
-/** Takes the learned skills `names` back out of the run's work: each `work/.agents/skills/<name>/`, unless a folder on
- *  the way is a link (or no folder), when nothing is touched. */
-async function takeSkills(work: string, names: Iterable<string>): Promise<void> {
-  for (let depth = 1; depth <= RUN_SKILLS.length; depth++) {
-    const stats = await lstat(join(work, ...RUN_SKILLS.slice(0, depth))).catch(() => undefined);
-    if (!stats?.isDirectory()) return;
-  }
-  for (const name of names) await rm(join(work, ...RUN_SKILLS, name), { recursive: true, force: true });
 }
 
 /** The learned skills' names a pin's `skills` hold, each once. */
@@ -943,16 +947,25 @@ const namesIn = (files: readonly string[] | undefined): string[] => [...new Set(
  *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files (by their bytes in `work`) leave of
  *  SKILL_BYTES. One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
  *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`), is left out. */
-async function chooseSkills(work: string, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
+async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
   if (!seed.skills?.length) return { taken: [], left: [] };
   let ownBytes = 0;
-  for (const path of own) ownBytes += (await lstat(join(work, ...RUN_SKILLS, ...path.split("/")))).size;
+  const folders = new Map<string, Promise<Entry[]>>();
+  for (const path of own) {
+    const at = `${SKILLS_PATH}/${path}`;
+    const dir = posix.dirname(at);
+    if (!folders.has(dir)) folders.set(dir, work.list(dir));
+    const entry = (await folders.get(dir)!).find((one) => one.name === posix.basename(at) && one.kind === "file");
+    if (!entry) throw new WorkspaceError("NOT_FOUND", `the revision's skill file ${at} is not in the run's work`, { path: at });
+    ownBytes += entry.size;
+  }
   let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - ownBytes));
   const owned = new Set(namesIn(own));
+  const there = await runSkillNames(work);
   const taken: LearnedSkill[] = [];
   const left: string[] = [];
   for (const skill of seed.skills) {
-    if (owned.has(skill.name) || (await lstat(join(work, ...RUN_SKILLS, skill.name)).then(() => true, () => false))) continue;
+    if (owned.has(skill.name) || there.has(skill.name)) continue;
     const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text));
     if (!skill.files || secret || skill.bytes > room) {
       left.push(shown.name(skill.name));
@@ -964,17 +977,17 @@ async function chooseSkills(work: string, seed: Seed, own: readonly string[], sh
   return { taken, left };
 }
 
-/** Writes `seed` into the run just made in `runDir`: the index and each active note into `work/.learning/`, made fresh
- *  (whatever was there goes), then the pin, with what the run reads under `# Learned` (learnedOf) and the learned
- *  skills it gets beside the revision's `own` skill files (chooseSkills), then those skills, last, into
- *  `work/.agents/skills/`. A write that fails leaves no `.learning/`, no learned skill and no pin, and throws. */
-export async function pinSeed(runDir: string, work: string, seed: Seed, options: LearnedOptions & { own?: readonly string[] }): Promise<Pin> {
-  const dir = join(work, LEARNED_DIR);
+/** Writes `seed` into the run just made in `runDir`, its files through the run's Workspace (`work`): the index and each
+ *  active note into `.learning/`, made fresh (whatever was there goes), then the pin, with what the run reads under
+ *  `# Learned` (learnedOf) and the learned skills it gets beside the revision's `own` skill files (chooseSkills), then
+ *  those skills, last, into `.agents/skills/`. A write that fails leaves no `.learning/`, no learned skill and no pin,
+ *  and throws. */
+export async function pinSeed(runDir: string, work: Workspace, seed: Seed, options: LearnedOptions & { own?: readonly string[] }): Promise<Pin> {
   const pinFile = join(runDir, LEARNING_PIN);
   const made: string[] = [];
   try {
     await learningTestHooks.beforePin?.(runDir);
-    await layLearned(dir, seed, options.shown);
+    await layLearned(work, seed, options.shown);
     const { section, given } = learnedParts(seed, options);
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);
     const skills = taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`));
@@ -1006,7 +1019,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     // behind: it goes too, or the run's instructions would still say what it learned, of notes it has no copy of.
     await rm(pinFile, { force: true }).catch(() => undefined);
     await rm(join(runDir, LEARNED_WORKFLOWS_FILE), { force: true }).catch(() => undefined);
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    await work.remove(LEARNED_DIR, { recursive: true, force: true }).catch(() => undefined);
     await takeSkills(work, made).catch(() => undefined);
     throw error;
   }
@@ -1015,7 +1028,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
 /** Lays the learned skills a reopened run's pin names (`pin.skills`) again, fresh, from `read` (the skills of its seed's
  *  commit: skillsAt): what the run wrote over them, or took away, is not what it learned. Each only with the files the
  *  pin names. Throws when it cannot, a link on the way among the reasons. */
-export async function layPinnedSkills(work: string, pin: Pin, read: () => Promise<LearnedSkill[]>): Promise<void> {
+export async function layPinnedSkills(work: Workspace, pin: Pin, read: () => Promise<LearnedSkill[]>): Promise<void> {
   const names = namesIn(pin.skills);
   if (!names.length) return;
   const files = new Set(pin.skills);
@@ -1025,15 +1038,15 @@ export async function layPinnedSkills(work: string, pin: Pin, read: () => Promis
 }
 
 /** Takes back a seed whose copy a server went down during (runs.ts load): the learned skills its pin names, the pin,
- *  then its `work/.learning/`. True when the pin or the copy was there. */
-export async function dropSeed(runDir: string, work: string): Promise<boolean> {
+ *  then the run's `.learning/`, through its Workspace. True when the pin or the copy was there. */
+export async function dropSeed(runDir: string, work: Workspace): Promise<boolean> {
   const pinFile = join(runDir, LEARNING_PIN);
-  const dir = join(work, LEARNED_DIR);
-  const there = Boolean((await lstat(pinFile).catch(() => null)) ?? (await lstat(dir).catch(() => null)));
+  const copied = await work.list(LEARNED_DIR).then(() => true, (error: unknown) => !isWorkspaceError(error, "NOT_FOUND"));
+  const there = Boolean(await lstat(pinFile).catch(() => null)) || copied;
   if (!there) return false;
   await takeSkills(work, namesIn((await readPin(runDir).catch(() => undefined))?.skills));
   await rm(pinFile, { force: true });
-  await rm(dir, { recursive: true, force: true });
+  await work.remove(LEARNED_DIR, { recursive: true, force: true });
   return there;
 }
 
@@ -1067,9 +1080,9 @@ const NOTHING_YET = "Nothing learned yet.";
  *  failed, a workflow's run) is never asked what to keep, so it is told nothing. And its skill files: the revision's
  *  `own`, then the learned ones its pin names, by their paths under `.agents/skills/` in `work`, but for a skill named
  *  like one of the revision's, which is the revision's. A learned skill the work no longer holds whole, as a harness reads
- *  it (no link on the way: workspace.ts), is left out: a learning fault never fails a run. The one path for every harness
- *  (app.ts): pi's system prompt, claude-agent's and codex's instructions, and the skills each gets. */
-export async function withLearned(runDir: string, work: string, instructions: string, own: readonly string[] = []): Promise<{ instructions: string; skills: string[] }> {
+ *  it through the run's Workspace (no link on the way), is left out: a learning fault never fails a run. The one path for
+ *  every harness (app.ts): pi's system prompt, claude-agent's and codex's instructions, and the skills each gets. */
+export async function withLearned(runDir: string, work: Workspace, instructions: string, own: readonly string[] = []): Promise<{ instructions: string; skills: string[] }> {
   const pin = await readPin(runDir);
   const section = pin?.section;
   const owned = new Set(namesIn(own));
@@ -1077,7 +1090,7 @@ export async function withLearned(runDir: string, work: string, instructions: st
   const whole = new Set<string>();
   for (const name of namesIn(learned)) {
     const files = learned.filter((path) => path.startsWith(`${name}/`));
-    if (await Promise.all(files.map((path) => readWorkText(work, [...RUN_SKILLS, path].join("/")))).then(() => true, () => false)) whole.add(name);
+    if (await Promise.all(files.map((path) => work.read(`${SKILLS_PATH}/${path}`))).then(() => true, () => false)) whole.add(name);
     else process.stderr.write(`agentrun-serve: the skill ${name} its agent learned is no longer whole in the run's work, so the run goes on without it\n`);
   }
   return {

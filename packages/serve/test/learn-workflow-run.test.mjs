@@ -16,6 +16,7 @@ import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learned-workflow.js";
 import { REPLAY } from "../dist/host-tools.js";
+import { localWorkspace } from "../dist/workspace/index.js";
 import { git } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -292,7 +293,7 @@ async function pinned(t, id, files, secrets = [], extra = {}) {
   const runDir = join(await scratch(t), "run");
   mkdirSync(join(runDir, "work"), { recursive: true });
   const seed = await seedOf(data, id);
-  return { seed, pin: await learning.pinSeed(runDir, join(runDir, "work"), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
+  return { seed, pin: await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
 }
 
 test("a learned workflow whose README's front matter does not read one way (not closed, or a key indented) is not the run's: never read as active", { timeout: 60_000 }, async (t) => {

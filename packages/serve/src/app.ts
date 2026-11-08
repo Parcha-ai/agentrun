@@ -178,7 +178,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(coding.extension);
   // What the run's agent learned goes into its instructions, and the skills it wrote join the revision's, the one path for
   // every harness (learning.ts).
-  const learned = revision.kind === "agentic" ? await withLearned(where.root, where.work, revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
+  const learned = revision.kind === "agentic" ? await withLearned(where.root, localWorkspace(where.work), revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
   // The workflows the agent learned that its run may run, as one tool (learned-workflow.ts), when its pin names any: on
   // the run's models, as the run's own requests under its cap, each model node and `llm` call on the run's model of its
   // tier, else the run's own (the only one the run was made with, and handed the key of); on another harness, the
