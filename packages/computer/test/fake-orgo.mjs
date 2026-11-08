@@ -74,6 +74,14 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 				}
 				return json(200, publicOf(record));
 			}
+			if (method === "PATCH") {
+				if (!visible(record) || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
+				if (typeof body?.name === "string") {
+					if ([...computers.values()].some((c) => c !== record && !c.deleted && c.name === body.name && c.workspace_id === record.workspace_id)) return json(409, { error: "name in use", code: "name_taken" });
+					record.name = body.name;
+				}
+				return json(200, publicOf(record));
+			}
 			if (method === "DELETE") {
 				if (record === undefined || record.deleted) return json(404, { error: "Computer not found", code: "computer_not_found" });
 				if (wakingLeft > 0) {
