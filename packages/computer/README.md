@@ -1360,11 +1360,17 @@ switch or a refused setting.
 ### Extend and stream
 
 `extend(ref, ttlMs)` sets E2B's timer to now + `ttlMs` (`Sandbox.setTimeout`, `index.mjs:5529-5541`), reads the end
-back, then moves init's own deadline there with `deadline.extend`. It is never earlier than the current end, and never
-past create's time plus the cap, the maximum init was given; a refusal moves nothing. When init's move fails after
-E2B's, the error says E2B's timer moved and init's did not: the programs end at the old deadline, earlier than asked,
-never later. E2B has no call that changes metadata, so the deadline label stays as create wrote it, and `list()`
-reports E2B's own end once it is past where create set it (its start plus the timeout create gave, by E2B's clock).
+back, then moves init's own deadline there with `deadline.extend`, and returns the deadline init took. It is never
+earlier than the current end, and never past create's time plus the cap, the maximum init was given; a refusal moves
+nothing. E2B's timer is asked for whole seconds, rounded down at the cap, so it never passes the cap by this machine's
+clock; init's deadline is E2B's end up to the cap. When init's move fails after E2B's, the error says E2B's timer moved
+and init's did not: the programs end at the old deadline, earlier than asked, never later. A provider runs one extend
+of a computer at a time, each reading the deadline the one before it left, so a slow, shorter extend never pulls E2B's
+timer under a longer one's (two providers extending one computer at once are not ordered). E2B has no call that
+changes metadata, so the deadline label stays as create wrote it, and `list()` and `attach()` report E2B's own end, up
+to the cap, once it is more than 2 s past where create set it (its start plus the timeout create gave, by E2B's clock,
+to the second E2B rounds to); extend never leaves E2B's end inside those 2 s, moving it at least 3 s past create's end,
+so an extend however short reads back.
 
 `stream()` exists only on a provider made with `publicStream` (`COMPUTER_E2B_PUBLIC_STREAM=1`): a private sandbox's
 URL needs the `e2b-traffic-access-token` header, which a browser cannot send (E2B docs, network/restrict-public-access),
