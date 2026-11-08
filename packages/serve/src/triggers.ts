@@ -315,7 +315,7 @@ export class Triggers {
   /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. */
   rotate(id: string): { secret: string } {
     const trigger = this.need(id);
-    if (!this.adapter(trigger.source).secret) throw invalid([{ field: "source.kind", reason: "not_allowed", message: `Only a trigger whose source has a signing secret has one (${this.adapters.filter((a) => a.secret).map((a) => a.id).join(", ")}).` }]);
+    if (!this.adapter(trigger.source).secret) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
     return { secret: this.deps.secrets.mint(id) };
   }
 
