@@ -38,7 +38,10 @@ const askIdOf = (sessionTag, requestId) => createHash("sha256").update(`${sessio
 
 /** A signed-in owner's server with the fake browser, and a run of `faux` started (with `cap`, if any) and come to
  *  input_required with its session open and its viewer handed over. `env`: more of the run's environment. */
-async function watched(t, { faux, cap, env = {}, hook } = {}) {
+/** `settled`: awaited once the run reads input_required, before the viewer's hand-over is looked for (a test's way to
+ *  let the run's process move on first, as a slow machine does). `viewer: false`: no hand-over is waited for, for a run
+ *  that need not keep one (paused at its cap, its process is let go, and its viewer with it). */
+async function watched(t, { faux, cap, env = {}, hook, settled, viewer = true } = {}) {
   const log = join(await scratch(t), "browser.jsonl");
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: log, ...env }, KEYS);
   const server = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER, faux });
@@ -53,6 +56,14 @@ async function watched(t, { faux, cap, env = {}, hook } = {}) {
   const runId = started.body.run_id;
   const followed = await follow(server.api, runId, ["input_required"]);
   const dir = join(runFolder(server.data, runId), "browser-live");
+  if (settled) await settled(server, runId, dir);
+  if (!viewer) {
+    const w = { server, origin, cookie, runId, log, after: followed.after, firstRows: followed.rows };
+    w.view = async () => (await server.api("GET", `/runs/${runId}`)).body;
+    w.rows = async () => (await server.api("GET", `/runs/${runId}/timeline`)).body.rows;
+    w.handBack = (outcome, headers = { cookie }) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/browser/hand-back`, headers: { ...json, origin, ...headers }, body: { outcome } });
+    return w;
+  }
   assert.ok(await until(() => readdir(dir).then((names) => names.some((name) => name.endsWith(".json")), () => false)), "the run's process handed its viewer over");
   const handed = JSON.parse(readFileSync(join(dir, (await readdir(dir)).find((name) => name.endsWith(".json"))), "utf8"));
   const wsPath = `/v2/runs/${runId}/browser/live/v/${handed.id}/ws`;
@@ -324,7 +335,10 @@ test("an ask whose words echo a value the server holds as a key shows it cut, ne
 });
 
 test("cap: the agent's ask holds the person's 15 minutes first; with no room no ask is made and the tool's result says why", { timeout: 180_000 }, async (t) => {
-  const w = await watched(t, { faux: BROWSE_HANDOFF, cap: 0.03 });
+  // Paused at its cap, the run's process is let go, its browser's session and its viewer's hand-over with it: the test
+  // goes on only once that has happened (as on a slow machine), so it never depends on catching the hand-over first.
+  const handoverGone = async (server, runId, dir) => assert.ok(await until(async () => !(await readdir(dir).then((names) => names.some((name) => name.endsWith(".json")), () => false)) && runRecordOf(server.data, runId).holder?.pid === undefined, 60_000), "the paused run's process let go");
+  const w = await watched(t, { faux: BROWSE_HANDOFF, cap: 0.03, settled: handoverGone, viewer: false });
   const view = await w.view();
   // The agent's own step the cap refused: its tool's result says so, and the run waits on a raise, as for any paid call.
   assert.equal(view.pending?.kind, "budget", `no browser ask; paused at the cap: ${JSON.stringify(view.pending)}`);
