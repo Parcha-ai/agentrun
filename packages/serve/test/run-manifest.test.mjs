@@ -3,12 +3,12 @@
 // quoted, a format character in it escaped, so no name forges an entry or reorders what the model reads; and only
 // work/'s own inputs/ is read, never through a link.
 import assert from "node:assert/strict";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
 import { uploadTestHooks } from "../dist/uploads.js";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -130,20 +130,28 @@ Files for this run: "inputs/a\u202eb.txt" (3 B), "inputs/c\u200bd\u2066.txt" (2 
   assert.deepEqual(names, ["inputs/a\u202eb.txt", "inputs/c\u200bd\u2066.txt", `inputs/${forged}`]);
 });
 
-test("only work/'s own inputs/ is read: a link at work/inputs lists nothing from where it points, and the run still starts", { timeout: 90_000 }, async (t) => {
+test("only work/'s own inputs/ is read: a link at work/inputs lists nothing from where it points, and no file is copied through it", { timeout: 90_000 }, async (t) => {
   const elsewhere = await scratch(t);
   await writeFile(join(elsewhere, "planted.txt"), "not the run's");
   // On the unit: a work/ whose inputs is a link lists nothing.
   const work = await scratch(t);
   await symlink(elsewhere, join(work, "inputs"));
   assert.deepEqual(await inputFiles(work), []);
-  // Through the API: the link planted before the run's files are copied, as a run's own tool could leave it.
-  uploadTestHooks.beforeCopy = async (runWork) => symlink(elsewhere, join(runWork, "inputs"));
-  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
+  // Through the API: the link planted before the run's files are copied. The copy goes through the run's Workspace,
+  // which follows no link: the run ends failed, saying why, and nothing lands where the link points.
   const server = await serve(t);
   const { api } = server;
+  uploadTestHooks.beforeCopy = async () => {
+    const runId = (await api("GET", "/runs")).body.runs[0].run_id;
+    await symlink(elsewhere, join(runDir(server.data, runId), "work", "inputs"));
+  };
+  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
   const id = await upload(server, "notes.txt", Buffer.from("x"));
   assert.equal((await api("POST", "/agents", agent("linked"))).status, 201);
-  const { said } = await run(api, "linked", "Look.", [id]);
-  assert.deepEqual(said, ["Look."], "nothing from where the link points");
+  const started = await api("POST", "/agents/linked/runs", { input: { content: "Look." }, file_ids: [id] });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const read = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.deepEqual([read.status, read.error?.code], ["failed", "run_failed"], JSON.stringify(read));
+  assert.match(read.error.message, /could not be copied into its workspace/);
+  assert.deepEqual(await readdir(elsewhere), ["planted.txt"], "nothing written through the link");
 });

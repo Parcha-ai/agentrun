@@ -215,15 +215,16 @@ test("a run whose files are still being copied does not start for a message mean
   const gate = new Promise((resolve) => (open = resolve));
   let copying;
   const started = new Promise((resolve) => (copying = resolve));
-  uploadTestHooks.beforeCopy = async (work) => {
-    copying(work);
+  uploadTestHooks.beforeCopy = async () => {
+    copying();
     await gate;
   };
   t.after(() => void (uploadTestHooks.beforeCopy = undefined));
   const created = api("POST", "/agents/held/runs", { input: { content: "Hello." }, file_ids: [notes.file_id] });
-  const work = await started;
+  await started;
   const runId = (await api("GET", "/runs")).body.runs[0]?.run_id;
   assert.ok(runId, "a client finds the run while it copies");
+  const work = join(runDir(server.data, runId), "work");
   // The message waits for the copy, never a launch, and is answered so once its wait is up.
   const message = await api("POST", `/runs/${runId}/messages`, { content: "Go on." });
   assert.deepEqual([message.status, message.body.error?.code, message.body.error?.message], [503, "unavailable", "the run's files are still being copied into its workspace"], JSON.stringify(message.body));
