@@ -227,4 +227,10 @@ export interface ComputerProvider {
 	extend?(ref: ComputerRef, ttlMs: number, context?: CallContext): Promise<Result<{ deadline: Date }>>;
 	/** A URL that shows the screen live, the vendor's own. Optional. */
 	stream?(ref: ComputerRef, options?: { viewOnly?: boolean }, context?: CallContext): Promise<Result<{ url: string; expiresAt?: Date }>>;
+	/**
+	 * Removes what this provider's computers left behind outside the computers themselves (Docker: an egress proxy and its
+	 * volume whose computer is gone or whose deadline has passed), with all of these labels, and returns what it removed,
+	 * by name. Optional; the janitor's sweep calls it after the computers, which release their own parts.
+	 */
+	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal }): Promise<Result<string[]>>;
 }

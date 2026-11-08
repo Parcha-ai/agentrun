@@ -2188,7 +2188,7 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
 run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
-git 2.40 or later is one such fault, said once on stderr.
+git 2.32 or later (what learning's own git calls need) is one such fault, said once on stderr.
 
 ### What a run learns
 
