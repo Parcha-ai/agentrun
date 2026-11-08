@@ -337,3 +337,44 @@ test("a server-wide hook's documented answers are its own: its firings' by names
   for (const answer of [{ firings: [] }, { challenge: "c-123" }, { ok: "ignored" }, { firings: [{ ok: "duplicate" }] }, { ok: true }, { ok: "ignored", challenge: "c-9" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
   assert.deepEqual(schemaProblems(doc, body("200"), { ok: "maybe" }), [], "an ok answer of the source's own is a handshake");
 });
+
+/** A server-wide source whose triggers each choose their own events (takes), with no scope: one event fires every
+ *  trigger that takes it. */
+const fan = {
+  id: "fan", label: "fan trigger", delivery: "push", owner: false,
+  describe: '{kind: "fan", topic}', fires: "a fan event", schemas: [],
+  settings: { scope: "server", fields: { signing: { minBytes: MIN_KEY_BYTES } } },
+  push: {
+    maxBodyBytes: 4096,
+    key: "signing",
+    headers: headersRefusal,
+    verify,
+    parse(_headers, body) {
+      const doc = JSON.parse(body.toString("utf8"));
+      return [{ key: doc.id, text: doc.text, event: doc.topic, body: doc }];
+    },
+  },
+  takes: (source, event) => (source.topic === event.event ? undefined : "another topic"),
+  parse: (value, _now, bad) => (typeof value.topic === "string" ? { kind: "fan", topic: value.topic } : bad("topic", "missing", "topic is a string")),
+  wellFormed: (source) => typeof source.topic === "string",
+};
+
+test("a server-wide source whose triggers each choose their events fires every trigger that takes one event, each its own firing; one that does not take it fires nothing", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const secret = `whsec_${randomBytes(32).toString("base64")}`;
+  new SealedSettings(data, "fan", fan.settings, sealKey, () => {}).set("server", "signing", secret);
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, fan] });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("fanned"))).status, 201);
+  const make = async (topic) => (await api("POST", "/triggers", { name: topic, source: { kind: "fan", topic }, target: { kind: "start_run", agent_id: "fanned", input: { content: "A fan event." }, max_cost_usd: 0.5 } })).body;
+  const [a1, a2, b] = [await make("a"), await make("a"), await make("b")];
+  assert.ok(a1.id && a2.id && b.id, "two triggers may take the same events: no scope of one");
+  const res = await post(server.baseUrl, "/hooks/fan", JSON.stringify({ id: "evt-1", topic: "a", text: "hi" }), { secret });
+  assert.equal(res.status, 202, JSON.stringify(res.body));
+  assert.equal(res.body.firings.length, 2, JSON.stringify(res.body));
+  for (const id of [a1.id, a2.id]) assert.equal((await firings(api, id, 1))[0].status, "started");
+  assert.deepEqual((await api("GET", `/triggers/${b.id}/firings`)).body.firings, []);
+});
