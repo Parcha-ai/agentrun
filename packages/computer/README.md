@@ -1367,7 +1367,9 @@ switch or a refused setting.
 back, then moves init's own deadline there with `deadline.extend`, and returns the deadline init took. It is never
 earlier than the current end, and never past create's time plus the cap, the maximum init was given; a refusal moves
 nothing. E2B's timer is asked for whole seconds, rounded down at the cap, so it never passes the cap by this machine's
-clock; init's deadline is E2B's end up to the cap. When init's move fails after E2B's, the error says E2B's timer moved
+clock; init's deadline is E2B's end up to the cap. When no whole number of seconds inside the cap reaches the deadline
+held now (init's, or E2B's own end as `getInfo` reads it), extend is refused as `limit` and moves nothing, so E2B's
+timer is never pulled under it. When init's move fails after E2B's, the error says E2B's timer moved
 and init's did not: the programs end at the old deadline, earlier than asked, never later. A provider runs one extend
 of a computer at a time, each reading the deadline the one before it left, so a slow, shorter extend never pulls E2B's
 timer under a longer one's (two providers extending one computer at once are not ordered). E2B has no call that

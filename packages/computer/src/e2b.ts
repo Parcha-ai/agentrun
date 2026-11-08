@@ -1364,6 +1364,16 @@ export class E2BProvider implements ComputerProvider {
 		const created = createdEnd(info);
 		const want = created === undefined ? target : Math.max(target, clearOf(created));
 		const timerMs = Math.min(Math.ceil((want - now) / 1000) * 1000, Math.floor((most.getTime() - now) / 1000) * 1000);
+		// Rounded down at the cap, the timer may end before the deadline now held, init's or E2B's own end: setTimeout
+		// would then shorten the computer's life, and init refuses to move back. Nothing moves.
+		const vendorEnd = info.endAt instanceof Date ? info.endAt.getTime() : Number.NaN;
+		const held = Number.isNaN(vendorEnd) ? current.getTime() : Math.max(current.getTime(), vendorEnd);
+		if (now + timerMs < held) {
+			return fail(
+				"limit",
+				`no whole number of seconds E2B takes moves ${ref.name}'s end from ${new Date(held).toISOString()} to ${new Date(target).toISOString()} without passing ${most.toISOString()}, the most this computer may live; nothing moved`,
+			);
+		}
 		if (created !== undefined && now + timerMs < clearOf(created)) {
 			return fail(
 				"limit",
