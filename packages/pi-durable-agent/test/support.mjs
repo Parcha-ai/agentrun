@@ -32,7 +32,7 @@ export function diskRuns(dir) {
 }
 
 /** The stored format, declared from outside the package. */
-export const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
+export const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({}) });
 
 async function openStorage(file) {
   const database = await openNodeSqliteDatabase(file);

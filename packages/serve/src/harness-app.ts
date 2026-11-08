@@ -29,7 +29,8 @@
 // again and reports itself; the root holds its call once.
 //
 // A host tool call the tool gate parks for a person's approval (tool-gate.ts) ends its turn: no model request leaves
-// after it, and the turn is interrupted once its result is in, then settled as a stopped one is, its end interrupted.
+// after it, and the turn is interrupted once its result is in and the request that asked for it is booked (its end, up to
+// BOOKING_WAIT_MS), then settled as a stopped one is, its end interrupted.
 // The answer's resume is a message of its own, sent as a person's is; a turn the park ended is not resumed at the next
 // open while the call still waits.
 import { existsSync, writeFileSync } from "node:fs";
@@ -352,7 +353,8 @@ export function adapterRun(
   // A paid request whose cost could not be written: the booking admits no request after it, and the turn stops on it.
   let halted: Error | undefined;
   // The call the gate parked, until the next message starts a turn: no request leaves meanwhile, and the turn is
-  // interrupted once the call's result is in. Not a failure: the turn ends as the person's answer will resume it.
+  // interrupted once the call's result is in and the requests in flight are booked (up to BOOKING_WAIT_MS). Not a
+  // failure: the turn ends as the person's answer will resume it.
   let parked: ParkedCall | undefined;
   // The parked call answered allow (the gate's unpark): the run's own requests beside the harness's (the approved call's
   // node) are admitted from then, while the harness's own stay held until the next message's turn. Apart from `parked`,
@@ -714,8 +716,11 @@ export function adapterRun(
       if (waiting) deferred.set(event.callId, result);
       void flush();
       if (!waiting) later(() => commit(async (tx) => void (await result(tx))).then(() => undefined));
-      // The parked call's result is in: its turn ends here, settled once the interrupt is done (runTurns).
-      if (endsTurn(parked, { callId: event.callId, tool: event.name, args: argsOf.get(event.callId) }) && !stopping) stopping = session?.interrupt();
+      // The parked call's result is in: its turn ends here, settled once the interrupt is done (runTurns). The CLI runs a
+      // tool as soon as its call has streamed, before the request that asked for it has ended (its usage comes with that
+      // end): the interrupt waits for the requests in flight to be booked, up to BOOKING_WAIT_MS, so that request is booked
+      // at its price. Past the wait it is cut as before, its cost unknown. No request leaves meanwhile (PARKED).
+      if (endsTurn(parked, { callId: event.callId, tool: event.name, args: argsOf.get(event.callId) }) && !stopping) stopping = bookings(BOOKING_WAIT_MS).then(() => session?.interrupt());
     }
   };
 

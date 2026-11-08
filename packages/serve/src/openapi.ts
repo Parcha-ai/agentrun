@@ -5,6 +5,8 @@
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
 import { TRIGGER_SOURCES } from "@parcha/pi-durable-agent/timeline";
+import type { TriggerAdapter } from "./trigger-adapter.js";
+import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
@@ -17,9 +19,11 @@ import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
-import { HOOK_TOLERANCE_S } from "./trigger-secrets.js";
-import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
-import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
+import { HOOK_BODY_MS } from "./push-handler.js";
+import { CATCHUP_WINDOW_S, DUE_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { DEFINITION_FIELDS, MODEL_REF, NOT_KEPT } from "./validate.js";
+import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
 import { permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
@@ -529,18 +533,16 @@ const RUN_TRIGGER: Json = {
   ...TRIGGER_MARK,
 };
 const DATE_TIME = { type: "string", format: "date-time" };
-const TRIGGER_SOURCE = {
-  oneOf: [
-    closedWith({ kind: { const: "schedule" }, cron: { type: "string", description: "Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap." } }, { timezone: { type: "string", default: "UTC", description: "The IANA zone the cron line is read in." } }),
-    closed({ kind: { const: "schedule" }, at: { ...DATE_TIME, description: "Once, at this time (to the second, in the future); the trigger turns itself off after." } }),
-    closedWith({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
-    closed({ kind: { const: "webhook" } }),
-  ],
-  description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), or a signed request to /hooks/{trigger_id} (\`webhook\`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
-};
+/** A trigger's source, as `adapters` give it. */
+const sourceSchemaOf = (adapters: readonly TriggerAdapter[]) => ({
+  oneOf: adapters.flatMap((a) => a.schemas),
+  description: `When it fires: ${adapters.map((a) => a.fires).join(", or ")}. Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+});
+const TRIGGER_SOURCE = sourceSchemaOf(TRIGGER_ADAPTERS);
 /** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
  *  start always set, to UTC and to when it was written when the write left them out. */
-const TRIGGER_SOURCE_SENT = { ...TRIGGER_SOURCE, oneOf: TRIGGER_SOURCE.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) };
+const sentOf = (sources: ReturnType<typeof sourceSchemaOf>) => ({ ...sources, oneOf: sources.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) });
+const TRIGGER_SOURCE_SENT = sentOf(TRIGGER_SOURCE);
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
@@ -560,10 +562,14 @@ const TRIGGER_TARGET = {
   ],
   description: "What each firing does: start a run of an agent, capped, or send a message to one run.",
 };
+/** A firing's `by`, as `adapters` give it. */
+/** A firing's `by`, as `adapters` give it: the clock's sources, then a run now, then the pushed ones, the order the
+ *  document has always served. */
+const firedByOf = (adapters: readonly TriggerAdapter[]) => ({ enum: [...adapters.filter((a) => a.delivery === "clock").map((a) => a.id), "manual", ...adapters.filter((a) => a.delivery === "push").map((a) => a.id)], description: adapters.flatMap((a) => (a.firedBy ? [a.firedBy] : [])).join(" ") });
 const TRIGGER_FIRING = closedWith(
   {
     key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
-    by: { enum: ["schedule", "manual", "webhook"], description: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`." },
+    by: firedByOf(TRIGGER_ADAPTERS),
     nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
     status: { enum: [...FIRING_STATUSES], description: `\`due\`: recorded, its run not started yet (a full server keeps it due, with \`retry_at\`). \`started\`: its run is \`run_id\`. \`sent\`: a message_run firing's message reached \`run_id\`. \`skipped\`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; \`reason\` says which. \`failed\`: the run was refused, with \`error\`; a trigger.failed webhook message says so. \`missed\`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), \`count\` of them from \`nominal_at\` on.` },
     at: { ...DATE_TIME, description: "When it was recorded." },
@@ -596,7 +602,59 @@ const TRIGGER_WRITE = {
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, default: CATCHUP_WINDOW_S },
 };
 const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { type: "string" } };
+/** A hook whose body did not arrive in time (push-handler.ts readCapped): answered, then its socket closed. */
+const HOOK_TIMEOUT = { description: `\`request_timeout\`: the body did not arrive, whole, within ${HOOK_BODY_MS / 1000} s; the socket is closed after this answer.`, headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } };
+/** What a pushed request made: one firing for each event it held that a trigger takes, in order; none for a request
+ *  with no event, or whose events no trigger takes. */
+const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } } } });
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
+/** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
+const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
+const NULLABLE_STRING = { type: ["string", "null"] };
+const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." } });
+const TEMPLATE = closed({
+  name: { type: "string", description: "Its folder's name, the one apply takes." },
+  display_name: { type: ["string", "null"], description: "The agent's name, its `${parameters.<name>}` filled at apply; null: the package's name." },
+  version: { type: "string", description: "SemVer." },
+  description: { type: "string" },
+  license: NULLABLE_STRING,
+  repository: NULLABLE_STRING,
+  harness: { type: ["array", "null"], items: { type: "string" }, description: "The harnesses it runs on, in the order it prefers them: apply takes the first this server runs. Null: any, the server's default." },
+  model: { type: ["object", "null"], additionalProperties: false, required: ["tier"], properties: { tier: { enum: Object.keys(MODEL_TIERS) }, prefer: { type: "string" } }, description: "The model it wants: `prefer` when this server runs it, else this server's model for the tier (fast: AGENT_MODEL_FAST, balanced: AGENT_MODEL, strong: AGENT_MODEL_STRONG, each else the default). Null: the server's default." },
+  effort: { type: ["string", "null"], description: "Its thinking level, the definition's `thinking`." },
+  tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
+  mcp: {
+    type: "array",
+    items: closed({
+      server: { type: "string" },
+      required: { type: "boolean" },
+      tools: { type: "array", items: closed({ name: { type: "string" }, tool: { type: "string", description: "Its gate name, `mcp:<server>/<tool>`: what apply's `grants` and the tool settings name." }, asks: { enum: ["allow", "ask"], description: "The permission the package asks the owner for: a consent screen shows it, and only the owner's `grants` at apply set it." } }) },
+    }),
+    description: "The MCP servers it uses, by the name this server saves them under, and the tools of each it grants: apply grants them when the server is saved here, each at the owner's own setting (a third-party tool asks by default), and sets to allow only those the apply's `grants` name; one not saved is skipped with a warning, or, `required`, refuses the apply (409, nothing made).",
+  },
+  parameters: { type: "object", additionalProperties: TEMPLATE_PARAMETER, description: "What apply takes in `parameters`, by name, put where the package writes `${parameters.<name>}`." },
+  secrets: { type: "array", items: { type: "string" }, description: "The keys this server must have, by variable name (a saved key counts), before apply makes anything." },
+  budget: { type: ["object", "null"], additionalProperties: false, required: ["per_run_usd"], properties: { per_run_usd: { type: "number" } }, description: "Each run's spend cap, the agent's max_cost_usd. Required of a package with triggers." },
+  learning: { type: "boolean" },
+  triggers: { type: "array", items: { type: "object" }, description: "The triggers apply makes on its agent: POST /triggers bodies with no agent_id, placeholders unfilled." },
+  skills: { type: "array", items: { type: "string" } },
+  evals: { type: "array", items: { type: "string" }, description: `Its eval cases (evals/<case>/: prompt.md and graders of ${GRADER_TYPES.join(", ")}); none runs here.` },
+});
+const TEMPLATE_APPLY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    parameters: { type: "object", description: "The package's parameters (GET /templates), by name, each of its type." },
+    grants: { type: "array", items: { type: "string" }, description: "The owner's answer to the consent screen: the package's MCP tools, by gate name (`mcp:<server>/<tool>`, GET /templates `mcp[].tools[].tool`), the agent is allowed to call unasked. Any other is 422. One the owner denies on this server stays denied, with a warning. Absent, none: every tool keeps the owner's setting." },
+    overrides: { type: "object", additionalProperties: false, properties: { model: { type: "string", pattern: MODEL_REF.source, description: "The agent's model in place of the one the package's tier and preference pick, \"provider/model-id\"." } } },
+  },
+};
+const TEMPLATE_APPLIED = closed({
+  template: { type: "string" },
+  version: { type: "string" },
+  agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
+  trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
+  warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it." },
+});
 const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {
   oneOf: [
@@ -1227,11 +1285,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/hooks/{trigger_id}": {
     post: {
       operationId: "receiveHook", tags: ["local"], summary: "Fire a webhook trigger: a request signed by its secret, no token",
-      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. It follows the Standard Webhooks spec, so a sender signs with any of its libraries: \`webhook-id\` (1 to 255 printable ASCII characters, no space; the firing's idempotency key), \`webhook-timestamp\` (Unix seconds, within ${HOOK_TOLERANCE_S} s of this server's clock either way) and \`webhook-signature\`, space-separated \`v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">\` under the secret's 32 bytes (at most 2048 characters in all), any one of which may match. The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" untrusted>\`. A bad or missing signature, a stale or future timestamp, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. The first request with a webhook-id answers 202 once its firing is recorded, and its run starts after; the same webhook-id again, for a day after, answers 200 with that firing and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new webhook-id answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
+      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. It follows the Standard Webhooks spec, so a sender signs with any of its libraries: \`webhook-id\` (1 to 255 printable ASCII characters, no space; the firing's idempotency key), \`webhook-timestamp\` (Unix seconds, within ${HOOK_TOLERANCE_S} s of this server's clock either way) and \`webhook-signature\`, space-separated \`v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">\` under the secret's 32 bytes (at most 2048 characters in all), any one of which may match. The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" untrusted>\`. A bad or missing signature, a stale or future timestamp, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. The first request with a webhook-id answers 202 once its firing is recorded, and its run starts after; the same webhook-id again, for a day after, answers 200 with that firing and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new webhook-id answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
       security: [],
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "*/*": { schema: {} } } },
-      responses: { "202": json(TRIGGER_FIRING, "Recorded: its run starts (or its message goes) after this answer."), "200": json(TRIGGER_FIRING, "This webhook-id's firing, as it stands."), ...errors(401, 413, 429, 500) },
+      responses: { "202": json(TRIGGER_FIRING, "Recorded: its run starts (or its message goes) after this answer."), "200": json(TRIGGER_FIRING, "This webhook-id's firing, as it stands."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
       ...TRIGGER_MARK,
     },
   },
@@ -1241,6 +1299,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [TRIGGER_ID],
       responses: { "200": json(closed({ firings: { type: "array", items: TRIGGER_FIRING } }), "Each firing."), ...errors(401, 404, 409, 429, 500) },
       ...TRIGGER_MARK,
+    },
+  },
+  "/templates": {
+    get: {
+      operationId: "listTemplates", tags: ["local"], summary: "The template packages this server ships: each makes an agent, its skills and its triggers",
+      responses: { "200": json(closed({ templates: { type: "array", items: TEMPLATE } }), "Each package, by name."), ...errors(401, 429, 500) },
+      ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/{template}/apply": {
+    post: {
+      operationId: "applyTemplate", tags: ["local"], summary: "Apply a template package: make its agent, with its skills, then its triggers",
+      description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it granted and set to allow. Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's name (GET /templates)." }, ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_APPLY } } },
+      responses: { "201": json(TEMPLATE_APPLIED, "Applied: the agent and its triggers made."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      ...TEMPLATE_MARK,
     },
   },
   "/settings/webhook/deliveries/{webhook_id}/redeliver": {
@@ -1720,7 +1795,48 @@ export const REQUEST_EXAMPLES: Record<string, Record<string, { summary: string; 
   },
 };
 
-export function openapiDocument(capabilityOf: (operationId: string) => string | undefined): Json {
+/** `doc` with every source schema and firing `by` the registry gives made `adapters'`, and a hook path for each pushed
+ *  source whose settings are the server's: a server given other sources (a test's) documents its own. */
+function withAdapters(doc: Json, adapters: readonly TriggerAdapter[]): void {
+  const [source, sent, by] = [JSON.stringify(TRIGGER_SOURCE), JSON.stringify(TRIGGER_SOURCE_SENT), JSON.stringify(firedByOf(TRIGGER_ADAPTERS))];
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk);
+    if (!value || typeof value !== "object") return value;
+    const text = JSON.stringify(value);
+    if (text === source) return sourceSchemaOf(adapters);
+    if (text === sent) return sentOf(sourceSchemaOf(adapters));
+    if (text === by) return firedByOf(adapters);
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
+  };
+  doc.paths = walk(doc.paths);
+}
+
+/** POST /hooks/{source}, for each pushed source of `adapters` whose settings are the server's (push-handler.ts): its own
+ *  check, its own body limit, and the firings its events made. */
+function serverHooks(adapters: readonly TriggerAdapter[]): Record<string, Json> {
+  const paths: Record<string, Json> = {};
+  for (const adapter of adapters) {
+    const push = adapter.push;
+    if (!push || adapter.settings?.scope !== "server") continue;
+    const handshake = push.handshake ? " A handshake its sender asks for (a URL check) is answered as the source answers it, after the check, never before." : "";
+    // Its firings name the sources the server has, its own among them.
+    const made = hookFiringsOf(adapters);
+    paths[`/hooks/${adapter.id}`] = {
+      post: {
+        operationId: `receiveHook_${adapter.id}`, tags: ["local"], summary: `Fire a ${adapter.label}: a request it checks, no token`,
+        description: `A pushed source's own route, with no token: the request is checked by the source's own check against its settings' \`${push.key}\` (the server's, PUT through its settings), on the raw body before anything else. The body is at most ${push.maxBodyBytes} bytes (413 at once past it, the socket closed) and arrives within ${HOOK_BODY_MS / 1000} s (408). Every refusal is the same 401. Each event the request holds fires the one trigger of this source that listens where it happened; an event no trigger takes, and a request with none, is answered 200 with no firing for it, and said in the server's log.${handshake}`,
+        security: [],
+        requestBody: { required: true, content: { "*/*": { schema: {} } } },
+        // A handshake's answer is any object but a firings one, so each answer is exactly one of the 200's shapes.
+        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, { type: "object", not: { required: ["firings"] }, description: "The source's handshake answer." }] } : made, "Nothing new: each event's firing as it stands, or none."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
+        ...TRIGGER_MARK,
+      },
+    };
+  }
+  return paths;
+}
+
+export function openapiDocument(capabilityOf: (operationId: string) => string | undefined, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): Json {
   const doc = structuredClone(contract()) as Json & { info: Json; paths: Record<string, Record<string, Json>> };
   const unsupported: string[] = [];
   for (const [path, item] of Object.entries(doc.paths)) {
@@ -1959,6 +2075,9 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // This document is read from the server it describes, wherever it is published: a client generated from it calls
   // that server, not the first of the contract's.
   doc.servers = [{ url: "/v2", description: "This server." }];
+  if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
+  // Every server-wide pushed source's own hook, the registry's as a test's.
+  Object.assign(doc.paths, serverHooks(adapters));
   return doc;
 }
 

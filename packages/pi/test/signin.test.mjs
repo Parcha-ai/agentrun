@@ -373,7 +373,7 @@ test(`a sign-in on fakes (pi-ai ${piAiVersion}): auth.json is 0600 in a 0700 dir
   });
   const registry = createRegistry();
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(db), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(db), { registry, models: createModels() }, ctx);
   try { await (await flow.start(harness, { key: 'signed-in', workflow: WORKFLOW, input: {} }, ctx)).wait(ctx); } finally { await harness.close(ctx); }
   const recording = JSON.stringify(recordingLines(db).lines);
   assert.ok(recording.includes('"answer":"hello"') && recording.includes(resolved.model.id), 'the run and its model are in the recording');

@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { Harness, createRegistry, defineExtension, defineTask } from '@earendil-works/pi-durable';
+import { createModels } from '@earendil-works/pi-ai/models';
+import { AgentDoc, Harness, MemoryStorage, createRegistry, defineExtension, defineTask } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import * as recovery from '@parcha/agentrun-dsl/recovery';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
@@ -45,7 +46,7 @@ async function runTask(file, key) {
   const flow = createWorkflowExtension({ options: () => ({ files }), run: () => ({ adapters: { runEffect: async () => ({ price: 21 }) } }) });
   const registry = createRegistry();
   registry.install(flow.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
   try { await (await flow.start(harness, { key, workflow: WORKFLOW, input: { sku: 'A-1' } }, ctx)).wait(ctx); } finally { await harness.close(ctx); }
 }
 
@@ -107,7 +108,7 @@ test('polled with after = last as commits land, the document lines are one read\
 
 test('a driver checkpoint prunes what a bare export sees: a line before the earliest surviving driver revision has no gen, and a recorder reading each commit saw them all', async () => {
   const file = fileOf();
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
   const polled = [];
   let last = 0;
   const poll = () => { const read = recordingLines(file, { after: last }); polled.push(...read.lines); last = read.last; };
@@ -201,8 +202,8 @@ for (const [point, status] of [['after-admit', 'unknown'], ['after-complete', 'c
 test('an execution path is read back from the ids the DSL builds: an effect\'s id, and a node attempt\'s session key', async () => {
   let emit;
   const recorded = [];
-  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { write: (lines) => { recorded.push(...lines); } });
-  const document = (id, kind, key) => ({ type: 'document', record: { id, kind, key, scope: { kind: 'session' } }, conversationId: undefined, version: 1, value: {}, ops: [] });
+  const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ write: (lines) => { recorded.push(...lines); } });
+  const document = (id, kind, key) => ({ type: 'document', kind: 'change', record: { id, kind, key, scope: { kind: 'session' } }, conversationId: undefined, version: 1, value: {}, ops: [] });
   const paths = ['/root/steps/0', '/root/steps/2/items/3', '/root/steps/1/branches/a:b', '/root/steps/0#call:1/x'];
   const cases = [
     ...paths.flatMap((path, i) => [
@@ -221,7 +222,7 @@ test('an execution path is read back from the ids the DSL builds: an effect\'s i
 
 test('two journals in one store: a commit\'s generation is its own driver revisions\', in the recorder as in the export', async () => {
   const file = fileOf();
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: createModels() }, ctx);
   const recorded = [];
   const stop = recordCommits(harness, { write: (lines) => { recorded.push(...lines); } });
   try {
@@ -237,15 +238,15 @@ test('two journals in one store: a commit\'s generation is its own driver revisi
 });
 
 test('a record in a node attempt\'s conversation takes the node\'s path: its entries, documents and tasks, from a snapshot or a later commit', async () => {
-  const node = (id, conversation, path) => ({ type: 'document', record: { id, kind: 'agentrun.nodes', key: recovery.frozenStepSessionId('run-1', `node ${id}`, 'step', path, 0), scope: { kind: 'session' } },
+  const node = (id, conversation, path) => ({ type: 'document', kind: 'change', record: { id, kind: 'agentrun.nodes', key: recovery.frozenStepSessionId('run-1', `node ${id}`, 'step', path, 0), scope: { kind: 'session' } },
     conversationId: undefined, version: 1, value: { conversation, digest: null, startedMs: null, closed: false }, ops: [] });
   const snapshot = [{ channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', commit: 1, order: 0, gen: 3, snapshot: true, data: { doc: 'agentrun.nodes', key: node(4, 7, '/root/steps/3').record.key, value: { conversation: 7 }, version: 1 } }];
   let emit;
   const recorded = [];
-  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { from: snapshot, write: (lines) => { recorded.push(...lines); } });
+  const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ from: snapshot, write: (lines) => { recorded.push(...lines); } });
   emit({ seq: 2, changes: [
     { type: 'entry', value: { id: 20, conversationId: 7, kind: 'pi.assistant', model: [] } },
-    { type: 'document', record: { id: 5, kind: 'pi.usage', scope: { kind: 'conversation', conversationId: 7 } }, conversationId: 7, version: 1, value: {}, ops: [] },
+    { type: 'document', kind: 'change', record: { id: 5, kind: 'pi.usage', scope: { kind: 'conversation', conversationId: 7 } }, conversationId: 7, version: 1, value: {}, ops: [] },
     { type: 'task', value: { id: 21, conversationId: 7, kind: 'pi.generation', state: { status: 'running' } } },
     { type: 'entry', value: { id: 22, conversationId: 8, kind: 'pi.user' } },
   ] }, ctx);
@@ -261,7 +262,7 @@ test('a host\'s gen never overrides a driver generation: the recorder takes its 
   const run = async (options, changes) => {
     let emit;
     const recorded = [];
-    const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { ...options, write: (lines) => { recorded.push(...lines); } });
+    const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ ...options, write: (lines) => { recorded.push(...lines); } });
     emit({ seq: 9, changes }, ctx);
     await stop();
     return recorded.map((line) => line.gen);
@@ -279,7 +280,7 @@ test('a host\'s gen never overrides a driver generation: the recorder takes its 
 test('a conversation record is a durable pi.conversation line, { id, parent?, owner? } and nothing else, at its commit and before its entries: a fork, a task-owned conversation and an ownerless one', async () => {
   let emit;
   const recorded = [];
-  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { gen: 2, write: (lines) => { recorded.push(...lines); } });
+  const stop = recordCommits({ observeCommits: (observer) => { emit = (publication, context) => observer.advance(publication, context); return { detach: () => {} }; } },{ gen: 2, write: (lines) => { recorded.push(...lines); } });
   emit({ seq: 4, changes: [
     { type: 'entry', value: { id: 120, conversationId: 51, kind: 'pi.user', message: 'a fork\'s first message' } },
     { type: 'conversation', value: { id: 51, parent: { conversationId: 33, at: 90 }, owner: { conversationId: 33, taskId: 70 }, title: 'content that is never recorded' } },
@@ -317,7 +318,7 @@ test('a real store: a fork made under a task is a pi.conversation line from reco
     abort: async (_task, runtime, context) => { await runtime.commit(async () => ({ status: 'terminal', outcome: { status: 'aborted' } }), context); } });
   const registry = createRegistry();
   registry.install(defineExtension({ name: 'recording-test', tasks: [Owner] }));
-  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
   const recorded = [];
   let created;
   try {
@@ -344,7 +345,7 @@ test('a real store: a fork made under a task is a pi.conversation line from reco
   const exported = recordingLines(file).lines.filter((line) => line.kind === 'pi.conversation');
   assert.deepEqual(exported.map((line) => line.data).sort((a, b) => a.id - b.id), live.map((line) => line.data).sort((a, b) => a.id - b.id), 'the export and the live recorder agree');
   const storage = await openNodeSqliteStorage(file);
-  const again = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const again = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   try {
     const snapshot = await snapshotLines(storage, { at: lastCommit(file), context: ctx });
     assert.deepEqual(snapshot.filter((line) => line.kind === 'pi.conversation').map((line) => line.data).sort((a, b) => a.id - b.id), live.map((line) => line.data).sort((a, b) => a.id - b.id), 'the snapshot at open agrees too');
@@ -353,4 +354,27 @@ test('a real store: a fork made under a task is a pi.conversation line from reco
   const fork = live.find((line) => line.data.id === Number(created.fork.id));
   assert.deepEqual(fork.data, { id: Number(created.fork.id), parent: { conversationId: Number(created.root.id), at: Number(created.entry.id) }, owner: { conversationId: Number(created.root.id), taskId: Number(created.task) } }, 'the fork\'s line is its record: parent and owner');
   assert.deepEqual(live.find((line) => line.data.id === Number(created.loose.id)).data, { id: Number(created.loose.id), parent: { conversationId: Number(created.root.id), at: Number(created.entry.id) } }, 'an ownerless fork keeps its parent and has no owner');
+});
+
+// pi 1.5 ends a commit observer `failed` with "session closed" on a normal close too; the Session's own end (`closed`,
+// tagged by kind) tells a close from a store failure. A demo detaches its recorder after the run closed its Harness.
+test('a recorder stopped after a normal close of its Session stops quietly: the close is no recording failure', async () => {
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
+  const recorded = [];
+  const stop = recordCommits(harness, { gen: 1, write: (lines) => { recorded.push(...lines); } });
+  await harness.root(ctx, {});
+  await harness.close(ctx);
+  await stop();
+  assert.ok(recorded.length > 0, 'the commits before the close were recorded');
+});
+
+test('a recorder whose Session failed on its store throws the store\'s error at its stop', async () => {
+  const storage = new MemoryStorage();
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
+  const stop = recordCommits(harness, { gen: 1, write: () => {} });
+  const root = await harness.root(ctx, {});
+  storage.commit = async () => { throw new Error('the disk is gone'); };
+  await harness.commit(async (tx) => { (await tx.doc(AgentDoc, root.id)).thinkingLevel = 'high'; }, ctx).catch(() => undefined);
+  assert.equal((await harness.closed).kind, 'failed', 'the Session failed');
+  await assert.rejects(stop(), /the disk is gone/);
 });

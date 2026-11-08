@@ -27,7 +27,10 @@ export const toolUse = (name, args) => fauxAssistantMessage([fauxToolCall(name, 
 export function failing(storage) {
   const knobs = { releaseFails: 0, failAll: false, refused: 0, held: null, waiting: false };
   const releaseTask = (write) => write.type === "task" && write.value?.kind === "browser.release";
-  const commit = async (writes, context) => {
+  // pi 1.5 commits in batches (each batch one ordinary commit): a call whose batches would create a release task, or any
+  // call once `failAll` is set, is refused whole, so none of its writes is stored.
+  const commit = async (batches, receive, context) => {
+    const writes = batches.flat();
     if (knobs.held && writes.some(releaseTask)) {
       const held = knobs.held;
       knobs.held = null;
@@ -40,7 +43,7 @@ export function failing(storage) {
       knobs.refused += 1;
       throw new Error("the storage refused the write");
     }
-    return storage.commit(writes, context);
+    return storage.commit(batches, receive, context);
   };
   // A Proxy, not Object.create: a class storage's members read its private fields, so each is bound to it.
   return { knobs, storage: new Proxy(storage, { get: (target, key) => key === "commit" ? commit : typeof target[key] === "function" ? target[key].bind(target) : target[key] }) };

@@ -193,7 +193,9 @@ every route but `GET /v2/capabilities` and `GET /v2/health` still needs the toke
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
-`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab. With no
+`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab, and
+`AGENTRUN_SEAL_KEY`, which seals the keys, MCP server credentials and webhook trigger secrets the server saves (keep a
+copy: a service that loses it loses them). With no
 `AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
 code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
@@ -1531,11 +1533,14 @@ anything else. A bad signature, a stale timestamp, an unknown trigger, one that 
 answer the same `401`, so no trigger id can be found by asking; a body past 256 KiB is `413`.
 
 The secret, `whsec_` and 32 random bytes in base64, is made with the trigger and shown in the `201` once; no `GET`
-shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-secrets.json`, so with no seal key no webhook
-trigger is made (`409 no_sealing_key`). `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one
-signs nothing from then on. An import cuts these secrets out of what it keeps, and no learning text shows one. A
-`trigger-secrets.json` that does not read is never written over: until it is fixed or moved away, no webhook trigger is
-made or rotated (`409 store_unreadable`) and none fires.
+shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-webhook.json` (each trigger source's
+sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
+`POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
+secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
+import keeps and from every learning text. A secret that does not open under the seal key the server starts with is
+said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
+secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
+away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
 
 The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
 after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that
@@ -1561,6 +1566,15 @@ one message per id; a firing driven again after a restart first looks for it the
 never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
 5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
 with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+
+## Templates
+
+A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
+folder the server ships. `GET /v2/templates` lists them; `POST /v2/templates/{name}/apply` with `{parameters,
+overrides?: {model}}` makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
+package's `version` is SemVer and never `definition.version`, the agent's revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
+rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
+`agentrun template validate DIR` checks a folder as the server does.
 
 ## What it serves
 
@@ -1595,6 +1609,7 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
+| `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. |
 
@@ -2077,7 +2092,7 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
 run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
-git 2.40 or later is one such fault, said once on stderr.
+git 2.32 or later (what learning's own git calls need) is one such fault, said once on stderr.
 
 ### What a run learns
 

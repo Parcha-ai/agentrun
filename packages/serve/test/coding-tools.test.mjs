@@ -79,7 +79,7 @@ test("in a box the source is pi's read, write, edit and bash, and the background
   seen.length = 0;
   boxEnv.exec = async (command) => (seen.push([...command.slice(0, 2), ...command.slice(4, 6)]), { ok: true, value: { exitCode: 0 } });
   const list = source.tools.find((tool) => tool.name === "bash_list");
-  assert.match((await list.execute({}, api, context)).content[0].text, /^No background processes in this run's box/);
+  assert.match((await list.execute({}, api, context)).output[0].text, /^No background processes in this run's box/);
   assert.deepEqual(seen, [["sh", "-c", "/workspace", "list"]]);
   assert.deepEqual(calls, [context, context]);
   assert.throws(() => codingSource({ mode: "sandbox", box: "docker" }), /needs its box/);

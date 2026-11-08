@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { capBefore } from "../dist/cap.js";
 import { adapterRun } from "../dist/harness-app.js";
@@ -45,7 +46,7 @@ test("a request admitted carrying the wrap-up note and refused by a stop before 
       };
     },
   };
-  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
   const app = adapterRun(async () => adapter, "noted", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx, 1, [], undefined, cap, cancelled);
   app.door.attach(() => {});
   await app.onOpen(runOf(harness));

@@ -16,6 +16,7 @@ import * as timeline from "@parcha/pi-durable-agent/timeline";
 import { startServe } from "../dist/index.js";
 import { client, FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, firings, made, schedule } from "./trigger-support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
@@ -54,7 +55,7 @@ const inputOf = async (data, runId) => JSON.parse(await readFile(join(runDir(dat
 for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a webhook trigger's run takes its first input as the trigger's, owner false whatever the body says: its entry's origin, its Timeline row, and the very text the model reads`, { timeout: 120_000 }, async (t) => {
     withEnv(t, SEAL);
-    const { api, baseUrl, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const agentId = `hooked-${harness}`;
     await made(api, agentId, harness === "pi" ? {} : { harness });
     const created = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
@@ -141,7 +142,7 @@ test("a schedule's run's first Timeline row names the schedule by its name, on a
 
 test("a webhook's message to a working run is refused busy and sent again on the engine's retry: its entry reads the trigger's origin, and every refused try's marker is withdrawn, none left open", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
-  const { api, baseUrl, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, baseUrl, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   await made(api, "busy");
   const run = await api("POST", "/agents/busy/runs", { input: { content: `Hold the answer until ${go}.` }, max_cost_usd: 1 });

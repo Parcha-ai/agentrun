@@ -316,7 +316,7 @@ test("when every search fails the call fails with the last one's reason and name
   const pending = tools.find((tool) => tool.name === "web_search").execute({ query: "cancelled" }, { conversationId: "c" }, { abortSignal: stop.signal });
   setTimeout(() => stop.abort(new Error("run cancelled")), 20);
   const cancelled = await pending;
-  assert.equal(JSON.parse(cancelled.content[0].text).code, "aborted");
+  assert.equal(JSON.parse(cancelled.output[0].text).code, "aborted");
   assert.equal(provider, 0, "a cancelled search does not fall back");
 });
 
@@ -377,7 +377,7 @@ test("a fetch source is tried only for a markdown read and only while it says it
   const { tools } = createWebExtension({ providers: {}, fetchSources: [lone.source], evidence: sink });
   const failed = await tools.find((tool) => tool.name === "web_fetch").execute({ url: "https://s.example/b" }, { conversationId: "c" }, {});
   assert.equal(failed.isError, true);
-  assert.match(JSON.parse(failed.content[0].text).message, /returned 404/, "with nothing after it, the source's own failure is told");
+  assert.match(JSON.parse(failed.output[0].text).message, /returned 404/, "with nothing after it, the source's own failure is told");
 });
 
 test("fetch and search calls of one round run at once", async (t) => {
@@ -830,8 +830,8 @@ test("a search cancelled while its snippets are judged ends as aborted and retur
   setTimeout(() => stop.abort(new Error("run cancelled")), 50);
   const cancelled = await pending;
   assert.equal(asked, 1, "the screen had started");
-  assert.equal(JSON.parse(cancelled.content[0].text).code, "aborted");
-  assert.doesNotMatch(cancelled.content[0].text, /Ignore all previous/);
+  assert.equal(JSON.parse(cancelled.output[0].text).code, "aborted");
+  assert.doesNotMatch(cancelled.output[0].text, /Ignore all previous/);
 });
 
 test("the screen is capped, judges only hits that carry a snippet, and adds nothing to the search's price", async (t) => {
@@ -883,7 +883,7 @@ test("a judgment still pending when the screen ends sees its signal aborted: at 
   const stop = new AbortController();
   const call = tools.find((tool) => tool.name === "web_search").execute({ query: "cancelled" }, { conversationId: "c" }, { abortSignal: stop.signal });
   setTimeout(() => stop.abort(new Error("run cancelled")), 50);
-  assert.equal(JSON.parse((await call).content[0].text).code, "aborted");
+  assert.equal(JSON.parse((await call).output[0].text).code, "aborted");
   assert.ok(seen.length > 0 && seen.every((signal) => signal.aborted), "and when the run is cancelled");
 });
 

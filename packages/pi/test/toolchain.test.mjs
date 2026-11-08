@@ -1,6 +1,5 @@
-// A run that asks for a pi version (scripts/pi-leg.mjs sets PI_EXPECT_VERSION) runs on exactly that one: every pi
-// package this package installs, the chord and pi-ai its pi-durable loads, and the pi-durable of the disk package its
-// crash sweeps load in the same process.
+// The suites run on exactly the pi version this package pins (one whole family): every pi package it installs, the
+// chord and pi-ai its pi-durable loads, and the pi-durable of the disk package its crash sweeps load in the same process.
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -17,9 +16,9 @@ const copyOf = (dir, name) => {
   }
 };
 const FAMILY = ['@earendil-works/pi-durable', '@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui'];
-const expected = process.env.PI_EXPECT_VERSION;
+const expected = JSON.parse(readFileSync(join(here, 'package.json'), 'utf8')).devDependencies['@earendil-works/pi-durable'];
 
-test('the suites run on the pi version they were asked to run on', { skip: expected ? false : 'no version asked for' }, () => {
+test('the suites run on the pi version the package pins', () => {
   const durable = copyOf(here, '@earendil-works/pi-durable');
   const disk = copyOf(copyOf(here, '@parcha/pi-durable-disk').dir, '@earendil-works/pi-durable');
   const seen = {

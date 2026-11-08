@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
 import { uploadTestHooks } from "../dist/uploads.js";
 import { agent, follow, scratch, serve } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 
@@ -69,7 +70,7 @@ export default function reply(context, faux) {
 
 for (const harness of ["claude-agent", "codex"]) {
   test(`a ${harness} run's first message names its files too`, { timeout: 90_000 }, async (t) => {
-    const server = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const server = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const { api } = server;
     const ids = [await upload(server, "a.md", Buffer.from("alpha")), await upload(server, "docs/b.csv", Buffer.alloc(1536, 120))];
     assert.equal((await api("POST", "/agents", agent(`on-${harness}`, { harness, tools: ["read"] }))).status, 201);

@@ -26,8 +26,9 @@ import { deref, explain } from "./explain.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_INSTALLS, HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstall, removeFlatInstall } from "./harness-install.js";
+import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
+import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
+import { HarnessInstall, harnessesOf, installDirOf, NPM_STOP_GRACE_MS, npmInstall, removeFlatInstall } from "./harness-install.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
@@ -56,7 +57,7 @@ import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode, meterFiguresIn } from "./cap.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
@@ -68,8 +69,16 @@ import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
+import { type SealedSettings } from "./sealed-settings.js";
+import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
+import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
+import { HookCut, receivePush } from "./push-handler.js";
+import type { TriggerAdapter } from "./trigger-adapter.js";
+import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { webhook } from "./trigger-webhook.js";
+import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -87,8 +96,6 @@ const IDEMPOTENCY_FILE = ".idempotency.json";
 /** A run's live browser viewer, under the run's path (browser-live.ts): its run id, then its page, files or WebSocket. */
 const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/browser\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
-/** The largest body a webhook trigger takes (POST /v2/hooks/{id}). */
-const HOOK_MAX_BODY = 256 << 10;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
@@ -181,8 +188,9 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
    *  of Exa's MCP endpoint (exa-keyless.ts). */
   fauxExa?: string;
-  /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
-  fauxHarness?: string;
+  /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
+   *  stand-ins for the harnesses. */
+  harnessTable?: string;
   /** With `faux` only: a module whose default export, given the data root, is the box provider runs' Docker boxes come
    *  from (the tests' faux box, pi-transport's local box): docker is then available, and nothing asks Docker. */
   fauxBox?: string;
@@ -273,6 +281,10 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** A test's seam: the trigger sources this server has (default the registry, trigger-adapters.ts). */
+  triggerAdapters?: readonly TriggerAdapter[];
+  /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
+  templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
@@ -286,7 +298,7 @@ const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_E
 
 /** The test switches a run's process gets, each module path resolved: empty outside tests. */
 function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {};
+  const env: NodeJS.ProcessEnv = options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {};
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
@@ -318,8 +330,6 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 /** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
-/** What an unknown trigger's request is checked against, so it is refused in a known trigger's time. */
-const NO_TRIGGER_SECRET = `whsec_${randomBytes(32).toString("base64")}`;
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -408,6 +418,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
+  { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
+  { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
@@ -595,7 +607,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -666,6 +678,9 @@ async function oldLayout(data: string): Promise<string | undefined> {
 }
 
 export async function startServe(options: ServeOptions): Promise<Serve> {
+  // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
+  // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
+  delete process.env[HARNESS_TABLE_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
   const data = await realpath(resolve(options.data));
@@ -688,6 +703,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
+  const templates = readPackages(options.templates);
   // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
   // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
@@ -701,7 +718,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   try {
     // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
     markRunning(data);
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow }, stops);
+    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     lock.release();
@@ -709,8 +726,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none" }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow } = checked;
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -727,12 +744,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
-   *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
-  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? [])];
-  // Each webhook trigger's secret, made below once the environment is read; shown nowhere, as the server's own are not.
-  let triggerSecrets: TriggerSecrets | undefined;
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  /** Every secret this server never shows, read at each call, so one made, saved or rotated is cut at once: the host's,
+   *  wherever its launcher put them, and the keys a person saved on it (read through `stored`, storedKeys below, by
+   *  default), its tokens, and every one it holds (server-secrets.ts). What a run shows (runs.ts), what its learning
+   *  keeps (learning-run.ts), a person's note, every learning text read, and the VM relay's errors are cut of it. */
+  const serverSecrets = (stored: StoredKeys = storedKeys) => [...hostSecrets(process.env, stored), ...(secretStores?.values() ?? [])];
+  // The server's own secrets, and each trigger source's sealed settings, opened below once the environment is read;
+  // shown nowhere.
+  let secretStores: ServerSecrets | undefined;
+  let triggerSettings: Map<string, SealedSettings> = new Map();
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
@@ -896,7 +917,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const vmClient = boxes.vmClient();
   // What the provider says in an error is cut of every value this server holds (the VM token among them) before a run's
   // process sees it.
-  const vmSecrets = () => [...learningSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
+  const vmSecrets = () => [...serverSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
   const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
   const vmLimits = (() => {
     const limits = boxLimitsOf(env);
@@ -928,14 +949,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   }
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
   if (image) imageLog(image.state());
-  const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
+  const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
+  const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const agents = new Agents(data);
-  triggerSecrets = new TriggerSecrets(data, env, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)));
+  ({ secrets: secretStores, settings: triggerSettings } = openServerSecrets(data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
+  secretStores.add("server", () => [token, doorToken]);
   // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
   // server's keys (under faux, the vendor's fake alone), a lease held while the run it names has not ended, and a
   // pointer never forgotten while a run it was handed is going (runs.ts handedTo; `runs` is made below, before any request).
   const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running", { handedTo: (agentId: string, hash: string | undefined): Promise<string | undefined> => runs.handedTo(agentId, hash) });
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
+  // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
+  secretStores.add("webhook", () => webhooks.signingSecrets());
   stops.push(() => webhooks.close());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
@@ -946,7 +971,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
   // of each at a time, which every run on that harness, and the save of an agent on it, waits for or starts; once one is
-  // in, the offers are probed again, so capabilities no longer say it installs on first use. A faux harness needs none.
+  // in, the offers are probed again, so capabilities no longer say it installs on first use. Each is its table entry's
+  // `installs` (a test's stand-in has none).
   // Claude Code as an earlier build installed it, at the top of the harnesses directory itself (read-only): removed once,
   // before the first install, which then goes in beside nothing. Any other layout is left as it is.
   let flat: Promise<void> | undefined;
@@ -955,9 +981,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       (removed) => void (removed && log?.(logLine("harness_install_removed", { dir: harnessesOf(data), said: `removed the earlier Claude Code install at ${harnessesOf(data)}: it installs again under harnesses/claude-agent` }))),
       (error: unknown) => ((flat = undefined), Promise.reject(error)),
     ));
-  const installs: Record<string, HarnessInstall> = options.fauxHarness ? {} : Object.fromEntries(Object.values(HARNESS_INSTALLS).map((entry) => {
+  const installed = HARNESSES.flatMap((id) => {
+    const harness = harnessOf(base, id);
+    return harness?.installs && harness.pins ? [{ entry: harness.installs, pins: harness.pins }] : [];
+  });
+  const installs: Record<string, HarnessInstall> = Object.fromEntries(installed.map(({ entry, pins }) => {
     const lock = options.harnessLocks?.[entry.id];
-    const pins = () => import("./adapters.js").then((adapters) => adapters.harnessPins(entry.id));
     // npm past its SIGTERM's grace (it waits on a tarball once it writes): killed, and the line says so.
     const onKilled = () => log?.(logLine("harness_install_killed", { harness: entry.id, said: `npm did not stop within ${NPM_STOP_GRACE_MS / 1000} s of SIGTERM; killed` }));
     return [entry.id, new HarnessInstall(entry, installDirOf(data, entry.id), pins, async (entry, dir, pins, signal) => (await flatRemoved(), npmInstall(entry, dir, pins, { signal, onKilled, ...(lock ? { lock } : {}) })), (ms) => {
@@ -988,7 +1017,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       return undefined;
     }
   };
-  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], triggerName: (id) => triggerNameOf(id), signIns, approvers: options.accounts === true });
+  const runs = new Runs({ installs, dockerAllow: boxNetwork.allow, ...(egress?.volume ? { dockerVolume: egress.volume } : {}), ...(boxPaths ? { dockerPaths: boxPaths } : {}), agents, token, storedKeys, mcpServers: mcpSource, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.openTimeoutMs ? { openTimeoutMs: options.openTimeoutMs } : {}), ...(options.faux && options.fauxHandedNonce ? { fauxHandedNonce: options.fauxHandedNonce } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), serverSecrets, triggerName: (id) => triggerNameOf(id), signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -1067,6 +1096,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Firings an earlier server left due are driven again now, beside the recovery above.
   const triggers: Triggers = new Triggers(data, {
     clock: options.triggerClock,
+    adapters,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
       if (target.kind === "message_run") {
@@ -1104,7 +1134,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         throw error;
       }
     },
-    secrets: { mint: (id) => triggerSecrets!.mint(id), remove: (id) => triggerSecrets!.remove(id) },
+    settings: (adapterId) => triggerSettings.get(adapterId),
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
     async runOf(key) {
       const started = await agents.request(() => agents.store.runOfOrigin(key));
@@ -1218,30 +1248,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     if (size > max) throw new ApiError("payload_too_large", `the body is over ${max} bytes`, { details: { limit: "max_body_bytes" } });
     return Buffer.concat(chunks);
-  }
-
-  /** POST /v2/hooks/{trigger_id}: a webhook trigger's firing, signed by the Standard Webhooks spec under its secret
-   *  (trigger-secrets.ts), checked on the raw body before anything else. An unknown trigger, one that is off or not a
-   *  webhook's, and a check that fails are one answer, so no trigger id can be found by asking; an unknown one is
-   *  checked against a secret of no trigger's, so it takes the same time. A webhook-id already fired answers its firing. */
-  async function hook(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
-    const refuse = (reason: string) => {
-      authFailed(`/v2${path}`, reason);
-      return new ApiError("unauthenticated", "this route needs a request signed by the webhook trigger's secret");
-    };
-    // Headers that can never pass are refused before a byte of the body is read; they say nothing of the trigger.
-    const early = hookHeadersRefusal(req.headers, Date.now());
-    if (early) throw refuse(early);
-    const body = await bytesOf(req, HOOK_MAX_BODY);
-    let id = "";
-    try {
-      id = decodeURIComponent(/^\/hooks\/([^/]+)$/.exec(path)![1]!);
-    } catch {}
-    const secret = ID.test(id) && triggers.hookable(id) ? triggerSecrets!.value(id) : undefined;
-    const refusal = hookRefusal(secret ?? NO_TRIGGER_SECRET, req.headers, body, Date.now());
-    if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
-    const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
-    return send(res, created ? 202 : 200, firing, created ? {} : { "idempotent-replayed": "true" });
   }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
@@ -1382,6 +1388,73 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     return blockers.map(issueOf);
   }
 
+  /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
+   *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
+   *  tool the box refuses (browser) keeps the runner. */
+  async function createAgentOf(body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    let warnings: InputIssue[] = [];
+    const definition = checkDefinitionBody(body);
+    const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
+    const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+    const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
+    return { entry, warnings };
+  }
+
+  /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
+   *  servers it names (409, nothing made; an MCP server it can do without is skipped, with a warning), then its
+   *  agent made as POST /agents makes one, its MCP tools at the owner's own settings save those granted, set to allow (a
+   *  deny the owner set on this server stays, with a warning), its body held to POST /agents' limit (413), on the first harness of its list this server runs and the model packageModel
+   *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
+   *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
+   *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
+  async function applyTemplate(pkg: Package, body: Json) {
+    const { parameters, grants, model: override } = applyBodyOf(pkg, body);
+    const missing = pkg.secrets.filter((name) => !secret(name, storedKeys));
+    const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
+    const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
+    const needed = unsaved.filter((need) => need.required);
+    if (missing.length || needed.length) {
+      const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
+      const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+    }
+    // An MCP server the package can do without is skipped, and said: its tools are not granted.
+    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
+    const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+    const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
+    const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
+    // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
+    const server = settings.get() as Parameters<typeof permissionFrom>[1];
+    const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
+    const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
+    for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
+    const { entry, warnings } = await createAgentOf(made.agent);
+    const ids: string[] = [];
+    try {
+      for (const [i, trigger] of made.triggers.entries()) {
+        try {
+          ids.push((await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } })).id);
+        } catch (error) {
+          if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
+          throw error;
+        }
+      }
+    } catch (error) {
+      for (const id of ids.reverse()) {
+        try {
+          triggers.remove(id);
+        } catch (undo) {
+          log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
+        }
+      }
+      await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      throw error;
+    }
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...warnings] };
+  }
+
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
    *  with the documented run bodies; a workflow run's its workflow's input schema, never the agentic example. Each value
    *  suggested must pass this route's own checks of the body, the workflow's input check among them. */
@@ -1472,7 +1545,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await runnable(revision, place, { capped: cap !== undefined });
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
-    const shown = redactedOutput(input, learningSecrets());
+    const shown = redactedOutput(input, serverSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
     return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(capMode !== undefined ? { capMode } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(from ? { from } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
@@ -1916,8 +1989,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
-    // The one route with no token: a webhook trigger's request, checked by its signature before anything else is read.
-    if (found.name === "receiveHook") return hook(req, res, path);
+    // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
+    // read (push-handler.ts).
+    if (found.name === "receiveHook") {
+      // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
+      const answer = await receivePush({ adapters, hookable: (id, kind) => triggers.hookable(id, kind), receive: (id, eventId, payload) => triggers.receive(id, eventId, payload), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      return send(res, answer.status, answer.body, answer.headers ?? {});
+    }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
     if (found.name === "mcpOAuthCallback") {
@@ -1970,13 +2048,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "createAgent": {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
-          let warnings: InputIssue[] = [];
-          // A new agent that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision;
-          // one that names a tool the box refuses (browser) keeps the runner, as before.
-          const definition = checkDefinitionBody(body);
-          const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-          const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
-          const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
+          const { entry, warnings } = await createAgentOf(body);
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await signIns.view(entry.agent.id), await learningOfAgent(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -2337,7 +2409,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger;
         // what learning changed, from the same rows and ledger (learningImpact).
         const { counts, impact, notes } = await runs.learning.ofAgent(rows, id);
-        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts, impact, notes));
+        return send(res, 200, await agentLearning(data, id, secretsShown(serverSecrets()), counts, impact, notes));
       }
       case "listLearningNotes":
       case "listLearningLog":
@@ -2345,12 +2417,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (found.name === "listLearningNotes") {
           // Each note's runs (given it, read it), counted as the agent's learning view counts them (learning-run.ts ofAgent).
           const { notes } = await runs.learning.ofAgent(await agents.request(() => agents.store.listRuns({ agent: id })), id);
-          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(learningSecrets()), notes));
+          return send(res, 200, await learningNotes(data, id, url.searchParams, secretsShown(serverSecrets()), notes));
         }
-        return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(learningSecrets())));
+        return send(res, 200, await learningLog(data, id, url.searchParams, secretsShown(serverSecrets())));
       case "readLearningFile":
         await needAgent(id);
-        return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
+        return sendNote(res, 200, await readNote(data, id, second!, secretsShown(serverSecrets())));
       case "writeLearningFile":
       case "retireLearningFile":
       case "approveLearningFile":
@@ -2358,16 +2430,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: serverSecrets(), approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
-        const shown = secretsShown(learningSecrets());
+        const shown = secretsShown(serverSecrets());
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
       }
       case "getRunLearning":
-        return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets(), data));
+        return send(res, 200, await runLearning(await needRun(id), secretsShown(serverSecrets()), serverSecrets(), data));
       case "getRunLearningDiff":
-        return send(res, 200, await runDiff(data, await needRun(id), secretsShown(learningSecrets())));
+        return send(res, 200, await runDiff(data, await needRun(id), secretsShown(serverSecrets())));
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -2399,6 +2471,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
         return send(res, answer.status, secret && !replayed ? { ...first, secret } : answer.body, answer.headers);
+      }
+      case "listTemplates":
+        return send(res, 200, { templates: templates.map(packageView) });
+      case "applyTemplate": {
+        const pkg = templates.find((t) => t.name === id);
+        if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        const body = await bodyOf(req);
+        const answer = await idempotent(req, `/templates/${pkg.name}/apply`, body, async () => {
+          const applied = await applyTemplate(pkg, body);
+          return { status: 201, body: applied, headers: { location: `/v2/agents/${applied.agent_id}` } };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         return send(res, 200, triggers.rotate(id));
@@ -2472,6 +2556,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
+      // A request cut before its body was read (push-handler.ts readCapped): its socket goes once the answer is out.
+      if (error instanceof HookCut) res.once("finish", () => req.socket.destroy());
       // A store still busy past a request's wait is home_busy, whichever read or write met it.
       const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
       if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
@@ -2503,6 +2589,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
+  // A request's headers come within 10 s, whatever its route: nothing sends more than a few kilobytes of them. Its body
+  // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
+  // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
+  server.headersTimeout = 10_000;
   // The one upgrade this server takes: a run's live browser viewer's WebSocket (browser-live.ts). Every other is refused.
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());

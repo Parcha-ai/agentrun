@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { APPROVAL_ENTRY, NOT_RUN, RunGate } from "../dist/tool-gate.js";
 import { scratch } from "./support.mjs";
@@ -18,7 +19,7 @@ const ARGS = { url: "https://paid.example/report" };
 /** A claude-agent run's gate on `storage` (fresh: the first process; the same: the next, after a restart), with web_fetch
  *  set to ask on the server; its resumes recorded. */
 async function runOn(t, { storage = new MemoryStorage(), where } = {}) {
-  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   await harness.root(ctx);
   const dirs = where ?? { root: await scratch(t), work: await scratch(t), data: await scratch(t) };
   await writeFile(join(dirs.data, "tool-settings.json"), JSON.stringify({ web_fetch: { permission: "ask" } }));

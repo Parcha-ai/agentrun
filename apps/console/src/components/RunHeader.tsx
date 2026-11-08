@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { goBack } from "@/lib/back";
-import { cost, isEstimate, runLabel, soFar, soFarNote, when } from "@/lib/format";
+import { cost, isEstimate, runEnded, runLabel, soFar, soFarNote, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { placeOf, runPlaceWords } from "@/lib/place";
@@ -18,9 +18,9 @@ import { placeOf, runPlaceWords } from "@/lib/place";
 export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; onRaiseCap?: (usd: number) => Promise<RaiseAnswer>; busy?: "stop" | "cancel" | "archive" | null };
 
 /** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
-const costTitle = (c: Run["cost"]): string | undefined => {
+const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  if (known) return soFarNote(known);
+  if (known) return soFarNote(known, { ended });
   return c && c.usd !== null && isEstimate(c) ? "A local estimate, not a bill" : undefined;
 };
 
@@ -60,7 +60,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
-              : <span className="font-mono" title={costTitle(run.cost)}>{cost(run.cost)}</span>}
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{cost(run.cost, { ended: runEnded(run.status) })}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>

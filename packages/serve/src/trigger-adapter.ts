@@ -1,0 +1,117 @@
+// What a trigger source is to the engine (triggers.ts): one adapter, declared once. Its id is the source's kind, the
+// `by` of the firings it delivers and the tag of the payload a pushed firing passes on. The engine, the capabilities and
+// the OpenAPI document read every list of sources from the registry (trigger-adapters.ts), so a new source is one
+// adapter file and one line there.
+import type { InputIssue } from "./errors.js";
+import type { SettingsSpec } from "./sealed-settings.js";
+import { unknownFields } from "./validate.js";
+
+type Json = Record<string, unknown>;
+/** A source as triggers.json keeps it: its kind, the adapter's id, and the adapter's own fields. */
+export type Source = { kind: string } & Json;
+
+/** The times of a source that fires on a clock, made once for one reading of it (a cron line is parsed once). */
+export type Clock = {
+  /** Its first time strictly after `after`, or null when it has none. */
+  next(after: number): number | null;
+  /** Its latest time at or before `now`, given one that is (`first`), found without walking to it. */
+  latest(first: number, now: number): number;
+  /** A fixed interval between its times, when it has one: missed times are then counted, not walked. */
+  step?: number;
+};
+
+export type TriggerAdapter = {
+  /** The source's kind: `source.kind`, the `by` of its firings, the payload's tag. */
+  id: string;
+  /** How a person names one: `the <label> "<name>"`, in each run's provenance line. */
+  label: string;
+  /** `clock`: it fires on its own times, read by the engine's timer. `push`: a request delivered to the server fires it,
+   *  keyed by the sender's own id, which a retry repeats. */
+  delivery: "clock" | "push";
+  /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
+   *  it up; never for words that come from outside. */
+  owner: boolean;
+  /** What it keeps sealed (sealed-settings.ts), for the server or for each trigger: a field it mints (a signing secret)
+   *  is made at a trigger's create and at a rotation, shown once, and goes with the trigger. */
+  settings?: SettingsSpec;
+  /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */
+  describe: string;
+  /** When it fires, for the OpenAPI document's source description. */
+  fires: string;
+  /** What a firing of it is, for the OpenAPI document's firing `by`. */
+  firedBy?: string;
+  /** Its shapes as JSON Schema, each a closed object with `kind` its id: the OpenAPI document's source oneOf. */
+  schemas: ObjectSchema[];
+  /** A source given at a create or a PATCH (`value.kind` is its id), checked: each issue added through `bad`, with its
+   *  field under `source`. Undefined when it does not read. */
+  parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
+  /** Whether a source triggers.json keeps is whole, of its type. */
+  wellFormed(source: Json): boolean;
+  /** The zone its times are read in, for its runs' provenance line. Default UTC. */
+  zone?(source: Source): string;
+  /** A clock source's times. */
+  clock?(source: Source): Clock;
+  /** Why a source kept in the file no longer reads on this server, if it does not: its trigger is turned off, alone. */
+  problem?(source: Source): string | undefined;
+  /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
+   *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
+  push?: Push;
+  /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
+   *  `scope` to find the triggers it fires. */
+  scopeOf?(source: Source): string;
+};
+
+/** Request headers, as Node gives them. */
+export type Headers = Record<string, string | string[] | undefined>;
+/** How a pushed source's requests are taken, in this order: its headers, its body (at most maxBodyBytes), its check
+ *  against its settings' `key`, its handshake, its parse. Every refusal is the one 401. */
+export type Push = {
+  maxBodyBytes: number;
+  /** The settings field it checks a request with. */
+  key: string;
+  /** Why the headers alone are refused, before a byte of the body is read. */
+  headers?(headers: Headers, nowMs: number): string | undefined;
+  /** Why the request is not the sender's under `key`, or undefined when it is. */
+  verify(key: string, headers: Headers, body: Buffer, nowMs: number): string | undefined;
+  /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
+  handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
+  /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
+   *  said). */
+  parse(headers: Headers, body: Buffer): PushEvent[];
+};
+/** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
+ *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
+ *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */
+export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string> };
+/** A closed object's JSON Schema: its fields, each by its own schema, and the ones it always holds. */
+export type ObjectSchema = { type: "object"; additionalProperties: false; required: string[]; properties: Record<string, Json> };
+
+/** A closed object schema: every field in `required` is, and `optional`'s may be. */
+export const closedSchema = (required: Record<string, Json>, optional: Record<string, Json> = {}): ObjectSchema => ({ type: "object", additionalProperties: false, required: Object.keys(required), properties: { ...required, ...optional } });
+
+/** `value`'s fields past `allowed`, as issues under `source`. */
+export const unknownSourceFields = (value: Json, allowed: readonly string[]): InputIssue[] => unknownFields(value, allowed).map((i) => ({ ...i, field: `source.${i.field}` }));
+
+const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/i;
+/** An RFC 3339 date-time with its offset, as an instant; undefined for one that names no real time (month 13, Feb 30,
+ *  25 o'clock, an offset past 23:59), which Date.parse would refuse or roll over. */
+export function instantOf(text: unknown): number | undefined {
+  const parts = typeof text === "string" ? RFC3339.exec(text) : null;
+  if (!parts) return undefined;
+  const [y, mo, d, h, mi, s, , , oh = "0", om = "0"] = parts.slice(1).map((p) => p ?? "0").map(String);
+  const days = new Date(Date.UTC(Number(y), Number(mo), 0)).getUTCDate();
+  if (Number(mo) < 1 || Number(mo) > 12 || Number(d) < 1 || Number(d) > days || Number(h) > 23 || Number(mi) > 59 || Number(s) > 59 || Number(oh) > 23 || Number(om) > 59) return undefined;
+  const at = Date.parse(text as string);
+  return Number.isFinite(at) ? at : undefined;
+}
+/** RFC 3339 in UTC, to the second: the form a schedule's key is made of. */
+export const second = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+/** Whether this server's ICU knows `zone` (an IANA zone). */
+export const validZone = (zone: string) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+};

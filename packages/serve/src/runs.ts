@@ -16,10 +16,11 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { doorKey, doorTook } from "@parcha/pi-durable-disk";
 import { RUN_STATUS_TABLE } from "@parcha/pi-durable-disk/internals";
 import { AgentHomeError, type Revision, runDirIn, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { chargedTool, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer, TRIGGER_LABELS } from "@parcha/pi-durable-agent/timeline";
+import { chargedTool, endedUsage, isMessageRow, MESSAGE_ORIGIN, type MessageOrigin, NOTE_SUFFIX, originOf, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, scrubUrls, type TimelineEvent, timelineOf, timelineReducer, TRIGGER_LABELS } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { runLink } from "./console-links.js";
-import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
+import { harnessOfBody } from "./harness.js";
+import { builtinHarness, harnessOf } from "./harness-table.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
@@ -53,7 +54,7 @@ import { isObject, type Json } from "./validate.js";
 import { RequestBounds } from "./bounds.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
-import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, handoverSignIn, mcpHandover, mcpSecretValues, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { type HandedSignIn, pointerHash, type SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { cutStrings, keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
@@ -343,6 +344,11 @@ export type Run = {
   turns: Turns;
   /** Its tool calls that waited for a person's approval, read from its store's entries, by id. */
   approvals?: Map<string, Approval>;
+  /** Each resume row's approval, by the row's id (stable: rows upsert by id), noted the first time the row comes in with
+   *  the gate's head (withApprovals). A row already rewritten no longer starts with that head, so an answer's restate
+   *  reads the link from here, never from the row's text. Rebuilt from the store's rows, which keep the head, when a
+   *  run is opened. */
+  resumeRows?: Map<string, string>;
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
@@ -621,12 +627,31 @@ const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval
 const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
 /** The row after each tool call that waited for approval, beside its result's row. Its arguments are redacted whole
  *  (`redact`, the Timeline's own: no held key), before any cut. */
-function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">, redact: (text: string) => string): TimelineEvent[] {
-  if (!run.approvals?.size) return [...rows];
+function withApprovals(given: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta" | "resumeRows">, redact: (text: string) => string): TimelineEvent[] {
+  if (!run.approvals?.size) return [...given];
+  // The approval rows are this function's own, made again below from each call's result row: rows it gave before (an
+  // answer's restate) come in without them, so it gives the same rows run on its own output.
+  const rows = given.filter((row) => row.kind !== APPROVAL_ROW);
   const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
   const waiting = waitingApproval(run);
   // The result rows of the calls that waited for approval: the park answered each with the gate's waiting text.
   const parkedResults = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id && byCall.has(row.tool_use_id)).map((row) => row.id));
+  // A resume row's approval: from the gate's head the first time the row comes in (noted by its id), and by that id after,
+  // once the row's text is the rewritten one (`fresh` false: it is given as it is, never rewritten twice).
+  const links = (run.resumeRows ??= new Map());
+  const resumeOf = (row: TimelineEvent): { approval: Approval; fresh: boolean } | undefined => {
+    if (row.kind !== "phase") return undefined;
+    if (row.text?.startsWith(RESUME_PREFIX)) {
+      const approval = resumedBy(row.text, byCall);
+      if (approval) links.set(row.id, approval.id);
+      return approval ? { approval, fresh: true } : undefined;
+    }
+    const linked = links.get(row.id);
+    const approval = linked === undefined ? undefined : run.approvals!.get(linked);
+    return approval ? { approval, fresh: false } : undefined;
+  };
+  // The approvals whose resume row is on the timeline: that row, after the approval's, says what came of the call.
+  const resumedIds = new Set(rows.flatMap((row) => { const found = resumeOf(row); return found ? [found.approval.id] : []; }));
   return rows.flatMap((row) => {
     // A Saved row (pi-durable-agent's, read from a write's arguments) of a call that waited: the park wrote nothing, a
     // deny or a withdrawal never will, and what an allowed call wrote is its resume's, so the row would say a file was
@@ -634,11 +659,15 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     const savedBy = row.kind === "phase" ? /^(.*):saved:\d+$/.exec(row.id)?.[1] : undefined;
     if (savedBy !== undefined && parkedResults.has(savedBy)) return [];
     // The gate's resume, the server's row: it says what came of the answer, never the head the model reads.
-    const resumed = row.kind === "phase" && row.text?.startsWith(RESUME_PREFIX) ? resumedBy(row.text, byCall) : undefined;
+    const found = resumeOf(row);
+    if (found && !found.fresh) return [row];
+    const resumed = found?.approval;
     if (resumed) return [{ ...row, summary: resumeSays(resumed, run.meta.approvals?.[resumed.id], row.text!, redact), text: resumeShows(resumed, run.meta.approvals?.[resumed.id], row.text!, redact) }];
     const own = (row.kind === "tool_use" || row.kind === "tool_result") && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
-    // The call's own rows: what it answered at the park is not what it did, so they say what came of the approval.
-    const called = own ? { ...row, summary: parkedCallSays(own, run, waiting), tool_status: null } : row;
+    // The call's own rows: what it answered at the park is not what it did. A client folds them into the call's step, at
+    // the call's place above the approval row, so once the resume row (below the approval's) says what came of it they
+    // say only that it was held; before that, they say what came of the approval.
+    const called = own ? { ...row, summary: resumedIds.has(own.id) && own !== waiting ? HELD : parkedCallSays(own, run, waiting), tool_status: null } : row;
     if (row.kind === "tool_use") return [called];
     const approval = own;
     if (!approval) return [row];
@@ -663,8 +692,10 @@ function parkedCallSays(approval: Approval, run: Pick<Run, "meta">, waiting: App
   if (given.decision === "withdrawn" || given.decision === "canceled")
     return given.superseded?.decision === "allow" ? `Allowed, then the run was ${ended}: no result of it reached the model` : `Not run: the run was ${ended} while it waited`;
   if (given.decision === "deny") return given.by === "message" ? "Not run: your message declined it" : "Not run: you declined it";
-  return approval.resolved ? "Allowed: its result is in the message that resumed the run" : "Allowed: it runs now";
+  return approval.resolved ? "Ran once you allowed it; its result went to the agent" : "Allowed: it runs now";
 }
+/** A parked call's own rows once its resume row says what came of it. */
+const HELD = "Held for your approval";
 /** The call a resume (resumeText, its text as the row has it) answers: its head names the call's tool and id. */
 const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approval | undefined =>
   [...byCall.values()].find((approval) => text.startsWith(`${RESUME_PREFIX}This answers your ${approval.tool} call ${approval.call_id} `));
@@ -674,7 +705,10 @@ const resumedBy = (text: string, byCall: ReadonlyMap<string, Approval>): Approva
  *  shows as the person's own row. */
 function resumeSays(approval: Approval, given: { decision: string; by?: string; note?: string } | undefined, text: string, redact: (text: string) => string): string {
   const note = given?.decision === "deny" && given.by !== "message" && given.note ? scrubUrls(redact(given.note)).split(/\r?\n/).map((line) => line.trim()).find(Boolean) : undefined;
-  return `${resumeOutcome(approval, given, text)}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
+  const outcome = resumeOutcome(approval, given, text);
+  // An allowed call that ran: where its result went (the outcome its own rows said before this row carried it).
+  const went = given?.decision !== "deny" && !outcome.endsWith(", and failed") ? "; its result went to the agent" : "";
+  return `${outcome}${went}${note ? `: ${clipPoints(note, DENY_NOTE_CHARS)}` : ""}`;
 }
 /** `text` cut to `max` code points, an ellipsis last when cut: a pair of surrogates is never halved. */
 const clipPoints = (text: string, max: number): string => {
@@ -1037,7 +1071,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `openTimeoutMs`: how long a launched process has to open its run (READY_TIMEOUT_MS,
  *  the first message's wait, by default; never the request's wait); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[]; /** A trigger's name as it is now, by its id (triggers.ts): a trigger's Timeline row names it (servedTriggerRow). Absent, or a trigger gone, its row names its id. */ triggerName?: (id: string) => string | undefined };
+export type RunsOptions = { /** The installs of the harnesses that install on first use (harness-install.ts HarnessInstall), by harness: a run on one waits for its install before it launches. Absent, none is waited for. */ installs?: Readonly<Record<string, { readonly installed: boolean; readonly installingWords: string; needed(): Promise<boolean>; ensure(): Promise<void> }>>; /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; /** On a Mac, the server's proxy container's volume a run's Docker box mounts (box-egress-vm.ts). */ dockerVolume?: string; /** A server in a container: where its Docker has the data directory (box-paths.ts), which a run's Docker box mounts from. Absent on a host. */ dockerPaths?: BoxPaths; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; /** The server's saved MCP servers (mcp-servers.ts): a run's pin and its credentials come from them at each launch. */ mcpServers?: McpServerSource; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The server's VM box provider, with its client: a VM run's box is made, seeded, pulled and ended with it, here alone, as a Daytona one is (box-relay-vm.ts); it has no network. */ vmBoxes?: BoxProvider; /** A VM box's limits (run-box.ts RemoteLimits), from the box settings. */ vmLimits?: RemoteLimits; /** The relay's VM half, which lets go of a run's programs at its end. */ vmRelay?: { drop(runId: string): void }; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; openTimeoutMs?: number; /** Under --faux only (server.ts): the nonce handed to each run's process in place of its launch's. */ fauxHandedNonce?: string; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** Every secret this server never shows (server.ts serverSecrets), read at each call, so one made or rotated is cut at once: the host's and the keys saved on it, read through `stored` when given (learning's view keeps the saved keys it read), its tokens, and each it holds (server-secrets.ts). What a run shows, its title among it, and what its learning keeps are cut of it. */ serverSecrets: (stored?: StoredKeys) => string[]; /** A trigger's name as it is now, by its id (triggers.ts): a trigger's Timeline row names it (servedTriggerRow). Absent, or a trigger gone, its row names its id. */ triggerName?: (id: string) => string | undefined };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1077,7 +1111,7 @@ export async function needsOf(revision: Revision): Promise<RunNeeds> {
   const nodes = workflow ? workflowNodes(workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(workflow)) : undefined;
   const bound = nodes && workflowTools(nodes);
   return {
-    harness: revision.body.harness ?? DEFAULT_HARNESS,
+    harness: harnessOfBody(revision.body),
     ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}),
     tools: bound ? [...bound.nodes, ...bound.calls] : [...(revision.body.tools ?? [])],
     ...(nodes ? { tiers: llmTiers(nodes, nodeTiers(nodes)) } : {}),
@@ -1088,14 +1122,15 @@ export async function needsOf(revision: Revision): Promise<RunNeeds> {
 /** The secrets a run of `needs` is handed over its pipe, by the keys `env` holds now: RUN_SECRETS but each field of a
  *  `tool` row of `rows` (TOOL_KEYS) that unlocks none of the tools the run binds; and but each model key its model does
  *  not need, from the host's model settings and the keys in `env`: a pi run's, its models' providers' keys or the
- *  gateway's (model.ts' modelKeys: its own model, or the host's of each tier it runs); codex's and claude-agent's, the
- *  one key their route sends for the revision's model (adapters.ts' harnessModelKeys). Read at each launch, so a key
+ *  gateway's (model.ts' modelKeys: its own model, or the host's of each tier it runs); a run on an adapter's, the
+ *  one key its wire's route sends for the revision's model (adapters.ts' harnessModelKeys). Read at each launch, so a key
  *  saved with no restart counts at the next. */
 export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly KeyRow[] = TOOL_KEYS): string[] {
   const named = new Set(needs.tools);
   const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
   const scoped = scopedOf(rows);
-  const model = new Set(needs.harness !== DEFAULT_HARNESS ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));
+  const entry = harnessOf(env, needs.harness);
+  const model = new Set(!entry || entry.facts ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));
   return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || model.has(name)));
 }
 
@@ -1621,7 +1656,8 @@ export class Runs {
    *  shown at once: an answer takes no new rows. */
   private restate(run: Run): void {
     if (!run.approvals?.size) return;
-    run.rows = withApprovals(run.rows.filter((row) => row.kind !== APPROVAL_ROW), run, this.redactor(run));
+    // The rows as served, run through again: withApprovals gives the same rows run on its own output.
+    run.rows = withApprovals(run.rows, run, this.redactor(run));
     this.show(run);
   }
 
@@ -1630,9 +1666,11 @@ export class Runs {
   private show(run: Run): void {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
     // Their summary and text are redacted whole, then cut (decision-rows.ts): a provider's error can quote a held key.
-    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run));
+    // An ended run's usage row says its cost, never "so far": its rows may have been read while it ran.
+    const ended = TERMINAL.has(statusOf(run).status);
+    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run), { ended });
     // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
-    const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
+    const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : ended ? endedUsage(row) : row));
     // A run paused at its cap says so after the refusal, as the row its status reads.
     const said = pausedAt(run);
     const rows = said === undefined || run.meta.max_cost_usd === undefined ? served : withPaused(served);
@@ -1772,7 +1810,7 @@ export class Runs {
   }
 
   /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
-   *  this server's secrets and tokens and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
+   *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in (handedPointers); `withheld`
    *  when that can't be read back here, as a load would hide the run. */
   private async rowShown(agentId: string, meta: Partial<RunMeta> | null, damaged = false): Promise<((text: string) => string) | "withheld"> {
     // Its serve.json there but unreadable: what it was handed went with it (load hides such a run, its revision granting
@@ -1781,7 +1819,7 @@ export class Runs {
     const browser = isObject(meta?.tool_plane) ? keptVendor(meta.tool_plane as Plane).browser : undefined;
     const pointers = await this.handedPointers(agentId, browser, handedMark(meta?.sign_in_handed));
     if (pointers === "unreadable") return "withheld";
-    const values = [...hostSecrets(process.env, this.options.storedKeys), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET), this.options.token, this.options.doorToken];
+    const values = [...this.options.serverSecrets(), ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)];
     return (text) => withoutLoopback(redacted(text, values));
   }
 
@@ -1849,18 +1887,10 @@ export class Runs {
     return this.redactor(run)(await lastLogLine(run));
   }
 
-  /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): this
-   *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
-   *  server's own tokens and the secrets it makes (ownSecrets: each webhook trigger's, read now, so a rotation is cut at
-   *  once). */
+  /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): every one
+   *  this server never shows (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
   private refusedValues(run: Run): string[] {
-    return [...this.serverSecrets(), ...(run.handed ?? [])];
-  }
-
-  /** The values this server holds, whatever run: its secrets wherever its launcher put them and the keys saved on it, its
-   *  own tokens, and the secrets it makes (ownSecrets). */
-  private serverSecrets(): string[] {
-    return [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
+    return [...this.options.serverSecrets(), ...(run.handed ?? [])];
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
@@ -2807,10 +2837,11 @@ export class Runs {
     // the run's last choice (model.ts hostModel: the tier's variable, then AGENT_MODEL where the harness runs it, then a
     // key the run holds, then this), so a host's setting the harness can run still wins; and one it cannot (AGENT_MODEL
     // on Anthropic's model, for codex) no longer leaves the run with none. pi and codex choose through the gateway
-    // (chooseModel); claude-agent never does, and holds the key its route sends, which gives its default.
+    // (chooseModel); a harness whose model is its own (its facts' ownModel: claude-agent) never does, and holds the key
+    // its route sends, which gives its default.
     delete env[DEFAULT_MODEL_ENV];
-    const harness = run.tooling?.harness ?? DEFAULT_HARNESS;
-    const defaultModel = run.tooling && !run.tooling.model && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
+    const harness = run.harness;
+    const defaultModel = run.tooling && !run.tooling.model && !builtinHarness(harness)?.facts?.ownModel ? hostModel(served, "default", harness) : undefined;
     if (defaultModel) env[DEFAULT_MODEL_ENV] = defaultModel;
     // Opened for a person's follow-up to a run whose turn had ended: nothing it resumes was cut (app.ts markResumed).
     delete env[FOLLOW_UP_OPEN_ENV];
@@ -3291,6 +3322,8 @@ export class Runs {
       run.finishing = undefined;
       run.settled = true;
       run.updatedAt = new Date().toISOString();
+      // Its rows as an ended run's (its usage row says its cost) before its status wakes a reader: see below.
+      this.show(run);
       this.refresh(run);
       this.persistLater(run, persist);
       return;
@@ -3305,6 +3338,10 @@ export class Runs {
     run.finishing = undefined;
     run.settled = true;
     run.updatedAt = new Date().toISOString();
+    // Its rows were last shown while it ran (its end's read), so its usage row said "so far". Shown again as an ended run's
+    // before refresh() marks its status: a reader following with a cursor gets the row's change with the final page,
+    // never a final page over the running wording.
+    this.show(run);
     this.refresh(run);
     this.notice(run, "run.ended", run.endedAt);
     // Only once the run has ended as it would without learning: a slow or failing check never holds the job.
@@ -3323,11 +3360,14 @@ export class Runs {
       return counted;
     }
     const body = revision.kind === "agentic" ? revision.body : undefined;
-    const harness = body?.harness ?? DEFAULT_HARNESS;
-    // As its process chose it (app.ts): the run's effort, else its revision's thinking, else the host's, else medium.
+    // The run's harness, as it was resolved when the run was made (blank).
+    const facts = builtinHarness(run.harness)?.facts;
+    // As its process chose it (app.ts): the run's effort, else its revision's thinking, else the host's, else medium; on
+    // an adapter, at the level its harness takes.
     const launched = run.meta.launch_thinking;
-    const level = launched && thinkingFor(harness, thinkingOf({ [EFFORT_ENV]: launched.effort, AGENT_THINKING: launched.host }, body?.thinking));
-    return { ...counted, ...(level ? { effort: level } : {}), ...(harness !== DEFAULT_HARNESS && body?.model ? { model: body.model } : {}) };
+    const thinking = launched && thinkingOf({ [EFFORT_ENV]: launched.effort, AGENT_THINKING: launched.host }, body?.thinking);
+    const level = thinking && (facts ? thinkingFor(facts, thinking) : thinking);
+    return { ...counted, ...(level ? { effort: level } : {}), ...(facts && body?.model ? { model: body.model } : {}) };
   }
 
   /** Tries `persist` again every settleRetryMs while the server lives, until it lands. */
@@ -3450,7 +3490,7 @@ export class Runs {
       const at = new Date().toISOString();
       const meta: RunMeta = {
         // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
-        title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.serverSecrets()), 80),
+        title: clip(redacted(options.title.trim().replace(/\s+/g, " "), this.options.serverSecrets()), 80),
         created_at: at,
         input: options.input,
         place: options.place,
@@ -3563,7 +3603,7 @@ export class Runs {
 
   /** Whether the run's harness takes a message mid-turn. */
   private steers(run: Run): boolean {
-    return run.kind !== "agentic" || steersMidTurn(run.harness);
+    return run.kind !== "agentic" || (builtinHarness(run.harness)?.steer ?? false);
   }
 
   /** Whether the run's store already took a message under `requestId`: a trigger's firing sent it, and the server went

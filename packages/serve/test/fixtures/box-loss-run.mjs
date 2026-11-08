@@ -29,7 +29,8 @@ const ref = { disk: "dsk-local", region: "local", id: "run-1" };
 const CAP_USD = 1.7;
 
 const registry = createRegistry();
-let models = {};
+// A real Models even for a workflow-only run: pi 1.5's Harness.open binds models.getAuth.
+let models = createModels();
 let model;
 let marked;
 /** The run's store as a barrier takes it, from the open's beforeResume: before a resumed task sends anything. */

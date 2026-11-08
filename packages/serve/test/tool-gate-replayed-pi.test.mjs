@@ -9,6 +9,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { GATE_PASSED_ENTRY, NOT_RUN, RunGate } from "../dist/tool-gate.js";
 import { scratch } from "./support.mjs";
@@ -18,7 +19,7 @@ const UNKNOWN = "It had started before the deny, and whether it took effect is n
 /** A pi run's process on `storage` (the same storage: the next process, after a crash), with web_fetch set to
  *  `permission` on the server (`tool`, replay-safe: web_fetch by default); `sent` counts the tool's own runs. */
 async function processOn(t, { storage = new MemoryStorage(), where, permission, tool = "web_fetch" }) {
-  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   await harness.root(ctx);
   const dirs = where ?? { root: await scratch(t), work: await scratch(t), data: await scratch(t) };
   await writeFile(join(dirs.data, "tool-settings.json"), JSON.stringify({ [tool]: { permission } }));

@@ -234,8 +234,11 @@ describe("the door hook: admission", () => {
       const run = await openOn(disk, REF, app);
       // The run as the door sees it: fenced from the moment the admission commits (the lease lost right after it).
       let lost = false;
-      run.harness.subscribeCommits((publication) => {
-        if (publication.changes.some((c) => c.type === "entry" && c.value.kind === "door.input")) lost = true;
+      run.harness.observeCommits({
+        advance: (publication) => {
+          if (publication.changes.some((c) => c.type === "entry" && c.value.kind === "door.input")) lost = true;
+        },
+        end: () => undefined,
       });
       const seen = new Proxy(run, { get: (target, key) => (key === "fenced" ? lost : Reflect.get(target, key, target)) });
       server.attach(seen, hook);

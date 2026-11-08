@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Harness } from "@earendil-works/pi-durable";
-import type { HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
+import type { CommitResult, HarnessOptions, HarnessSettings, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
 import type { AcquireOptions, Claim, RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
@@ -101,6 +101,21 @@ export interface OpenRunOptions {
    * caller on one machine with no host epoch. Either way the store's own exclusive lock keeps a second writer out.
    */
   readonly epoch?: number;
+}
+
+/**
+ * A run's tasks are never ended for its processes' deaths. pi 1.5 counts every open as a restart of each task left
+ * running (pi-durable dist/harness/scheduler.js:238-240), resets the count only when the task commits a new state
+ * (:2844), and at `settings.restartLimit` (default 5, harness/agent.js:36) faults it (:1777-1781). A workflow task keeps
+ * its progress in its journal and its nodes' conversations, never its own state (pi durable/task.ts), so five deaths in a
+ * row would fault it, its replacement would abort the node's conversation, and the node would run its effects again.
+ * `Infinity` (agent.js:37) is pi 1.1's unbounded resume. A model request the host dies during still counts against the
+ * retry policy, as pi 1.5 charges it. A caller that names its own `restartLimit` keeps it.
+ */
+function withRunRestarts<O extends { readonly settings?: HarnessSettings | (() => HarnessSettings | undefined) }>(options: O): O {
+  const given = options.settings;
+  const settings = typeof given === "function" ? () => ({ restartLimit: Infinity, ...given() }) : { restartLimit: Infinity, ...given };
+  return { ...options, settings };
 }
 
 export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegistration> extends Omit<OpenRunOptions, "cleanup"> {
@@ -291,9 +306,12 @@ export async function storeHead(store: StoreHeadSource): Promise<number> {
 }
 
 /**
- * `storage` with `before` run ahead of every commit (it may throw to refuse it), every resolved commit's sequence
- * reported to `after`, every rejected commit's error to `failed`, and its close to `closing`; everything else delegates
- * unchanged.
+ * `storage` with `before` run ahead of every commit (it may throw to refuse it), each durable batch's sequence reported
+ * to `after`, every rejected commit's error to `failed`, and its close to `closing`; everything else delegates
+ * unchanged. pi 1.5 commits in batches (group commit): one call stores several, each an ordinary atomic commit with
+ * its own seq, which pi's `receive(index, seq)` reports once per durable batch. `after` takes that same seq, so it
+ * hears each ordinary commit's seq as it did when a call was one commit. A batch Durable refuses comes back in the
+ * result (`refused`), not as a rejection, as a refused commit's StorageRejected never was a FencedError for `failed`.
  */
 function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Seq): void; failed(error: unknown): void; closing?(): void }): Storage {
   return new Proxy(storage, {
@@ -305,17 +323,17 @@ function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Se
         };
       }
       if (key === "commit") {
-        return async (writes: readonly StorageWrite[], context: Context) => {
+        return async (batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, context: Context): Promise<CommitResult> => {
           hooks.before();
-          let seq: Seq;
           try {
-            seq = await target.commit(writes, context);
+            return await target.commit(batches, (index, seq) => {
+              receive(index, seq);
+              hooks.after(seq);
+            }, context);
           } catch (error) {
             hooks.failed(error);
             throw error;
           }
-          hooks.after(seq);
-          return seq;
         };
       }
       const value: unknown = Reflect.get(target, key, target);
@@ -689,7 +707,7 @@ class Run implements DurableRun {
       if (this.#releasing === undefined && !lease.fenced) this.#closedFirst = true;
     });
     // openDurableRun refused an open without Harness options (here or from afterClaim) before this runs.
-    this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness!, env: this.env }, this.#context));
+    this.#harness = await step("harness", () => Harness.open(storage, { ...withRunRestarts(this.#options.harness!), env: this.env }, this.#context));
     // This incarnation's record, written under the store's lock.
     await step("record", () => this.#keepStatus(lease.record));
     const before = this.#options.beforeResume;
