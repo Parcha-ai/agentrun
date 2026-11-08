@@ -21,5 +21,5 @@ export const flows = [
   { name: "connect-github", pending: "waits on #1980 (Connect GitHub, its CSP form-action fix)" },
   { name: "template-apply", pending: "waits on #1975 (the Templates page and its Apply screen)" },
   { name: "run-to-end", pending: "to come: a run with the faux model, followed to its end" },
-  { name: "take-over", pending: "to come: the browser ask and take-over with pi-browser's fakes" },
+  { name: "take-over", pending: "waits on #1987 (the browser ask) and the run view that opens viewer.url in a new tab, never framed" },
 ];
