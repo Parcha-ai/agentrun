@@ -9,6 +9,11 @@ import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
 export type { AlsoRow, Claim, Command, Journal };
 
+/** Why a run ends failed when the answer it would end on was cut at the model's output limit (stopReason "length"): the
+ *  answer is unfinished, so the run never reads ended. `tokens`: what the cut answer used, when its harness says. */
+export const cutAtLimit = (tokens?: number): string =>
+  `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
+
 /** How an end-of-run turn the loop asked ended: its answer's text, its deadline passed (the turn is aborted), or it
  *  failed. */
 export type EndOfRunAnswer = { readonly ended: true; readonly answer: string } | { readonly timedOut: true } | { readonly failed: { readonly code: string; readonly message: string } };
