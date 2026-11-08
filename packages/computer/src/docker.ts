@@ -33,6 +33,7 @@ import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, 
 import {
 	ALLOW_PORTS,
 	allowOf,
+	containerSigns,
 	EGRESS_IMAGE,
 	EGRESS_LABEL,
 	EGRESS_MOUNT,
@@ -50,6 +51,7 @@ import {
 	RELAY_FLAG,
 } from "./docker/egress.js";
 import { EGRESS_READY } from "./docker/egress-proxy.js";
+import { addressBytes } from "./docker/egress-table.js";
 import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -82,6 +84,12 @@ export interface DockerEgressOptions {
 	hint?: string;
 	/** How long create waits for the proxy to say it is ready before it gives up, in ms. Default 10 s. */
 	readyMs?: number;
+	/**
+	 * The Docker host's own addresses, each an IP address, which the proxy refuses as the host's (this-host), beside this
+	 * machine's public ones. Required for an allowlist when this provider's interfaces are not the Docker host's: it runs
+	 * in a container (containerSigns), or its docker CLI talks to a daemon that is not a local unix socket.
+	 */
+	hostAddresses?: string[];
 }
 
 export interface DockerProviderOptions {
@@ -213,7 +221,10 @@ export class DockerProvider implements ComputerProvider {
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	readonly #image: ImageSource;
-	readonly #egress: { image: string; hint?: string; readyMs: number };
+	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[] };
+	/** Why this provider's own interfaces are not the Docker host's, in words, or none: read once, for the first allowlist
+	 *  with no egress.hostAddresses (#elsewhere). */
+	#elsewhere: string | null | undefined;
 	/** Where the egress proxy's code is: this package's own build. */
 	readonly #code: EgressCode = egressCode();
 	/** The host as docker info first read it: a host's enforcement does not change under a running provider. */
@@ -268,13 +279,17 @@ export class DockerProvider implements ComputerProvider {
 		return ensureImage(this.#image, { ...options, docker: this.#docker });
 	}
 
-	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind or an
-	 *  allowlist on a host that remaps user ids. */
+	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, a bind or an
+	 *  allowlist on a host that remaps user ids, and an allowlist on a Docker host this provider does not run on. */
 	check(spec: ComputerSpec): Refusal[] {
 		const host = this.#host;
 		const remapped = host?.remap !== undefined && spec?.mount?.kind === "bind" ? [{ field: "mount", message: remapWords(host.remap, String(spec.mount.path)) }] : [];
-		const allowRemapped = host?.remap !== undefined && isAllow(spec?.network) ? [{ field: "network", message: remapAllowWords(host.remap) }] : [];
-		return [...this.#checkSpec(spec), ...remapped, ...allowRemapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
+		const allowed: Refusal[] = [];
+		if (isAllow(spec?.network)) {
+			if (host?.remap !== undefined) allowed.push({ field: "network", message: remapAllowWords(host.remap) });
+			if (typeof this.#elsewhere === "string" && this.#egress.hostAddresses === undefined) allowed.push({ field: "network", message: elsewhereWords(this.#elsewhere) });
+		}
+		return [...this.#checkSpec(spec), ...remapped, ...allowed, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
 	}
 
 	#checkSpec(spec: ComputerSpec): Refusal[] {
@@ -344,6 +359,12 @@ export class DockerProvider implements ComputerProvider {
 		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
 		// Under remapped ids the egress volume and the proxy's code belong to host ids the computer's user is not.
 		if (allow !== undefined && host.value.remap !== undefined) return fail("refused", `network: ${remapAllowWords(host.value.remap)}`);
+		// The proxy refuses the Docker host's own addresses only when it knows them: this machine's, when it is that host.
+		if (allow !== undefined && this.#egress.hostAddresses === undefined) {
+			const elsewhere = await this.#elsewhereOf(signal);
+			if (!elsewhere.ok) return elsewhere;
+			if (elsewhere.value !== null) return fail("refused", `network: ${elsewhereWords(elsewhere.value)}`);
+		}
 		if (bound !== undefined) {
 			// Under remapped ids the folder's owner on the host is not the computer's user: refuse, never guess the mapping.
 			if (host.value.remap !== undefined) return fail("refused", `mount: ${remapWords(host.value.remap, bound)}`);
@@ -442,26 +463,36 @@ export class DockerProvider implements ComputerProvider {
 		if (!volume.ok) return volume;
 		if (volume.value.exitCode !== 0) return fail("docker", `docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
 		const { image, hint, readyMs } = this.#egress;
-		const args = egressRunArgs({ name, user, image, allow, local: hostAddresses(), deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
+		const local = [...new Set([...hostAddresses(), ...(this.#egress.hostAddresses ?? [])])];
+		const args = egressRunArgs({ name, user, image, allow, local, deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
 		const ran = await this.#run(args, signal);
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("docker", `docker run of the egress proxy ${proxy} failed: ${ran.value.stderr.trim()}`);
-		const bound = Date.now() + readyMs;
+		// Every call of the poll ends at the readiness bound, so a docker that stops answering cannot hold create past it: a
+		// call the bound cut off is the timeout, and the caller's own abort stays aborted.
+		const bound = AbortSignal.timeout(readyMs);
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		const late = () => fail("timeout", `the egress proxy ${proxy} was not ready within ${readyMs / 1000} s`);
+		const cut = <T>(result: Result<T>): Result<T> => {
+			if (result.ok) return result;
+			if (signal?.aborted) return fail("aborted", `create was aborted while the egress proxy ${proxy} started`);
+			return bound.aborted ? late() : result;
+		};
 		for (;;) {
-			const logs = await this.#run(["logs", proxy], signal);
+			const logs = cut(await this.#run(["logs", proxy], either));
 			if (!logs.ok) return logs;
 			const said = `${logs.value.stdout}\n${logs.value.stderr}`;
 			if (said.split("\n").some((line) => line.startsWith(EGRESS_READY))) return ok(undefined);
-			const found = await this.#inspect([proxy], signal);
+			const found = cut(await this.#inspect([proxy], either));
 			if (!found.ok) return found;
 			const state = found.value[0]?.State;
 			if (state?.Running !== true) {
 				const words = said.trim().split("\n").filter(Boolean).slice(-3).join("; ");
 				return fail("docker", `the egress proxy ${proxy} ended (exit code ${state?.ExitCode ?? "unknown"}) before it was ready${words ? `: ${words}` : ""}`);
 			}
-			if (Date.now() >= bound) return fail("timeout", `the egress proxy ${proxy} was not ready within ${readyMs / 1000} s`);
-			await sleep(EGRESS_POLL_MS, undefined, { signal }).catch(() => undefined);
+			await sleep(EGRESS_POLL_MS, undefined, { signal: either }).catch(() => undefined);
 			if (signal?.aborted) return fail("aborted", `create was aborted while the egress proxy ${proxy} started`);
+			if (bound.aborted) return late();
 		}
 	}
 
@@ -499,6 +530,31 @@ export class DockerProvider implements ComputerProvider {
 		if (!egressShaped(report)) return ok(undefined);
 		const found = await this.#inspect([egressNameOf(nameOf(report))], signal);
 		return found.ok ? ok(found.value[0] ?? null) : found;
+	}
+
+	/**
+	 * Why this provider's own interfaces are not the Docker host's, in words, or null when they are: it runs in a
+	 * container (containerSigns), or its docker CLI talks to a daemon that is not a local unix socket, as the CLI itself
+	 * resolves its context and DOCKER_HOST (`docker context inspect`). A CLI that cannot say is a reason too. Read once.
+	 */
+	async #elsewhereOf(signal?: AbortSignal): Promise<Result<string | null>> {
+		if (this.#elsewhere !== undefined) return ok(this.#elsewhere);
+		const sign = containerSigns();
+		if (sign !== undefined) return ok((this.#elsewhere = `this provider runs in a container (${sign})`));
+		const ran = await this.#run(["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], signal);
+		if (!ran.ok) return ran;
+		let endpoint: unknown;
+		try {
+			endpoint = ran.value.exitCode === 0 ? JSON.parse(ran.value.stdout) : undefined;
+		} catch {
+			endpoint = undefined;
+		}
+		if (typeof endpoint !== "string") {
+			const why = (ran.value.stderr.trim() || ran.value.stdout.trim()).split("\n")[0]?.slice(0, 200) ?? "";
+			return ok((this.#elsewhere = `the docker CLI could not say where its Docker daemon is (docker context inspect: ${why || `exit ${ran.value.exitCode}`})`));
+		}
+		this.#elsewhere = endpoint.startsWith("unix://") ? null : `the docker CLI talks to a Docker daemon at ${endpoint.slice(0, 200)}, not a local unix socket`;
+		return ok(this.#elsewhere);
 	}
 
 	/** The Docker host's architecture and enforcement (hostOf), read by docker info once per provider. */
@@ -796,7 +852,7 @@ function infoOf(report: DockerInspect, proxy: DockerInspect | null | undefined, 
 const MAX_TIMER_MS = 2_147_483_647;
 
 /** The egress options with their defaults, or a throw in words. */
-function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS }: DockerEgressOptions): { image: string; hint?: string; readyMs: number } {
+function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS, hostAddresses: given }: DockerEgressOptions): { image: string; hint?: string; readyMs: number; hostAddresses?: string[] } {
 	if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || image.includes("\0")) {
 		throw new Error(`the egress proxy's image ${JSON.stringify(image)} must name an image, such as ${EGRESS_IMAGE}`);
 	}
@@ -805,7 +861,18 @@ function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS
 	if (!Number.isSafeInteger(readyMs) || readyMs <= 0 || readyMs > MAX_TIMER_MS) {
 		throw new Error(`the egress proxy's readyMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${readyMs}`);
 	}
-	return { image, readyMs, ...(hint === undefined ? {} : { hint }) };
+	if (given !== undefined && !(Array.isArray(given) && given.every((address) => typeof address === "string" && addressBytes(address) !== undefined && !address.includes(",")))) {
+		throw new Error(`the egress proxy's hostAddresses must be a list of IP addresses, such as ["93.184.215.20"], not ${JSON.stringify(given)}`);
+	}
+	return { image, readyMs, ...(hint === undefined ? {} : { hint }), ...(given === undefined ? {} : { hostAddresses: [...given] }) };
+}
+
+/**
+ * Why an allowlist is refused when this provider's own interfaces are not the Docker host's: the proxy refuses the host's
+ * own addresses as this-host only when it knows them, and here it does not.
+ */
+function elsewhereWords(why: string): string {
+	return `${why}, so this provider's own interfaces are not the Docker host's, and the egress proxy could not refuse the host's own addresses: pass them as egress.hostAddresses, or ask for network none or open`;
 }
 
 /** Whether a spec's network is an allowlist. */

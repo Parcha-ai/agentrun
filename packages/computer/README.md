@@ -558,6 +558,13 @@ key.
   port, a URL, a private range. On a Docker host that remaps user ids (userns-remap or rootless Docker), an allowlist
   is refused before anything is made, as a bind is: the volume's owner and the proxy's code are host ids the computer's
   user does not map to, and the provider does not guess the mapping.
+- **The Docker host's own addresses.** The proxy refuses them as `this-host`, so it must know them. Docker does not
+  report them; the provider passes this machine's public interface addresses, which are the Docker host's only when
+  the provider runs on it. When it runs in a container (`/.dockerenv`, `/run/.containerenv`, or a container's cgroup in
+  `/proc/self/cgroup`), or its docker CLI talks to a daemon that is not a local unix socket (`docker context inspect`,
+  which resolves the context and `DOCKER_HOST` as the CLI does), an allowlist is refused in words before anything is
+  made, and `check` says so once it knows, unless `egress.hostAddresses` names the host's addresses (IP addresses),
+  which then go to the proxy beside this machine's own. A plain local host is as before.
 - **What the proxy refuses**, each before any socket opens: a name off the list, before any lookup, so it never
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
@@ -575,8 +582,9 @@ key.
   deadline, and `release(ref)` still clears it.
 - **Read-back.** `network`, `list` and `attach` read the allowlist from Docker: network mode none, the egress volume
   read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
-  deadline, runs while the computer runs, is hardened as above with exactly its volume and code, and whose argv holds
-  the list. Anything less is `{ other: "network allow, but its egress proxy ... <why>" }`. **A crashed proxy** is not
+  deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
+  IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
+  argv holds the list. Anything less is `{ other: "network allow, but its egress proxy ... <why>" }`. **A crashed proxy** is not
   restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
   it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
 

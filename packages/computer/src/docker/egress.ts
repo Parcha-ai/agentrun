@@ -14,7 +14,7 @@
 //  - The computer: init gets `--egress <socket>` and relays its loopback port 3128 to the socket, and tells every program
 //    it starts that port is its HTTP and HTTPS proxy. A program that ignores that reaches nothing: there is no route.
 //  - Both carry the label EGRESS_LABEL=<computer>; release finds the proxy and the volume by it, never by name alone.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { DEADLINE_LABEL, type DockerInspect } from "../drift.js";
@@ -114,10 +114,34 @@ export function sameAllow(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /** This machine's own public addresses, as its interfaces hold them: the proxy refuses them as the host's. A private or
- *  local one needs no entry; the address rule refuses it anyway. */
+ *  local one needs no entry; the address rule refuses it anyway. They are the Docker host's only when this provider runs
+ *  on it, not in a container and not against a daemon elsewhere (containerSigns, and the provider's own check). */
 export function hostAddresses(): string[] {
 	const all = Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((entry) => entry.address));
 	return [...new Set(all.filter((address) => checkAddress(address, []).ok))];
+}
+
+/** A container's cgroup path, under any manager that names one: Docker, containerd, Kubernetes, Podman, LXC, BuildKit. */
+const CONTAINER_CGROUP = /(^|[/.:-])(docker|containerd|cri-containerd|kubepods|libpod|lxc|buildkit)([/.:-]|$)/;
+
+/**
+ * What shows this process runs in a container, under `root` (the filesystem's root; a test's seam): /.dockerenv (Docker),
+ * /run/.containerenv (Podman), or a line of /proc/self/cgroup naming a container's cgroup. Undefined when none does. A
+ * cgroup namespace's bare root (a lone slash after the hierarchy) is no evidence either way. A container with none of these is not seen: the
+ * caller then still has its own interfaces, which is why egress.hostAddresses exists.
+ */
+export function containerSigns(root = "/"): string | undefined {
+	const at = (path: string) => `${root.replace(/\/$/, "")}${path}`;
+	if (existsSync(at("/.dockerenv"))) return "/.dockerenv exists";
+	if (existsSync(at("/run/.containerenv"))) return "/run/.containerenv exists";
+	let cgroup = "";
+	try {
+		cgroup = readFileSync(at("/proc/self/cgroup"), "utf8");
+	} catch {
+		return undefined;
+	}
+	const line = cgroup.split("\n").find((entry) => CONTAINER_CGROUP.test(entry.slice(entry.indexOf(":", entry.indexOf(":") + 1) + 1)));
+	return line === undefined ? undefined : `/proc/self/cgroup names a container's cgroup (${line.slice(0, 120)})`;
 }
 
 /** `docker volume create` of a computer's volume: tmpfs, so nothing of it outlives the daemon, and its user's alone. */
@@ -139,13 +163,21 @@ export interface EgressRun {
 	labels?: Record<string, string>;
 }
 
+/** The proxy container's bounds, as create sets them and the read-back holds it to: memory (swap the same), processes,
+ *  and a bounded json-file log. */
+const PROXY_MEMORY_MB = 256;
+const PROXY_PIDS = 64;
+const PROXY_LOG = { driver: "json-file", options: { "max-size": "1m", "max-file": "2" } } as const;
+
 /** `docker run` of a computer's proxy container (see the head of this file). Pinned by a golden test. */
 export function egressRunArgs({ name, user, image, allow, local, deadline, code, hint, labels = {} }: EgressRun): string[] {
 	const proxy = egressNameOf(name);
 	const args = ["run", "--detach", "--name", proxy, "--label", `${EGRESS_LABEL}=${name}`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 	for (const [key, value] of Object.entries(labels)) args.push("--label", `${key}=${value}`);
 	args.push("--user", user, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private");
-	args.push("--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2");
+	const memory = `${PROXY_MEMORY_MB}m`;
+	args.push("--pids-limit", String(PROXY_PIDS), "--memory", memory, "--memory-swap", memory, "--log-driver", PROXY_LOG.driver);
+	for (const [key, value] of Object.entries(PROXY_LOG.options)) args.push("--log-opt", `${key}=${value}`);
 	args.push("--network", "bridge");
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
 	args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
@@ -194,6 +226,18 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	const securityOpt = host.SecurityOpt;
 	if (!Array.isArray(securityOpt) || securityOpt.length !== 1 || securityOpt[0] !== "no-new-privileges") return other(`lacks no-new-privileges alone (SecurityOpt ${show(securityOpt)})`);
 	if (host.ReadonlyRootfs !== true) return other("has no read-only root");
+	const bytes = PROXY_MEMORY_MB * 1024 * 1024;
+	if (host.Memory !== bytes) return other(`has memory ${show(host.Memory)}, not ${bytes}`);
+	if (host.MemorySwap !== bytes) return other(`has memory swap ${show(host.MemorySwap)}, not ${bytes}`);
+	if (host.PidsLimit !== PROXY_PIDS) return other(`has pids limit ${show(host.PidsLimit)}, not ${PROXY_PIDS}`);
+	if (host.IpcMode !== "private") return other(`has IPC mode ${show(host.IpcMode)}, not "private"`);
+	if (host.CgroupnsMode !== "private") return other(`has cgroup namespace ${show(host.CgroupnsMode)}, not "private"`);
+	const log = (host.LogConfig ?? {}) as { Type?: unknown; Config?: Record<string, unknown> | null };
+	const logOptions = log.Config ?? {};
+	const wanted = Object.entries(PROXY_LOG.options);
+	if (log.Type !== PROXY_LOG.driver || Object.keys(logOptions).length !== wanted.length || !wanted.every(([key, value]) => logOptions[key] === value)) {
+		return other(`has the log ${show(log)}, not ${PROXY_LOG.driver} with ${wanted.map(([key, value]) => `${key} ${value}`).join(" and ")}`);
+	}
 	if (!blank(host.PortBindings) || host.PublishAllPorts === true) return other("publishes ports");
 	for (const field of ["Binds", "VolumesFrom", "Devices", "PidMode", "UsernsMode"]) if (!blank(host[field])) return other(`has ${field} ${show(host[field])}`);
 	if (config.User !== owner.user) return other(`runs as ${show(config.User).replaceAll('"', "")}, not the computer's ${show(owner.user).replaceAll('"', "")}`);
