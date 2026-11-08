@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type AdbRunner, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
+import { type AdbTransport, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
 
 /** The environment this module reads, by name. */
 export const PHONE_ENV = {
@@ -81,7 +81,7 @@ export interface PhoneModuleOptions extends Pick<PhoneProviderOptions, "fetch" |
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 	/** The adb runner; default the CLI the settings name. */
-	adb?: AdbRunner | string;
+	adb?: AdbTransport | string;
 }
 
 function optionsOf({ env = process.env, adb, ...rest }: PhoneModuleOptions): PhoneProviderOptions {

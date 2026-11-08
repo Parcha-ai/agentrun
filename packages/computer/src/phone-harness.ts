@@ -11,6 +11,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { crc32, deflateSync } from "node:zlib";
 import { checkActions } from "./actions.js";
 import type { KindCapabilities } from "./kinds.js";
@@ -104,16 +105,37 @@ export interface AdbResult {
 }
 
 /**
- * Runs adb with args. A result in words when adb could not run at all (missing, timed out); otherwise its exit code
- * and output, whatever they are. The words never hold the args: an unlock code is one of them.
+ * How the provider reaches adb. A spawned process's argv is in /proc for every user of the host, so no secret goes
+ * there: the phone's endpoint goes only to the local adb server, over its socket (server), and the unlock code only
+ * through a spawned adb's stdin (run's input). A spawned adb names its device by the adb server's transport id.
  */
-export type AdbRunner = (args: string[], options: { timeoutMs: number; signal?: AbortSignal }) => Promise<Result<AdbResult>>;
+export interface AdbTransport {
+	/**
+	 * Runs adb with args, and input on its stdin when given. A result in words when adb could not run at all (missing,
+	 * timed out); otherwise its exit code and output, whatever they are. The words never hold the args or the input.
+	 */
+	run(args: string[], options: { timeoutMs: number; signal?: AbortSignal; input?: string }): Promise<Result<AdbResult>>;
+	/**
+	 * One request to the local adb server by its socket protocol (host:connect:<endpoint>, host:disconnect:<endpoint>,
+	 * host:devices-l), starting the server first if need be: the answer's words. The words never hold the request.
+	 */
+	server(service: string, options: { timeoutMs: number }): Promise<Result<string>>;
+}
 
-/** The adb CLI (Android platform-tools) at path, by execFile, never a shell. */
-export function adbCli(path = "adb"): AdbRunner {
-	return (args, { timeoutMs, signal }) =>
+/** One adb call on a connected phone: the args after its -t <transport id>, a bound, and stdin. */
+type AdbRun = (args: string[], timeoutMs?: number, input?: string) => Promise<Result<AdbResult>>;
+
+/** The adb server's port when none is given: adb's own default. */
+export const ADB_SERVER_PORT = 5037;
+
+/**
+ * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
+ * loopback at port (adb's own default), spoken to by its socket protocol.
+ */
+export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number } = {}): AdbTransport {
+	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			execFile(path, args, { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, args, { encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
@@ -123,7 +145,49 @@ export function adbCli(path = "adb"): AdbRunner {
 				if (error && typeof (error as { code?: unknown }).code !== "number") return resolve(fail("phone", `adb could not run: ${error.message.split("\n")[0]}`));
 				resolve(ok({ exitCode: typeof code === "number" ? code : error ? 1 : 0, stdout: Buffer.from(stdout), stderr: Buffer.from(stderr).toString("utf8") }));
 			});
+			// stdin always ends, so no adb waits on it; it carries the input when there is one.
+			child.stdin?.on("error", () => undefined);
+			child.stdin?.end(input ?? "");
 		});
+	let started: Promise<Result<AdbResult>> | undefined;
+	const server: AdbTransport["server"] = async (service, { timeoutMs }) => {
+		const what = service.split(":").slice(0, 2).join(":");
+		started ??= run(["start-server"], { timeoutMs });
+		const start = await started;
+		if (!start.ok || start.value.exitCode !== 0) {
+			started = undefined;
+			return start.ok ? fail("phone", `adb start-server failed: ${start.value.stderr.trim().split("\n")[0] || `exit code ${start.value.exitCode}`}`) : start;
+		}
+		return new Promise((resolve) => {
+			const chunks: Buffer[] = [];
+			let settled = false;
+			const done = (result: Result<string>) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				socket.destroy();
+				resolve(result);
+			};
+			const socket = createConnection({ host: "127.0.0.1", port });
+			const timer = setTimeout(() => done(fail("timeout", `the adb server did not answer ${what} within ${timeoutMs / 1000} s`)), timeoutMs);
+			socket.on("connect", () => socket.write(`${Buffer.byteLength(service).toString(16).padStart(4, "0")}${service}`));
+			socket.on("data", (chunk) => chunks.push(chunk));
+			socket.on("error", (error) => done(fail("phone", `the adb server on 127.0.0.1:${port} could not be reached for ${what}: ${error.message}`)));
+			socket.on("close", () => done(adbAnswer(Buffer.concat(chunks), what)));
+		});
+	};
+	return { run, server };
+}
+
+/** The adb server's answer: OKAY, or FAIL and its words, each optionally followed by a length-prefixed message. */
+export function adbAnswer(raw: Buffer, what: string): Result<string> {
+	const status = raw.subarray(0, 4).toString("latin1");
+	const rest = raw.subarray(4);
+	const length = rest.length >= 4 ? Number.parseInt(rest.subarray(0, 4).toString("latin1"), 16) : Number.NaN;
+	const message = Number.isSafeInteger(length) && length >= 0 && rest.length >= 4 + length ? rest.subarray(4, 4 + length).toString("utf8") : rest.toString("utf8");
+	if (status === "OKAY") return ok(message);
+	if (status === "FAIL") return fail("phone", `the adb server refused ${what}: ${message.trim()}`);
+	return fail("phone", `the adb server answered ${what} with ${JSON.stringify(raw.subarray(0, 40).toString("latin1"))}, not OKAY or FAIL`);
 }
 
 export interface PhoneProviderOptions {
@@ -135,8 +199,8 @@ export interface PhoneProviderOptions {
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
-	/** The adb runner, or the adb CLI's path; default adbCli("adb"). */
-	adb?: AdbRunner | string;
+	/** How adb is reached (AdbTransport), or the adb CLI's path; default adbCli("adb"). */
+	adb?: AdbTransport | string;
 	/** Where the provider's phones and their labels are kept; default memoryLedger(). */
 	ledger?: PhoneLedger;
 	/** The longest lifetime; default 30 min. */
@@ -184,7 +248,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly #apiKey: string;
 	readonly #baseUrl: string;
 	readonly #fetch: typeof globalThis.fetch;
-	readonly #adb: AdbRunner;
+	readonly #adb: AdbTransport;
 	readonly #ledger: PhoneLedger;
 	readonly #maxLifetimeMs: number;
 	readonly #readyMs: number;
@@ -201,7 +265,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		this.#apiKey = apiKey;
 		this.#baseUrl = (options.baseUrl ?? PHONE_HARNESS_URL).replace(/\/+$/, "");
 		this.#fetch = options.fetch ?? globalThis.fetch;
-		this.#adb = typeof options.adb === "function" ? options.adb : adbCli(options.adb ?? "adb");
+		const adb = options.adb;
+		if (adb !== undefined && typeof adb !== "string" && !(typeof adb?.run === "function" && typeof adb?.server === "function")) {
+			throw new Error("options.adb is the adb CLI's path, or a transport with run() and server()");
+		}
+		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
 		this.#ledger = options.ledger ?? memoryLedger();
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
 		if (!(Number.isSafeInteger(this.#maxLifetimeMs) && this.#maxLifetimeMs > 0)) throw new Error(`maxLifetimeMs ${show(options.maxLifetimeMs)} is not a whole number of milliseconds above 0`);
@@ -409,6 +477,25 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return this.#end(ref.id);
 	}
 
+	/**
+	 * The adb server's transport id of the phone at endpoint, from host:devices-l, once it is a device: a connected
+	 * phone may show as offline for a moment first.
+	 */
+	async #transportOf(endpoint: string): Promise<Result<string>> {
+		let last = "not listed";
+		for (let tries = 0; tries < 10; tries++) {
+			if (tries > 0) await this.#sleep(500);
+			const listed = await this.#adb.server("host:devices-l", { timeoutMs: ADB_TIMEOUT_MS });
+			if (!listed.ok) return listed;
+			const line = listed.value.split("\n").find((one) => one.trim().split(/\s+/)[0] === endpoint);
+			const state = line?.trim().split(/\s+/)[1];
+			const id = /\btransport_id:(\d+)\b/.exec(line ?? "")?.[1];
+			if (state === "device" && id !== undefined) return ok(id);
+			last = state ?? "not listed";
+		}
+		return fail("phone", `adb connected to the phone, and the adb server still lists it as ${last}, not a device`);
+	}
+
 	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		if ((await this.#ledger.get(ref.id)) === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		const session = await this.#session(ref.id);
@@ -426,18 +513,24 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (typeof host !== "string" || !/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isSafeInteger(port) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(code)) {
 			return fail("phone", `the phone harness gave ${ref.id} no adb link this provider can use (a host, a port and an unlock code)`);
 		}
-		const serial = `${host}:${port}`;
-		const adb = (args: string[], timeoutMs = ADB_TIMEOUT_MS) => this.#adb(args, { timeoutMs });
-		const connected = await adb(["connect", serial]);
+		// The endpoint and the code never reach an argv: the endpoint goes to the adb server over its socket, the code to
+		// the phone's sh through stdin, and every spawned adb names the phone by its transport id.
+		const endpoint = `${host}:${port}`;
+		const server = (service: string) => this.#adb.server(service, { timeoutMs: ADB_TIMEOUT_MS });
+		const connected = await server(`host:connect:${endpoint}`);
 		if (!connected.ok) return connected;
-		const said = connected.value.stdout.toString("utf8").trim();
-		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return fail("phone", `adb could not reach the phone at ${serial}: ${said.split("\n")[0] || connected.value.stderr.trim()}`);
-		const unlocked = await adb(["-s", serial, "shell", `unlock ${code}`]);
+		const said = connected.value.trim();
+		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) return fail("phone", `adb could not reach the phone of ${ref.id}: ${said.split("\n")[0]}`);
+		const transport = await this.#transportOf(endpoint);
+		if (!transport.ok) return transport;
+		const id = transport.value;
+		const adb: AdbRun = (args, timeoutMs = ADB_TIMEOUT_MS, input) => this.#adb.run(["-t", id, ...args], { timeoutMs, ...(input === undefined ? {} : { input }) });
+		const unlocked = await adb(["shell", "-T"], ADB_TIMEOUT_MS, `unlock ${code}\nexit\n`);
 		if (!unlocked.ok) return unlocked;
-		const probe = await adb(["-s", serial, "shell", "echo ph-ok"]);
+		const probe = await adb(["shell", "echo ph-ok"]);
 		if (!probe.ok) return probe;
-		if (!probe.value.stdout.toString("utf8").includes("ph-ok")) return fail("phone", `the phone at ${serial} stayed locked after its unlock code`);
-		const client = new AdbClient(serial, adb, this.#sleep);
+		if (!probe.value.stdout.toString("utf8").includes("ph-ok")) return fail("phone", `the phone of ${ref.id} stayed locked after its unlock code`);
+		const client = new AdbClient(id, adb, () => server(`host:disconnect:${endpoint}`), this.#sleep);
 		const opened = await client.open(this.#daemonVersion);
 		if (!opened.ok) return opened;
 		const hello = opened.value;
@@ -445,7 +538,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			client.close();
 			return fail("refused", `hello: the daemon reports version ${hello.version}, expected ${this.version}`);
 		}
-		return ok({ client, hello, close: async () => client.close() });
+		return ok({ client, hello, close: () => client.closed() });
 	}
 }
 
@@ -497,9 +590,15 @@ class AdbClient implements ComputerClient {
 	#scale = 1;
 	#held: { id: string; bytes: Buffer } | undefined;
 
+	/** The disconnect close started, which the connection's close waits for. */
+	#gone: Promise<unknown> = Promise.resolve();
+
 	constructor(
-		readonly serial: string,
-		readonly adb: (args: string[], timeoutMs?: number) => Promise<Result<AdbResult>>,
+		/** The adb server's transport id of the phone: no secret, so it may be in an argv. */
+		readonly transport: string,
+		readonly adb: AdbRun,
+		/** Lets the adb server drop the phone's transport, by its endpoint over the server's socket. */
+		readonly disconnect: () => Promise<unknown>,
 		readonly sleep: (ms: number) => Promise<void>,
 	) {}
 
@@ -513,7 +612,7 @@ class AdbClient implements ComputerClient {
 		if (!density.ok) return density;
 		const sizes = [...size.value.matchAll(/(\d+)x(\d+)/g)];
 		const last = sizes.at(-1);
-		if (!last) return fail("phone", `the phone at ${this.serial} did not say its screen's size: ${size.value.trim().slice(0, 100)}`);
+		if (!last) return fail("phone", `the phone (adb transport ${this.transport}) did not say its screen's size: ${size.value.trim().slice(0, 100)}`);
 		this.#size = [Number(last[1]), Number(last[2])];
 		const dpi = [...density.value.matchAll(/(\d+)/g)].at(-1);
 		this.#scale = dpi ? Number(dpi[1]) / 160 : 1;
@@ -526,12 +625,18 @@ class AdbClient implements ComputerClient {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#held = undefined;
-		void this.adb(["disconnect", this.serial]).catch(() => undefined);
+		this.#gone = this.disconnect().catch(() => undefined);
+	}
+
+	/** Closes, and waits until the adb server has let the phone's transport go. */
+	async closed(): Promise<void> {
+		this.close();
+		await this.#gone;
 	}
 
 	/** One shell command on the phone: its stdout, or the failure in words. */
 	async #shell(command: string): Promise<Result<string>> {
-		const ran = await this.adb(["-s", this.serial, "shell", command]);
+		const ran = await this.adb(["shell", command]);
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) {
 			const why = (ran.value.stderr.trim() || ran.value.stdout.toString("utf8").trim()).split("\n")[0] || `exit code ${ran.value.exitCode}`;
@@ -541,7 +646,7 @@ class AdbClient implements ComputerClient {
 	}
 
 	async #execOut(command: string): Promise<Result<Buffer>> {
-		const ran = await this.adb(["-s", this.serial, "exec-out", command], 60_000);
+		const ran = await this.adb(["exec-out", command], 60_000);
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("phone", `${command.split(" ")[0]} on the phone failed: ${ran.value.stderr.trim().split("\n")[0] || `exit code ${ran.value.exitCode}`}`);
 		return ok(ran.value.stdout);

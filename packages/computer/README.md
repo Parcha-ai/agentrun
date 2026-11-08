@@ -1828,7 +1828,13 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
 - **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
-  `adb connect`, unlocks the phone with the session's code (never in a result or an error) and probes it. Then it gives
+  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it.
+  - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
+    The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
+    `host:disconnect`). The code reaches the phone's `sh` through the stdin of `adb shell -T`. Every spawned adb names
+    the phone by the adb server's transport id (`-t <id>`).
+
+  Then it gives
   a client in this process that answers each protocol method with adb commands:
   - `screen.shot`/`screen.read`: a raw `screencap`, cropped to the region and encoded as an RGBA PNG; `scale` is the
     density over 160;
@@ -1854,8 +1860,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   deadline in its `ledger` option: `{ put, get, list, remove }`. It is in memory by default; serve passes a store-backed
   one, and the conformance module a JSON file. `list`, `attach`, `network`, `connect`, `release` and the janitor see
   only the phones it names, never another session on the account, and forget a phone the service ended.
-- **adb** is an option too: a runner (tests give a fake), or the path of the `adb` CLI (Android platform-tools; default
-  `adb` on PATH). Without it, connect says so in words.
+- **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
+  the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
+  (port 5037, adb's own). Without it, connect says so in words.
 - **testConnection** is one `GET /sessions` joined to the ledger, which rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
   reached.

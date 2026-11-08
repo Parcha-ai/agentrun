@@ -196,8 +196,12 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
 	// The phone harness's own link: a DNS name, a port, and a ph_ code (OpenAPI SessionAdb), as a live run gave it.
-	const serial = `${ADB_HOST}:${22220 + 1}`;
-	assert.deepEqual(fake.adbCalls().slice(0, 3), [["connect", serial], ["-s", serial, "shell", `unlock ${ADB_CODE}`], ["-s", serial, "shell", "echo ph-ok"]]);
+	// The endpoint goes to the adb server over its socket; every spawned adb names the phone by its transport id, and the
+	// unlock code reaches the phone's sh through stdin.
+	const endpoint = `${ADB_HOST}:${22220 + 1}`;
+	assert.deepEqual(fake.serverCalls().slice(0, 2), [`host:connect:${endpoint}`, "host:devices-l"]);
+	assert.deepEqual(fake.adbCalls().slice(0, 2), [["-t", "1", "shell", "-T"], ["-t", "1", "shell", "echo ph-ok"]]);
+	assert.deepEqual(fake.shells().slice(0, 2), [`unlock ${ADB_CODE}`, "echo ph-ok"]);
 	assert.deepEqual(connected.value.hello, { version: provider.version, os: "android", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
@@ -236,6 +240,15 @@ test("no spawned adb's argv holds the unlock code or the phone's endpoint, which
 	}
 	assert.ok(fake.shells().includes(`unlock ${ADB_CODE}`), "the phone was unlocked all the same");
 	assert.deepEqual(fake.phone.connected.size, 0, "and close let the transport go");
+});
+
+test("the adb server's answers are read as its socket protocol frames them: OKAY or FAIL, then a hex length and the message", () => {
+	const frame = (status, message) => Buffer.from(`${status}${Buffer.byteLength(message).toString(16).padStart(4, "0")}${message}`);
+	assert.deepEqual(phone.adbAnswer(frame("OKAY", "connected to live.phone-harness.test:22221"), "host:connect"), { ok: true, value: "connected to live.phone-harness.test:22221" });
+	assert.deepEqual(phone.adbAnswer(Buffer.from("OKAY"), "host:disconnect"), { ok: true, value: "" });
+	const refused = phone.adbAnswer(frame("FAIL", "no such device"), "host:disconnect");
+	assert.deepEqual(refused, { ok: false, error: { code: "phone", message: "the adb server refused host:disconnect: no such device" } });
+	assert.equal(phone.adbAnswer(Buffer.from("HTTP/1.1 400"), "host:devices-l").error.code, "phone");
 });
 
 test("without adb on this machine, connect says what to install", async () => {
