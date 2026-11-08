@@ -4,8 +4,13 @@ parameters:
   post_to: crm
   competitors: "Alloy, Persona, Middesk, Sardine"
   crm_score_property: lead_fit_score
-# A fake HubSpot MCP server, saved as `hubspot` before the apply: it answers the tools below from
-# fixtures/fake-hubspot.json and records every call. Its writes are granted at apply.
+# A fake HubSpot MCP server, saved as `hubspot` before the apply, from fixtures/fake-hubspot.json (the shared fake-MCP
+# fixture format); it records every call. The grants are the owner's answer at apply, listed one by one, so the run asks
+# nobody.
 mcp:
   hubspot: fixtures/fake-hubspot.json
-grants: ["mcp:hubspot/manage_crm_objects"]
+grants:
+  - mcp:hubspot/get_crm_objects
+  - mcp:hubspot/search_crm_objects
+  - mcp:hubspot/tool_guidance
+  - mcp:hubspot/manage_crm_objects

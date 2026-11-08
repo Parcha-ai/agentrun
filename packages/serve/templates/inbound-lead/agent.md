@@ -12,17 +12,16 @@ effort: low
 tools: [read, web_search, web_fetch]
 mcp:
   - server: hubspot
-    tools: [search_crm_objects, get_crm_objects, search_properties, tool_guidance, manage_crm_objects]
+    tools: [get_crm_objects, search_crm_objects, tool_guidance, manage_crm_objects]
     required: false
-    allow: [manage_crm_objects]
+    allow: [get_crm_objects, search_crm_objects, tool_guidance]
   - server: slack
-    tools: [slack_search_channels, slack_send_message]
+    tools: [slack_send_message]
     required: false
-    allow: [slack_send_message]
 parameters:
   icp: { type: string, required: true, description: "your ideal customer in your own words: industry, company size, region, buying signals, and what disqualifies a lead (e.g. 'B2B fintech, 50-2000 people, US or EU, has a compliance team; never gambling operators')" }
   post_to: { type: string, required: true, pattern: "^(crm|slack|none)$", description: "where each brief goes: crm (a note and the score field on the HubSpot contact), slack (a message in one channel) or none (the run's answer only)" }
-  slack_channel: { type: string, pattern: "^(#?[a-z0-9][a-z0-9_-]{0,79}|[CG][A-Z0-9]{8,12})$", description: "the Slack channel the brief is posted to when post_to is slack, by name (#inbound-leads) or id (C0123456789)" }
+  slack_channel: { type: string, pattern: "^[CG][A-Z0-9]{8,12}$", description: "the ID of the Slack channel the brief is posted to when post_to is slack (C0123456789; the channel's details in Slack show it), never a name" }
   crm_score_property: { type: string, pattern: "^[a-z][a-z0-9_]{0,99}$", description: "the internal name of the HubSpot contact number property the fit score is written to when post_to is crm (e.g. lead_fit_score); empty: the note only" }
   competitors: { type: string, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
 budget: { per_run_usd: 0.40 }
@@ -51,12 +50,13 @@ profile disagree, the note wins, because it is newer.
 ## Where the brief goes
 
 - `post_to`: `${parameters.post_to}` (`crm`, `slack` or `none`).
-- Slack channel, when posting to Slack: `${parameters.slack_channel}` (empty: none set).
+- Slack channel ID, when posting to Slack: `${parameters.slack_channel}` (empty: none set, so nothing is posted).
 - HubSpot score property, when posting to the CRM: `${parameters.crm_score_property}` (empty: write the note only).
 - The owner's competitors: `${parameters.competitors}` (empty: none named).
 
-Post only where `post_to` says, and only with the tools you were granted. When the tool is missing or the write fails,
-don't retry another way: return the brief, and say in `posted` what didn't happen.
+Post only where `post_to` says: to that one channel ID, or to the CRM contact whose email is the lead's. Your writes
+ask the owner unless they allowed them at apply. When the tool is missing, the owner declines, the record doesn't match
+or the write fails, don't retry another way: return the brief, and say in `posted` what didn't happen.
 
 ## Ground rules
 

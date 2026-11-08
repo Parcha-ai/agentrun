@@ -1,4 +1,8 @@
-# Parameters the case's agent is applied with.
+# Applied with these parameters (POST /v2/templates/release-notes/apply). Pass: 3 of 3 runs.
 parameters:
   repo: "acme/lantern"
   groups: "Slack, Status"
+# The agent's learning folder is seeded from fixtures/learning/ (MEMORY.md and its one note) before the run, so the
+# run reads the note under # Learned as it would after the owner's edit to a past draft was kept. The message itself
+# says nothing about the word: only the learning path can carry it.
+learning: fixtures/learning/

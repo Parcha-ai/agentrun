@@ -13,7 +13,7 @@ tools: [read]
 mcp:
   - server: github
     tools: [list_releases, get_latest_release, get_release_by_tag, list_tags, get_tag, list_commits, get_commit, search_pull_requests, pull_request_read, get_file_contents, search_issues, get_label, issue_write]
-    required: true
+    required: false
     allow: [list_releases, get_latest_release, get_release_by_tag, list_tags, get_tag, list_commits, get_commit, search_pull_requests, pull_request_read, get_file_contents, search_issues, get_label]
 parameters:
   repo: { type: string, required: true, pattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$", description: "the GitHub repository whose releases you write notes for, as owner/name" }
@@ -30,6 +30,8 @@ SKILL.md and the STYLE.md beside it before your first tool call, then follow the
 Each message names what to write notes for: a tag ("notes for v1.4.0"), a range ("since v1.3.0", "since v1.3.0 through
 v1.4.0-rc.1"), the unreleased changes ("what merged since the last release"), or a GitHub release or tag event wrapped in
 `<trigger-payload ... untrusted>`. A message may instead hold the merged pull requests themselves; then work from those.
+Without the GitHub MCP tools (the owner hasn't saved the server), a PR list in the message is the only way in: the skill
+says what to answer otherwise.
 
 The owner's settings:
 - Sections under "What you can do now", in this order: "${parameters.groups}". Empty: pick 3 to 7 from the changes.

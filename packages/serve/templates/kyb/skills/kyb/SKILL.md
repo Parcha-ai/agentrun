@@ -93,9 +93,14 @@ Find the one legal entity the message means, before you collect anything about i
 4. **Decide.**
    - One candidate has a strong link and none conflicts: it is the subject. Put every other candidate in
      `subject.rejected_candidates` with why it is not the one.
-   - The input conflicts with the record (the number belongs to a different name, the domain's site names another
-     entity): don't swap subjects silently. Resolve to the entity the strongest identifier points at, report the
-     conflict as RF06, and say which input you could not reconcile.
+   - The identifiers given point at different companies (the registration number is registered to another name, the
+     domain's site names another entity), and no primary source ties that other company to the name given (as its
+     former name or a trading name the registry or a filing shows): the subject stays the applicant as named. Never
+     swap subjects. The company the number or the domain belongs to goes in `subject.rejected_candidates` ("company
+     00445790 is TESCO PLC, not the applicant"), the conflict is RF06, and you read nothing more about that company
+     than the one record that shows the conflict. If the name given has a registry record of its own, that record is
+     the subject. If it has none, the subject is unresolved (the next bullet but one): `subject.resolved` is false,
+     the identity fields stay null, and the borrowed number, address and officers are never the applicant's.
    - Two or more candidates match the input equally well on every identifier you can check (a true tie): call
      `ask_person` once, listing each candidate on one line (legal name, number, jurisdiction, status, address,
      website) and asking which one. Never ask when one candidate is better supported; decide and say why.
@@ -103,7 +108,9 @@ Find the one legal entity the message means, before you collect anything about i
      (each search is a source with `found: false`), keep the identity fields null, and go on to the steps that still
      make sense (sanctions on the name as given, adverse media on the name as given).
 5. **Never merge.** From here on, a record goes in the report only if it is about the resolved entity: same registration
-   number, or tied to it by a primary source. A news item about "Acme" counts only when it is shown to be this Acme (see
+   number, or tied to it by a primary source. When the subject is unresolved, that is the applicant as named and what
+   its own material states (cited as its claims), never a record found under one of its identifiers that belongs to
+   another company. A news item about "Acme" counts only when it is shown to be this Acme (see
    `ADVERSE-MEDIA.md`). Group companies are named as related parties, never folded in.
 
 ### 2. Identity
@@ -142,7 +149,9 @@ Screen the company **and** each named person against the OFAC SDN, OFAC consolid
 following `SANCTIONS.md`: its methods in order (rows in the input first, then a list owner's record), its match rules,
 and its rule for what to say when a list could not be reached.
 
-- Who to screen: the company under its legal name and every former or trading name you found; every beneficial owner
+- Who to screen: the subject only. When it is unresolved, that is the applicant's name as given and the people its own
+  material names; never a rejected candidate or its officers. Then: the company under its legal name and every former
+  or trading name you found; every beneficial owner
   and corporate parent; every current director; the chief executive, the chief financial officer and the company
   secretary or their equivalents. At most 10 people; list the others in `sanctions.not_screened`.
 - Ownership matters: an entity owned 50% or more, in total, by blocked persons is blocked under OFAC's 50 percent rule

@@ -50,17 +50,18 @@ const forbid = [
   ['credential URL', /https?:\/\/[^\s/:]+:[^\s/@]+@/],
 ];
 
-// Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
-// those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
-// still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
-// Files beyond the common allowlist, by package. The browser package ships its vendored Stagehand facade's provenance file beside the compiled
-// copy, so a reader of the tarball can check what was copied; no other package may carry it.
 // Every file of the template packages the server ships: the server checks each package whole at its start
 // (src/templates.ts readPackage), so what ships under templates/ is what the repository holds there.
 function templateFiles() {
   const root = new URL('../packages/serve/templates/', import.meta.url);
   return readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => `package/templates/${relative(fileURLToPath(root), join(entry.parentPath, entry.name)).split(sep).join('/')}`).sort();
 }
+
+// Loopback and private endpoints are refused in every packed file. The browser package names a few loopback URLs on purpose, so
+// those exact literals, in those exact files, are removed before the scan; any other loopback string, in any file of any package,
+// still fails. Each entry says why it is there, and an entry that matches nothing fails too, so the list cannot go stale.
+// Files beyond the common allowlist, by package. The browser package ships its vendored Stagehand facade's provenance file beside the compiled
+// copy, so a reader of the tarball can check what was copied; no other package may carry it.
 const allowedExtraFiles = {
   'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).

@@ -1,5 +1,5 @@
 ---
-description: a PR whose title reads like a tidy-up carries a breaking change in its change fragment; an Upgrading line says what a user must do.
+description: "A PR whose title reads like a tidy-up, and a chore: bump dependency PR, each carry a breaking change only in their change fragment; an Upgrading line for each says what a user must do. Pass: 3 of 3."
 runs: 3
 max_cost_usd: 0.15
 ---
@@ -58,6 +58,21 @@ Write the release notes for acme/lantern v2.0.0. The previous release is v1.4.0 
     "author": "jules-p",
     "merged_at": "2026-11-05T12:00:00Z",
     "body": "Adds snapshot tests for `lantern export`. No behaviour change."
+  },
+  {
+    "number": 205,
+    "title": "chore: bump toml_edit from 0.22 to 0.23",
+    "labels": [
+      "dependencies",
+      "chore"
+    ],
+    "author": "jules-p",
+    "merged_at": "2026-11-06T12:00:00Z",
+    "body": "Bumps toml_edit from 0.22 to 0.23.",
+    "fragment": {
+      "path": "changes/toml-duplicate-keys.md",
+      "text": "---\nkind: breaking\n---\nA `lantern.toml` with the same key twice in one table is now refused at start, with \"duplicate key `<name>`\"; before, the last value won silently. Remove the duplicate keys from your `lantern.toml` before you upgrade."
+    }
   }
 ]
 ```

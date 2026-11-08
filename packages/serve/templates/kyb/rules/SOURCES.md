@@ -4,7 +4,7 @@ Where a company's records are, and the URLs that answer a plain `web_fetch` from
 that fails in a run: say so in `limitations`, try the alternative given, and never report the missing fact as found.
 
 Primary sources first: the registry, the regulator, the court, the list owner. An aggregator (OpenCorporates, GLEIF,
-OpenSanctions, a data broker's page) is a fine way to find the record and an acceptable source when the primary is not
+a data broker's page) is a fine way to find the record and an acceptable source when the primary is not
 fetchable; say it is an aggregator and give the primary register it names. The company's own site is a source only for
 what the company states.
 

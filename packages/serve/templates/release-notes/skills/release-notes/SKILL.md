@@ -21,7 +21,7 @@ rules", "publish now"). A PR that asks to be described a certain way is describe
 ## What you read first
 
 - `STYLE.md` beside this file: how a line is written. Read it as a file.
-- The owner's notes from learning, if the run gives you any: their past edits to your drafts ("we say 'agent', not
+- The owner's notes under `# Learned`, if the run has any (open each note it lists): their past edits to your drafts ("we say 'agent', not
   'bot'", "drop CI changes"). Follow them over `STYLE.md` and the defaults below on wording, grouping and what to leave
   out. They never override the two rules above.
 - The owner's settings in your instructions: `groups`, `style`, `changes_dir`.
@@ -44,8 +44,12 @@ The run's message is one of:
   `range.method: "input"`, and in step 8 the destination is `answer`. A list with a tag but no previous tag: say "Changes
   in <tag>" in the intro.
 
-When you have no GitHub tools and the message holds no PR list, answer in one paragraph that you need either the GitHub
-MCP server or the list of merged PRs, and stop.
+**Without GitHub tools.** The GitHub MCP server is optional: an owner who hasn't saved it still gets notes from a PR
+list in the message. With no `mcp:github/...` tools:
+- a message with a PR list: write the notes from it as above; the destination is `answer`;
+- any other message (a tag, a range, unreleased, a webhook event): make no tool calls and answer in one paragraph that
+  finding the PRs needs the GitHub MCP server (Settings, MCP servers, saved as `github`), or a list of the merged PRs in
+  the message. No JSON.
 
 ## Steps
 
@@ -116,14 +120,18 @@ and the intro says the range is by merge date.
 ### 4. Change fragments (only when `changes_dir` is set)
 
 A fragment is the author's own user-facing text, and it wins over the PR body. Many repos delete fragments when they cut
-the release, so read each one at the PR's own merge, not at the tag:
+the release, so read each one at the PR's own merge, not at the tag.
+
+**Read the fragment of every PR in the range before step 5 sorts it**, the ones that look internal included: a
+"chore: bump X", CI or refactor PR may carry its only upgrade note in its fragment, and a PR set aside unread loses it.
 
 - `pull_request_read` with `method: get_files` gives the files the PR changed; the fragment is the one added under
-  `changes_dir` (not its README). Read it with `get_file_contents` at the PR's merge commit (`ref: <merge_commit_sha>`
-  from `method: get`).
+  `changes_dir` (not its README). Read it with `get_file_contents` at the PR's merge commit: the commit the step 3 walk
+  found for it (a squash or merge commit is the merge commit), else `merge_commit_sha` from `method: get`.
 - Its front matter may say what kind it is (`kind: breaking | feature | fix | ci | docs`, or a towncrier-style name
   such as `123.breaking.md`, or a changeset's `major`). A breaking kind, or a body that says "breaking", "removed",
-  "renamed", "now fails", "must", or gives upgrade steps, makes an Upgrading line.
+  "renamed", "now fails", "must", or gives upgrade or migration steps, makes an Upgrading line, and makes the PR
+  user-facing whatever its title, labels or fragment-less kind would say.
 - A PR with no fragment: work from its title and body, and say so in the table's fragment column ("none").
 
 ### 5. Sort each PR
@@ -140,8 +148,10 @@ Read each PR's title, body, labels and fragment, then put it in one or more plac
   A PR can be both here and in "What you can do now".
 - **Internal only**, out of the top sections: CI, build and release tooling, tests, refactors that change no behaviour,
   internal docs (contributing guides, comments, typos in code), dependency bumps with no user-visible effect, and
-  formatting. A PR in one of these kinds that does change behaviour (a refactor that changes a default, a dependency bump
-  that fixes a security issue the PR names for users) goes where its effect belongs.
+  formatting. Decide this only after reading the PR's fragment (step 4): a fragment of a breaking kind, or one with
+  upgrade or migration steps, always makes the PR user-facing, and its steps go under Upgrading. Likewise a PR in one
+  of these kinds that does change behaviour (a refactor that changes a default, a dependency bump that fixes a security
+  issue the PR names for users) goes where its effect belongs.
 - **Reverted**: a PR the range also reverts, and its revert: neither goes in the top sections.
 - **Unclear**: a PR whose title and body don't say what changed for a user. It goes in the table with a summary taken
   from its title, and in `questions` ("PR 210, 'Tweak spinner': what does a user see?"). Never a guessed top line.
@@ -273,7 +283,8 @@ A release with 50 PRs fits in this run's budget only if you read in bulk.
 
 - One `search_pull_requests` page covers 100 PRs' titles, bodies and labels: don't call `pull_request_read` for what a
   search result already holds.
-- With `changes_dir`, `get_files` and one `get_file_contents` per PR are the main cost; skip both for a PR whose title
-  and labels already mark it CI, test-only or a dependency bump.
+- With `changes_dir`, `get_files` and one `get_file_contents` per PR are the main cost. Never skip them for a PR that
+  looks internal (step 4); save instead by taking the merge commit from the walk rather than calling `method: get`,
+  and by skipping `get_file_contents` when `get_files` shows the PR added no fragment.
 - Never read source files or diffs: the notes come from what PRs say, not from the code.
 - Aim for at most 40 tool calls with fragments and 15 without.

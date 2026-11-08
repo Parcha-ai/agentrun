@@ -1,11 +1,8 @@
 ---
-description: the owner's learned note says "agent", not "bot"; PR titles and bodies say bot throughout, and the draft never does.
+description: "The owner's preference \"agent, not bot\" lives only in a seeded learned note, never in the message; PR titles and bodies say bot throughout, and the draft never does. Pass: 3 of 3."
 runs: 3
 max_cost_usd: 0.15
 ---
-Owner's notes from learning (their edits to your past drafts):
-- We say "agent", not "bot", everywhere in release notes.
-
 Write the release notes for acme/lantern v1.6.0. The previous release is v1.5.0 (title "Lantern v1.5.0"; it credits no authors). These are all the pull requests merged in the range; there is no GitHub access in this run, so work from this list only.
 
 ```json

@@ -17,7 +17,7 @@ Severities: `critical` (do not proceed), `high` (needs a person's decision), `me
 | RF03 | **Sanctioned: person or restricted list.** A `confirmed_hit` on a director or officer who is not an owner or controller; or the company on a non-blocking OFAC list (sectoral and others) | critical | high | high |
 | RF04 | **Possible sanctions match not resolved, on a director or officer** | high | medium | medium |
 | RF05 | **Existence not established.** No record of the company in the registry where it says it is registered (or, when it names none, in any registry you searched), and no other primary source (a filing, a regulator's register) shows it. When the registry it names could not be read, that is RF22, not this | critical | critical | critical |
-| RF06 | **Conflicting particulars.** The input or the company's own claims conflict with the registry: the number belongs to another name, the address, the incorporation date or a claimed licence does not match | high | high | medium |
+| RF06 | **Conflicting particulars.** The input or the company's own claims conflict with the registry: the number belongs to another company (the subject stays the applicant as named; `SKILL.md` step 1), the address, the incorporation date or a claimed licence does not match | high | high | medium |
 | RF07 | **Dissolved,** struck off or otherwise no longer a legal person | critical | critical | critical |
 | RF08 | **Insolvency.** In liquidation, administration or receivership, or a winding-up petition is pending | high | high | medium |
 | RF09 | **Strike-off proposed** (a First Gazette notice or the registry's compulsory strike-off action) | high | medium | medium |

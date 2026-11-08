@@ -7,7 +7,7 @@ Scheduled weekly run, fired 2026-11-09T08:00:00Z (Monday). Write this week's mar
 (quillforge.example) with your monitor skill.
 
 quillforge.example and the news site are not reachable from this run. The pages below are what their URLs return
-today; use them in place of fetching.
+today; use them in place of fetching. The previous digest is pasted below.
 
 --- Previous digest, posted 2026-11-02 ---
 *Market monitor:* 2026-10-26 to 2026-11-02

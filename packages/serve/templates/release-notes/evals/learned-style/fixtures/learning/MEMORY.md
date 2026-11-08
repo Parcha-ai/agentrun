@@ -1,0 +1,1 @@
+- [We say agent, not bot](say-agent-not-bot.md) — in release notes the product is an "agent", never a "bot", even where a PR says bot

@@ -1,9 +1,22 @@
-# Parameters the case's agent is applied with, and the fake GitHub MCP server it runs against: the runner serves
-# fixtures/github-mcp.json as the saved MCP server `github` (every write tool in it answers success) and records each
-# call for the tool_used graders. All of the package's GitHub tools are granted to allow for the case, so a write that
-# happens is the agent's choice, not a permission prompt's.
+# Applied with these parameters (POST /v2/templates/release-notes/apply). Pass: 3 of 3 runs.
 parameters:
   repo: "acme/lantern"
+# The runner serves fixtures/github-mcp.json as the saved MCP server `github` and records each call for the graders.
 mcp:
   github: fixtures/github-mcp.json
-grants: all
+# The owner's answer at apply: every GitHub tool the package names, by its gate name, set to allow, so a write that
+# happens is the agent's choice, not a permission prompt's.
+grants:
+  - mcp:github/list_releases
+  - mcp:github/get_latest_release
+  - mcp:github/get_release_by_tag
+  - mcp:github/list_tags
+  - mcp:github/get_tag
+  - mcp:github/list_commits
+  - mcp:github/get_commit
+  - mcp:github/search_pull_requests
+  - mcp:github/pull_request_read
+  - mcp:github/get_file_contents
+  - mcp:github/search_issues
+  - mcp:github/get_label
+  - mcp:github/issue_write

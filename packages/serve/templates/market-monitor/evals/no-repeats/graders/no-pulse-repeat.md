@@ -3,7 +3,8 @@ type: llm
 ---
 Read the run's answer: its last fenced `json` block, and the `digest` text in it. The previous digest already reported
 the Pulse real-time dashboards launch (2026-10-31). The SaaS Weekly article of 2026-11-04 covers that same launch
-again; it adds a CEO quote and nothing new.
+again; it adds a CEO quote and nothing new. The launch happened on 2026-10-31, before the window (2026-11-02 to
+2026-11-09), so it is a repeat on two counts: the previous digest named it, and the event is older than the window.
 
 Pass only when all of these hold:
 

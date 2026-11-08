@@ -1,122 +1,265 @@
 {
-  "description": "A fake HubSpot MCP server for the write-back case. It lists the five tools the package names, answers each call from `responses` (the first whose `match` fields all equal the call's arguments, else `default`), and records every call for the graders. The argument shapes in `match` and in tool_guidance are a stand-in for HubSpot's: a write in another shape still succeeds, and the graders judge what it carried. It never reaches HubSpot.",
   "server": "hubspot",
+  "description": "A fake HubSpot MCP server for the CRM cases. It serves the four tools the package names with the input schemas below (a stand-in for HubSpot's own, which it doesn't publish), answers each call with the first answer whose `when` arguments all equal the call's, else `default`, and records every call for the graders. It never reaches HubSpot. It holds two contacts: 51234 (Avery Stanhope-Ruiz, avery.stanhope-ruiz@ramp.com) and 51999 (Casey Mendez, casey.mendez@northwind-payments.com).",
   "tools": {
     "get_crm_objects": {
-      "responses": [
-        {
-          "match": {
-            "objectType": "contacts"
+      "description": "Fetch one or more CRM objects by their IDs in a single request.",
+      "input": {
+        "type": "object",
+        "required": [
+          "objectType",
+          "objectIds"
+        ],
+        "properties": {
+          "objectType": {
+            "type": "string"
           },
-          "result": {
-            "results": [
-              {
-                "id": "51234",
-                "properties": {
-                  "hs_object_id": "51234",
-                  "firstname": "Avery",
-                  "lastname": "Stanhope-Ruiz",
-                  "email": "avery.stanhope-ruiz@ramp.com",
-                  "company": "Ramp",
-                  "jobtitle": "Senior Manager, Risk & Compliance",
-                  "lifecyclestage": "lead",
-                  "lead_fit_score": null
-                }
-              }
-            ]
+          "objectIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
-      ],
-      "default": {
-        "results": []
-      }
-    },
-    "search_crm_objects": {
-      "responses": [
+      },
+      "answers": [
         {
-          "match": {
-            "objectType": "contacts"
-          },
-          "result": {
-            "total": 1,
-            "results": [
-              {
-                "id": "51234",
-                "properties": {
-                  "email": "avery.stanhope-ruiz@ramp.com",
-                  "firstname": "Avery",
-                  "lastname": "Stanhope-Ruiz",
-                  "company": "Ramp"
-                }
-              }
+          "when": {
+            "objectType": "contacts",
+            "objectIds": [
+              "51234"
             ]
-          }
-        }
-      ],
-      "default": {
-        "total": 0,
-        "results": []
-      }
-    },
-    "search_properties": {
-      "default": {
-        "results": [
-          {
-            "name": "lead_fit_score",
-            "label": "Lead fit score",
-            "type": "number",
-            "fieldType": "number",
-            "objectType": "contacts"
-          }
-        ]
-      }
-    },
-    "tool_guidance": {
-      "default": {
-        "guidance": "manage_crm_objects takes {operation: create | update, objectType, records: [{id? (update), properties, associations? (create): [{to: {id}, types: [{associationCategory: HUBSPOT_DEFINED, associationTypeId}]}]}]}. A note is objectType notes with properties hs_timestamp and hs_note_body; note-to-contact is associationTypeId 202."
-      }
-    },
-    "manage_crm_objects": {
-      "responses": [
-        {
-          "match": {
-            "operation": "create",
-            "objectType": "notes"
           },
           "result": {
-            "status": "COMPLETE",
-            "results": [
+            "content": [
               {
-                "id": "90001",
-                "objectType": "notes"
+                "type": "text",
+                "text": "{\"results\": [{\"id\": \"51234\", \"properties\": {\"hs_object_id\": \"51234\", \"firstname\": \"Avery\", \"lastname\": \"Stanhope-Ruiz\", \"email\": \"avery.stanhope-ruiz@ramp.com\", \"company\": \"Ramp\", \"jobtitle\": \"Senior Manager, Risk & Compliance\", \"lifecyclestage\": \"lead\", \"lead_fit_score\": null}}]}"
               }
             ]
           }
         },
         {
-          "match": {
-            "operation": "update",
-            "objectType": "contacts"
+          "when": {
+            "objectType": "contacts",
+            "objectIds": [
+              "51999"
+            ]
           },
           "result": {
-            "status": "COMPLETE",
-            "results": [
+            "content": [
               {
-                "id": "51234",
-                "objectType": "contacts"
+                "type": "text",
+                "text": "{\"results\": [{\"id\": \"51999\", \"properties\": {\"hs_object_id\": \"51999\", \"firstname\": \"Casey\", \"lastname\": \"Mendez\", \"email\": \"casey.mendez@northwind-payments.com\", \"company\": \"Northwind Payments\", \"jobtitle\": \"VP Finance\", \"lifecyclestage\": \"opportunity\", \"lead_fit_score\": \"88\"}}]}"
               }
             ]
           }
         }
       ],
       "default": {
-        "status": "COMPLETE",
-        "results": [
+        "content": [
           {
-            "id": "90002"
+            "type": "text",
+            "text": "{\"results\": []}"
           }
+        ]
+      }
+    },
+    "search_crm_objects": {
+      "description": "Search and filter CRM records using filter groups, text queries, sorting, and pagination.",
+      "input": {
+        "type": "object",
+        "required": [
+          "objectType"
         ],
-        "note": "the fake accepts any argument shape; the graders read what was sent"
+        "properties": {
+          "objectType": {
+            "type": "string"
+          },
+          "filterGroups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filters": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "propertyName",
+                      "operator",
+                      "value"
+                    ],
+                    "properties": {
+                      "propertyName": {
+                        "type": "string"
+                      },
+                      "operator": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "query": {
+            "type": "string"
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "objectType": "contacts"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"total\": 1, \"results\": [{\"id\": \"51234\", \"properties\": {\"email\": \"avery.stanhope-ruiz@ramp.com\", \"firstname\": \"Avery\", \"lastname\": \"Stanhope-Ruiz\", \"company\": \"Ramp\"}}]}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"total\": 0, \"results\": []}"
+          }
+        ]
+      }
+    },
+    "tool_guidance": {
+      "description": "Retrieve usage instructions and guidance for one or more HubSpot MCP tools.",
+      "input": {
+        "type": "object",
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "answers": [],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "manage_crm_objects: {operation: create | update, objectType, records: [{id? (update only), properties, associations? (create only): [{to: {id}, types: [{associationCategory: HUBSPOT_DEFINED, associationTypeId}]}]}]}. A note is objectType notes with properties hs_timestamp and hs_note_body; note to contact is associationTypeId 202."
+          }
+        ]
+      }
+    },
+    "manage_crm_objects": {
+      "description": "Create or update CRM records or activities.",
+      "input": {
+        "type": "object",
+        "required": [
+          "operation",
+          "objectType",
+          "records"
+        ],
+        "properties": {
+          "operation": {
+            "enum": [
+              "create",
+              "update"
+            ]
+          },
+          "objectType": {
+            "type": "string"
+          },
+          "records": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "properties"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "object"
+                },
+                "associations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "operation": "create",
+            "objectType": "notes"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"status\": \"COMPLETE\", \"results\": [{\"id\": \"90001\", \"objectType\": \"notes\"}]}"
+              }
+            ]
+          }
+        },
+        {
+          "when": {
+            "operation": "update",
+            "objectType": "contacts"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"status\": \"COMPLETE\", \"results\": [{\"objectType\": \"contacts\"}]}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "The fake HubSpot server accepts a notes create and a contacts update only."
+          }
+        ]
       }
     }
   }

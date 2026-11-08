@@ -9,6 +9,8 @@ repository: https://github.com/Parcha-ai/agentrun
 harness: [pi]
 model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
 effort: low
+# read: the skill reads its REVIEW.md as a file; with no sandbox there is no shell to read it with.
+tools: [read]
 mcp:
   - server: github
     tools: [pull_request_read, get_file_contents, search_code, get_repository_tree, pull_request_review_write, add_comment_to_pending_review]
