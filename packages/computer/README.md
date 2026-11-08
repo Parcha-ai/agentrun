@@ -465,9 +465,10 @@ setting:
   and no option clears it, so the provider refuses to start while it is set. It only reads.
 
 `scripts/check-env.mjs` holds the library to this: it reads every file under `src/` outside `src/conformance/`, those
-in its directories (`src/docker/`) included, with TypeScript's parser and fails on any use of `process.env` (dotted, bracketed, destructured, aliased, through
-`globalThis` or an import of `node:process`) but these two, each by its variable, its file and its function.
-`test/providers.test.mjs` runs it, and on fixtures of every evasion it catches.
+in its directories (`src/docker/`) included, with TypeScript's parser and fails on any use of `process.env` (dotted,
+bracketed, destructured, aliased, through `globalThis` or an import of `node:process`) but these two, each by its
+variable, its file and its function. `test/providers.test.mjs` runs it, checks the files it read, and runs it on
+fixtures of every evasion it catches.
 
 ## Docker
 
