@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { PassThrough, Writable } from "node:stream";
 import { scriptOf } from "./fake-e2b.mjs";
+import { netDevText } from "./net-dev.mjs";
 
 export const VERSION = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 export const KEY = "sk_fake_orgo_key_0123456789abcdef";
@@ -130,16 +131,20 @@ export function markOf(argv) {
  *  - notListening: how many stdio bridges find no daemon listening before one does;
  *  - startFails: words the start of init fails with;
  *  - bridge: "ok" (default), or "timeout": every stdio fails as the terminal channel does when its marker never comes;
- *  - initDies: init is gone once the start's call returns (as when bash's end takes it), and its log says why.
- * The status script answers what the computer holds: init running or not, its socket, its log's tail.
- * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state.
+ *  - initDies: init is gone once the start's call returns (as when bash's end takes it), and its log says why;
+ *  - rootPorts: the TCP ports root listens on in Orgo's own network (its agent, its VNC), as the ports script reads
+ *    them (default 8231 and 5900).
+ * The status script answers what the computer holds: init running or not, its socket, its log's tail. The daemon holds
+ * its programs to their own loopback when init was started with --own-network, and else shares Orgo's network.
+ * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state, its
+ * probes' targets in box.probes.
  */
-export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false } = {}) {
+export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900] } = {}) {
 	const boxes = new Map();
 	const calls = [];
 	let waiting = notListening;
 	const boxOf = (id) => {
-		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [] });
+		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [], probes: [] });
 		return boxes.get(id);
 	};
 	const channel = {
@@ -171,6 +176,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 				return done(0);
 			}
 			if (mark?.kind === "orgo-labels-read") return box.labels === undefined ? done(1, `cat: ${mark.args[0]}: No such file or directory`) : done(0, box.labels);
+			if (mark?.kind === "orgo-ports") return done(0, rootPorts.map((port) => `${port}\n`).join(""));
 			if (mark?.kind === "orgo-status") {
 				const up = box.init !== undefined;
 				return done(0, [`init ${up ? "running" : "not running"}`, `socket ${up ? "present" : "absent"}`, `log ${box.log ?? (up ? "computerd: init: listening" : "")}`].join("\n"));
@@ -186,7 +192,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			const [, deadline, user, , , display = "", max = ""] = mark.args;
 			const [uid, gid] = user.split(":").map(Number);
 			if (initDies) box.log = "computerd: init: terminated by signal 15 (SIGTERM)";
-			else box.init = { deadline, user, uid, gid, display, max };
+			else box.init = { deadline, user, uid, gid, display, max, ownNetwork: argv.join(" ").includes("--own-network") };
 			return { ok: true, value: undefined };
 		},
 		async stdio(computer, argv) {
@@ -227,12 +233,19 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 function answer(box, { method, params }, patch) {
 	const result = (value) => ({ result: value });
 	const error = (kind, message) => ({ error: { code: -32000, message, data: { kind } } });
-	const { uid, gid, display } = box.init;
+	const { uid, gid, display, ownNetwork } = box.init;
 	const reaches = display !== "" && patch.display !== false;
+	// Init started with --own-network holds its programs to their own loopback; without it they share Orgo's network,
+	// which reaches the internet and Orgo's agent alike (as live runs 2 and 3 read).
+	const interfaces = patch.interfaces ?? (ownNetwork ? ["lo"] : ["lo", "eth0"]);
+	if (method === "files.read" && params.path === "/proc/self/net/dev") {
+		const text = netDevText(interfaces);
+		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+	}
 	if (method === "hello") return result({ version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), ...patch.hello });
 	if (method === "ping") return result({});
 	if (method === "files.read" && params.path === "/proc/self/status") {
-		const fields = { Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, ...patch.status };
+		const fields = { Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, Seccomp: "2", ...patch.status };
 		const text = Object.entries(fields).map(([k, v]) => `${k}:\t${v}\n`).join("");
 		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 	}
@@ -242,7 +255,9 @@ function answer(box, { method, params }, patch) {
 		return error("not_found", `${params.path}: no such file`);
 	}
 	if (method === "exec.run" && params.argv[0] === DAEMON && params.argv[1] === "probe") {
-		const report = { uid, gid, kernel: patch.kernel ?? "6.8.0", reached: patch.reached ?? [], accepted: [] };
+		const targets = params.argv.slice(2).filter((_, at) => at % 2 === 1);
+		box.probes.push(targets);
+		const report = { uid, gid, kernel: patch.kernel ?? "6.8.0", interfaces, quiet: [], raised: [], reached: patch.reached ?? (ownNetwork ? [] : targets), accepted: [] };
 		return result({ exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 	}
 	if (method === "exec.run") return result({ exitCode: 0, stdout: Buffer.from(`${params.argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });

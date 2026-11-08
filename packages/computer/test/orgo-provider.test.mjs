@@ -44,7 +44,7 @@ function seeded({ api, channel }, { labels = SPEC.labels, status = "running", de
 	const box = channel.boxOf(record.id);
 	box.labels = file ?? JSON.stringify({ name: record.name, labels, deadline, maxDeadline: max, image: "linux", cpus: 1, memoryMb: 4096 });
 	box.daemon = { path: "/opt/agentrun/computerd", bytes: DAEMON_BYTES };
-	box.init = { deadline, user: "2510:2510", uid: 2510, gid: 2510, display: ":99", max };
+	box.init = { deadline, user: "2510:2510", uid: 2510, gid: 2510, display: ":99", max, ownNetwork: true };
 	return { record, box, ref: { id: record.id, name: record.name } };
 }
 
@@ -93,6 +93,7 @@ test("Orgo: a Linux desktop with computerd as a child of Orgo's own agent, netwo
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
 		mount: [],
+		vendorAgentPorts: [5900, 6080],
 	});
 	assert.equal(serves(provider.capabilities(), "desktop"), true);
 	assert.equal(kindOf(provider.capabilities()), "desktop");
@@ -142,7 +143,13 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.match(record.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3$/);
 	assert.deepEqual(record.asked, { workspace_id: WORKSPACE, name: record.name, os: "linux", ram: 4, cpu: 1, ends_in_hours: 1 });
 	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
-	assert.deepEqual(ops.slice(0, 6), ["upload", "run install", "run orgo-x11", "run orgo-labels", "start init", "stdio stdio"]);
+	assert.deepEqual(ops.slice(0, 7), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "start init", "stdio stdio"]);
+	// Init and its programs in a network of their own, loopback alone; the probe tries every port root listens on in
+	// Orgo's own network (its agent's, read at create) and the declared ones, on both loopbacks: all refused.
+	assert.match(channel.calls.find((call) => call.op === "start").argv.join(" "), /--own-network/);
+	const probed = channel.boxes.get(record.id).probes.at(-1);
+	for (const port of [8231, 5900, 6080]) for (const host of ["127.0.0.1", "[::1]"]) assert.ok(probed.includes(`${host}:${port}`), `the probe tries ${host}:${port}: ${probed.join(", ")}`);
+	assert.ok(created.value.notes.some((note) => /Orgo's own network listens on 5900, 8231/.test(note)), JSON.stringify(created.value.notes));
 	const upload = channel.calls[0];
 	assert.match(upload.path, /^\/tmp\/agentrun-computerd-[0-9a-f]{16}$/);
 	assert.equal(upload.size, DAEMON_BYTES.length);
@@ -180,6 +187,8 @@ test("Orgo create: each refusal deletes the computer and says why, never with th
 		[{ box: { display: false } }, /screen/],
 		[{ box: { status: { NoNewPrivs: "0" } } }, /no_new_privs/],
 		[{ box: { reached: ["1.1.1.1:443"] } }, /1\.1\.1\.1:443/],
+		[{ box: { reached: ["127.0.0.1:8231"] } }, /127\.0\.0\.1:8231/],
+		[{ box: { interfaces: ["lo", "eth0"] } }, /daemon network: declared its own \(lo alone\), read back lo, eth0/],
 	]) {
 		const { provider, api } = setup({}, { channel: channelOptions });
 		const created = await provider.create(SPEC);
