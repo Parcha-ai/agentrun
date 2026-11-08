@@ -158,9 +158,11 @@ export interface AdbTransport {
 	run(args: string[], options: { timeoutMs: number; signal?: AbortSignal; input?: string }): Promise<Result<AdbResult>>;
 	/**
 	 * One request to the local adb server by its socket protocol (host:connect:<endpoint>, host:disconnect:<endpoint>,
-	 * host:devices-l), starting the server first if need be: the answer's words. The words never hold the request.
+	 * host:devices-l), starting the server first if need be: the answer's words. With transport, the socket is bound to
+	 * that phone first (host:transport-id:<id>) and the service is one of the phone's (shell:<command>), answered with
+	 * its output: how the unlock code reaches the phone with no argv holding it. The words never hold the request.
 	 */
-	server(service: string, options: { timeoutMs: number }): Promise<Result<string>>;
+	server(service: string, options: { timeoutMs: number; transport?: string }): Promise<Result<string>>;
 }
 
 /** One adb call on a connected phone: the args after its -t <transport id>, a bound, and stdin. */
@@ -191,17 +193,20 @@ export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number
 			child.stdin?.end(input ?? "");
 		});
 	let started: Promise<Result<AdbResult>> | undefined;
-	const server: AdbTransport["server"] = async (service, { timeoutMs }) => {
-		const what = service.split(":").slice(0, 2).join(":");
+	const server: AdbTransport["server"] = async (service, { timeoutMs, transport }) => {
+		const what = serviceWords(service);
 		started ??= run(["start-server"], { timeoutMs });
 		const start = await started;
 		if (!start.ok || start.value.exitCode !== 0) {
 			started = undefined;
 			return start.ok ? fail("phone", `adb start-server failed: ${start.value.stderr.trim().split("\n")[0] || `exit code ${start.value.exitCode}`}`) : start;
 		}
+		const frame = (request: string) => `${Buffer.byteLength(request).toString(16).padStart(4, "0")}${request}`;
 		return new Promise((resolve) => {
-			const chunks: Buffer[] = [];
+			let buffer = Buffer.alloc(0);
 			let settled = false;
+			// With a transport: first host:transport-id, whose OKAY binds the socket to the phone; then the service.
+			let bound = transport === undefined;
 			const done = (result: Result<string>) => {
 				if (settled) return;
 				settled = true;
@@ -211,13 +216,32 @@ export function adbCli(path = "adb", { port = ADB_SERVER_PORT }: { port?: number
 			};
 			const socket = createConnection({ host: "127.0.0.1", port });
 			const timer = setTimeout(() => done(fail("timeout", `the adb server did not answer ${what} within ${timeoutMs / 1000} s`)), timeoutMs);
-			socket.on("connect", () => socket.write(`${Buffer.byteLength(service).toString(16).padStart(4, "0")}${service}`));
-			socket.on("data", (chunk) => chunks.push(chunk));
+			socket.on("connect", () => socket.write(frame(bound ? service : `host:transport-id:${transport}`)));
+			socket.on("data", (chunk) => {
+				buffer = Buffer.concat([buffer, chunk]);
+				if (bound || buffer.length < 4) return;
+				const status = buffer.subarray(0, 4).toString("latin1");
+				if (status !== "OKAY") return done(adbAnswer(buffer, `host:transport-id:${transport}`));
+				buffer = buffer.subarray(4);
+				bound = true;
+				socket.write(frame(service));
+			});
 			socket.on("error", (error) => done(fail("phone", `the adb server on 127.0.0.1:${port} could not be reached for ${what}: ${error.message}`)));
-			socket.on("close", () => done(adbAnswer(Buffer.concat(chunks), what)));
+			socket.on("close", () => {
+				if (!bound) return done(fail("phone", `the adb server closed host:transport-id:${transport} before it answered`));
+				// A phone's service answers OKAY and then its output, with no length: the output is what follows.
+				if (transport !== undefined && buffer.subarray(0, 4).toString("latin1") === "OKAY") return done(ok(buffer.subarray(4).toString("utf8")));
+				done(adbAnswer(buffer, what));
+			});
 		});
 	};
 	return { run, server };
+}
+
+/** A service as error words name it: its kind and first word, never the rest (a shell command's code, an endpoint). */
+export function serviceWords(service: string): string {
+	const [kind, rest = ""] = service.split(/:(.*)/s);
+	return `${kind}:${rest.split(/[\s:]/)[0]}`;
 }
 
 /** The adb server's answer: OKAY, or FAIL and its words, each optionally followed by a length-prefixed message. */
@@ -628,8 +652,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (!transport.ok) return letGo(transport);
 		const id = transport.value;
 		const adb: AdbRun = (args, timeoutMs = ADB_TIMEOUT_MS, input) => this.#adb.run(["-t", id, ...args], { timeoutMs, ...(input === undefined ? {} : { input }) });
-		const unlocked = await adb(["shell", "-T"], ADB_TIMEOUT_MS, `unlock ${code}\nexit\n`);
+		// The vendor's unlock is the shell command `unlock <code>`, once per connection (docs, guides/connect-adb): the
+		// shell service's own string, sent over the adb server's socket bound to the phone, so no argv holds the code.
+		// Probe 1 (2026-11-08) showed it live: "unlocked", and getprop answered after it.
+		const unlocked = await this.#adb.server(`shell:unlock ${code}`, { timeoutMs: ADB_TIMEOUT_MS, transport: id });
 		if (!unlocked.ok) return letGo(unlocked);
+		if (!/\bunlocked\b/.test(unlocked.value)) return letGo(fail("phone", `the phone of ${ref.id} refused its unlock code: ${unlocked.value.trim().split("\n")[0].replace(code, "[code]")}`));
 		const probe = await adb(["shell", "echo ph-ok"]);
 		if (!probe.ok) return letGo(probe);
 		if (!probe.value.stdout.toString("utf8").includes("ph-ok")) return letGo(fail("phone", `the phone of ${ref.id} stayed locked after its unlock code`));

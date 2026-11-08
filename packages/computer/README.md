@@ -1831,8 +1831,11 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it.
   - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
     The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
-    `host:disconnect`). The code reaches the phone's `sh` through the stdin of `adb shell -T`. Every spawned adb names
-    the phone by the adb server's transport id (`-t <id>`).
+    `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell
+    answers `locked` before it. It is sent as that shell service's own string, `shell:unlock <code>`, on a socket the
+    adb server bound to the phone (`host:transport-id:<id>`), as `adb shell unlock <code>` would send it. Every
+    spawned adb names the phone by the adb server's transport id (`-t <id>`). A shell's stdin cannot carry the unlock:
+    a shell with no command string is answered `locked` (live run 3); the socket path unlocked a phone live (probe 1).
 
   Then it gives
   a client in this process that answers each protocol method with adb commands:

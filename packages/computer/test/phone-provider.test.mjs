@@ -218,11 +218,12 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
 	// The phone harness's own link: a DNS name, a port, and a ph_ code (OpenAPI SessionAdb), as a live run gave it.
-	// The endpoint goes to the adb server over its socket; every spawned adb names the phone by its transport id, and the
-	// unlock code reaches the phone's sh through stdin.
+	// The endpoint goes to the adb server over its socket; the unlock is the shell service `shell:unlock <code>` on a
+	// socket the server bound to the phone (the fake's record keeps the code out); every spawned adb names the phone by
+	// its transport id.
 	const endpoint = `${ADB_HOST}:${22220 + 1}`;
-	assert.deepEqual(fake.serverCalls().slice(0, 2), [`host:connect:${endpoint}`, "host:devices-l"]);
-	assert.deepEqual(fake.adbCalls().slice(0, 2), [["-t", "1", "shell", "-T"], ["-t", "1", "shell", "echo ph-ok"]]);
+	assert.deepEqual(fake.serverCalls().slice(0, 3), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:unlock [code]"]);
+	assert.deepEqual(fake.adbCalls()[0], ["-t", "1", "shell", "echo ph-ok"]);
 	assert.deepEqual(fake.shells().slice(0, 2), [`unlock ${ADB_CODE}`, "echo ph-ok"]);
 	assert.deepEqual(connected.value.hello, { version: provider.version, os: "android", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
@@ -234,7 +235,7 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	const lockedRef = (await locked.provider.create(SPEC)).value;
 	const refused = await locked.provider.connect(lockedRef);
 	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /stayed locked after its unlock code/);
+	assert.match(refused.error.message, /refused its unlock code: wrong code$/);
 	assert.ok(!JSON.stringify(refused).includes(ADB_CODE), "the unlock code is never in an error");
 	assert.ok(!JSON.stringify(refused).includes("ph_"), "nor any part of it");
 
@@ -270,7 +271,7 @@ test("a connect that fails once adb reached the phone lets the transport go: the
 	const { value: ref } = await provider.create(SPEC);
 	const refused = await provider.connect(ref);
 	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /stayed locked after its unlock code/);
+	assert.match(refused.error.message, /refused its unlock code/);
 	assert.equal(fake.phone.connected.size, 0, "no transport is left on the adb server");
 	assert.equal(fake.serverCalls().at(-1), `host:disconnect:${ADB_HOST}:${22220 + 1}`);
 	// A drifted phone, unlocked and then refused after its hello, lets it go too.
@@ -289,6 +290,10 @@ test("the adb server's answers are read as its socket protocol frames them: OKAY
 	const refused = phone.adbAnswer(frame("FAIL", "no such device"), "host:disconnect");
 	assert.deepEqual(refused, { ok: false, error: { code: "phone", message: "the adb server refused host:disconnect: no such device" } });
 	assert.equal(phone.adbAnswer(Buffer.from("HTTP/1.1 400"), "host:devices-l").error.code, "phone");
+	// A service is named in words by its kind and first word, never by its code or endpoint.
+	assert.equal(phone.serviceWords(`shell:unlock ${ADB_CODE}`), "shell:unlock");
+	assert.equal(phone.serviceWords(`host:connect:${ADB_HOST}:22221`), "host:connect");
+	assert.equal(phone.serviceWords("host:devices-l"), "host:devices-l");
 });
 
 test("without adb on this machine, connect says what to install", async () => {

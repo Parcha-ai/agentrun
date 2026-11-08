@@ -296,6 +296,8 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	/** Every shell command the phone ran, from an argv or from stdin, in order. */
 	const ran = [];
 	const result = (stdout, exitCode = 0, stderr = "") => ({ ok: true, value: { exitCode, stdout: Buffer.from(stdout), stderr } });
+	/** What a locked connection answers every shell, in the vendor's words (phone probe 1, 2026-11-08). */
+	const LOCKED = "locked: run `adb shell unlock <code>` first\n";
 
 	function connectTo(endpoint) {
 		phone.connected.add(endpoint);
@@ -315,7 +317,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	 */
 	function shellOn(serial, command) {
 		ran.push(command);
-		if (!phone.unlocked.has(serial) && !/^unlock /.test(command)) return result("locked\n");
+		if (!phone.unlocked.has(serial) && !/^unlock /.test(command)) return result(LOCKED);
 		const out = shell(command);
 		if (phone.unlockedNow) {
 			phone.unlocked.add(serial);
@@ -344,7 +346,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		// `locked` without reading stdin; an unlocked one runs stdin's lines.
 		if (rest[1] === "-T" && rest.length === 2) {
 			ran.push(`(stdin) ${String(options.input ?? "").split("\n")[0].split(" ")[0]}`);
-			if (!phone.unlocked.has(serial)) return result("locked\n");
+			if (!phone.unlocked.has(serial)) return result(LOCKED);
 			let out = "";
 			for (const line of String(options.input ?? "").split("\n")) {
 				if (line.trim() === "" || line.trim() === "exit") continue;
