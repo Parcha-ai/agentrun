@@ -2,6 +2,7 @@
 // injected fetch) and of the phone it rents (an injected adb runner), test/fake-phone-harness.mjs. No port is opened, no
 // adb runs, and no test waits on the wall clock: the fake's clock moves on when the provider sleeps.
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -389,6 +390,22 @@ test("a drifted twin's phone is refused at connect, in the drift check's words",
 	const refused = await drifted.connect(ref);
 	assert.equal(refused.error.code, "refused");
 	assert.match(refused.error.message, new RegExp(`hello: the daemon reports version 0\\.0\\.0-drift, expected ${provider.version.replaceAll(".", "\\.")}`));
+});
+
+test("a file ledger loses no phone when processes and calls put at once: every entry lands", async () => {
+	// Each put reads the whole file, adds one entry and renames a new file into place: two writers that read the same
+	// file each drop the other's entry, and that phone is billed with no ledger naming it.
+	const path = join(dir, "concurrent-ledger.json");
+	const module = new URL("../dist/conformance/phone-harness.js", import.meta.url).href;
+	const writers = 6;
+	const each = 30;
+	const script = `const { fileLedger } = await import(process.argv[1]); const ledger = fileLedger(process.argv[2]); const who = process.argv[3]; await Promise.all(Array.from({ length: ${each} }, (_, i) => ledger.put({ id: who + "-" + i, labels: {}, image: "android", deadline: "2026-11-08T12:00:00.000Z" })));`;
+	const ran = await Promise.all(
+		Array.from({ length: writers }, (_, w) => new Promise((resolve) => execFile(process.execPath, ["--input-type=module", "-e", script, module, path, `w${w}`], (error, stdout, stderr) => resolve({ error, stderr })))),
+	);
+	for (const { error, stderr } of ran) assert.equal(error, null, stderr);
+	const ids = (await conformance.fileLedger(path).list()).map((entry) => entry.id).sort();
+	assert.equal(ids.length, writers * each, `every put landed: ${ids.length} of ${writers * each}`);
 });
 
 test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never PHONE_HARNESS_API_KEY, and keeps its ledger in a file", async () => {
