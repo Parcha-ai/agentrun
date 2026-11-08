@@ -256,6 +256,26 @@ func TestInitWithAUserMustStartAsRoot(t *testing.T) {
 	}
 }
 
+// --egress takes the egress proxy's socket, one absolute path, once. That init then relays its loopback port to it is
+// internal/daemon's TestInitWithAnEgressSocketRelaysItsLoopbackToItAndSaysWhere, and the Docker live tests'.
+func TestInitRefusesAnEgressSocketThatIsNotOneAbsolutePath(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"init", "--deadline", deadline, "--egress"},
+		{"init", "--deadline", deadline, "--egress", ""},
+		{"init", "--deadline", deadline, "--egress", "egress.sock"},
+		{"init", "--deadline", deadline, "--egress", "/opt/agentrun/egress/egress.sock", "--egress", "/tmp/other.sock"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 {
+			t.Errorf("computerd %q: exit %d; want 2, a refusal", args, code)
+		}
+		if !strings.Contains(stderr, "--egress") || !strings.Contains(stderr, "absolute path") {
+			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
 func TestProbePrintsOneJSONLineOfWhatItReached(t *testing.T) {
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
