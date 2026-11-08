@@ -1627,6 +1627,42 @@ never opens a completed run again for one it already has. A firing to a run that
 5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
 with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 
+### GitHub triggers (Connect GitHub)
+
+A server has at most one GitHub App, made with GitHub's app-manifest flow, and every `github` trigger (and every
+GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?}`, to make
+the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
+`manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
+callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
+(`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 no_public_url`
+without it), a seal key (`409 no_sealing_key`), and no App connected already (`409 already_connected`: disconnect it
+first). Its `state` is random, used once, good for an hour, and bound to the browser that started it by a cookie on the
+callback's path.
+
+GitHub sends the browser back to `GET /v2/integrations/github/callback` with a code. The server converts it with GitHub
+and keeps the App's id, slug and client id, which are no secret, and its private key and webhook secret, which are,
+sealed in `DIR/trigger-settings-github.json`; GitHub's client secret is never kept, and no secret is logged or answered.
+A state that is unknown, used, older than an hour or from another browser is `400`, and nothing is converted. The
+browser goes on to install the App; GitHub's redirect after (`/v2/integrations/github/installed`) records the
+installation once GitHub, asked with the App's own JWT, says it is the App's, and the App's `installation` events keep
+the list current. `GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
+
+A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a
+webhook trigger's, above; required) and keeps no secret of its own. `POST /v2/hooks/github` takes no token: each delivery
+is checked by `X-Hub-Signature-256` under the App's webhook secret, and one event fires **every** github trigger whose
+`accept` takes it, each its own firing, keyed by the SHA-256 of the signed body, and its own run (github triggers may
+take the same events; `max_active_runs` caps each). Every other github trigger keeps the body's key for its day, so the
+same body sent again under another `X-GitHub-Event`, which GitHub does not sign, starts nothing: where it matters, a rule
+also tests a field only that event's body has. An event no trigger takes is `200 {"ok": "ignored"}`; GitHub's `ping` is
+`200 {"ok": "pong"}`. The payload's tag also names the installation and the repository (`installation="..."
+repo="owner/name"`). A github trigger made or turned on with no App connected is `409 not_connected` ("Connect GitHub in
+Settings"). A `{kind: "webhook", signature: "github"}` trigger is unchanged: a repository webhook with its own secret.
+
+When the App's installation is deleted or suspended on GitHub, or `DELETE /v2/integrations/github` disconnects it, every
+github trigger is turned off (`disabled: {reason: "connection_lost", detail}`, naming what went) and kept: an agent keeps
+its triggers, and each goes on again once turned on with GitHub connected. Disconnecting removes the App's credentials
+from this server only; the App itself stays on GitHub, which the answer says, to delete there.
+
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
