@@ -982,7 +982,14 @@ export function adapterRun(
         onEvent: onModel,
         // The booking's spend is the run's one meter (a learned node's requests are the session's: no side spend of their own).
         note: (model: string, request?: NoteRequest) => takeNote(plus(booking.spentUsd(), charged), model, request),
-        stopped: (request) => halted ?? cancelStop() ?? (parked === undefined || (approved && request.host !== undefined) ? undefined : PARKED),
+        stopped: (request) => {
+          const why = halted ?? cancelStop() ?? (parked === undefined || (approved && request.host !== undefined) ? undefined : PARKED);
+          // A stop refuses this request, and each one after it but an approved host request (which never carries the
+          // note): a note an admission gave a request the stop then refused never left, so the next request takes it,
+          // before the model proxy asks for it (takeNote), not only at that request's own check.
+          if (why && wrap.pending && wrap.pending.turn === undefined) wrap.pending = undefined;
+          return why;
+        },
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {
