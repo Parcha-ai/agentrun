@@ -307,6 +307,10 @@ test("what a provider says through its onNote option, the CLI gives it, and puts
 	const plain = sink();
 	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--json"], { stdout: plain, cwd: HERE, cases: [pass("health.ping")] }), 0);
 	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "providerNotes"), false, "no note, no field");
+	// Review (#1994, P2): the text report prints them too, beside the computers' notes; an unclean release is said there.
+	const text = sink();
+	await main(["--provider", "./fixtures/release-note-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] });
+	assert.match(text.text(), new RegExp(`^provider note ${report.providerNotes[0].computer}: .*not let go cleanly`, "m"));
 });
 
 test("the CLI's --json prints the report object; a Core failure exits 1", async () => {
