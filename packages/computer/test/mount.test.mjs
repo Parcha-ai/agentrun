@@ -120,7 +120,19 @@ test("checkMount's Archil rule: disk, region, folder and token are non-empty str
 
 test("readBackOf: what a provider reads back of a mount is its kind and source, never the token", () => {
 	assert.deepEqual(computer.readBackOf({ kind: "bind", path: dir }), { kind: "bind", path: dir });
-	const read = computer.readBackOf(ARCHIL);
-	assert.deepEqual(read, { kind: "archil", disk: "dsk-runs", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work" });
+	assert.deepEqual(computer.readBackOf({ kind: "bind", path: dir }, 7), { kind: "bind", path: dir }, "a bind has no epoch, given one or not");
+	const read = computer.readBackOf(ARCHIL, 7);
+	assert.deepEqual(read, { kind: "archil", disk: "dsk-runs", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", exclusive: true, epoch: 7 });
 	assert.ok(!JSON.stringify(read).includes(TOKEN));
+	assert.deepEqual(computer.readBackOf(ARCHIL, 0), { ...read, epoch: 0 }, "epoch 0 is an epoch");
+});
+
+test("readBackOf: an Archil mount is read back under the computer's claim epoch, so one with no epoch, or none that is one, is a caller's mistake", () => {
+	for (const epoch of [undefined, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, "7"]) {
+		assert.throws(
+			() => computer.readBackOf(ARCHIL, epoch),
+			(error) => error instanceof TypeError && /epoch/.test(error.message) && !error.message.includes(TOKEN),
+			`epoch ${String(epoch)}`,
+		);
+	}
 });
