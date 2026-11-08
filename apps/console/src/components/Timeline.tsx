@@ -96,7 +96,8 @@ function Row({ step, last, ended }: { step: Step; last: boolean; ended: boolean 
  *  a question once; repeated failures once): newest last, older steps folded behind "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
 export function Timeline({ rows, live, fold = 6, asking, ended = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
-  /** Whether the run has ended (runEnded of its status): a charge's words then say what is known, never "so far". */
+  /** Whether the run has ended (runEnded of its status): a charge's words then say what is known, never "so far". The run
+   *  page and the agent page's latest run both pass it. */
   ended?: boolean }) {
   const [all, setAll] = useState(false);
   const told = steps(rows).map((s) => (asking && s.row.id === asking ? { ...s, above: true } : s));
