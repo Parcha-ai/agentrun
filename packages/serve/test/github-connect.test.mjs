@@ -7,7 +7,7 @@ import { createHash, createVerify, generateKeyPairSync, randomUUID } from "node:
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { connect, connectable, deliver, failedWith, PUBLIC, SEAL } from "./github-support.mjs";
+import { connect, connectable, deliver, failedWith, held, PUBLIC, SEAL, startConnect } from "./github-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { runDir, serve, withEnv } from "./support.mjs";
 import { firings, keyOf, made } from "./trigger-support.mjs";
@@ -17,7 +17,7 @@ const pr = (extra = {}) => ({ action: "opened", number: 12, pull_request: { draf
 
 test("Connect GitHub starts GitHub's app-manifest flow: the manifest names the server's public hook, its redirect and setup URLs and the App's permissions and events, under a single-use state bound to this browser", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
-  const started = await server.api("POST", "/integrations/github/connect", {});
+  const started = await startConnect(server, {});
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const { action, manifest, state } = started.body;
   assert.match(state, /^[A-Za-z0-9_-]{32,}$/);
@@ -35,10 +35,10 @@ test("Connect GitHub starts GitHub's app-manifest flow: the manifest names the s
     default_events: ["pull_request", "issue_comment"],
   });
   assert.match(String(started.headers.get("set-cookie")), /HttpOnly; SameSite=Lax; Path=\/v2\/integrations\/github\/callback/, "bound to the browser that started it");
-  const org = await server.api("POST", "/integrations/github/connect", { org: "acme" });
+  const org = await startConnect(server, { org: "acme" });
   assert.equal(org.body.action, `https://github.com/organizations/acme/settings/apps/new?state=${encodeURIComponent(org.body.state)}`);
   assert.notEqual(org.body.state, state, "each start its own state");
-  const badOrg = await server.api("POST", "/integrations/github/connect", { org: "no such/org" });
+  const badOrg = await startConnect(server, { org: "no such/org" });
   assert.deepEqual([badOrg.status, badOrg.body.error.fields?.map((f) => f.field)], [422, ["org"]]);
   const doc = await (await fetch(`${server.baseUrl}/openapi.json`)).json();
   assert.ok(doc.paths["/integrations/github/connect"]?.post, "documented");
@@ -54,14 +54,14 @@ test("with no public URL, or no seal key, Connect GitHub is refused in words: Gi
   assert.match(refused.body.error.message, /AGENTRUN_PUBLIC_URL/);
   withEnv(t, {}, ["AGENTRUN_SEAL_KEY"]);
   const unsealed = await serve(t, { publicUrl: PUBLIC });
-  const noKey = await unsealed.api("POST", "/integrations/github/connect", {});
+  const noKey = await startConnect(unsealed, {});
   assert.deepEqual([noKey.status, noKey.body.error.code], [409, "github_no_seal_key"], JSON.stringify(noKey.body));
   assert.match(noKey.body.error.message, /AGENTRUN_SEAL_KEY/, "names the setting");
 });
 
 test("the callback takes a state once, from the browser that started it: a bad, a replayed or another browser's state sends the browser to the console with state_invalid, a code GitHub does not convert with conversion_failed; a good one converts the code, seals the App's fields, drops its client secret, logs and answers no secret, and sends the browser to install the App", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
-  const started = await server.api("POST", "/integrations/github/connect", {});
+  const started = await startConnect(server, {});
   const cookie = String(started.headers.get("set-cookie")).split(";")[0];
   const back = (state, headers = { cookie }, code = "code-1") => fetch(`${server.baseUrl}/integrations/github/callback?code=${code}&state=${state}`, { redirect: "manual", headers });
   const sentTo = async (res) => [res.status, res.headers.get("location")];
@@ -83,14 +83,14 @@ test("the callback takes a state once, from the browser that started it: a bad, 
   for (const secret of [app.webhook_secret, app.client_secret, app.pem.split("\n")[1], app.client_id]) assert.ok(!shown.includes(secret), "never shown or logged");
   assert.ok(server.lines.some((line) => line.includes("condition=github_connected") && line.includes("app_id=4242")), "said, by its id");
 
-  const again = await server.api("POST", "/integrations/github/connect", {});
+  const again = await startConnect(server, {});
   assert.deepEqual([again.status, again.body.error.code], [409, "github_already_connected"], "one App per server");
   assert.equal(again.body.error.message, "This server already has a GitHub App. Disconnect it first.");
 });
 
 test("a code GitHub does not convert sends the browser to the console with conversion_failed, and keeps nothing", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
-  const started = await server.api("POST", "/integrations/github/connect", {});
+  const started = await startConnect(server, {});
   const cookie = String(started.headers.get("set-cookie")).split(";")[0];
   const back = await fetch(`${server.baseUrl}/integrations/github/callback?code=code-unknown&state=${started.body.state}`, { redirect: "manual", headers: { cookie } });
   assert.deepEqual([back.status, back.headers.get("location")], [302, failedWith("conversion_failed")]);
@@ -207,23 +207,89 @@ test("an installation deleted or suspended on GitHub leaves the list; github tri
   await made(server.api, "review");
   await connect(server);
   const { webhook_secret: secret } = server.github.app;
-  const event = (action, id, login) => deliver(server.baseUrl, secret, "installation", { action, installation: { id, account: { login } } });
+  // As GitHub sends them: the installation, its account and its App; and as GitHub holds them by then (the fake's).
+  const event = (action, id, login) => deliver(server.baseUrl, secret, "installation", { action, installation: { id, account: { login }, app_id: 4242 } });
+  const { installations } = server.github;
   const list = async () => (await server.api("GET", "/integrations/github")).body.installations;
+  installations.set(778, { account: "other", suspended_at: null });
   assert.equal((await event("created", 778, "other")).status, 200);
   assert.deepEqual(await list(), [{ id: 777, account: "acme" }, { id: 778, account: "other" }]);
   const ids = [];
   for (const name of ["a", "b"]) ids.push((await server.api("POST", "/triggers", { name, source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id);
   const states = async () => Promise.all(ids.map(async (id) => (await server.api("GET", `/triggers/${id}`)).body));
+  installations.delete(777);
   assert.equal((await event("deleted", 777, "acme")).status, 200);
   assert.deepEqual(await list(), [{ id: 778, account: "other" }], "one deleted leaves the list");
   assert.deepEqual((await states()).map((t) => t.enabled), [true, true], "another is left: they stay on");
+  installations.get(778).suspended_at = new Date().toISOString();
   assert.equal((await event("suspend", 778, "other")).status, 200);
   assert.deepEqual(await list(), [], "the last one suspended");
   for (const trigger of await states()) {
     assert.deepEqual([trigger.enabled, trigger.disabled?.reason], [false, "connection_lost"], JSON.stringify(trigger));
     assert.match(trigger.disabled.detail, /installation 778 \(other\)/);
   }
+  installations.get(778).suspended_at = null;
   assert.equal((await event("unsuspend", 778, "other")).status, 200);
   assert.deepEqual(await list(), [{ id: 778, account: "other" }], "back in the list");
   assert.deepEqual((await states()).map((t) => t.enabled), [false, false], "and nothing turned on");
+});
+
+test("X-GitHub-Event is not signed: a signed issue_comment body resent as an installation event changes nothing, and an installation event GitHub does not bear out (still installed, another App's) is not taken", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await made(server.api, "review");
+  await connect(server);
+  const id = (await server.api("POST", "/triggers", { name: "a", source: { kind: "github", accept: [{ event: "pull_request" }] }, target: target("review") })).body.id;
+  const { webhook_secret: secret } = server.github.app;
+  const list = async () => (await server.api("GET", "/integrations/github")).body.installations;
+  const relabeled = await deliver(server.baseUrl, secret, "installation", { action: "deleted", comment: { id: 1, body: "gone" }, issue: { number: 3 }, installation: { id: 777 }, repository: { full_name: "acme/widgets" } });
+  assert.equal(relabeled.status, 200, JSON.stringify(relabeled.body));
+  const notGone = await deliver(server.baseUrl, secret, "installation", { action: "deleted", installation: { id: 777, account: { login: "acme" }, app_id: 4242 } });
+  assert.equal(notGone.status, 200, "GitHub still holds it: not taken");
+  const other = await deliver(server.baseUrl, secret, "installation", { action: "created", installation: { id: 999, account: { login: "mallory" }, app_id: 1 } });
+  assert.equal(other.status, 200, "another App's: not taken");
+  assert.deepEqual(await list(), [{ id: 777, account: "acme" }], "the list as it was");
+  assert.equal((await server.api("GET", `/triggers/${id}`)).body.enabled, true, "the trigger still on");
+});
+
+test("two Connects at once: the one whose code GitHub converts after the other's App is kept is sent back with already_connected, and the first App stays", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  const [first, second] = [await startConnect(server), await startConnect(server)];
+  const cookie = (started) => String(started.headers.get("set-cookie")).split(";")[0];
+  const hold = held();
+  server.github.holds["code-2"] = hold.promise;
+  const late = fetch(`${server.baseUrl}/integrations/github/callback?code=code-2&state=${second.body.state}`, { redirect: "manual", headers: { cookie: cookie(second) } });
+  while (!server.github.requests.some((r) => r.url === "/app-manifests/code-2/conversions")) await new Promise((resolve) => setTimeout(resolve, 20));
+  const done = await fetch(`${server.baseUrl}/integrations/github/callback?code=code-1&state=${first.body.state}`, { redirect: "manual", headers: { cookie: cookie(first) } });
+  assert.equal(done.status, 302);
+  hold.release();
+  const answer = await late;
+  assert.deepEqual([answer.status, answer.headers.get("location")], [302, failedWith("already_connected")]);
+  assert.equal((await server.api("GET", "/integrations/github")).body.app_id, "4242", "the first App, not overwritten");
+});
+
+test("an installation checked while GitHub is disconnected and connected again, to another App, is dropped, not written into the new connection", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  const started = await startConnect(server);
+  const cookie = String(started.headers.get("set-cookie")).split(";")[0];
+  assert.equal((await fetch(`${server.baseUrl}/integrations/github/callback?code=code-1&state=${started.body.state}`, { redirect: "manual", headers: { cookie } })).status, 302);
+  const hold = held();
+  server.github.holds.installation = hold.promise;
+  const installing = fetch(`${server.baseUrl}/integrations/github/installed?installation_id=777`, { redirect: "manual" });
+  while (!server.github.requests.some((r) => r.url === "/app/installations/777")) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await server.api("DELETE", "/integrations/github")).status, 200);
+  const again = await startConnect(server);
+  assert.equal((await fetch(`${server.baseUrl}/integrations/github/callback?code=code-2&state=${again.body.state}`, { redirect: "manual", headers: { cookie: String(again.headers.get("set-cookie")).split(";")[0] } })).status, 302);
+  hold.release();
+  const answer = await installing;
+  assert.deepEqual([answer.status, answer.headers.get("location")], [302, failedWith("installation_unverified")]);
+  assert.deepEqual((await server.api("GET", "/integrations/github")).body, { app_id: "4343", slug: "agentrun-test-app-2", installations: [] }, "the new App holds no installation of the old one");
+});
+
+test("Connect started at an address other than the public URL is refused before any state, 409 github_wrong_origin, naming where to open the server", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  const refused = await startConnect(server, {}, { wrong: true });
+  assert.deepEqual([refused.status, refused.body.error?.code], [409, "github_wrong_origin"], JSON.stringify(refused.body));
+  assert.equal(refused.body.error.message, `Open this server at ${PUBLIC} to connect GitHub.`);
+  assert.deepEqual(refused.body.error.details, { open: PUBLIC });
+  assert.equal(refused.headers.get("set-cookie"), null, "no state cookie set");
 });

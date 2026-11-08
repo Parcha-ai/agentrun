@@ -181,3 +181,28 @@ test("a resumed run's token stays narrowed to the repository its first message n
   assert.deepEqual(runTokens(server).map((entry) => entry.repositories), [["widgets"], ["widgets"]], "minted at the start and at the resume, both for the first message's repository");
   assert.ok(!server.github.requests.some((request) => request.url.startsWith("/repos/acme/other")), "nothing asked or minted for the follow-up's");
 });
+
+test("an inline preview of a github_app server lists its tools with a token of the App, as a saved one's does", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await connect(server);
+  const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
+  const fake = await startFakeMcp({ token: (authorization) => minted().includes(authorization) });
+  t.after(() => fake.close());
+  const preview = await server.api("POST", "/settings/mcp-servers/preview", { url: fake.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.ok(preview.body.tools.some((tool) => tool.name === "add"));
+  assert.equal(server.github.tokens.length, 1, "with one token of the App's installation");
+});
+
+test("a github_app server moved to another origin keeps no static headers: the move is refused in words unless they are sent again, and nothing reaches the new address", { timeout: 60_000 }, async (t) => {
+  const server = await connectable(t);
+  await connect(server);
+  const minted = () => server.github.tokens.map((entry) => `Bearer ${entry.token}`);
+  const [a, b] = [await startFakeMcp({ token: (authorization) => minted().includes(authorization) }), await startFakeMcp({ token: (authorization) => minted().includes(authorization) })];
+  t.after(() => Promise.all([a.close(), b.close()]));
+  assert.equal((await server.api("PUT", "/settings/mcp-servers/gh", { url: a.url, auth: { type: "github_app", headers: { "X-MCP-Tools": "add" } } })).status, 200);
+  const moved = await server.api("PUT", "/settings/mcp-servers/gh", { url: b.url, auth: { type: "github_app" } });
+  assert.equal(moved.status, 422, JSON.stringify(moved.body));
+  assert.match(moved.body.error.message, /moved/);
+  assert.deepEqual(b.log, [], "nothing reached the new address");
+});

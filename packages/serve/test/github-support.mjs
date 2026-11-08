@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createHmac, createVerify, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { serve, withEnv } from "./support.mjs";
+import { call, serve, withEnv } from "./support.mjs";
 
 export const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 export const PUBLIC = "https://agents.example.test";
@@ -14,41 +14,54 @@ export const failedWith = (reason) => `${PUBLIC}/#/settings/github?github=error&
 /** The repositories the App's one installation (777, on acme) covers. */
 export const INSTALLED = new Set(["acme/widgets"]);
 
-/** A fake GitHub API: the manifest's conversion (once per code) and an installation, as GitHub answers them; it keeps
- *  each request so a test reads what was asked and with which credential. */
+/** A fake GitHub API: the manifest's conversion (code-1 makes the App 4242, code-2 a second App, 4343, each once), the
+ *  App's installations as GitHub holds them now (`installations`: id → {account, suspended_at}, which a test changes as
+ *  GitHub would), installation tokens and a repository's installation. It keeps each request so a test reads what was
+ *  asked and with which credential; `holds` keeps an answer back until a test lets it go (a conversion by its code, an
+ *  installation's read by `installation`). */
 export async function fakeGitHub(t) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
   const app = { id: 4242, slug: "agentrun-test-app", client_id: `Iv1.${randomBytes(8).toString("hex")}`, client_secret: randomBytes(20).toString("hex"), webhook_secret: randomBytes(20).toString("hex"), pem: privateKey, tokenMs: 3600_000 };
+  const second = { ...app, id: 4343, slug: "agentrun-test-app-2" };
+  const byCode = new Map([["code-1", app], ["code-2", second]]);
+  const installations = new Map([[777, { account: "acme", suspended_at: null }]]);
+  const holds = {};
   const requests = [];
   const tokens = [];
-  const codes = new Set(["code-1"]);
   const server = createServer((req, res) => {
     let body = "";
-    req.on("data", (chunk) => (body += chunk)).on("end", () => {
+    req.on("data", (chunk) => (body += chunk)).on("end", async () => {
       requests.push({ method: req.method, url: req.url, headers: req.headers, body });
       const answer = (status, doc) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(doc));
       const conversion = /^\/app-manifests\/([^/]+)\/conversions$/.exec(req.url);
       if (req.method === "POST" && conversion) {
-        if (!codes.delete(conversion[1])) return answer(404, { message: "Not Found" });
-        return answer(201, { id: app.id, slug: app.slug, node_id: "A_1", owner: { login: "acme", type: "Organization" }, name: "AgentRun test", client_id: app.client_id, client_secret: app.client_secret, webhook_secret: app.webhook_secret, pem: app.pem });
+        const made = byCode.get(conversion[1]);
+        if (!made) return answer(404, { message: "Not Found" });
+        byCode.delete(conversion[1]);
+        await holds[conversion[1]];
+        return answer(201, { id: made.id, slug: made.slug, node_id: "A_1", owner: { login: "acme", type: "Organization" }, name: "AgentRun test", client_id: made.client_id, client_secret: made.client_secret, webhook_secret: made.webhook_secret, pem: made.pem });
       }
-      // Every App endpoint takes only the App's JWT: RS256 over its header and claims, under the App's private key.
-      const appAuthorized = () => {
+      // Every App endpoint takes only an App's JWT: RS256 over its header and claims, under the App's private key.
+      const appId = () => {
         const [header, claims, signature] = String(req.headers.authorization ?? "").replace(/^Bearer /, "").split(".");
         const verified = header && createVerify("RSA-SHA256").update(`${header}.${claims}`).verify(publicKey, Buffer.from(signature ?? "", "base64url"));
-        return verified && JSON.parse(Buffer.from(claims, "base64url").toString()).iss === String(app.id);
+        const iss = verified ? Number(JSON.parse(Buffer.from(claims, "base64url").toString()).iss) : undefined;
+        return iss === app.id || iss === second.id ? iss : undefined;
       };
       const installation = /^\/app\/installations\/(\d+)$/.exec(req.url);
       if (req.method === "GET" && installation) {
-        if (!appAuthorized()) return answer(401, { message: "A JSON web token could not be decoded" });
-        if (installation[1] !== "777") return answer(404, { message: "Not Found" });
-        return answer(200, { id: 777, account: { login: "acme", type: "Organization" }, app_id: app.id });
+        const id = appId();
+        if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
+        await holds.installation;
+        const held = installations.get(Number(installation[1]));
+        if (!held) return answer(404, { message: "Not Found" });
+        return answer(200, { id: Number(installation[1]), account: { login: held.account, type: "Organization" }, app_id: id, suspended_at: held.suspended_at });
       }
       // An installation token, narrowed to the repositories asked (by name), which installation 777 holds: acme/widgets.
       const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(req.url);
       if (req.method === "POST" && minting) {
-        if (!appAuthorized()) return answer(401, { message: "A JSON web token could not be decoded" });
-        if (minting[1] !== "777") return answer(404, { message: "Not Found" });
+        if (!appId()) return answer(401, { message: "A JSON web token could not be decoded" });
+        if (minting[1] !== "777" || !installations.has(777)) return answer(404, { message: "Not Found" });
         const asked = JSON.parse(body || "{}");
         if ((asked.repositories ?? []).some((name) => !INSTALLED.has(`acme/${name}`))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
         const token = `ghs_test${randomBytes(18).toString("hex")}`;
@@ -57,16 +70,33 @@ export async function fakeGitHub(t) {
       }
       const covering = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(req.url);
       if (req.method === "GET" && covering) {
-        if (!appAuthorized()) return answer(401, { message: "A JSON web token could not be decoded" });
+        const id = appId();
+        if (!id) return answer(401, { message: "A JSON web token could not be decoded" });
         if (!INSTALLED.has(`${covering[1]}/${covering[2]}`)) return answer(404, { message: "Not Found" });
-        return answer(200, { id: 777, account: { login: "acme", type: "Organization" }, app_id: app.id });
+        return answer(200, { id: 777, account: { login: "acme", type: "Organization" }, app_id: id });
       }
       answer(404, { message: "Not Found" });
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, app, publicKey, requests, tokens };
+  t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
+  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, installations, holds };
+}
+
+/** A promise and the function that settles it: a hold a test lets go. */
+export function held() {
+  let release;
+  const promise = new Promise((resolve) => (release = resolve));
+  return { promise, release };
+}
+
+/** POST /v2/integrations/github/connect from the console at the server's public URL (its Host and https, as a proxy in
+ *  front gives them), the address GitHub sends the browser back to; `wrong` sends it to the address the server listens
+ *  on instead. Answers as the API client does: status, JSON body, headers.get. */
+export async function startConnect(server, body = {}, { wrong = false } = {}) {
+  const port = Number(new URL(server.baseUrl).port);
+  const res = await call(port, { method: "POST", path: "/v2/integrations/github/connect", headers: { ...(wrong ? {} : { host: new URL(PUBLIC).host, "x-forwarded-proto": "https" }), authorization: `Bearer ${server.token}`, "content-type": "application/json" }, body });
+  return { status: res.status, body: res.json ?? res.text, headers: { get: (name) => [res.headers[name] ?? []].flat().join(", ") || null } };
 }
 
 /** A server with a public URL and a seal key, its GitHub API the fake's. */
@@ -81,7 +111,7 @@ export async function connectable(t, extra = {}) {
 /** The Connect flow as the owner's browser goes through it: connect (the console posts the manifest to GitHub), GitHub's
  *  redirect back with a code, then its redirect after the App is installed. */
 export async function connect(server) {
-  const started = await server.api("POST", "/integrations/github/connect", {});
+  const started = await startConnect(server);
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const cookie = String(started.headers.get("set-cookie") ?? "").split(";")[0];
   const back = await fetch(`${server.baseUrl}/integrations/github/callback?code=code-1&state=${started.body.state}`, { redirect: "manual", headers: { cookie } });
