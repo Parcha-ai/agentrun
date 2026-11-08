@@ -10,6 +10,8 @@
 //
 // Where a run's computer is: the process that holds the run's claim registers it (registerRunComputer) once its computer
 // is up, and lets it go at the run's end; these routes answer from that register.
+import { ApiError, invalid } from "./errors.js";
+import { unknownFields } from "./validate.js";
 import { type ComputerHold, HOLD_MAX_MS } from "./workspace/computer-hold.js";
 
 /** The kinds of computer these routes show: a screen a person can watch and take. */
@@ -103,3 +105,28 @@ export async function handBack(runId: string): Promise<ComputerView | ViewRefusa
 
 /** The longest a take-over lasts with no hand-back, in minutes, for the API's words. */
 export const TAKE_OVER_MINUTES = HOLD_MAX_MS / 60_000;
+
+/** How a request to one of the routes came: by the owner's signed-in page, or with a token; whether this server has
+ *  accounts (for the refusal's words); its body, for a POST. */
+export type ComputerRequest = { readonly ownerSession: boolean; readonly token: boolean; readonly accounts: boolean; readonly body?: unknown };
+
+/**
+ * One of the routes (COMPUTER_ROUTES, by its name in serve's route table) for run `runId`: the answer, or an ApiError.
+ * A token is refused (forbidden): the view drives the computer once taken over, so it takes the owner's signed-in page,
+ * as a run's browser does. A POST takes an empty body. Serve's dispatch sends what this answers.
+ */
+export async function computerRoute(name: string, runId: string, request: ComputerRequest): Promise<ComputerView> {
+  if (!request.ownerSession && request.token) {
+    throw new ApiError("forbidden", request.accounts ? "A run's computer view takes the owner's password sign-in in the console, never a token." : "A run's computer view takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+  }
+  if (name !== "getRunComputer") {
+    const body = request.body ?? {};
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object, empty");
+    const issues = unknownFields(body, []);
+    if (issues.length) throw invalid(issues);
+  }
+  const answer = name === "getRunComputer" ? await readComputer(runId, undefined) : name === "takeOverRunComputer" ? await takeOver(runId) : name === "handBackRunComputer" ? await handBack(runId) : undefined;
+  if (answer === undefined) throw new ApiError("not_found", `no computer route ${name}`);
+  if ("code" in answer) throw new ApiError(answer.code, answer.message);
+  return answer;
+}
