@@ -593,6 +593,43 @@ const swept = await sweep(new DockerProvider({ daemonPath: "dist/computerd-linux
 if (swept.ok) console.log(`deleted ${swept.value.deleted.join(", ") || "none"}; kept ${swept.value.kept}`);
 ```
 
+### Run and epoch labels: `releaseOlder`
+
+The claim epoch is the one fence for runs and computers. Every computer of a run carries two labels, set in one place
+(`src/labels.ts`): `agentrun.run` (`RUN_LABEL`), the run's id, and `agentrun.epoch` (`EPOCH_LABEL`), the claim epoch of
+the runner that made it, in decimal. A new claim is epoch + 1, and its first step is to release the run's computers of
+a lower epoch. The labels sit outside each provider's own `agentrun.computer` namespace, so every provider takes them
+as a caller's labels, with no code of its own: Docker writes them with `--label` and lists them with `--filter`.
+
+- `runLabels(run, epoch)` gives the two labels for `ComputerSpec.labels`. A run id is a non-empty string with no NUL
+  byte, the strictest rule the providers share for a label's value (`runProblem`); an epoch is a whole number from 0
+  to 2^53 - 1 (`epochProblem`). Anything else throws, in words.
+- `epochOf(labels)` reads a computer's epoch: decimal digits with no sign, leading zero or space, up to 2^53 - 1. A
+  missing label is `not_found`; anything else is `invalid`, in words naming what the label reads.
+- `releaseOlder(provider, run, epoch, { signal? })` (in `src/janitor.ts`) lists the run's computers by
+  `agentrun.run` and deletes each with a lower epoch, and each whose epoch label is missing or unreadable, since it
+  cannot prove it is current (named in `unproven`, with why). It keeps the run's computers of this epoch. It holds
+  each listed computer to the run's label again, so a computer of another run is never touched, whatever `list` gives.
+  It returns `{ released, kept, unproven }`.
+- **Fenced.** A computer of the run with a higher epoch means a later claim holds the run: `releaseOlder` is refused
+  (`refused`, `fenced: run "r1" has computer-… at epoch 4, above this claim's epoch 3; …`) before it releases
+  anything.
+- **A partial cleanup is a failure.** Every release is attempted; when any fails, the result is an error naming each
+  computer left and why, and what was released. A takeover goes on (revoke, then mount) only on `ok`. An aborted call
+  starts no further release and says which ran.
+- It revokes no mount: there is no `unmount` on the provider. Revoking an Archil mount is the root helper's, run inside
+  the computer through the provider's own exec, and a deleted computer holds no mount.
+
+```ts
+import { DockerProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+// A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
+const older = await releaseOlder(docker, "r1", 3);
+if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: runLabels("r1", 3) });
+```
+
 ### Waiting for a vendor: `waitUntil`
 
 `waitUntil(read, done, { boundMs, signal?, minMs?, maxMs?, what?, describe? })` (in `src/wait.ts`) is the one bounded
@@ -1220,7 +1257,10 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
   truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers and keeps them
-  (`lifetime:janitor`, `release:stop`, and no `stopDeletes`), and a spec that
+  (`lifetime:janitor`, `release:stop`, and no `stopDeletes`), a takeover by label (`provider.release-older`, which
+  needs nothing declared: computers of one run at epochs 1, 2 and 3 and one of another run at epoch 1 carry and read
+  back `agentrun.run` and `agentrun.epoch`; `releaseOlder` at epoch 3 deletes 1 and 2 and keeps 3 and the other run's,
+  by id and by label; at epoch 2 after it, it is refused as fenced and deletes nothing), and a spec that
   asks for root (`user:root`, from `capabilities().user` holding `"root"`) or another uid (`user:uid`), still with no
   capability in any set and `no_new_privs`, read as in Core; and from the extension `touch.pinch` (two fingers logged
   moving apart), `lifetime.extend` (`extend`: made with 45 s and extended to 120 s, at 60 s it answers ping with a

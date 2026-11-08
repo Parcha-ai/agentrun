@@ -44,7 +44,7 @@ const BROKEN = [
 		{ failRelease: { [EPOCH_LABEL]: "2" } },
 		/^releaseOlder at epoch 3: refused: the release of run "conformance-[0-9a-f]+"'s computers below epoch 3 is incomplete: it released fake-\d+, and could not release fake-\d+ \(epoch 2\): the fake cannot delete fake-\d+$/,
 	],
-	["a release that answers ok and leaves the computer", { keepOnRelease: true }, /^the run's computers after releaseOlder at epoch 3: expected \["fake-\d+"\], got \["fake-\d+","fake-\d+","fake-\d+"\]$/],
+	["a release that answers ok and leaves the computer", { keepOnRelease: true }, /^attach to fake-\d+, released: expected an error \(not_found\), got ok /],
 ];
 
 for (const [what, options, words] of BROKEN) {
