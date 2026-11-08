@@ -21,13 +21,14 @@ export function appJwt(appId: string, pem: string, nowMs = Date.now()): string {
 
 /** One call to GitHub's API at `api`: its status and its JSON (null when it answers none). A network failure or a wait
  *  past GITHUB_MS throws, saying which; what GitHub answered is the caller's to word, never passed on as it is. */
-export async function githubCall(api: string, path: string, options: { method?: "GET" | "POST"; jwt?: string; signal?: AbortSignal } = {}): Promise<{ status: number; json: unknown }> {
+export async function githubCall(api: string, path: string, options: { method?: "GET" | "POST"; jwt?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<{ status: number; json: unknown }> {
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(GITHUB_MS)]) : AbortSignal.timeout(GITHUB_MS);
   let res: Response;
   try {
     res = await fetch(`${api.replace(/\/+$/, "")}${path}`, {
       method: options.method ?? "GET",
-      headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "agentrun-serve", ...(options.jwt ? { authorization: `Bearer ${options.jwt}` } : {}) },
+      headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "agentrun-serve", ...(options.jwt ? { authorization: `Bearer ${options.jwt}` } : {}), ...(options.body !== undefined ? { "content-type": "application/json" } : {}) },
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       signal,
     });
   } catch (error) {

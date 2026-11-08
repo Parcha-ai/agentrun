@@ -227,4 +227,81 @@ export class GitHubConnect {
     this.options.say({ condition: "github_installed", installation: installationId, account });
     return CONNECTED_PAGE;
   }
+
+  /** The App's installation tokens minted and not yet long past their hour, by token: every one is a secret this server
+   *  never shows (server-secrets.ts), kept only in memory. */
+  private readonly live = new Map<string, number>();
+
+  /** Every installation token minted that may still be in use (its hour, and ten minutes past it). */
+  liveTokens(): string[] {
+    const now = this.options.now?.() ?? Date.now();
+    for (const [token, expires] of this.live) if (expires + 10 * 60_000 < now) this.live.delete(token);
+    return [...this.live.keys()];
+  }
+
+  /** An installation token for one run: narrowed to the one repository `target` names (its installation given, or asked
+   *  of GitHub with the App's JWT), its permissions the App's; or why there is none, in words its calls answer. */
+  async tokenFor(target: { installation?: number; repo: string } | undefined, signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+    if (!target) return { unusable: "No GitHub repository was named for this run: a GitHub event's run has one; another run names it in its input as https://github.com/<owner>/<repo>." };
+    const credentials = this.connection.credentials();
+    if (!credentials || !this.connection.view()) return { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
+    const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+    const notInstalled = { unusable: `The GitHub App isn't installed on ${target.repo}: install it there (or add the repository to its installation), then run again.` };
+    try {
+      let installation = target.installation;
+      if (installation === undefined) {
+        const found = await githubCall(this.options.api, `/repos/${target.repo}/installation`, { jwt, ...(signal ? { signal } : {}) });
+        const id = isObject(found.json) ? found.json.id : undefined;
+        if (found.status !== 200 || !Number.isSafeInteger(id)) return notInstalled;
+        installation = id as number;
+      }
+      return await this.mint(installation, jwt, [target.repo.split("/")[1]!], notInstalled, signal);
+    } catch (error) {
+      return { unusable: `GitHub did not give this run a token: ${(error as Error).message}.` };
+    }
+  }
+
+  /** An installation token for listing an MCP server's tools as it is saved: the App's first installation, every
+   *  repository it covers; or why there is none. */
+  async tokenForListing(signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+    const credentials = this.connection.credentials();
+    const view = this.connection.view();
+    if (!credentials || !view) return { unusable: "This server has no GitHub App: Connect GitHub in Settings." };
+    const first = view.installations[0];
+    if (!first) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
+    try {
+      return await this.mint(first.id, appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), undefined, { unusable: `GitHub gave no token for the App's installation on ${first.account}.` }, signal);
+    } catch (error) {
+      return { unusable: `GitHub did not give a token: ${(error as Error).message}.` };
+    }
+  }
+
+  private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+    const answer = await githubCall(this.options.api, `/app/installations/${installation}/access_tokens`, { method: "POST", jwt, ...(repositories ? { body: { repositories } } : {}), ...(signal ? { signal } : {}) });
+    const minted = isObject(answer.json) ? answer.json : {};
+    if (answer.status !== 201 || typeof minted.token !== "string" || typeof minted.expires_at !== "string") return refused;
+    const expiresAt = Date.parse(minted.expires_at);
+    this.live.set(minted.token, Number.isFinite(expiresAt) ? expiresAt : (this.options.now?.() ?? Date.now()) + 60 * 60_000);
+    this.options.say({ condition: "github_token_minted", installation: String(installation), repositories: repositories?.join(",") ?? "all" });
+    return { token: minted.token, expiresAt: this.live.get(minted.token)! };
+  }
+}
+
+const unescapeAttr = (value: string) => value.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+const REPO_URL = /https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})\/([A-Za-z0-9._-]{1,100})/;
+
+/** The repository a run is about, from its first message: the GitHub event it was started for (the server's own payload
+ *  tag, the first one, with its installation and repository), else the first https://github.com/<owner>/<repo> its owner's
+ *  words name, before any payload (a sender's text is never read for it). Undefined when it names none. */
+export function githubTargetOf(content: unknown): { installation?: number; repo: string } | undefined {
+  if (typeof content !== "string") return undefined;
+  const at = content.indexOf("<trigger-payload ");
+  if (at >= 0) {
+    const tag = content.slice(at, content.indexOf(">", at) + 1);
+    const attrs = Object.fromEntries([...tag.matchAll(/ ([a-z][a-z0-9_-]*)="([^"]*)"/g)].map((m) => [m[1]!, unescapeAttr(m[2]!)]));
+    if (attrs.source === "github" && typeof attrs.repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(attrs.repo)) return { repo: attrs.repo, ...(/^\d{1,15}$/.test(attrs.installation ?? "") ? { installation: Number(attrs.installation) } : {}) };
+  }
+  const own = at >= 0 ? content.slice(0, at) : content;
+  const url = REPO_URL.exec(own);
+  return url ? { repo: `${url[1]}/${url[2]!.replace(/\.git$/, "")}` } : undefined;
 }

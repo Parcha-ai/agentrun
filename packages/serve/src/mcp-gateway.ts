@@ -55,10 +55,15 @@ export type McpCredentials = Record<string, { url: string; headers?: Record<stri
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
   /** The server's credential, opened now: its headers, or why it does not open, each under its own tag; undefined when
-   *  it has none. */
-  headers(name: string): { headers: Record<string, string> } | { unopened: string } | undefined;
+   *  it has none. With `runId`, for that run's launch: a github_app server's static headers with the token minted for
+   *  the run (mint), or why it has none. */
+  headers(name: string, runId?: string): { headers: Record<string, string> } | { unopened: string } | undefined;
   /** Before a launch: an OAuth access token near its expiry refreshed (mcp-servers.ts headersForRun). Never throws. */
   refresh?(name: string): Promise<void>;
+  /** Before a launch: a github_app server's installation token minted for run `runId`, narrowed to the one repository
+   *  its first message (`input`) is about (github-connection.ts githubTargetOf); kept in memory for headers. Never
+   *  throws: a token there is none of is a credential that does not open, said in words to the run's calls. */
+  mint?(name: string, runId: string, input: unknown): Promise<void>;
 }
 
 /** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
@@ -153,12 +158,12 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
 
 /** What a launch hands the run for its pin: each pinned server's URL now, with its headers only when it has not moved. A
  *  server no longer saved is absent. */
-export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCredentials {
+export function mcpCredentialsOf(pin: McpPin, source: McpServerSource, runId?: string): McpCredentials {
   const out: McpCredentials = Object.create(null);
   for (const [name, pinned] of Object.entries(pin)) {
     const saved = source.server(name);
     if (!saved) continue;
-    const credential = saved.url === pinned.url ? source.headers(name) : undefined;
+    const credential = saved.url === pinned.url ? source.headers(name, runId) : undefined;
     out[name] = { url: saved.url, ...(credential && "unopened" in credential ? { unopened: credential.unopened } : credential ? { headers: credential.headers } : {}) };
   }
   return out;

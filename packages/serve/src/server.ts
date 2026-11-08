@@ -72,7 +72,7 @@ import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { type SealedSettings } from "./sealed-settings.js";
 import { openServerSecrets, type ServerSecrets } from "./server-secrets.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
-import { GitHubConnect, GitHubConnection, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { GitHubConnect, GitHubConnection, githubTargetOf, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
 import { GITHUB_API } from "./github.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
@@ -785,6 +785,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
+  /** Each run's GitHub token for a github_app MCP server, by run and server, minted at its launch (mcpSource.mint): in
+   *  this process's memory only, handed to the run over its pipe, and listed among the server's secrets while it lives. */
+  const runTokens = new Map<string, ({ token: string } | { unusable: string }) & { at: number }>();
   // What a run's grants are checked against, its pin made from and its credentials read from (runs.ts, runnable.ts).
   const mcpSource: McpServerSource = {
     server: (name) => {
@@ -795,8 +798,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return undefined;
       }
     },
-    headers: (name) => mcpServers.headers(name),
+    headers: (name, runId) => {
+      const saved = mcpServers.headers(name);
+      if (runId === undefined || !mcpServers.takesAppToken(name) || !saved || "unopened" in saved) return saved;
+      // A github_app server: its static headers as written, with the token minted for this run's launch.
+      const minted = runTokens.get(`${runId}\n${name}`);
+      if (!minted) return { unopened: "no GitHub token was minted for this run's launch; it is minted again when the run resumes" };
+      return "unusable" in minted ? { unopened: minted.unusable } : { headers: { ...saved.headers, authorization: `Bearer ${minted.token}` } };
+    },
     refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
+    async mint(name, runId, input) {
+      if (!mcpServers.takesAppToken(name)) return;
+      const now = Date.now();
+      for (const [key, kept] of runTokens) if (kept.at + 2 * 60 * 60_000 < now) runTokens.delete(key);
+      const minted = await githubConnect.tokenFor(githubTargetOf(input), stopping.signal).catch((error: Error) => ({ unusable: `GitHub did not give this run a token: ${error.message}.` }));
+      runTokens.set(`${runId}\n${name}`, { ...minted, at: now });
+    },
   };
   // Each with whether it can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
@@ -1101,6 +1118,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
   const githubConnection = () => github.view();
+  // A github_app MCP server lists its tools with an installation token of the App, and every token minted is one of the
+  // server's secrets while it may be in use.
+  mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
+  secretStores.add("github-tokens", () => githubConnect.liveTokens());
   const triggers: Triggers = new Triggers(data, {
     clock: options.triggerClock,
     adapters,
