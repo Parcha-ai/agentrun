@@ -109,7 +109,29 @@ export interface RunPatch {
  *  run's moment owes (the outbox), what a channel was told. A command consumed is Staged.take, refused when not untaken. */
 export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
-  | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } };
+  | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } }
+  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's). */
+  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown } }
+  /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
+   *  once: the same id staged again (an end replayed after a crash) adds nothing. */
+  | { readonly table: "learning_run"; readonly row: { id: string } };
+
+/** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
+export interface LearningProposal {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly turn: unknown;
+  readonly proposal: unknown;
+  readonly createdAt: number;
+}
+
+/** Learning on the runner: the kept proposals, written only beside a run's end (AlsoRow learning_proposals). */
+export interface Learning {
+  /** The run's kept proposal; undefined when its end kept none. */
+  proposal(runId: string): Promise<LearningProposal | undefined>;
+  /** The agent's kept proposals, newest first. */
+  proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
+}
 
 /** A command a journal commit takes, with the id of the record that is its effect: written only by the commit that stores
  *  that record, in its transaction, so the command is taken with its effect or not at all. */
@@ -322,6 +344,7 @@ export interface Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly learning: Learning;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

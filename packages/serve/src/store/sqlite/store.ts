@@ -11,7 +11,7 @@ import {
   CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -186,6 +186,7 @@ class SqliteStore implements Store {
   readonly runs: Runs;
   readonly mcp: Mcp;
   readonly live: Live;
+  readonly learning: Learning;
   readonly #db: Connection;
   readonly #now: () => number;
   /** Each claim's one journal, until it is closed. */
@@ -443,6 +444,22 @@ class SqliteStore implements Store {
       drop: async (runId) => {
         await db.write([{ sql: "DELETE FROM run_live WHERE run_id = ?", params: [runId] }]);
       },
+    };
+
+    type ProposalRecord = { run_id: string; agent_id: string; turn: string; proposal: string; created_at: number };
+    const proposalOf = (row: ProposalRecord): LearningProposal => ({
+      runId: row.run_id, agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal), createdAt: row.created_at,
+    });
+    this.learning = {
+      proposal: async (runId) => {
+        const row = await db.get<ProposalRecord>("SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE run_id = ?", runId);
+        return row ? proposalOf(row) : undefined;
+      },
+      proposals: async (agentId, { limit = 100 } = {}) =>
+        (await db.all<ProposalRecord>(
+          "SELECT run_id, agent_id, turn, proposal, created_at FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
+          agentId, limit,
+        )).map(proposalOf),
     };
   }
 

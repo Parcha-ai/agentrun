@@ -242,6 +242,18 @@ export const STORE_DDL: readonly string[] = [
     ${json("state")},
     updated_at INTEGER NOT NULL
   ) STRICT`,
+
+  // Learning on the runner: what a run's end-of-run turn kept (the turn it asked and answered, and the proposal checked from
+  // it), written in the same commit as the run's end, beside the learning run that grades and merges it. Read by the
+  // learning routes (the pre-merge view) and by the learning run.
+  `CREATE TABLE IF NOT EXISTS learning_proposals (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    agent_id TEXT NOT NULL REFERENCES agents (id),
+    ${json("turn")},
+    ${json("proposal")},
+    created_at INTEGER NOT NULL
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS learning_proposals_by_agent ON learning_proposals (agent_id, created_at DESC)`,
 ];
 
 /** pi-durable's journal tables (its SqliteStorage schema, version 2, the `sleeping` task status included; MIT, see NOTICE),
