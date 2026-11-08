@@ -73,13 +73,25 @@ export function recorder() {
     ops: [],
     /** Runner names whose renews fail as a busy store's would. */
     blockRenew: new Set(),
+    /** The size of each batch a runner claimed (claimMany), in order. */
+    batches: [],
   };
 }
 
 /** `store` (the runner's part of it), recording into `record`. */
 export function observed(store, record) {
   return {
-    runs: store.runs,
+    runs: {
+      update: (claim, patch, also) => store.runs.update(claim, patch, also),
+      claimable: (options) => store.runs.claimable(options),
+      async claimMany(runner, k, options) {
+        const claims = await store.runs.claimMany(runner, k, options);
+        const at = Date.now();
+        for (const claim of claims) record.claims.push({ runId: claim.runId, runner, epoch: claim.epoch, at, until: claim.until, from: claim.from });
+        if (claims.length) record.batches.push(claims.length);
+        return claims;
+      },
+    },
     async claim(runId, runner, options) {
       const claim = await store.claim(runId, runner, options);
       if (claim) record.claims.push({ runId, runner, epoch: claim.epoch, at: Date.now(), until: claim.until });

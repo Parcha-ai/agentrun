@@ -12,15 +12,17 @@ const RUNS = 310;
 const LOOPS = 300;
 // Generous for a loaded box: a runner that serialises its loops, or spins, is seconds behind.
 const LAG_P99_MS = 250;
+// Time from the runner's start to 300 held: one batch claim, then 300 loops opened. Claimed one by one (~6 ms each on a
+// loaded box beside the loops' commits) it is about 1.8 s.
+const FILL_MS = 1_000;
 const id = (i) => `run-${String(i).padStart(3, "0")}`;
 
 test("310 runs on a runner of 300 loops: at most 300 held at once, every run ends and is released, lag bounded", async (t) => {
   const { server, runners: [store] } = await stores({ runners: 1 });
   const record = recorder();
-  // Each turn does a little synchronous work, as a harness parsing a model's reply would. A run lasts about 5 s, long
-  // enough for the runner to claim its 300 while the first are still going: on a loaded box a claim beside the loops'
-  // commits takes about 6 ms (a real run lasts minutes).
-  const faux = fauxLoops({ turns: 5, turnMs: 1_000, work: () => JSON.parse(JSON.stringify({ text: "x".repeat(2_000) })) });
+  // Each turn does a little synchronous work, as a harness parsing a model's reply would. Runs of about 250 ms: the
+  // runner fills its 300 loops in one batch claim (store.runs.claimMany), long before the first run ends.
+  const faux = fauxLoops({ turns: 5, turnMs: 50, work: () => JSON.parse(JSON.stringify({ text: "x".repeat(2_000) })) });
   for (let i = 0; i < RUNS; i++) await queue(server, id(i));
 
   const lag = monitorEventLoopDelay({ resolution: 10 });
@@ -39,7 +41,12 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
   t.after(() => runner.close());
 
   let most = 0;
-  const sampler = setInterval(() => (most = Math.max(most, runner.held().length)), 5);
+  let full;
+  const startedAt = Date.now();
+  const sampler = setInterval(() => {
+    most = Math.max(most, runner.held().length);
+    if (full === undefined && most >= LOOPS) full = Date.now() - startedAt;
+  }, 5);
   t.after(() => clearInterval(sampler));
   await until(async () => {
     const runs = await server.runs.list({ state: "ended" });
@@ -49,7 +56,8 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
   await sleep(20);
 
   assert.ok(most <= LOOPS, `held ${most} at once (at most ${LOOPS})`);
-  assert.ok(most >= LOOPS - 10, `held ${most} at once: the runner fills its loops`);
+  assert.equal(record.batches[0], LOOPS, `the first claim is one batch of ${LOOPS}: ${JSON.stringify(record.batches)}`);
+  assert.ok(full !== undefined && full < FILL_MS, `the runner held all ${LOOPS} within ${full} ms (bound ${FILL_MS})`);
   assert.equal(faux.loops.length, RUNS, "one loop per run");
   assert.equal(record.claims.length, RUNS, "each run claimed once");
   const p99 = lag.percentile(99) / 1e6;
