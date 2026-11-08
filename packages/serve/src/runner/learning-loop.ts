@@ -17,6 +17,8 @@ import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
 import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
+import { mergedNote, parseNoteFile } from "../learn/notes.js";
+import { learnedPlace } from "../learn/skills.js";
 import { notKept, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
 import { KINDS } from "./journal-kinds.js";
@@ -35,6 +37,8 @@ export interface KeptProposal {
   readonly files?: readonly NoteText[];
   readonly asked?: readonly string[];
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
+  /** The commit of the learning folder's main the run started from (its pin's seed). */
+  readonly seed?: string;
 }
 
 /** Main as the grader reads it: every active note's index line, the text of each note the proposal supersedes, and the
@@ -55,6 +59,8 @@ export interface MergeChange {
   readonly files: readonly { readonly path: string; readonly text: string }[];
   readonly held?: readonly string[];
   readonly graded: Readonly<Record<string, string>>;
+  /** The run's seed: a skill's or a draft's file not on main as it was on it is a conflict, never written over. */
+  readonly seed?: string;
 }
 
 export type LearningCommitResult =
@@ -87,16 +93,59 @@ type DroppedData = { readonly source: string; readonly reason: string; readonly 
 type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string };
 type UnavailableData = { readonly source: string; readonly error: string };
 
-/** The merge's files: the kept notes and files, each by its path in the folder. */
-const filesOf = (proposal: KeptProposal) => [...proposal.notes, ...(proposal.files ?? [])].map(({ file, text }) => ({ path: file, text }));
+/** The graded item a proposal's file is judged as (grade.ts itemOf): a draft's README.md with its workflow.json, every
+ *  other file as itself. */
+const itemOf = (file: string): string => {
+  const place = learnedPlace(file);
+  return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
+};
 
 /** `proposal` with only what `verdict` keeps (grade.ts keptProposal's rule): a note or file its item keeps or holds. */
 function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
   if (!verdict.items.length) return proposal;
   const kept = new Set(verdict.items.filter((item) => item.keep).map((item) => item.file));
-  const itemOf = (file: string) => (/^workflows\/[^/]+\/README\.md$/.test(file) ? file.replace(/README\.md$/, "workflow.json") : file);
   return { ...proposal, notes: proposal.notes.filter(({ file }) => kept.has(file)), files: (proposal.files ?? []).filter(({ file }) => kept.has(itemOf(file))) };
 }
+
+/** The merge of `merging` (what the verdict kept) as the server's grade made it (grade.ts mergeProposal): each note with
+ *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
+ *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
+ *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
+function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
+  const judged = new Map(verdict.items.map((item) => [item.file, item]));
+  const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
+  const files = (merging.files ?? []).map(({ file, text }) => ({ path: file, text }));
+  const held = [
+    ...merging.notes.filter(({ file }) => judged.get(file)?.pending === true).map(({ file }) => file),
+    ...files.filter(({ path }) => learnedPlace(path)?.kind !== "workflow" && judged.get(itemOf(path))?.pending === true).map(({ path }) => path),
+  ];
+  return {
+    kind: "merge", runId, reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
+    ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}),
+  };
+}
+
+/** The merge's words, as the server's grade said them (learning-run.ts grade): the notes it added that runs read, the
+ *  ones waiting for their owner's OK, its skill and draft (each pending when it waits), what the grader left out, and
+ *  what the checks left out (the kept row's `left`). */
+function mergedWords(merging: KeptProposal, verdict: Verdict, checked: readonly Problem[]): string {
+  const waiting = new Set(verdict.items.filter((item) => item.pending).map((item) => item.file));
+  const notes = merging.notes.flatMap(({ file, text }) => {
+    const note = parseNoteFile(file, text);
+    return Array.isArray(note) ? [] : [{ file, name: note.name, supersedes: note.supersedes }];
+  });
+  const learned = notes.filter(({ file }) => !waiting.has(file));
+  const pending = notes.filter(({ file }) => waiting.has(file)).map(({ name }) => ({ name }));
+  const made = (suffix: string) => (merging.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
+  const left = verdict.items.filter((item) => !item.keep).map((item) => ({ why: item.why }));
+  return said.merged(learned, pending, [...made("/SKILL.md"), ...made("/workflow.json")], left, checked as never);
+}
+
+/** The skills and drafts a proposal names, by their item's file: what a merge the grader refused loses (notKept). */
+const lostOf = (proposal: KeptProposal) => (proposal.files ?? []).flatMap(({ file }) => {
+  const place = learnedPlace(file);
+  return place && place.kind !== "readme" ? [{ file, name: place.name }] : [];
+});
 
 export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps) => Loop {
   return (deps) => {
@@ -146,12 +195,14 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
         }
         // The row as the end-of-run hook keeps it: its state and words, the kept Proposal inside (a drop queues no learning
         // run, so a row that isn't proposed is read as nothing to grade).
-        const row = kept.proposal as { readonly state?: string; readonly proposal?: KeptProposal } | null;
+        const row = kept.proposal as { readonly state?: string; readonly proposal?: KeptProposal; readonly left?: readonly Problem[] } | null;
         if (row?.state !== "proposed" || !row.proposal) {
           await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
           return { state: "ended" };
         }
         const proposal = row.proposal;
+        // What the checks left out of the proposal (propose.ts Proposed `left`), said with the merge.
+        const checked = Array.isArray(row.left) ? row.left : [];
 
         /** The grade and the merge, on the agent's learning folder `ws`. */
         const onFolder = async (ws: unknown): Promise<LoopEnd> => {
@@ -200,17 +251,13 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           if (halt) return halt;
 
           if (!graded.verdict.merge) {
-            await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(graded.verdict) } satisfies DroppedData, "ended");
+            await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(graded.verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
             return { state: "ended" };
           }
           const merging = keptOf(proposal, graded.verdict);
-          const held = graded.verdict.items.filter((item) => item.pending).map((item) => item.file);
-          const result = await learning.commit(ws, {
-            kind: "merge", runId: source.runId, reason: graded.verdict.reason || "The grader kept every new note.",
-            files: filesOf(merging), ...(held.length ? { held } : {}), graded: graded.graded,
-          });
+          const result = await learning.commit(ws, mergeChangeOf(source.runId, merging, graded.verdict, graded.graded));
           if (result.ok) {
-            const detail = said.merged(merging.notes.map(({ file }) => ({ name: file.replace(/\.md$/, ""), supersedes: [] })));
+            const detail = mergedWords(merging, graded.verdict, checked);
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");
             return { state: "ended" };
           }
