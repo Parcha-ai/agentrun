@@ -77,6 +77,12 @@ export interface PiRunSpec {
   /** How long a person's stop waits for the turn to settle before the run is failed in words (a tool call that ignores
    *  its abort). Default STOP_SETTLE_MS. */
   readonly stopSettleMs?: number;
+  /** The end's patch beside its state: the run's outcome, cost and metrics, read when the end is written and carried in
+   *  its commit. Bounded (CUT_STEP_MS): a reader that stalls gives no patch, and the end is still written. */
+  readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">>;
+  /** Handed the run's own Harness commit once it opens (and after each restart's re-open): what the model proxy's request
+   *  marks and the cap's marks commit through, so a commit after the claim is lost is refused by the fence like any other. */
+  readonly harnessReady?: (commit: Harness["commit"]) => void;
 }
 
 /** pi's own default restart limit (pi-durable 1.5.0 agent settings). */
@@ -284,6 +290,8 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
   };
   /** While the end-of-run turn runs: its writes and edits under work/.learning/ are refused (REFLECT_NOTE_ONLY). */
   let reflecting = false;
+  /** The claimed run's spec, once read: its end patch is read from it when the end is written. */
+  let runSpec: PiRunSpec | undefined;
 
   /** Places a steer in the run's turn; its row is taken by pi's own commit of that submission. */
   const steer = async (command: Command): Promise<CommandOutcome> => {
@@ -318,6 +326,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
 
   async function run(claim: Claim): Promise<LoopEnd> {
     const spec = await specOf(claim);
+    runSpec = spec;
     const hooks = spec.hooks ?? quiet;
     const restartLimit = spec.restartLimit ?? DEFAULT_RESTART_LIMIT;
     context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
@@ -453,6 +462,9 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         gate = new Gate(deps.journal(claim));
         if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
         harness = await Harness.open(gate.journal, { models: spec.models, registry, settings: { restartLimit }, onReport: () => {} }, context);
+        // The proxy's and the cap's marks commit through the run's own Harness, under its fence.
+        const opened_ = harness;
+        spec.harnessReady?.((change, ctx) => opened_.commit(change, ctx));
         root = await harness.root(context, { agent: { model: spec.model, extensions: [kernel] } as never });
         await reportHeld(harness, root.id);
         opened();
@@ -643,8 +655,37 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch, the rows staged with it (the end-of-run
    *  step's), and the rows it takes. */
-  async function writeEnd(harness: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[], also: readonly AlsoRow[] = []): Promise<LoopEnd> {
-    const ended = theGate.expect(writesEntry(KINDS.end), { run: { state: data.state, ...(data.summary ? { summary: data.summary } : {}) }, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
+  /** The end's patch from the run's spec (PiRunSpec.endPatch), bounded like the cut step: late or failing, none. */
+  async function endPatchOf(data: EndData): Promise<Pick<EndData, "outcome" | "costUsd" | "metrics">> {
+    if (!runSpec?.endPatch) return {};
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), CUT_STEP_MS)));
+    try {
+      const patch = await Promise.race([runSpec.endPatch(data), late]);
+      if (patch === "late") {
+        console.warn(`[runner] its end's patch gave no answer within ${CUT_STEP_MS / 1000} s; the end is written without it`);
+        return {};
+      }
+      return patch ?? {};
+    } catch (error) {
+      console.warn(`[runner] its end's patch failed: ${(error as Error).message}`);
+      return {};
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function writeEnd(harness: Harness, conversation: Conversation, theGate: Gate, base: EndData, take: readonly number[], also: readonly AlsoRow[] = []): Promise<LoopEnd> {
+    const patch = await endPatchOf(base);
+    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
+    const run = {
+      state: data.state,
+      ...(data.summary ? { summary: data.summary } : {}),
+      ...(data.outcome !== undefined ? { outcome: data.outcome } : {}),
+      ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
+      ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
+    };
+    const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);
     try {

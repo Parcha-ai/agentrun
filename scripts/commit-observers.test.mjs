@@ -19,7 +19,7 @@ export const ACCEPTED = [
   { at: "packages/pi-durable-disk/src/live-events.ts:150", keeps: "catches", why: "the adapter's followed documents: a change it cannot follow ends the stream, failed" },
   { at: "packages/pi/src/durable/recording.ts:279", keeps: "catches", why: "the recording maps and queues; a failure is the stop's to report" },
   { at: "packages/serve/src/browser-cost.ts:170", keeps: "catches", why: "a charge it fails to count, or an end before the run's close, makes the run's spend unknown (spent null)" },
-  { at: "packages/serve/src/runner/loop.ts:543", keeps: "catches", why: "the runner's held state (pi.live): its advance hands the ticker a reader and catches; a value it cannot read reports nothing held, at the tick, whose read never throws; its end only returns" },
+  { at: "packages/serve/src/runner/loop.ts:555", keeps: "catches", why: "the runner's held state (pi.live): its advance hands the ticker a reader and catches; a value it cannot read reports nothing held, at the tick, whose read never throws; its end only returns" },
 ];
 
 /** Every source file under each package's src/ (no dist/, vendor/ or declaration file). */
