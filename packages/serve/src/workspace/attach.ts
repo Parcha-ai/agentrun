@@ -61,8 +61,9 @@
 //
 // Durable on return, with a bind (lead, 11-08): a bind mount syncs nothing in the computer, so after each delegated
 // file call that changes the folder (write, append, mkdir, remove) the local backend fsyncs the target and every
-// folder from its own up to the root, on the host; a write's temporary file is synced before the move. exec's own
-// writes are not covered, the same as with no computer.
+// folder from its own up to the root, on the host; a write's temporary file is synced before the move. A file the host
+// cannot open (the computer's own private file, under another account) is synced by the computer itself, as its owner;
+// if neither can, the call fails in words. exec's own writes are not covered, the same as with no computer.
 import { randomBytes } from "node:crypto";
 import type {
   ComputerClient, DaemonMethod, DaemonMethods, Empty, FileStat, MountReadBack, MountSpec, ProcessExit, ProcessListParams, ProcessListResult,
@@ -113,6 +114,8 @@ export const noProcesses: Processes = {
 export const COMPUTER_CHUNK = 512 * 1024;
 /** How many times a read of more than one chunk starts again when the file changed under it. */
 const READ_ATTEMPTS = 3;
+/** How long the computer's own sync of a file the host cannot open may take. */
+const SYNC_TIMEOUT_MS = 60_000;
 
 const CODES: Record<string, WorkspaceErrorCode> = {
   not_found: "NOT_FOUND", exists: "EXISTS", limit: "TOO_LARGE", timeout: "TIMEOUT",
@@ -140,11 +143,20 @@ const chunks = (bytes: Uint8Array): Uint8Array[] => {
  * attach() checks the mount before it makes one of these. `synced(path)`, when given, runs after each file call that
  * changed `path` (write, append, mkdir, remove): a bind mount's backend makes the change durable on the host there,
  * since nothing in the computer syncs a bind. With "file" it syncs only that file's bytes (a write's temporary file,
- * before the move).
+ * before the move). When it answers false, the host could not open the entry (another account's private file, as
+ * the computer's own can be): the computer then syncs it itself, as its owner (`sync <path>`, exec.run), and a call
+ * whose change cannot be made durable either way fails in words, never silently.
  */
-export function attachedWorkspace(base: Workspace, computer: AttachableComputer, options: { readonly synced?: (path: string, only?: "file") => Promise<void> } = {}): Workspace {
-  const synced = options.synced ?? (async () => undefined);
+export function attachedWorkspace(base: Workspace, computer: AttachableComputer, options: { readonly synced?: (path: string, only?: "file") => Promise<boolean> } = {}): Workspace {
   const call = <M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"]): Promise<Result<DaemonMethods[M]["result"]>> => computer.client.call(method, params);
+  const synced = async (rel: string, only?: "file"): Promise<void> => {
+    if (options.synced === undefined || (await options.synced(rel, only))) return;
+    const ran = await call("exec.run", { argv: ["sync", `${MOUNT_AT}/${rel}`], timeoutMs: SYNC_TIMEOUT_MS });
+    if (!ran.ok || ran.value.exitCode !== 0) {
+      const why = ran.ok ? `sync exited ${ran.value.timedOut ? "at its deadline" : ran.value.exitCode}` : ran.error.message;
+      throw new WorkspaceError("UNAVAILABLE", `${JSON.stringify(rel)} could not be made durable: this host cannot open it, and the computer's own sync failed (${why})`, { path: rel });
+    }
+  };
   const at = (path: string): { rel: string; abs: string; segments: string[] } => {
     const segments = relativeSegments(path);
     const rel = segments.join("/");

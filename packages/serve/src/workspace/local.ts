@@ -503,27 +503,29 @@ class LocalWorkspace implements Workspace {
 
   /** What a computer changed at `path` in this folder made durable on the host: the entry itself when it is there (a
    *  file or a folder, never through a link), then, unless `only` is "file", every folder from its own up to the root.
-   *  A file this process may not read is synced through a write-only open; one it may neither read nor write (mode
-   *  0000, not ours) cannot be opened, and only its folders are synced. */
-  async #syncUp(path: string, only?: "file"): Promise<void> {
+   *  A file this process may not read is synced through a write-only open. One it may neither read nor write (another
+   *  account's private file, such as the computer's) cannot be synced from here: false says so, and the caller has the
+   *  computer sync it; true is that the entry is synced, or gone. */
+  async #syncUp(path: string, only?: "file"): Promise<boolean> {
     const segments = relativeSegments(path);
-    await this.#in(path, segments, segments.length - 1, async (dir) => {
+    const entry = await this.#in(path, segments, segments.length - 1, async (dir) => {
       const at = dir.at(segments.at(-1)!);
-      let handle: FileHandle | undefined;
       for (const flags of [O_RDONLY, O_WRONLY]) {
+        let handle: FileHandle;
         try {
           handle = await open(at, flags | O_NOFOLLOW | O_NONBLOCK);
-          break;
         } catch (error) {
-          if (errno(error) === "ENOENT" || errno(error) === "ELOOP") return;
+          if (errno(error) === "ENOENT" || errno(error) === "ELOOP") return true;
           if (errno(error) !== "EACCES") throw failed(error, path);
+          continue;
         }
+        try { await handle.sync(); } finally { await handle.close(); }
+        return true;
       }
-      if (handle === undefined) return;
-      try { await handle.sync(); } finally { await handle.close(); }
+      return false;
     });
-    if (only === "file") return;
-    for (let count = segments.length - 1; count >= 0; count--) await this.#in(path, segments, count, (dir) => dir.handle.sync());
+    if (only !== "file") for (let count = segments.length - 1; count >= 0; count--) await this.#in(path, segments, count, (dir) => dir.handle.sync());
+    return entry;
   }
 }
 

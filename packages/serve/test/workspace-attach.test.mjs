@@ -240,7 +240,7 @@ test("attached: a read-only file replaced in many chunks keeps its mode, and eve
 test("attached on a bind: a write's temporary file is synced on the host before the move, then the target and its folders", async () => {
   const root = scratch();
   const computer = fakeComputer(root);
-  const workspace = attachedWorkspace(localWorkspace(root), computer, { synced: async (path, only) => { computer.calls.push(["synced", { path, only }]); } });
+  const workspace = attachedWorkspace(localWorkspace(root), computer, { synced: async (path, only) => { computer.calls.push(["synced", { path, only }]); return true; } });
   await workspace.write("notes/a.md", "hello");
   const order = computer.calls.map(([method, params]) => (method === "synced" ? `synced ${params.path.replace(/\.workspace-[0-9a-f]+\.tmp$/, "<temp>")} ${params.only ?? "up"}` : method));
   assert.deepEqual(order, ["files.stat", "files.stat", "files.write", "synced notes/<temp> file", "files.move", "synced notes/a.md up"]);
@@ -300,4 +300,37 @@ test("attached: a folder link on the way is refused before a call changes anythi
   await refused(workspace.remove("alias/kept", { force: true }), "ESCAPE", /"alias" is a symbolic link/);
   assert.deepEqual(readdirSync(join(root, "real")), ["kept"], "nothing landed, nothing went: no call that failed changed the folder");
   assert.equal(Buffer.from(await workspace.read("alias/kept")).toString(), "kept", "a read follows a link inside the computer, its mount the boundary");
+});
+
+test("attached on a bind: what the host cannot open to sync, the computer syncs as its owner; if it cannot either, the write fails before the move", async () => {
+  const root = scratch();
+  writeFileSync(join(root, "a.md"), "old");
+  const computer = fakeComputer(root);
+  const ran = [];
+  computer.overrides["exec.run"] = (params) => { ran.push(params.argv); return { exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }; };
+  // The host's sync answers false: another account's private file, which it cannot open.
+  const workspace = attachedWorkspace(localWorkspace(root), computer, { synced: async () => false });
+  await workspace.write("a.md", "new");
+  assert.equal(ran.length, 2, "the temporary file before the move, then the target");
+  assert.match(ran[0].join(" "), /^sync \/workspace\/\.workspace-[0-9a-f]{16}\.tmp$/);
+  assert.deepEqual(ran[1], ["sync", "/workspace/a.md"]);
+  const order = computer.methods().filter((method) => method !== "files.stat");
+  assert.deepEqual(order, ["files.write", "exec.run", "files.write", "files.move", "exec.run"], "the temporary file's bytes are synced before its mode and the move");
+  // The computer's own sync fails: the write fails in words, before the move, and the target keeps its bytes.
+  computer.overrides["exec.run"] = () => ({ exitCode: 1, stdout: "", stderr: "", timedOut: false, truncated: false });
+  await refused(workspace.write("a.md", "lost?"), "UNAVAILABLE", /could not be made durable: this host cannot open it, and the computer's own sync failed \(sync exited 1\)/);
+  assert.equal(readFileSync(join(root, "a.md"), "utf8"), "new", "the target is untouched");
+  assert.deepEqual(readdirSync(root), ["a.md"], "and the temporary file is gone");
+});
+
+test("attached on a bind, with the real host sync: a file the host cannot open (mode 0000) is synced by the computer, never skipped", { skip: process.getuid?.() === 0 && "root opens any file" }, async () => {
+  const { root, computer, workspace } = await attached();
+  writeFileSync(join(root, "locked"), "old");
+  chmodSync(join(root, "locked"), 0o000);
+  const ran = [];
+  computer.overrides["exec.run"] = (params) => { ran.push(params.argv.join(" ")); return { exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }; };
+  await workspace.write("locked", "new");
+  assert.deepEqual(ran, ["sync /workspace/locked"], "the target, which the host could not open, was synced in the computer");
+  chmodSync(join(root, "locked"), 0o600);
+  assert.equal(readFileSync(join(root, "locked"), "utf8"), "new");
 });
