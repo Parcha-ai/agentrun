@@ -165,6 +165,10 @@ export class GitHubConnection {
   }
 }
 
+/** An installation event that comes, or is still being checked, as the server stops: 503, so GitHub shows the delivery
+ *  failed and it can be sent again. */
+const STOPPING = () => new ApiError("unavailable", "The server is stopping; send the delivery again.", { retry_after_ms: 60_000 }, { "retry-after": "60" });
+
 /** The Connect flow's three steps, for one server: its public address (GitHub calls it), GitHub's API (a test's fake),
  *  and where a step that finished sends the browser. */
 export class GitHubConnect {
@@ -283,7 +287,14 @@ export class GitHubConnect {
    *  for deleted, suspended for suspend, there and not suspended for created and unsuspend. X-GitHub-Event is not
    *  signed, so another event's signed body sent as one is never taken. A removal that leaves no installation turns every
    *  github trigger off (`turnOff`), naming it; one added turns none on. */
-  async installationEvent(doc: unknown, turnOff: (detail: string) => number): Promise<{ status: number; body: Json }> {
+  installationEvent(doc: unknown, turnOff: (detail: string) => number): Promise<{ status: number; body: Json }> {
+    if (this.stopping.signal.aborted) return Promise.reject(STOPPING());
+    const checked = this.checkEvent(doc, turnOff);
+    this.track(checked);
+    return checked;
+  }
+
+  private async checkEvent(doc: unknown, turnOff: (detail: string) => number): Promise<{ status: number; body: Json }> {
     const action = isObject(doc) && typeof doc.action === "string" ? doc.action.slice(0, 64) : "";
     const noted = { status: 200, body: { ok: "noted", action } };
     const view = this.connection.view();
@@ -298,23 +309,35 @@ export class GitHubConnect {
     const adds = ["created", "new_permissions_accepted", "unsuspend"].includes(action);
     const removes = action === "deleted" || action === "suspend";
     if (!adds && !removes) return noted;
-    let answer: { status: number; json: unknown };
     // GitHub out of reach (no answer, 429, 5xx) decides nothing: 503, so GitHub shows the delivery failed and it can be
     // sent again; the next read of the connection repairs the list from GitHub's own meanwhile (reconcile).
     const unavailable = (why: string) => {
       this.options.say({ condition: "github_unavailable", action, installation: String(id), reason: why });
       return new ApiError("unavailable", "GitHub could not be asked about this installation; send the delivery again.", { retry_after_ms: 60_000 }, { "retry-after": "60" });
     };
-    try {
-      answer = await githubCall(this.options.api, `/app/installations/${id}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()) });
-    } catch (error) {
-      throw unavailable((error as Error).message);
-    }
-    if (answer.status === 429 || answer.status >= 500) throw unavailable(`HTTP ${answer.status}`);
-    // Checked for the App connected when it came: one disconnected, or replaced, meanwhile takes nothing of it.
-    if (this.connection.view()?.app_id !== view.app_id) {
-      this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: "GitHub was disconnected or connected again while the event was checked" });
-      return noted;
+    let answer: { status: number; json: unknown };
+    for (let asked = 1; ; asked++) {
+      // The list's version before GitHub is asked: a write meanwhile (another event, the installed redirect, a repair) is
+      // newer than GitHub's answer, which is then asked for again, once.
+      const version = this.connection.version;
+      try {
+        answer = await githubCall(this.options.api, `/app/installations/${id}`, { jwt: appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now()), signal: this.stopping.signal });
+      } catch (error) {
+        if (this.stopping.signal.aborted) throw STOPPING();
+        throw unavailable((error as Error).message);
+      }
+      if (this.stopping.signal.aborted) throw STOPPING();
+      if (answer.status === 429 || answer.status >= 500) throw unavailable(`HTTP ${answer.status}`);
+      // Checked for the App connected when it came: one disconnected, or replaced, meanwhile takes nothing of it.
+      if (this.connection.view()?.app_id !== view.app_id) {
+        this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: "GitHub was disconnected or connected again while the event was checked" });
+        return noted;
+      }
+      if (this.connection.version === version) break;
+      if (asked >= 2) {
+        this.options.say({ condition: "github_installation_ignored", action, installation: String(id), reason: "the list was written again while GitHub was asked twice; the next read repairs it" });
+        return noted;
+      }
     }
     const found = isObject(answer.json) ? answer.json : {};
     const suspended = answer.status === 200 && found.suspended_at !== null && found.suspended_at !== undefined;
@@ -337,8 +360,14 @@ export class GitHubConnect {
   private reconciled = 0;
   /** Aborted as the server closes: a repair's GitHub calls stop waiting, and it writes nothing after. */
   private readonly stopping = new AbortController();
-  /** The repairs under way, which close waits for. */
-  private readonly repairs = new Set<Promise<void>>();
+  /** The repairs and installation checks under way, each settled, which close waits for. */
+  private readonly pending = new Set<Promise<void>>();
+
+  private track(work: Promise<unknown>): void {
+    const settled = work.then(() => undefined, () => undefined);
+    this.pending.add(settled);
+    void settled.finally(() => this.pending.delete(settled));
+  }
 
   /** The installation list repaired from GitHub's own (GET /app/installations with the App's JWT, every page; a suspended
    *  one is not listed), at most once a minute unless `force`: a missed or refused installation event is put right at the
@@ -351,15 +380,15 @@ export class GitHubConnect {
     const repair = this.repair(turnOff, force).catch((error: unknown) => {
       if (!this.stopping.signal.aborted) this.options.say({ condition: "github_installations_unrepaired", reason: (error as Error).message });
     });
-    this.repairs.add(repair);
-    void repair.finally(() => this.repairs.delete(repair));
+    this.track(repair);
     return repair;
   }
 
-  /** The repairs stopped: their GitHub calls aborted, nothing written after this, and each one ended when it resolves. */
+  /** The repairs and installation checks stopped: their GitHub calls aborted, nothing written after this, and each one
+   *  ended when it resolves. */
   async close(): Promise<void> {
     this.stopping.abort();
-    await Promise.all([...this.repairs]);
+    await Promise.all([...this.pending]);
   }
 
   private async repair(turnOff: (detail: string) => number, force: boolean): Promise<void> {
