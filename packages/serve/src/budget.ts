@@ -98,6 +98,11 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
    *  decision, at its node's path) is that step's work, whatever async context it runs in. pi-durable runs it from its
    *  scheduler's drain, in the context of whatever kicked the drain: none, or a map sibling's. */
   const byPath = new Map<string, symbol>();
+  /** Each node conversation's step by its provider session (pi's pi.provider sessionId, which every model request of the
+   *  conversation carries): a model request runs in whatever async context kicked pi's drain, a map sibling's included,
+   *  so its session says whose it is. */
+  const sessions = new Map<string, StepAt>();
+  const stepOf = (sessionId: string | undefined, fallback?: StepAt): StepAt | undefined => (sessionId === undefined ? undefined : sessions.get(sessionId)) ?? fallback;
   /** The outermost steps with a wait for a raise under way (a nested decision's wait counts for its outer step), each
    *  once whatever number of its waits: the process lets go only once every step in flight is one of these. */
   const waitingSteps = new Map<symbol, number>();
@@ -141,12 +146,20 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
       const at = held.get(path);
       return at ? at.total + (at.from !== undefined ? Date.now() - at.from : 0) : 0;
     },
-    /** Waits for a raise of the cap that refused `refusal`, at `at`: true once the cap is above it (now, or by a raise
-     *  that comes), false on a cancel or `signal`. The first wait writes the pause's mark; the last one to end on a raise
-     *  takes it away. */
-    async wait(refusal: CapRefusal, signal?: AbortSignal, at?: StepAt): Promise<boolean> {
+    /** The node conversation of provider session `sessionId` is the step at `at` (the node runner's onNodeOpen, app.ts). */
+    session(sessionId: string, at: StepAt): void {
+      sessions.set(sessionId, at);
+    },
+    /** The step a model request of `sessionId` belongs to, when its node told it (session); else `fallback`. */
+    stepOf,
+    /** Waits for a raise of the cap that refused `refusal`, at `given`: true once the cap is above it (now, or by a raise
+     *  that comes), false on a cancel or `signal`. A model request's `sessionId`, when its node told it, says the step
+     *  over `at` (which its async context gave, maybe a sibling's). The first wait writes the pause's mark; the last one to
+     *  end on a raise takes it away. */
+    async wait(refusal: CapRefusal, signal?: AbortSignal, given?: StepAt, sessionId?: string): Promise<boolean> {
       if (raisedAbove(refusal.capUsd)) return true;
       if (cancelled() || signal?.aborted) return false;
+      const at = stepOf(sessionId, given);
       // The step this wait holds: the step in flight at its path, else its outermost step's (a wait outside any step
       // stands for itself).
       const path = at?.path ?? undefined;
@@ -199,7 +212,8 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
     },
     /** Keeps a refusal no raise fixes, at `at`, for the server: the first one, which the run ends on. The step's own
      *  refusal is kept too, by its path, for `stopped` to read once the step fails on it. */
-    record(refusal: CapRefusal, at?: StepAt): void {
+    record(refusal: CapRefusal, given?: StepAt, sessionId?: string): void {
+      const at = stepOf(sessionId, given);
       if (!existsSync(join(root, CAP_STOPPED))) writeWhole(join(root, CAP_STOPPED), { words: refusal.words, node: at?.label ?? null, at: new Date().toISOString() } satisfies CapStopped);
       stops.set(at?.path ?? `#${stops.size}`, { refusal, at });
     },

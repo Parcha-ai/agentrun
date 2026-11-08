@@ -713,10 +713,12 @@ export type RunSpend = {
   raise?(to: number): void;
   /** A workflow run's wait for a raise (budget.ts), set once its run opens: a request refused for room waits on it before
    *  it is sent, and is judged again once it resolves true (the cap was raised); false (a cancel, its signal) refuses it
-   *  as before. Absent on an agentic run, whose turn ends on the refusal instead. */
-  wait?(refusal: CapRefusal, signal?: AbortSignal): Promise<boolean>;
-  /** A workflow run's record of a refusal no raise fixes (budget.ts), which its run ends on, in the cap's words. */
-  stopped?(refusal: CapRefusal): void;
+   *  as before. Absent on an agentic run, whose turn ends on the refusal instead. A model request passes its provider
+   *  session (`sessionId`, pi's per conversation), which says whose node it is wherever it runs. */
+  wait?(refusal: CapRefusal, signal?: AbortSignal, sessionId?: string): Promise<boolean>;
+  /** A workflow run's record of a refusal no raise fixes (budget.ts), which its run ends on, in the cap's words; a model
+   *  request's `sessionId` as for `wait`. */
+  stopped?(refusal: CapRefusal, sessionId?: string): void;
 };
 /** A refusal of the cap, as a call that was refused is told it: its words (after the code, as a pause serves them),
  *  whether a higher cap would send it (`room`; not so for no price, no ceiling or an unknown spend), the cap that refused
@@ -1346,10 +1348,13 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       // A workflow run's turn request refused for room waits for a raise, unsent, and is judged again (RunSpend.wait):
       // its node stands where it is. Its events then come from the request sent, or from the refusal if none is.
       const room = roomRefusal(judged.why);
+      // Its node by its conversation's provider session (pi's sessionId), never by the async context it runs in.
+      const sessionId = (options as { sessionId?: unknown } | undefined)?.sessionId;
+      const session = typeof sessionId === "string" ? sessionId : undefined;
       if (room !== undefined && own.wait) {
         const waited = createAssistantMessageEventStream();
         const signal = (options as { signal?: AbortSignal } | undefined)?.signal;
-        void own.wait({ words: room, room: true, capUsd: cap, ...(judged.figures ? { figures: judged.figures } : {}) }, signal).then(
+        void own.wait({ words: room, room: true, capUsd: cap, ...(judged.figures ? { figures: judged.figures } : {}) }, signal, session).then(
           (raised) => raised ? stream(send, simpleCall)(model, context, options) : refusedStream(model, judged),
           () => refusedStream(model, judged),
         ).then(async (events) => {
@@ -1363,7 +1368,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
         return waited;
       }
       // A refusal no raise fixes ends a workflow's run in its words (budget.ts): the node fails on the refusal.
-      if (room === undefined) own.stopped?.({ words: judged.why.replace(CAP_REFUSAL_PREFIX, ""), room: false, capUsd: cap });
+      if (room === undefined) own.stopped?.({ words: judged.why.replace(CAP_REFUSAL_PREFIX, ""), room: false, capUsd: cap }, session);
       return refusedStream(model, judged);
     };
   /** The refusal's own stream: its start mark first, then pi's error for it. */

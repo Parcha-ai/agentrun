@@ -12,7 +12,7 @@ import { mcpCredentials, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
-import { createRegistry, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, type Extension, type Harness, ProviderDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
@@ -330,8 +330,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const holdMs = Number(process.env[BUDGET_HOLD_ENV]);
   const waits = spend ? budgetWaits(where.root, spend, { holdMs: Number.isFinite(holdMs) && holdMs > 0 ? holdMs : BUDGET_HOLD_MS, letGo: () => void process.kill(process.pid, "SIGTERM") }) : undefined;
   if (spend && waits) {
-    spend.wait = (refusal, signal) => waits.wait(refusal, signal, stepNow());
-    spend.stopped = (refusal) => waits.record(refusal, stepNow());
+    // A model request's provider session names its node (the node runner's onNodeOpen, below); else the step its async
+    // context gives.
+    spend.wait = (refusal, signal, sessionId) => waits.wait(refusal, signal, stepNow(), sessionId);
+    spend.stopped = (refusal, sessionId) => waits.record(refusal, stepNow(), sessionId);
   }
   /** `fn`, a step of the run (a node, a call, a decision) named by its params, counted in flight for the pause's let-go. */
   const stepped = <F,>(fn: F, model = false): F => {
@@ -437,7 +439,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const bindings = (node.tools ?? []).flatMap((name) => nodeTools.get(name) ?? []);
     return { model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [...new Set([coding.extension, ...bindings.flatMap((b) => b.extensions), gatedTools])], tools: bindings.flatMap((b) => b.tools) };
   };
-  const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
+  // Under a cap, each node conversation's provider session (pi.provider's sessionId, which its every model request
+  // carries) is told to the waits as that node's step: a request runs in whatever async context kicked pi's drain, a map
+  // sibling's included, so its session says whose node it waits for and names.
+  const nodes = nodeRunner({
+    agent: (node) => nodeAgent(node) as never,
+    ...(waits ? { onNodeOpen: async (node: { label?: string; executionPath?: string; conversationId: unknown }) => {
+      const provider = runHarness ? await runHarness.snapshot(ProviderDoc, node.conversationId as never, BACKGROUND).catch(() => undefined) : undefined;
+      if (typeof provider?.sessionId === "string") waits.session(provider.sessionId, { label: String(node.label ?? ""), path: node.executionPath ?? null });
+    } } : {}),
+  });
   /** The node log's starts and ends, from the workflow's events: what a graph shows of a node's timing. */
   const onEvent = (event: { type: string; detail?: unknown; executionPath?: string }) => {
     if ((event.type !== "node.start" && event.type !== "node.end") || typeof event.executionPath !== "string") return;
