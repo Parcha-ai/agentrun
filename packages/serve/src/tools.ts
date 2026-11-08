@@ -28,7 +28,7 @@ import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
-import type { SettingFrom } from "./tool-gate.js";
+import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
@@ -447,15 +447,16 @@ export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane):
 /** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
  *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its settings key. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
  *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
-export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, SettingFrom> } => {
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane, from?: (name: string) => SettingFrom): { tools: string[]; gated: Record<string, string>; deniedBy: Record<string, DenyFrom> } => {
   const gated: Record<string, string> = {};
   // Where each deny was set (this agent's settings or this server's), so the refusal names it.
-  const deniedBy: Record<string, SettingFrom> = {};
+  const deniedBy: Record<string, DenyFrom> = {};
   const tools = learnedWorkflowTools(granted, plane).filter((name) => {
     const setting = permission(name);
     if (setting === "allow") return true;
     gated[name] = setting;
-    if (setting === "deny" && from) deniedBy[name] = from(name);
+    // A deny comes from a layer or the default, never from approvals, which only ever allows.
+    if (setting === "deny" && from) deniedBy[name] = from(name) as DenyFrom;
     return false;
   });
   return { tools, gated, deniedBy };
@@ -488,7 +489,7 @@ export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TO
 /** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
 export async function toolingOf(revision: Revision): Promise<Tooling> {
   const tools = await grantedTools(revision.kind === "agentic" ? { kind: "agentic", tools: revision.body.tools } : { kind: "workflow", tools: revision.body.tools, workflow: revision.body.workflow });
-  return { tools, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
+  return { tools, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}), ...(revision.body.approvals === "never" ? { approvals: "never" as const } : {}) };
 }
 
 /** The variables `entry` needs that `env` does not set, by name. */
