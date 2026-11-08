@@ -125,8 +125,10 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
  *  gate reads it: a permission by settings key. */
 export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts readToolSettings). Never shown. */ fallback?: true } | undefined>>;
 
-/** `name`'s permission in force and the layer it came from, most specific first: the agent's exact key, the agent's
- *  server wildcard, the server's exact key, the server's server wildcard, then the default. Rules over a call's
+/** `name`'s permission in force and the layer it came from. A deny set on this server, under the tool's own key or its MCP
+ *  server's wildcard (bash's for a shell tool), is absolute: it refuses on this server over any setting of the agent's.
+ *  Otherwise most specific first: the agent's exact key, the agent's server wildcard, the server's exact key, the
+ *  server's server wildcard, then the default. Rules over a call's
  *  arguments are not in V1. `approvals` "never" (an agent run unattended) turns the ask that is left into an allow, from
  *  "unattended", as the last step, and only where nothing stands behind that ask (standsBehind): never past a deny in any
  *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
@@ -164,8 +166,13 @@ function settingOf(name: string, server: PermissionSettings, agent: PermissionSe
 }
 
 /** permissionFrom's own read, and whether the permission is `written`: a valid one set in a layer as it reads there, not
- *  a stand-in. A value that is no permission at all reads ask, never the value. */
+ *  a stand-in. A value that is no permission at all reads ask, never the value. A deny set on this server is absolute:
+ *  under any key the tool is read by (its own, its MCP server's wildcard), it is the answer, from the server, before the
+ *  agent's own settings are read, so no ask or allow of the agent's reaches past it. Otherwise the agent's own setting
+ *  comes first, then the server's, then the default. */
 function settingFrom(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: "agent" | "server" | "default"; written: boolean } {
+  const denied = permissionKeys(name).map((key) => server[key]).find((setting) => setting?.permission === "deny");
+  if (denied) return { permission: "deny", from: "server", written: denied.fallback !== true };
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
     for (const key of permissionKeys(name)) {
       const setting = layer[key];
