@@ -26,6 +26,8 @@ const COMPUTER = ["read", "write", "edit", "bash", ...BACKGROUND];
 const NONE = ["read", "write", "edit"];
 const LOCAL = ["read", "write", "edit", "bash"];
 const answer = (text) => async () => ({ text });
+/** The ruled refusal of every background tool with no computer, in Mode 1 or Mode 2. */
+const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
 /** A call's failure, in its words: an executor answers a failure, and only an abort throws. */
 const errorOf = async (call) => (await call).error;
 const injected = { read: answer("read"), write: answer("write"), edit: answer("edit"), bash: answer("bash") };
@@ -49,7 +51,7 @@ test("ruled change: a background tool called with no computer is refused in word
   const { hands } = localHands();
   const registry = createRegistry({ maxExecS: 600, shell: "local", executors: injected });
   const refused = await registry.invoke("bash_background", { command: "sleep 1" }, { hands });
-  assert.equal(refused.error, "bash_background needs a computer: with no computer, bash runs in the run's folder and background processes are not offered");
+  assert.equal(refused.error, NEEDS_A_COMPUTER);
 });
 
 test("a registry missing an executor for a tool the model sees is refused when it is built, naming the tool", () => {
@@ -191,11 +193,43 @@ test("a link at work/background starts nothing, and a closed stdin says so", asy
   assert.equal(await errorOf(r.invoke("bash_input", { id: "2", text: "x" }, { hands })), "background process 2's stdin is closed: an earlier bash_input closed it");
 });
 
+test("a start cancelled while it waits its turn never starts, and answers as aborted", async (t) => {
+  const { hands } = localHands({ processes: true });
+  t.after(() => hands.processes.reap());
+  let release;
+  const held = new Promise((done) => (release = done));
+  hands.processes.beforeStart = () => held;
+  const r = registry();
+  const first = r.invoke("bash_background", { command: "sleep 30" }, { hands });
+  const cancel = new AbortController();
+  const second = r.invoke("bash_background", { command: "sleep 30" }, { hands, signal: cancel.signal });
+  await new Promise((done) => setTimeout(done, 50));
+  cancel.abort();
+  hands.processes.beforeStart = async () => {};
+  release();
+  assert.match((await first).text, /^Started background process 1 /);
+  await assert.rejects(second, (error) => error.name === "AbortError");
+  assert.equal(hands.processes.starts, 1);
+  assert.match((await r.invoke("bash_list", {}, { hands })).text, /^1 of at most 8 running\.\n1: is running;/);
+});
+
+test("closing a terminal's input after an earlier partial line ends the input: its line is sent, then the end", async (t) => {
+  const { hands } = localHands({ processes: true });
+  t.after(() => hands.processes.reap());
+  const r = registry();
+  await r.invoke("bash_background", { command: "cat", tty: true }, { hands });
+  await r.invoke("bash_input", { id: "1", text: "hello" }, { hands });
+  const closed = await r.invoke("bash_input", { id: "1", text: "", close: true }, { hands });
+  assert.equal(closed.text, "Wrote 0 bytes to background process 1's stdin, then closed it. Read what it answers with bash_output.");
+  await until(async () => /exited with code 0/.test((await r.invoke("bash_output", { id: "1" }, { hands })).text), "cat to end on the end of its input");
+  assert.match((await r.invoke("bash_output", { id: "1" }, { hands })).text, /\n\nhello$/);
+});
+
 test("with no computer's processes, each background tool refuses in words, and the run's end ends none", async () => {
   const { hands } = localHands();
   const r = registry();
   for (const name of BACKGROUND) {
-    assert.equal(await errorOf(r.invoke(name, { id: "1", command: "true", signal: "TERM", text: "x" }, { hands })), `${name} needs a computer: with no computer, bash runs in the run's folder and background processes are not offered`, name);
+    assert.equal(await errorOf(r.invoke(name, { id: "1", command: "true", signal: "TERM", text: "x" }, { hands })), NEEDS_A_COMPUTER, name);
   }
   assert.equal(await endBackground(hands), 0);
 });

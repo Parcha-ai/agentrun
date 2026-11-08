@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 import { runDirIn } from "@parcha/pi-durable-agent";
 import { learningRepo } from "../dist/learning.js";
 import { ID } from "../dist/validate.js";
-import { agentLearningFolder, EXEC_OUTPUT_MAX, localWorkspace, relativePath, relativeSegments, runFolder } from "../dist/workspace/index.js";
+import { agentLearningFolder, COMPUTER_ROOT, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder } from "../dist/workspace/index.js";
 import { suite } from "./workspace-conformance.mjs";
 
 const SHIM = new URL("../../pi-durable-disk/test/fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
@@ -64,6 +64,20 @@ test("paths: the relative-path rule", () => {
     assert.throws(() => relativeSegments(bad), (error) => error.name === "WorkspaceError" && error.code === "ESCAPE", JSON.stringify(bad));
   }
   assert.throws(() => relativeSegments(42), (error) => error.code === "ESCAPE", "not a string");
+});
+
+test("paths: portPath takes a tool call's path to the port's, by any of the folder's names, and leaves out every way out", () => {
+  const names = ["/data/disk/agents/a/runs/r/work", COMPUTER_ROOT];
+  assert.equal(COMPUTER_ROOT, "/workspace");
+  const cases = [
+    ["notes.md", "notes.md"], [".learning/x.md", ".learning/x.md"], ["./a/../b", "b"], [".", ""], ["", ""],
+    ["/data/disk/agents/a/runs/r/work/x", "x"], ["/data/disk/agents/a/runs/r/work", ""], ["/workspace/.learning/x", ".learning/x"], ["/workspace", ""],
+    ["../x", undefined], ["/etc/passwd", undefined], ["/workspace2/x", undefined], ["/data/disk/agents/a/runs/r/work2/x", undefined],
+    ["~/.token", undefined], ["~", undefined], ["file:///etc/passwd", undefined], ["a\0b", undefined], [".learning/../../x", undefined],
+  ];
+  for (const [given, port] of cases) assert.equal(portPath(given, names), port, JSON.stringify(given));
+  assert.equal(portPath("x", ["/workspace"]), "x", "a computer's folder alone");
+  assert.equal(portPath("/data/disk/agents/a/runs/r/work/x", ["/workspace"]), undefined, "a name the folder is not given is outside");
 });
 
 test("local: a write keeps an existing file's mode; a new file gets the usual one", async () => {

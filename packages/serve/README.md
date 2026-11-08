@@ -220,6 +220,11 @@ A data directory an earlier version wrote, with its runs under `DIR/runs/` (or a
 at start, saying so: this version neither reads nor moves it. Keep it with that version, or start this one on a new data
 directory (an empty folder, or a new volume).
 
+When a run's folder is on the owner's Archil disk and the run has no computer, a command runs through Archil's
+serverless exec, for at most 295 s. A known limit: a command, once sent, cannot be stopped. Stopping the call answers at
+once, but the command runs on to its own deadline, and the run's next command, or a write to its folder, waits until it
+has ended. A command not yet sent when the call is stopped is never sent.
+
 ## Upgrading from 0.1.0-beta.26
 
 0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions (and this version each run on the
