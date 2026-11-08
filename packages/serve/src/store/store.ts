@@ -230,6 +230,46 @@ export interface Runs {
   update(claim: Claim, patch: RunPatch, also?: readonly AlsoRow[]): Promise<RunRow>;
 }
 
+/** A saved MCP server: its listed tools (each with whether it can be granted, and why not), the owner's prices, and its
+ *  credential sealed (store/seal.ts): bytes the store never opens. `tools` and `prices` are JSON. */
+export interface McpServerRow {
+  readonly name: string;
+  readonly url: string;
+  readonly auth: string;
+  readonly protocol: string | null;
+  readonly tools: unknown;
+  readonly prices: unknown;
+  readonly sealed: Uint8Array | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+/** A run's MCP pin: what it may call, per granted server (url, tools, prices), written once at its first claim. */
+export interface McpPinRow {
+  readonly runId: string;
+  readonly body: unknown;
+  readonly pinnedAt: number;
+}
+
+export interface Mcp {
+  /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). */
+  put(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; sealed?: Uint8Array | null }): Promise<McpServerRow>;
+  remove(name: string): Promise<void>;
+  /** The registry's rows, by name. */
+  servers(): Promise<McpServerRow[]>;
+  server(name: string): Promise<McpServerRow | undefined>;
+  /** The run's pin, or none (a run that grants no MCP tool has none). */
+  pin(runId: string): Promise<McpPinRow | undefined>;
+  /** Writes the run's pin under `claim` unless it has one, in one transaction with the claim's epoch fence, and answers the
+   *  pin as stored: never rewritten, so a second call (or a later claim's) reads the first. Fenced, writing nothing, on a
+   *  stale claim. */
+  pinOnce(claim: Claim, body: unknown): Promise<McpPinRow>;
+  /** A refreshed credential (`sealed`), written only when the row is as it was read (`seen`: its updatedAt then): one
+   *  write that re-reads the row. When another claim refreshed it first, nothing is written and the newer row comes back
+   *  (refreshed false). StoreConstraint when the server is no longer saved. */
+  refreshToken(name: string, update: { seen: number; sealed: Uint8Array }): Promise<{ refreshed: boolean; row: McpServerRow }>;
+}
+
 /** Who opens the store. The server sets the schema up at its start and holds the store's owner lock (one server per
  *  store); a runner never sets anything up, and refuses a schema version it does not know. */
 export type StoreRole = "server" | "runner";
@@ -239,6 +279,7 @@ export interface Store {
   readonly templates: Templates;
   readonly triggers: Triggers;
   readonly runs: Runs;
+  readonly mcp: Mcp;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

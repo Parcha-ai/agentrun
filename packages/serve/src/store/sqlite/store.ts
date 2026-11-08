@@ -10,7 +10,7 @@ import {
   SchemaVersionUnknown, StoreConstraint,
   type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES,
+  FINAL_STATES, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -68,6 +68,15 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 
+type McpServerRecord = { name: string; url: string; auth: string; protocol: string | null; tools: string; prices: string; sealed: Uint8Array | null; created_at: number; updated_at: number };
+type McpPinRecord = { run_id: string; body: string; pinned_at: number };
+const MCP_SERVER_COLUMNS = "name, url, auth, protocol, tools, prices, sealed, created_at, updated_at";
+const mcpServerOf = (r: McpServerRecord): McpServerRow => ({
+  name: r.name, url: r.url, auth: r.auth, protocol: r.protocol, tools: JSON.parse(r.tools), prices: JSON.parse(r.prices),
+  sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), createdAt: r.created_at, updatedAt: r.updated_at,
+});
+const mcpPinOf = (r: McpPinRecord): McpPinRow => ({ runId: r.run_id, body: JSON.parse(r.body), pinnedAt: r.pinned_at });
+
 /** The store's schema version as the file holds it: null when the server has not set it up (no store_meta yet). */
 async function versionOf(db: Connection): Promise<number | null> {
   const table = await db.get<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'store_meta'");
@@ -119,6 +128,7 @@ class SqliteStore implements Store {
   readonly templates: Templates;
   readonly triggers: Triggers;
   readonly runs: Runs;
+  readonly mcp: Mcp;
   readonly #db: Connection;
   readonly #now: () => number;
   /** Each claim's one journal, until it is closed. */
@@ -270,6 +280,46 @@ class SqliteStore implements Store {
       },
       claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
       update: async (claim: Claim, patch: RunPatch, also: readonly AlsoRow[] = []): Promise<RunRow> => db.transaction((tx) => applyRunPatch(tx, claim, patch, also, now())),
+    };
+
+    const server = async (executor: SqliteExecutor, name: string) => {
+      const row = await executor.get<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers WHERE name = ?`, name);
+      return row && mcpServerOf(row);
+    };
+    this.mcp = {
+      put: async ({ name, url, auth, protocol = null, tools, prices = null, sealed = null }) => {
+        const at = now();
+        const [result] = await db.write([{
+          sql: `INSERT INTO mcp_servers (${MCP_SERVER_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
+              prices = excluded.prices, sealed = excluded.sealed, updated_at = excluded.updated_at
+            RETURNING ${MCP_SERVER_COLUMNS}`,
+          params: [name, url, auth, protocol, json(tools), json(prices), sealed, at, at],
+        }]);
+        return mcpServerOf(result!.rows[0] as McpServerRecord);
+      },
+      remove: async (name) => {
+        await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ?", params: [name] }]);
+      },
+      servers: async () => (await db.all<McpServerRecord>(`SELECT ${MCP_SERVER_COLUMNS} FROM mcp_servers ORDER BY name`)).map(mcpServerOf),
+      server: (name) => server(db, name),
+      pin: async (runId) => {
+        const row = await db.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", runId);
+        return row && mcpPinOf(row);
+      },
+      pinOnce: (claim, body) =>
+        db.transaction(async (tx) => {
+          await tx.step(fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]));
+          await tx.run("INSERT INTO mcp_pins (run_id, body, pinned_at) VALUES (?, ?, ?) ON CONFLICT (run_id) DO NOTHING", claim.runId, json(body), now());
+          return mcpPinOf((await tx.get<McpPinRecord>("SELECT run_id, body, pinned_at FROM mcp_pins WHERE run_id = ?", claim.runId))!);
+        }),
+      refreshToken: (name, { seen, sealed }) =>
+        db.transaction(async (tx) => {
+          const changed = await tx.runCounted("UPDATE mcp_servers SET sealed = ?, updated_at = ? WHERE name = ? AND updated_at = ?", sealed, Math.max(now(), seen + 1), name, seen);
+          const row = await server(tx, name);
+          if (!row) throw new StoreConstraint(`no MCP server ${name}: it is no longer saved`);
+          return { refreshed: changed === 1, row };
+        }),
     };
   }
 
