@@ -14,10 +14,10 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 const call = (usage: Record<string, unknown> | undefined, id = "c1"): TimelineRow => ({ id, seq: 2, kind: "tool_use", summary: "snapshot", text: null, timestamp: "2026-11-05T20:00:00Z", tool_name: "snapshot", tool_status: "success", ...(usage ? { usage } : {}) } as TimelineRow);
-const draw = (rows: TimelineRow[]) => {
+const draw = (rows: TimelineRow[], ended?: boolean) => {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(Timeline, { rows, live: false })));
+  act(() => root!.render(createElement(Timeline, { rows, live: false, ...(ended === undefined ? {} : { ended }) } as never)));
   return [...host.querySelectorAll("li")] as HTMLElement[];
 };
 
@@ -27,9 +27,30 @@ describe("a browser call's charge, on its own row", () => {
     expect(li.textContent).toMatch(/· \$0\.0018/);
   });
 
-  it("with a charge that has no price, what is known so far", () => {
-    const [li] = draw([call({ usd: null, requests: 0, so_far_usd: 0.001, unpriced: 1 })]);
+  it("with a charge that has no price, on a live run: what is known so far", () => {
+    const [li] = draw([call({ usd: null, requests: 0, so_far_usd: 0.001, unpriced: 1 })], false);
     expect(li.textContent).toContain("· so far $0.001, 1 not priced");
+  });
+
+  it("with a charge that has no price, on a run that has ended: what is known, never \"so far\" (as the run's cost says it)", () => {
+    const [li] = draw([call({ usd: null, requests: 0, so_far_usd: 0.001, unpriced: 1 })], true);
+    expect(li.textContent).toContain("· $0.001 known, 1 not priced");
+    expect(li.textContent).not.toContain("so far");
+  });
+
+  it("the run page says an ended run's call row as known (runEnded of its status), a working one's as so far", async () => {
+    const { RunDetail } = await import("./RunDetail");
+    const { messageFeatures, runFixture } = await import("@/fixtures");
+    const f = runFixture("run.completed.idle.1");
+    const rows = [call({ usd: null, requests: 0, so_far_usd: 0.001, unpriced: 1 })];
+    for (const [status, state, says] of [["completed", "idle", "$0.001 known, 1 not priced"], ["working", "working", "so far $0.001, 1 not priced"]] as const) {
+      const run = { ...f.run, kind: "agentic", status, state, result: null };
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      act(() => root!.render(createElement(RunDetail, { run, agentName: "browsing", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, tab: "timeline" } as never)));
+      expect(host.textContent, status).toContain(says);
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
   });
 
   it("a call whose result row follows it (the step a person reads is the two together) still reads the call's charge", () => {
