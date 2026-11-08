@@ -86,9 +86,12 @@ type Result struct {
 	Interfaces []string `json:"interfaces"`
 	Quiet      []string `json:"quiet"`
 	Raised     []string `json:"raised"`
-	Reached    []string `json:"reached"`
-	Accepted   []string `json:"accepted"`
-	Results    []Target `json:"results"`
+	// Sockets, when asked for (probe --sockets): the unix sockets with a path the probe could connect to
+	// (ConnectableSockets), by their real paths; absent when not asked.
+	Sockets  *[]string `json:"sockets,omitempty"`
+	Reached  []string  `json:"reached"`
+	Accepted []string  `json:"accepted"`
+	Results  []Target  `json:"results"`
 }
 
 // ProtocolOf is the request a target gets: a UDP target dns (a DNS query, the request a UDP server most commonly

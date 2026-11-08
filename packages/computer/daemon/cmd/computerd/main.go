@@ -16,9 +16,11 @@
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
-//	computerd probe [--connect <host:port>[/udp]]...
+//	computerd probe [--sockets] [--connect <host:port>[/udp]]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, the network interfaces
-//	                    it sees (interfaces), the addresses that
+//	                    it sees (interfaces, live; quiet; raised), with --sockets the unix sockets with a path it can
+//	                    connect to (sockets, by real path: a walk of /run, /tmp and the like, and /proc/net/unix's
+//	                    paths), the addresses that
 //	                    answered (reached: bytes came back), those that accepted a TCP connection and sent nothing back
 //	                    (accepted), and each target's outcome (results). A TCP target gets a request by its port (443 a
 //	                    TLS ClientHello, 80 an HTTP HEAD, 53 a DNS query, any other an HTTP HEAD), a host:port/udp one
@@ -106,11 +108,22 @@ func main() {
 			}
 			return
 		}
-		targets, ok := probeTargetsOf(logger, os.Args[2:])
+		args := os.Args[2:]
+		sockets := len(args) > 0 && args[0] == "--sockets"
+		if sockets {
+			args = args[1:]
+		}
+		targets, ok := probeTargetsOf(logger, args)
 		if !ok {
 			os.Exit(2)
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(probe.Run(targets, probe.ConnectBounds)); err != nil {
+		result := probe.Run(targets, probe.ConnectBounds)
+		if sockets {
+			netUnix, _ := os.ReadFile("/proc/net/unix")
+			listed := probe.ConnectableSockets(probe.SocketRoots, string(netUnix), 2*time.Second)
+			result.Sockets = &listed
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 			logger.Printf("probe: %v", err)
 			os.Exit(1)
 		}
@@ -195,7 +208,7 @@ func syncServeRunning(logger *log.Logger, args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | version")
 	os.Exit(2)
 }
 

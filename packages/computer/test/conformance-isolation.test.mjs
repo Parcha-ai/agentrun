@@ -99,10 +99,11 @@ test("it fails where a program connects to a path unix socket that is not the co
 	const vendor = await run({ vendorAgentPorts: [2280], pathSockets: [...own, "/run/vendor/agent.sock"] });
 	assert.equal(statuses(vendor)[ID], "fail");
 	assert.match(reasons(vendor)[ID], /\/run\/vendor\/agent\.sock/);
-	// An image with no python3 cannot list them: recorded in words, not failed.
-	const unlisted = await run({ vendorAgentPorts: [2280], pathSockets: "no python3" });
-	assert.deepEqual(statuses(unlisted), { [ID]: "pass" }, reasons(unlisted)[ID]);
-	assert.ok(unlisted.results[0].observed.some((line) => /no python3/.test(line)));
+	// The listing is computerd's own (the probe's sockets), so no image lacks it; a daemon whose probe reports no list is a
+	// failure in words, never a fence that silently did not run.
+	const unlisted = await run({ vendorAgentPorts: [2280], pathSockets: "no list" });
+	assert.equal(statuses(unlisted)[ID], "fail");
+	assert.match(reasons(unlisted)[ID], /no list of the path unix sockets/);
 });
 
 test("it is skipped in words where nothing is declared (Docker), and fails Core for a child daemon that declares nothing", async () => {
