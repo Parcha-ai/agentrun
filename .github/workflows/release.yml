@@ -57,8 +57,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
-      # verify:packages stops the release without them.
-      - uses: actions/setup-go@v5
+      # verify:packages stops the release without them. Pinned by commit: this job holds the npm OIDC token.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: packages/computer/daemon/go.mod
           cache: false
