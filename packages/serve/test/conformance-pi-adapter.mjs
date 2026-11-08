@@ -12,6 +12,13 @@ export const MODEL = "claude-sonnet-4-5";
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join(""));
 
+/** The text of the newest tool result a request carries (a denied call's refusal among them), its text blocks joined. */
+function lastResultOf(body) {
+  const results = (body.messages ?? []).flatMap((message) => (Array.isArray(message.content) ? message.content : [])).filter((part) => part.type === "tool_result");
+  const content = results.at(-1)?.content;
+  return typeof content === "string" ? content : (content ?? []).map((part) => (part.type === "text" ? part.text : "")).join("");
+}
+
 /** A fetch that answers Anthropic's Messages API as `script` says, one step per request. Records every request body. */
 export function scriptedOrigin(script, requests = []) {
   return async (_url, init = {}) => {
@@ -39,7 +46,7 @@ export function scriptedOrigin(script, requests = []) {
     // The newest person message with text (a steer, once one was placed), not a tool result.
     const hasText = (message) => typeof message.content === "string" || (Array.isArray(message.content) && message.content.some((part) => part.type === "text"));
     const lastPerson = [...(body.messages ?? [])].reverse().find((message) => message.role === "user" && hasText(message));
-    const text = next === undefined ? "" : "say" in next ? next.say : textOf(lastPerson);
+    const text = next === undefined ? "" : "say" in next ? next.say : "sayLastResult" in next ? lastResultOf(body) : textOf(lastPerson);
     return sse([
       start,
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
