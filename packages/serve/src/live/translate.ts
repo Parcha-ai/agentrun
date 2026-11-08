@@ -150,11 +150,12 @@ export function translate(state: LiveState, commit: JournalCommit): LiveEvent[] 
   };
   const toolCallId = (task: Task) => String((task.input as { callId?: unknown } | undefined)?.callId ?? "");
 
-  // Calls running now: pi's tool tasks that run (their intent stored).
+  // Calls running now: pi's tool tasks whose intent this commit stored (the execute checkpoint pi writes before it runs
+  // the tool). A task merely started is not a call that runs: the gate may still block it, and it never runs.
   for (const task of tasks) {
     if (task.kind !== PI_TOOL) continue;
-    const status = (task.state as { status?: string }).status;
-    if (status === "running") startCall(toolCallId(task));
+    const taskState = task.state as { status?: string; checkpoint?: { phase?: string } };
+    if (taskState.status === "running" && taskState.checkpoint?.phase === "execute") startCall(toolCallId(task));
   }
 
   // Entries in order, each call's end before the message that carries its result.
