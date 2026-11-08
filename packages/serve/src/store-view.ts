@@ -158,9 +158,11 @@ function learningViewOf(learningEnd: Awaited<ReturnType<typeof runLearningEnd>>,
  *  one. A terminal run holds no request in flight, so its overshoot bound is 0. */
 function costOfView(run: StoreRun): Record<string, unknown> {
   const imported = Boolean(run.row.importedFrom);
-  // The run's stored cost is read from the row's own column (number or null), never readRun's view (which drops a null):
-  // an ended run the store kept no cost for reads cost null, not 0, exactly as the file path did (run.costUsd = row.costUsd ?? null).
-  const stored = run.runRow.costUsd;
+  // The stored cost the view folds with the rows' usage: an ended run's is its row's column (number or null, so a run the
+  // store kept no cost for reads null, not 0, as the file path's run.costUsd = row.costUsd ?? null did). A run still going has
+  // no stored cost (its column is written only at the end), so it reads undefined, which costView turns into 0 before any
+  // request — never null.
+  const stored = run.row.state === "running" ? undefined : run.runRow.costUsd;
   const usd = imported ? (stored ?? null) : costView(run.rows, stored, undefined);
   const soFar = usd === null && !imported ? soFarOf(run.rows) : undefined;
   const cap = run.launch?.maxCostUsd;

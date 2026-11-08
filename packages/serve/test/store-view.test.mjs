@@ -95,6 +95,26 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
   assert.equal(moment.live, false);
 });
 
+test("a queued run (created, not yet claimed) reads queued and working, its cost 0", async (t) => {
+  const { store } = await storeOn(t);
+  await agent(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "Hi" }, title: "Queued run", place: { mode: "runner" } } });
+
+  const view = await viewOverStore(store, "run-1", deps);
+  assert.deepEqual(view, {
+    run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", sha: null,
+    status: "queued", state: "working", title: "Queued run", place: { mode: "runner" },
+    created_at: iso(T0), updated_at: iso(T0), ended_at: null,
+    result: null, error: null, review: null, pending: null,
+    cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null },
+    cap_mode: null, archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: null,
+  });
+  const moment = await momentOverStore(store, "run-1");
+  assert.equal(moment.terminal, false);
+  assert.equal(moment.working, true);
+  assert.equal(moment.live, false);
+});
+
 test("a failed run's view serves its error from the row, with an unknown cost", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
