@@ -86,8 +86,14 @@ describe("applying a template", () => {
       expect(t.tick(tool), tool).toBeTruthy();
       expect(t.tick(tool)!.checked, tool).toBe(false);
     }
-    expect(t.host.querySelector('[data-tool="mcp:github/get_pull_request"]')!.textContent).toContain("The agent may call this without asking you.");
-    expect(t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent).not.toContain("without asking you");
+    // A tick is always an allow: the server stores every granted tool as permission allow. Each row says so, and says
+    // apart what the template asks for; nothing promises an approval before each call.
+    const reads = t.host.querySelector('[data-tool="mcp:github/get_pull_request"]')!.textContent ?? "";
+    const writes = t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent ?? "";
+    for (const row of [reads, writes]) expect(row).toContain("Allow: the agent may call this without asking you.");
+    expect(reads).toContain("The template asks you to allow this.");
+    expect(writes).toContain("The template does not ask for this; unticked, it stays at your setting.");
+    expect(t.host.textContent).not.toContain("asks you before each call");
     // The MCP server, set up here or not, and the secrets by name only.
     expect(t.host.querySelector('[data-mcp="github"]')!.textContent).toContain("Set up here");
     expect(t.host.querySelector('[data-secret="PARALLEL_API_KEY"]')!.textContent).toContain("PARALLEL_API_KEY");
