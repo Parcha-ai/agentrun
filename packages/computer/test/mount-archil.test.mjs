@@ -177,6 +177,28 @@ test("archilMount: each step's failure stops the next, in words that never hold 
 	}
 });
 
+test("archilMount: a failure's words hold the token in no form: not as written, base64, base64url, URL-encoded or hex, nor any 8 characters of it", async () => {
+	// Review (#1994, P2-4): only the exact token was cut, so a helper or client that echoed it in another form leaked it.
+	const token = "tok+archil/scrub=0123456789abcdefXYZ~.";
+	const forms = {
+		written: token,
+		base64: Buffer.from(token).toString("base64"),
+		base64url: Buffer.from(token).toString("base64url"),
+		urlEncoded: encodeURIComponent(token),
+		hex: Buffer.from(token).toString("hex"),
+		chunk: token.slice(5, 17),
+	};
+	for (const [form, shown] of Object.entries(forms)) {
+		const root = fakeRoot({ mount: { exitCode: 1, output: `archil: refused the token ${shown} for this disk` } });
+		const result = await archilMount({ root, mount: { ...MOUNT, token }, releaseOlder: released(), timeoutMs: 1000 });
+		assert.equal(result.ok, false, form);
+		const words = result.error.message;
+		assert.match(words, /refused the token .* for this disk/, `${form}: the rest of the words stay`);
+		for (const [other, value] of Object.entries(forms)) assert.ok(!words.includes(value), `${form}: the words hold the token ${other}: ${words}`);
+		for (let at = 0; at + 8 <= token.length; at++) assert.ok(!words.includes(token.slice(at, at + 8)), `${form}: the words hold 8 characters of the token at ${at}: ${words}`);
+	}
+});
+
 /** A computerd client that answers every call, mount.sync with `syncs` in order (default exit 0), and records each. */
 function fakeClient({ syncs = [], answer = () => ok({}), syncDelay = 0 } = {}) {
 	const calls = [];
