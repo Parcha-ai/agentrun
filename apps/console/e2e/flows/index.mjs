@@ -13,6 +13,7 @@
 //   pending                                                  what the flow waits on; it doesn't run until then
 import setupOpen from "./setup-open.mjs";
 import signIn from "./sign-in.mjs";
+import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import templateApply from "./template-apply.mjs";
@@ -27,4 +28,5 @@ export const flows = [
   runToEnd,
   watchLive,
   takeOver,
+  signedOutElsewhere,
 ];
