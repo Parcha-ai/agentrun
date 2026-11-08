@@ -6,8 +6,9 @@
 // conflict, never written over. A folder with no main yet is made in the same call (the script's init first).
 import { isHeld, held } from "./skills.js";
 import { buildIndex, INDEX_FILE, INDEX_LINES, type LearnedNote, mergedNote, NOTE_FILE, parseNoteFile, supersede } from "./notes.js";
-import { mergeProblems, type Problem } from "./check.js";
-import { FolderRefused, type FolderChange, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, topOf, writeLearning } from "./folder.js";
+import { mergeProblems, type Problem, supersededBy } from "./check.js";
+import type { IndexEntry, NoteText } from "./grade.js";
+import { FolderRefused, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, topOf, writeLearning } from "./folder.js";
 import type { Workspace } from "../workspace/index.js";
 
 export type LearningChange =
@@ -21,7 +22,8 @@ export type LearningChange =
       files: { path: string; text: string }[];
       /** Paths written with `status: pending` (waiting for the owner's OK). */
       held?: string[];
-      /** Active notes this merge marks superseded, and by which new note. */
+      /** Active notes this merge marks superseded, and by which new note. Absent: what the new notes' own front matter
+       *  supersedes (a held note supersedes nothing until it is approved), as the merge always marked them. */
       supersede?: { path: string; by: string }[];
       /** Path to the blob the grader read; one that is another blob on main now is a conflict. */
       graded: Record<string, string>;
@@ -107,11 +109,24 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
   const conflicts = Object.entries(change.graded).filter(([path, oid]) => blobOf(snapshot, path) !== oid).map(([path]): Problem => ({ rule: "supersedes", path, detail: `${path} changed after the grade read it` }));
   if (conflicts.length) return { result: { ok: false, reason: "conflict", problems: conflicts } };
   const held = new Set(change.held ?? []);
-  const files = new Map(change.files.map(({ path, text }) => [path, held.has(path) ? heldText(path, text) : text]));
+  // Each new note as main keeps it (mergedNote): its own origin, `status: pending` when held, the run's risky mark gone.
+  // A skill's SKILL.md or a draft's README.md held: `status: pending` last in its front matter.
+  const files = new Map(change.files.map(({ path, text }) => {
+    if (isNote(path) && blobOf(snapshot, path) === undefined) {
+      const note = parseNoteFile(path, text);
+      return [path, Array.isArray(note) ? text : mergedNote(text, { origin: note.origin, pending: held.has(path) })];
+    }
+    return [path, held.has(path) ? heldText(path, text) : text];
+  }));
   const notes = snapshotNotes(snapshot);
   const active = new Set(notes.filter((note) => note.status === "active").map((note) => note.file));
   const refused: Problem[] = [];
-  for (const { path, by } of change.supersede ?? []) {
+  const fresh = [...files].filter(([path]) => isNote(path) && blobOf(snapshot, path) === undefined).flatMap(([path, text]) => {
+    const note = parseNoteFile(path, text);
+    return Array.isArray(note) ? [] : [note];
+  });
+  const marks = change.supersede ?? [...supersededBy(fresh)].map(([path, by]) => ({ path, by }));
+  for (const { path, by } of marks) {
     if (!active.has(path)) refused.push({ rule: "supersedes", path: by, detail: `it supersedes ${path}, which is not an active note` });
     else files.set(path, supersede(await body(path, blobOf(snapshot, path)!), by));
   }
@@ -127,11 +142,11 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
     written.push(note);
     // A merge adds notes and marks the ones they supersede: it never writes over another note main holds.
     if (blobOf(snapshot, path) === undefined) added.push(note);
-    else if (!(change.supersede ?? []).some((one) => one.path === path)) refused.push({ rule: "exists", path, detail: "the folder has a note by this name" });
+    else if (!marks.some((one) => one.path === path)) refused.push({ rule: "exists", path, detail: "the folder has a note by this name" });
   }
-  // mergeProblems asks of the new notes what a merge always asks: a free name, what they supersede active, the index's
-  // lines. The marks this merge makes are its own (`supersede`), so a new note's own supersedes are not asked again.
-  refused.push(...mergeProblems({ files: topOf(snapshot), active: notes.filter((note) => note.status === "active") }, added.map((note) => ({ ...note, supersedes: [] }))));
+  // mergeProblems asks of the new notes what a merge always asks: a free name, what they supersede active and named
+  // once, the index's lines.
+  if (!refused.length) refused.push(...mergeProblems({ files: topOf(snapshot), active: notes.filter((note) => note.status === "active") }, added));
   if (refused.length) return { result: { ok: false, reason: "refused", problems: refused } };
   const marked = new Set(written.map((note) => note.file));
   files.set(INDEX_FILE, buildIndex([...notes.filter((note) => !marked.has(note.file)), ...written]));
@@ -159,4 +174,24 @@ async function personOf(change: Extract<LearningChange, { kind: "person" }>, sna
     result: { pending: true },
     change: { by: { person: change.action, file: change.file, approved: change.via === "console" }, writes: [...writes, { path: INDEX_FILE, text: buildIndex(after) }], ...(change.action === "created" ? { absent: [change.file] } : {}) },
   };
+}
+
+/** Main as the grader reads it (the runner's learning loop `readMain`, grade.ts readForGrade): every active note's index
+ *  line, the whole text of each note the proposal supersedes, and the blob each of those was read at (`graded`, which
+ *  the merge checks); or `problems` when the proposal cannot join main as it is (learn/check.ts mergeProblems). From
+ *  the folder's snapshot and its bodies: no git, no exec. */
+export async function readMain(ws: Workspace, proposal: { readonly notes: readonly NoteText[] }): Promise<{ active: IndexEntry[]; superseded: NoteText[]; graded: Record<string, string> } | { problems: Problem[] }> {
+  const added = proposal.notes.map(({ file, text }) => parseNoteFile(file, text));
+  const bad = proposal.notes.filter((_, i) => Array.isArray(added[i])).map(({ file }): Problem => ({ rule: "note", path: file, detail: "the proposal's note is out of shape" }));
+  if (bad.length) return { problems: bad };
+  const notes = added as LearnedNote[];
+  return readLearning(ws, async ({ snapshot, body }) => {
+    const main = snapshotNotes(snapshot);
+    const problems = mergeProblems({ files: topOf(snapshot), active: main.filter((note) => note.status === "active") }, notes);
+    if (problems.length) return { problems };
+    const oids = new Map((snapshot?.notes ?? []).map((note) => [note.file, note.oid]));
+    // mergeProblems passed: each note superseded is active on main, and named once.
+    const superseded = await Promise.all(notes.flatMap((note) => note.supersedes).map(async (file) => ({ file, text: await body(file, oids.get(file)!) })));
+    return { active: main.filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description })), superseded, graded: Object.fromEntries(superseded.map(({ file }) => [file, oids.get(file)!])) };
+  });
 }

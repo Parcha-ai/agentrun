@@ -23,7 +23,8 @@
 // learning-run.ts calls readForGrade, judgeProposal and mergeProposal here, in the server; they move whole.
 // The merge runs in the agent's queue; the grader never does, so no run's seed waits on a model.
 import { buildIndex, gradedItems, held, INDEX_FILE, type IndexEntry, type LearnedNote, learnedPlace, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
-import { FolderRefused, readLearning, readRunDiff, type Snapshot, snapshotNotes, topOf, writeLearning } from "./learn/folder.js";
+import { FolderRefused, readRunDiff, type Snapshot, snapshotNotes, topOf, writeLearning } from "./learn/folder.js";
+import { readMain } from "./learn/commit.js";
 import { harnessOf } from "./harness-table.js";
 import { type Provider, providerFor } from "./provider.js";
 import { learningWorkspace, NO_TOKENS, type Proposal, type Tokens, withAgentRepo } from "./learning.js";
@@ -66,17 +67,7 @@ export function readForGrade(data: string, agentId: string, runId: string, propo
     const ws = (await learningWorkspace(data, agentId, { make: true }))!;
     const merged = await readRunDiff(ws, runId);
     if (merged) return { merged: merged.merge };
-    return readLearning(ws, async ({ snapshot, body }) => {
-      const main = mainOf(snapshot);
-      const added = proposedOf(proposal);
-      const problems = problemsOf(main, added);
-      if (problems.length) return { problems };
-      const active = main.notes.filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description }));
-      // mergeProblems passed: each note superseded is active on main, and named once.
-      const oids = new Map(main.notes.map((note) => [note.file, note.oid]));
-      const superseded = await Promise.all(added.flatMap((note) => note.supersedes).map(async (file) => ({ file, text: await body(file, oids.get(file)!) })));
-      return { active, superseded, graded: Object.fromEntries(superseded.map(({ file }) => [file, oids.get(file)!])) };
-    });
+    return readMain(ws, proposal);
   });
 }
 
