@@ -542,7 +542,7 @@ key.
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
   package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
   port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
-  pids and a bounded log. Its argv holds the list, the computer's deadline (it ends itself then), this machine's own
+  pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list, the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
   `EGRESS_IMAGE` is the one place its digest is written. Docker pulls it at the first allow computer when the host
   lacks it, so a host with no registry access pulls it ahead, reading the name from this package:
@@ -564,7 +564,9 @@ key.
   `/proc/self/cgroup`), or its docker CLI talks to a daemon that is not a local unix socket (`docker context inspect`,
   which resolves the context and `DOCKER_HOST` as the CLI does), an allowlist is refused in words before anything is
   made, and `check` says so once it knows, unless `egress.hostAddresses` names the host's addresses (IP addresses),
-  which then go to the proxy beside this machine's own. A plain local host is as before.
+  which then go to the proxy beside this machine's own. A plain local host is as before. An address that is not on any
+  interface is never seen: a cloud machine's NAT'd or elastic public IP, or one the host gains after create (they are
+  read once, at create). Put those in `egress.hostAddresses` too.
 - **What the proxy refuses**, each before any socket opens: a name off the list, before any lookup, so it never
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
@@ -573,13 +575,18 @@ key.
   resolved once, every answer is checked, and the checked address is the one dialled, so rebinding a name between the
   check and the dial reaches nothing new; a redirect reaches the client as sent and is never followed. A log line holds
   the host, port, address and class, never a path, query or header. A refusal reads `403 <host> is not on this box's
-  network list: <hint>`, the words serve's model sees today.
+  network list: <hint>`, the words serve's model sees today. The proxy does not open TLS, so a CONNECT to a listed CDN
+  name can carry an SNI for any other tenant of that CDN (domain fronting); listing a CDN's shared name lists every site
+  behind it. That is inherent to a CONNECT proxy, and the same as serve.
 - **Lifetime.** `create` makes the volume, starts the proxy and waits for its ready line (`egress.readyMs`, 10 s), then
   runs the computer. A proxy that ends first, or is not ready in time, fails create in its own words; the proxy and the
   volume are removed, and the computer is never run. `release` removes the proxy and the volume after the computer, each
   found by the label `agentrun.computer.egress=<computer>`, never by name alone, so the janitor's sweep and
-  `releaseOlder` remove them too. A computer removed outside the provider leaves its proxy, which stops forwarding at the
-  deadline, and `release(ref)` still clears it.
+  `releaseOlder` remove them too. Parts left with no computer (one removed by hand, or a provider that died between its
+  proxy and its computer) the sweep removes too (`sweepLeftovers`): a proxy or volume with the egress label, and the
+  sweep's labels, whose deadline label has passed, or whose computer is gone and that is older than a create could
+  take (its ready wait and two minutes), removed by what the label found. The volume carries the computer's deadline
+  and the spec's labels for this. Until then the proxy stops forwarding at its deadline.
 - **Read-back.** `network`, `list` and `attach` read the allowlist from Docker: network mode none, the egress volume
   read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private

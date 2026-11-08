@@ -144,10 +144,14 @@ export function containerSigns(root = "/"): string | undefined {
 	return line === undefined ? undefined : `/proc/self/cgroup names a container's cgroup (${line.slice(0, 120)})`;
 }
 
-/** `docker volume create` of a computer's volume: tmpfs, so nothing of it outlives the daemon, and its user's alone. */
-export function egressVolumeArgs(name: string, user: string): string[] {
+/** `docker volume create` of a computer's volume: tmpfs, so nothing of it outlives the daemon, and its user's alone. It
+ *  carries the computer's name, its deadline and the spec's labels, so the janitor finds it when the computer is gone. */
+export function egressVolumeArgs(name: string, user: string, deadline: string, labels: Record<string, string> = {}): string[] {
 	const [uid, gid] = user.split(":");
-	return ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`, "--label", `${EGRESS_LABEL}=${name}`, egressNameOf(name)];
+	const args = ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`];
+	args.push("--label", `${EGRESS_LABEL}=${name}`, "--label", `${DEADLINE_LABEL}=${deadline}`);
+	for (const [key, value] of Object.entries(labels)) args.push("--label", `${key}=${value}`);
+	return [...args, egressNameOf(name)];
 }
 
 export interface EgressRun {
@@ -164,9 +168,13 @@ export interface EgressRun {
 }
 
 /** The proxy container's bounds, as create sets them and the read-back holds it to: memory (swap the same), processes,
- *  and a bounded json-file log. */
+ *  half a CPU (a quota of each 100 ms, as a computer's cpus are; fixed, not the computer's own, since one proxy's work
+ *  is its connections, not the computer's size), at most 1024 open files, and a bounded json-file log. */
 const PROXY_MEMORY_MB = 256;
 const PROXY_PIDS = 64;
+const PROXY_CPU_PERIOD_US = 100_000;
+const PROXY_CPU_QUOTA_US = 50_000;
+const PROXY_NOFILE = 1024;
 const PROXY_LOG = { driver: "json-file", options: { "max-size": "1m", "max-file": "2" } } as const;
 
 /** `docker run` of a computer's proxy container (see the head of this file). Pinned by a golden test. */
@@ -176,7 +184,9 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	for (const [key, value] of Object.entries(labels)) args.push("--label", `${key}=${value}`);
 	args.push("--user", user, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private");
 	const memory = `${PROXY_MEMORY_MB}m`;
-	args.push("--pids-limit", String(PROXY_PIDS), "--memory", memory, "--memory-swap", memory, "--log-driver", PROXY_LOG.driver);
+	args.push("--pids-limit", String(PROXY_PIDS), "--memory", memory, "--memory-swap", memory);
+	args.push("--cpu-period", String(PROXY_CPU_PERIOD_US), "--cpu-quota", String(PROXY_CPU_QUOTA_US), "--ulimit", `nofile=${PROXY_NOFILE}:${PROXY_NOFILE}`);
+	args.push("--log-driver", PROXY_LOG.driver);
 	for (const [key, value] of Object.entries(PROXY_LOG.options)) args.push("--log-opt", `${key}=${value}`);
 	args.push("--network", "bridge");
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
@@ -232,6 +242,14 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (host.PidsLimit !== PROXY_PIDS) return other(`has pids limit ${show(host.PidsLimit)}, not ${PROXY_PIDS}`);
 	if (host.IpcMode !== "private") return other(`has IPC mode ${show(host.IpcMode)}, not "private"`);
 	if (host.CgroupnsMode !== "private") return other(`has cgroup namespace ${show(host.CgroupnsMode)}, not "private"`);
+	if (host.CpuPeriod !== PROXY_CPU_PERIOD_US || host.CpuQuota !== PROXY_CPU_QUOTA_US) {
+		return other(`has CPU quota ${show(host.CpuQuota)} of ${show(host.CpuPeriod)}, not ${PROXY_CPU_QUOTA_US} of ${PROXY_CPU_PERIOD_US}`);
+	}
+	const ulimits = host.Ulimits;
+	const [nofile] = Array.isArray(ulimits) ? (ulimits as Array<Record<string, unknown>>) : [];
+	if (!Array.isArray(ulimits) || ulimits.length !== 1 || nofile?.Name !== "nofile" || nofile.Soft !== PROXY_NOFILE || nofile.Hard !== PROXY_NOFILE) {
+		return other(`has the open-file limit ${show(ulimits)}, not nofile ${PROXY_NOFILE}:${PROXY_NOFILE}`);
+	}
 	const log = (host.LogConfig ?? {}) as { Type?: unknown; Config?: Record<string, unknown> | null };
 	const logOptions = log.Config ?? {};
 	const wanted = Object.entries(PROXY_LOG.options);

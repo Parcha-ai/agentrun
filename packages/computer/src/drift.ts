@@ -152,7 +152,7 @@ export interface DriftExpected extends HelloExpected {
 	egressCode?: EgressCode;
 }
 
-const show =(value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
+const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));
 const text = (value: unknown) => (typeof value === "string" ? value : show(value));
 const sameList = (a: unknown, b: string[]) => Array.isArray(a) && a.length === b.length && a.every((item, i) => item === b[i]);
 /** Docker's default for a field it reports: nothing, an empty string, list or map, zero or false. A map with any key,

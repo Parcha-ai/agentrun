@@ -442,7 +442,7 @@ export class DockerProvider implements ComputerProvider {
 	 */
 	async #startEgress(name: string, user: string, deadline: string, allow: string[], labels: Record<string, string>, signal?: AbortSignal): Promise<Result<void>> {
 		const proxy = egressNameOf(name);
-		const volume = await this.#run(egressVolumeArgs(name, user), signal);
+		const volume = await this.#run(egressVolumeArgs(name, user, deadline, labels), signal);
 		if (!volume.ok) return volume;
 		if (volume.value.exitCode !== 0) return fail("docker", `docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
 		const { image, hint, readyMs } = this.#egress;
@@ -716,6 +716,78 @@ export class DockerProvider implements ComputerProvider {
 			infos.push(...computers.map((report) => infoOf(report, egressShaped(report) ? (proxies.get(egressNameOf(nameOf(report))) ?? null) : undefined, this.#code)));
 		}
 		return ok(infos);
+	}
+
+	/**
+	 * The janitor's second pass (sweep calls it after the computers): every egress proxy container and egress volume
+	 * labelled EGRESS_LABEL, and with all of `labels`, whose deadline label has passed (or is missing or unreadable, fail
+	 * closed), or whose computer is gone and that is older than a create could take (#leftoverGraceMs: one under way has
+	 * made its proxy before its computer). Each is removed by what its label found, a proxy before its volume, never by a
+	 * name alone. Returns the names removed, a volume's as "<name> (volume)".
+	 */
+	async sweepLeftovers({ labels = {}, now = new Date(), signal }: { labels?: Record<string, string>; now?: Date; signal?: AbortSignal } = {}): Promise<Result<string[]>> {
+		const problem = filterProblem(labels);
+		if (problem) return fail("invalid", problem);
+		const filters = [`label=${EGRESS_LABEL}`, ...Object.entries(labels).map(([key, value]) => `label=${key}=${value}`)].flatMap((filter) => ["--filter", filter]);
+		const lines = (stdout: string) => stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+		const alive = await this.#run(["ps", "-a", "--no-trunc", "--filter", `label=${COMPUTER_LABEL}=1`, "--format", "{{.Names}}"], signal);
+		if (!alive.ok) return alive;
+		if (alive.value.exitCode !== 0) return fail("docker", `docker ps failed: ${alive.value.stderr.trim()}`);
+		const computers = new Set(lines(alive.value.stdout).filter((name) => NAME.test(name)));
+		const at = now.getTime();
+		const grace = this.#leftoverGraceMs();
+		const leftover = (labelsOf: Record<string, string> | null | undefined, created: unknown) => {
+			const owner = labelsOf?.[EGRESS_LABEL];
+			const deadline = Date.parse(labelsOf?.[DEADLINE_LABEL] ?? "");
+			if (typeof owner !== "string" || !NAME.test(owner)) return false;
+			if (Number.isNaN(deadline) || deadline <= at) return true;
+			if (computers.has(owner)) return false;
+			const made = typeof created === "string" ? Date.parse(created) : Number.NaN;
+			return Number.isNaN(made) || at - made > grace;
+		};
+		const removed: string[] = [];
+		const ps = await this.#run(["ps", "-a", "--no-trunc", ...filters, "--format", "{{.ID}}"], signal);
+		if (!ps.ok) return ps;
+		if (ps.value.exitCode !== 0) return fail("docker", `docker ps for egress proxies failed: ${ps.value.stderr.trim()}`);
+		const ids = lines(ps.value.stdout);
+		for (let from = 0; from < ids.length; from += INSPECT_BATCH) {
+			const found = await this.#inspect(ids.slice(from, from + INSPECT_BATCH), signal);
+			if (!found.ok) return found;
+			for (const proxy of found.value) {
+				if (!leftover(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created) || typeof proxy.Id !== "string") continue;
+				const ran = await this.#run(["rm", "--force", proxy.Id], signal);
+				if (!ran.ok) return ran;
+				if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return fail("docker", `docker rm of the egress proxy ${nameOf(proxy)} failed: ${ran.value.stderr.trim()}`);
+				removed.push(nameOf(proxy));
+			}
+		}
+		const ls = await this.#run(["volume", "ls", ...filters, "--format", "{{.Name}}"], signal);
+		if (!ls.ok) return ls;
+		if (ls.value.exitCode !== 0) return fail("docker", `docker volume ls for egress volumes failed: ${ls.value.stderr.trim()}`);
+		const names = lines(ls.value.stdout);
+		for (let from = 0; from < names.length; from += INSPECT_BATCH) {
+			const read = await this.#run(["volume", "inspect", "--format", "{{json .}}", ...names.slice(from, from + INSPECT_BATCH)], signal);
+			if (!read.ok) return read;
+			for (const line of lines(read.value.stdout)) {
+				let volume: { Name?: unknown; Labels?: Record<string, string> | null; CreatedAt?: unknown };
+				try {
+					volume = JSON.parse(line);
+				} catch {
+					return fail("docker", `docker volume inspect wrote a line that is not JSON: ${line.slice(0, 200)}`);
+				}
+				if (typeof volume.Name !== "string" || !leftover(volume.Labels, volume.CreatedAt)) continue;
+				const ran = await this.#run(["volume", "rm", "--force", volume.Name], signal);
+				if (!ran.ok) return ran;
+				if (ran.value.exitCode !== 0) return fail("docker", `docker volume rm ${volume.Name} failed: ${ran.value.stderr.trim()}`);
+				removed.push(`${volume.Name} (volume)`);
+			}
+		}
+		return ok(removed);
+	}
+
+	/** How long a proxy or volume with no computer may be a create under way: its ready wait, and two minutes more. */
+	#leftoverGraceMs(): number {
+		return Math.max(this.#egress.readyMs, EGRESS_READY_MS) + 120_000;
 	}
 
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
