@@ -1,3 +1,5 @@
+import type { Computer } from "./v2";
+
 /** Where an agent's runs execute (a definition's `place`, a run's `place`) and what this server offers
  *  (capabilities `places`). The server's words for a box it lacks (`reason`) are shown as it gives them. */
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: string };
@@ -7,6 +9,10 @@ export type BoxOffer = { id: string; available: boolean; reason?: string };
 export type Places = { modes: string[]; boxes: BoxOffer[]; defaultPlace?: Place };
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** The computer a place is, as the server keeps place as computer's view: the runner is the computer none, a sandbox box
+ *  is a sandbox on that box's provider. */
+export const computerOfPlace = (place: Place): Computer => (place.mode === "sandbox" ? { kind: "sandbox", provider: place.box } : { kind: "none" });
 
 /** A place as the server sent it, or undefined for none (the server's default) or a shape this console does not know. */
 export function placeOf(v: unknown): Place | undefined {

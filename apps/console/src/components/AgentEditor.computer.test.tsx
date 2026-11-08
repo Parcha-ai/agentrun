@@ -67,8 +67,8 @@ describe("AgentEditor, the Computer step", () => {
     expect(rail().some((text) => text.includes("Computer"))).toBe(false);
   });
 
-  // Pending: the kind cards (each kind the server lists, a kind it doesn't offer greyed with its why and a link to Settings →
-  // Computers), each kind's providers (ready, or why not) and "The loop gets …" all read capabilities.computers.kinds. That
+  // Pending: the kind cards (each kind the server lists, a kind it doesn't offer greyed with its why and a link to the
+  // Computers settings page), each kind's providers (ready, or why not) and "The loop gets …" all read capabilities.computers.kinds. That
   // read is not in the server's OpenAPI yet (it comes with GET /v2/computers in tl-places' server switch), so there is no
   // generated type to build it on.
   it.todo("shows each kind the server lists in capabilities.computers.kinds, a kind not offered greyed with the server's why");
