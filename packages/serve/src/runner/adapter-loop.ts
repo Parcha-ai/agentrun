@@ -20,7 +20,7 @@ import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTo
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type AskData, type EndData, KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
-import { approvalOf, CLOSE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { approvalOf, CLOSE_MS, STOP_SETTLE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { journalSessions } from "./sessions.js";
 import { sideEffect } from "./side-effects.js";
@@ -36,6 +36,9 @@ export interface AdapterRunSpec {
   readonly gate?: (call: ToolCall) => "allow" | "ask" | "deny";
   /** The host's check before each paid request (the spend cap). */
   readonly beforeRequest?: BeforeRequest;
+  /** How long a person's stop waits for the turn to settle before the run is failed in words (a tool call that ignores
+   *  its abort). Default STOP_SETTLE_MS. */
+  readonly stopSettleMs?: number;
 }
 
 /** What the loop lends the spec for one Session: the run's Harness (pi adds its turns to it). */
@@ -170,8 +173,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         if (end === "closed" || (stopReason && stopReason.kind !== "command")) return await interrupted(stopReason?.kind ?? "the Session closed");
         if (end === "stop" && stopReason?.kind === "command") {
-          await session!.interrupt().catch(() => {});
-          await harness.waitForIdle(context).catch(() => {});
+          // Bounded, the interrupt included: a tool call that ignores its abort keeps the turn from settling, and the claim
+          // is renewed meanwhile. Past the bound the run is failed in words, the stop row taken in that end's commit.
+          const settleMs = spec.stopSettleMs ?? STOP_SETTLE_MS;
+          const settling = (async () => {
+            await session!.interrupt().catch(() => {});
+            await harness!.waitForIdle(context).catch(() => {});
+            return true as const;
+          })();
+          let timer: NodeJS.Timeout | undefined;
+          const settled = await Promise.race([settling, new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), settleMs)))]);
+          clearTimeout(timer);
+          if (!settled) return await writeEnd(harness, root, gate, { state: "failed", summary: `stopped by a person, but the turn did not settle within ${settleMs / 1000} s: a tool call ignored its abort` }, [stopReason.commandId]);
           return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId]);
         }
         const outcome = await turn;
