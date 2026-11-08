@@ -1,78 +1,88 @@
-// The Archil run folder the mount cases use (src/conformance/archil.ts), against a fake S3-compatible endpoint: its
-// settings by name, all five or none; an endpoint that is not https on an Archil host of the region is refused before
-// the key goes anywhere; the folder's markers made, a file read and written by key, and the run's folder cleared.
+// The Archil run folder every remote provider's conformance module gives the mount cases (src/conformance/archil.ts):
+// a fresh agents/<agent>/runs/<run>/work on a disk, reached from outside through the disk's object API, from the
+// host's `disk` SDK or one given. Its settings are options, read from COMPUTER_ARCHIL_* by each module. No SDK is
+// loaded and nothing reaches Archil here: the object API and the SDK's constructor are fakes.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ARCHIL_ENV, archilFolder, archilSettingsFromEnv } from "../dist/conformance/archil.js";
-import { mountFor } from "../dist/conformance/daytona.js";
+import { fakeObjects } from "./fake-modal.mjs";
 
-const SETTINGS = { disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: "tok-conformance-0123456789abcdef", apiKey: "key-0123", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+const { ARCHIL_ENV, archilRunFolder, archilSettings } = await import("../dist/conformance/archil.js");
 
-function fakeS3() {
-	const objects = new Map();
-	const requests = [];
-	const fetch = async (input, init = {}) => {
-		const url = new URL(String(input));
-		const method = init.method ?? "GET";
-		requests.push({ method, url: url.href, auth: init.headers?.Authorization, redirect: init.redirect });
-		const [, disk, ...rest] = url.pathname.split("/").map(decodeURIComponent);
-		const key = rest.join("/");
-		if (disk !== SETTINGS.disk) return new Response(null, { status: 404 });
-		if (method === "GET" && url.searchParams.get("list-type") === "2") {
-			const prefix = url.searchParams.get("prefix");
-			const keys = [...objects.keys()].filter((k) => k.startsWith(prefix));
-			return new Response(`<ListBucketResult>${keys.map((k) => `<Contents><Key>${k}</Key></Contents>`).join("")}</ListBucketResult>`, { status: 200 });
-		}
-		if (method === "PUT") {
-			objects.set(key, new Uint8Array(await new Response(init.body).arrayBuffer()));
-			return new Response(null, { status: 200 });
-		}
-		if (method === "GET") return objects.has(key) ? new Response(objects.get(key), { status: 200 }) : new Response(null, { status: 404 });
-		if (method === "DELETE") {
-			objects.delete(key);
-			return new Response(null, { status: 204 });
-		}
-		return new Response(null, { status: 405 });
-	};
-	return { fetch, objects, requests };
-}
+const TOKEN = "tok-conformance-archil-0123456789abcdef";
+const KEY = "key-archil-account-0123456789abcdef";
+const DISK = "dsk-00000000000baf76";
+const REGION = "aws-us-east-1";
+const S3 = "https://s3.green.us-east-1.aws.prod.archil.com";
+const ENV = { COMPUTER_ARCHIL_DISK: DISK, COMPUTER_ARCHIL_REGION: REGION, COMPUTER_ARCHIL_TOKEN: TOKEN, COMPUTER_ARCHIL_API_KEY: KEY, COMPUTER_ARCHIL_S3_URL: S3 };
+const FOLDER = /^agents\/conformance\/runs\/[A-Za-z0-9][A-Za-z0-9_-]*\/work$/;
+const secretless = (value, what) => {
+	const text = JSON.stringify(value ?? null);
+	assert.ok(!text.includes(TOKEN) && !text.includes(KEY), `${what} holds a secret`);
+};
 
-test("the settings are COMPUTER_ARCHIL_*, all five or none", () => {
-	assert.deepEqual(Object.values(ARCHIL_ENV), ["COMPUTER_ARCHIL_DISK", "COMPUTER_ARCHIL_REGION", "COMPUTER_ARCHIL_TOKEN", "COMPUTER_ARCHIL_API_KEY", "COMPUTER_ARCHIL_S3_URL"]);
-	assert.equal(archilSettingsFromEnv({}), undefined);
-	const env = Object.fromEntries(Object.entries(ARCHIL_ENV).map(([field, name]) => [name, SETTINGS[field]]));
-	assert.deepEqual(archilSettingsFromEnv(env), SETTINGS);
-	assert.throws(() => archilSettingsFromEnv({ [ARCHIL_ENV.disk]: SETTINGS.disk }), /COMPUTER_ARCHIL_TOKEN/);
+test("ARCHIL_ENV names the settings a module reads for the Archil mount cases", () => {
+	assert.deepEqual(ARCHIL_ENV, {
+		archilDisk: "COMPUTER_ARCHIL_DISK",
+		archilRegion: "COMPUTER_ARCHIL_REGION",
+		archilToken: "COMPUTER_ARCHIL_TOKEN",
+		archilApiKey: "COMPUTER_ARCHIL_API_KEY",
+		archilS3Url: "COMPUTER_ARCHIL_S3_URL",
+	});
 });
 
-test("an endpoint that is not https on an Archil host of the region is refused before any request", async () => {
-	for (const s3Url of ["http://s3.green.us-east-1.aws.prod.archil.com", "https://s3.example.com", "https://s3.green.eu-west-1.aws.prod.archil.com"]) {
-		const s3 = fakeS3();
-		await assert.rejects(archilFolder({ ...SETTINGS, s3Url, fetch: s3.fetch }), /Archil host for region aws-us-east-1/);
-		assert.deepEqual(s3.requests, []);
+test("archilSettings: all of them or none; a partial set, or an S3 endpoint the key must not go to, is refused in words that hold no value", () => {
+	assert.equal(archilSettings({}), undefined, "no disk named: no Archil run folder");
+	assert.deepEqual(archilSettings(ENV), { disk: DISK, region: REGION, token: TOKEN, apiKey: KEY, s3BaseUrl: S3 });
+	assert.throws(
+		() => archilSettings({ COMPUTER_ARCHIL_DISK: DISK, COMPUTER_ARCHIL_TOKEN: TOKEN }),
+		(error) => /COMPUTER_ARCHIL_REGION/.test(error.message) && /COMPUTER_ARCHIL_API_KEY/.test(error.message) && !error.message.includes(TOKEN),
+	);
+	for (const s3 of ["http://s3.green.us-east-1.aws.prod.archil.com", "https://s3.example.com", "https://s3.green.eu-west-1.aws.prod.archil.com", "not a url"]) {
+		assert.throws(() => archilSettings({ ...ENV, COMPUTER_ARCHIL_S3_URL: s3 }), (error) => /COMPUTER_ARCHIL_S3_URL/.test(error.message) && !error.message.includes(KEY), s3);
 	}
+	assert.throws(() => archilSettings({ ...ENV, COMPUTER_ARCHIL_DISK: "dsk;rm" }), /COMPUTER_ARCHIL_DISK/);
+	assert.throws(() => archilSettings({ ...ENV, COMPUTER_ARCHIL_REGION: "us" }), /COMPUTER_ARCHIL_REGION/);
 });
 
-test("a folder: its markers made, files read and written by key with the account key, the run's folder cleared at close", async () => {
-	const s3 = fakeS3();
-	const folder = await archilFolder({ ...SETTINGS, fetch: s3.fetch });
-	assert.match(folder.mount.folder, /^agents\/conformance\/runs\/c[0-9a-f]{12}\/work$/);
-	assert.equal(folder.mount.folder, `agents/conformance/runs/${folder.run}/work`);
-	assert.deepEqual({ ...folder.mount, folder: "" }, { kind: "archil", disk: SETTINGS.disk, region: SETTINGS.region, folder: "", token: SETTINGS.token });
-	assert.ok(s3.objects.has(`${folder.mount.folder}/`), "the folder's marker");
+test("archilRunFolder over a given object API: a fresh folder of the helper's shape, read and written outside, a missing file undefined, close removes what the case touched", async () => {
+	const objects = fakeObjects();
+	const folder = await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects });
+	assert.deepEqual({ ...folder.mount, folder: undefined }, { kind: "archil", disk: DISK, region: REGION, folder: undefined, token: TOKEN });
+	assert.match(folder.mount.folder, FOLDER);
+	assert.notEqual((await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects })).mount.folder, folder.mount.folder, "a fresh folder each time");
+	assert.equal((await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects, agent: "a1", run: "r7" })).mount.folder, "agents/a1/runs/r7/work");
+	await folder.write("a.txt", Buffer.from("outside\n"));
+	assert.deepEqual(objects.calls.at(-1), ["putObject", `${folder.mount.folder}/a.txt`]);
+	assert.equal(Buffer.from(await folder.read("a.txt")).toString("utf8"), "outside\n");
 	assert.equal(await folder.read("missing.txt"), undefined);
-	await folder.write("a.txt", Buffer.from("hello"));
-	assert.equal(Buffer.from(await folder.read("a.txt")).toString(), "hello");
-	for (const request of s3.requests) {
-		assert.equal(request.auth, `Bearer ${SETTINGS.apiKey}`);
-		assert.equal(request.redirect, "error");
-		assert.ok(!request.url.includes(SETTINGS.token), "the mount token never goes to the file API");
-	}
+	await assert.rejects(folder.read("broken.txt"), /unreachable/, "any other failure is thrown");
+	await assert.rejects(folder.write("../escape.txt", Buffer.from("x")), /inside/);
+	await assert.rejects(folder.read("/etc/passwd"), /inside/);
 	await folder.close();
-	assert.deepEqual([...s3.objects.keys()].filter((key) => key.includes(folder.run)), []);
+	assert.equal(objects.objects.size, 0);
+	assert.ok(objects.calls.some(([name, key]) => name === "deleteObject" && key === `${folder.mount.folder}/missing.txt`), "what it read is removed too: the computer may have written it");
+	secretless(objects.calls, "the object API's calls");
+	await assert.rejects(archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, objects, run: "../x" }), /run/);
 });
 
-test("Daytona's conformance module gives an Archil folder when the settings are there, and none for a bind", async () => {
-	assert.equal(await mountFor("bind", { env: {} }), undefined);
-	assert.equal(await mountFor("archil", { env: {} }), undefined);
+test("archilRunFolder with no object API given: the SDK's Archil client, every setting passed explicitly, and the disk looked up once", async () => {
+	const made = [];
+	const objects = fakeObjects();
+	class Archil {
+		constructor(options) {
+			made.push({ options, got: [] });
+			this.disks = { get: async (id) => (made.at(-1).got.push(id), objects) };
+		}
+	}
+	const folder = await archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, apiKey: KEY, s3BaseUrl: S3, Archil });
+	assert.deepEqual(made, [{ options: { apiKey: KEY, region: REGION, s3BaseUrl: S3 }, got: [DISK] }]);
+	await folder.write("b.txt", Buffer.from("y"));
+	assert.deepEqual(objects.calls, [["putObject", `${folder.mount.folder}/b.txt`]]);
+	await assert.rejects(archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, Archil }), (error) => /apiKey/.test(error.message) && !error.message.includes(TOKEN));
+	const failing = class {
+		constructor() {
+			this.disks = { get: async () => Promise.reject(Object.assign(new Error(`401: bad key ${KEY}`), { status: 401 })) };
+		}
+	};
+	await assert.rejects(archilRunFolder({ disk: DISK, region: REGION, token: TOKEN, apiKey: KEY, s3BaseUrl: S3, Archil: failing }), (error) => /401/.test(error.message) && !error.message.includes(KEY));
 });

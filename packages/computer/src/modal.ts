@@ -19,7 +19,20 @@ import {
 	probeReportOf,
 	WORK,
 } from "./drift.js";
-import type { MountKind } from "./mount.js";
+import { releaseOlder } from "./janitor.js";
+import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
+import { checkMount, type MountKind, type MountReadBack, readBackOf, WORKSPACE } from "./mount.js";
+import {
+	ARCHIL_HELPER,
+	ARCHIL_TOOL_UID,
+	type ArchilMount,
+	type ArchilRoot,
+	archilMount,
+	archilReadBack,
+	archilRefusals,
+	archilRelease,
+	syncingClient,
+} from "./mount-archil.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -119,6 +132,8 @@ export interface ModalTimeouts {
 	releaseMs: number;
 	/** The first pause between two of those polls; the pauses double up to 5 s. */
 	releasePollMs: number;
+	/** Each root step of an Archil mount through exec (the preflight, netlock, mount or revoke, serve), and its checkin at release. */
+	mountMs: number;
 }
 
 export interface ModalProviderOptions {
@@ -163,8 +178,8 @@ export const ENV = {
 	serverUrl: "COMPUTER_MODAL_SERVER_URL",
 } as const;
 
-/** The mount kinds a Modal computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
-export const MOUNT: readonly MountKind[] = [];
+/** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
+export const MOUNT: readonly MountKind[] = ["archil"];
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
@@ -279,7 +294,24 @@ const CPU_REQUEST = 0.125;
 const MEMORY_REQUEST_MIB = 128;
 /** "1 core = 2 vCPUs" (guide/sandbox-resources): a spec's cpus are CPUs, Modal's cpu is physical cores. */
 const CPUS_PER_CORE = 2;
-const DEFAULT_TIMEOUTS: ModalTimeouts = { createMs: 600_000, callMs: 60_000, helloMs: 30_000, probeMs: 30_000, listMs: 120_000, uploadMs: 300_000, releaseMs: 120_000, releasePollMs: 500 };
+const DEFAULT_TIMEOUTS: ModalTimeouts = {
+	createMs: 600_000,
+	callMs: 60_000,
+	helloMs: 30_000,
+	probeMs: 30_000,
+	listMs: 120_000,
+	uploadMs: 300_000,
+	releaseMs: 120_000,
+	releasePollMs: 500,
+	mountMs: 120_000,
+};
+/** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
+const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
+/**
+ * What an Archil computer's entrypoint waits for, beside the daemon, before it becomes init: root makes it through exec
+ * once the run's folder is mounted, so no tool program runs before that. The daemon's directory is root's alone.
+ */
+export const ARCHIL_GATE = "/opt/agentrun/archil-mounted";
 /** The longest pause between two of release's polls. */
 const RELEASE_POLL_MAX_MS = 5_000;
 /** The daemon this package builds for Modal's architecture: images must be linux/amd64 (guide/existing-images). */
@@ -293,14 +325,21 @@ const LISTEN_RETRY_MS = 250;
  * The sandbox's command when the daemon is uploaded: wait, bounded, for the daemon to be moved into place executable,
  * then become it with exec, so init is the sandbox's main process and the sandbox ends when init does. POSIX sh and
  * tools in BusyBox and coreutils alike; `date +%s` bounds the wait however long a sleep takes, and in whole seconds it
- * ends after more than w seconds and less than w + 3.
+ * ends after more than w seconds and less than w + 3. An Archil computer's (`--gate <path>` before init's arguments)
+ * also waits for the gate, which root makes once the run's folder is mounted; a gate there before it starts (an image
+ * that holds one) is not this computer's, and goes first.
  */
 const ENTRYPOINT_SCRIPT = [
 	"# agentrun-computer: entrypoint",
 	"d=$1; w=$2; h=$3; shift 3",
+	'g=; if [ "${1-}" = --gate ]; then g=$2; shift 2; rm -f "$g"; fi',
 	"end=$(( $(date +%s) + $w ))",
-	'until [ -f "$d" ] && [ -x "$d" ]; do',
-	'\tif [ "$(date +%s)" -gt "$end" ]; then echo "agentrun-computer: the daemon did not arrive at $d within $w s, so this computer ends" >&2; exit 3; fi',
+	'until [ -f "$d" ] && [ -x "$d" ] && { [ -z "$g" ] || [ -f "$g" ]; }; do',
+	'\tif [ "$(date +%s)" -gt "$end" ]; then',
+	'\t\tif [ -f "$d" ] && [ -x "$d" ]; then echo "agentrun-computer: the Archil mount was not made within $w s ($g is not there), so this computer ends" >&2',
+	'\t\telse echo "agentrun-computer: the daemon did not arrive at $d within $w s, so this computer ends" >&2; fi',
+	"\t\texit 3",
+	"\tfi",
 	"\tsleep 0.2 2>/dev/null || sleep 1",
 	"done",
 	'export HOME="$h"',
@@ -351,8 +390,17 @@ const HOLD_SCRIPT = [
 ].join("\n");
 
 /**
+ * Init's arguments, after the daemon's path: the one place they are built, for the image route's command and the
+ * entrypoint alike. (The seam where init's own network namespace, `--own-network`, goes once computerd has it.)
+ */
+function initArgs({ deadline, user }: { deadline: string; user: string }): string[] {
+	return ["init", "--deadline", deadline, "--user", user];
+}
+
+/**
  * The commands the provider sends into a sandbox when it uploads the daemon, exactly: the sandbox's command
- * (entrypoint), the upload, and a connection's bridge (stdio). Exported so a test can run them where Modal would.
+ * (entrypoint, which also waits for `gate` when given: an Archil computer's), the upload, and a connection's bridge
+ * (stdio). Exported so a test can run them where Modal would.
  */
 export function modalCommands({
 	deadline = "",
@@ -361,9 +409,10 @@ export function modalCommands({
 	sha256 = "",
 	daemon = DAEMON_IN_COMPUTER,
 	home = WORK,
-}: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string } = {}) {
+	gate,
+}: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string; gate?: string } = {}) {
 	return {
-		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, "init", "--deadline", deadline, "--user", user],
+		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs({ deadline, user })],
 		upload: ["sh", "-c", UPLOAD_SCRIPT, "sh", daemon, sha256],
 		hold: ["sh", "-c", HOLD_SCRIPT, "sh", daemon],
 		stdio: [daemon, "stdio"],
@@ -376,7 +425,7 @@ export function modalCommands({
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
 const CLOSE_WAIT_MS = 5_000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount"]);
 const NUL = "a NUL byte cannot be passed to Modal";
 const ALLOWLIST =
 	"a Modal computer takes no allowlist yet: Modal's outbound CIDR allowlist (any protocol, every port) and its domain allowlist (beta: TLS on port 443 only, matched by SNI) cannot be read back, so an allowlist counts only once the live bypass cases pass (ruling 9); ask for network none or open";
@@ -394,6 +443,8 @@ interface Recorded {
 	memoryMb: number;
 	workdir: string;
 	runtime: "vm";
+	/** An Archil computer's mount as it reads back (readBackOf, under the claim's epoch): never the token. */
+	mount?: MountReadBack;
 }
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -585,6 +636,58 @@ function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
 	return { other: `the tag ${SPEC_TAG} names no network this provider makes` };
 }
 
+/** An Archil mount a spec tag records: its source, and what it must read back as, under the computer's epoch label. */
+interface RecordedArchil {
+	/** The source as recorded; none when the tag records a mount this provider never makes. */
+	mount?: Omit<ArchilMount, "token">;
+	/** The computer's agentrun.epoch label, when it reads as one. */
+	epoch?: number;
+	/** What the mount must read back as: readBackOf under the label's epoch, or a mount in words. */
+	expected: MountReadBack;
+}
+
+/** The Archil mount a computer's spec tag records, or undefined when it records none. */
+function recordedArchil(tags: Record<string, string>): RecordedArchil | undefined {
+	const recorded = recordedOf(tags);
+	if (typeof recorded === "string" || recorded.mount === undefined) return undefined;
+	const read = epochOf(tags);
+	const epoch = read.ok ? { epoch: read.value } : {};
+	const { kind, disk, region, folder, epoch: was } = (recorded.mount ?? {}) as Record<string, unknown>;
+	if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof folder !== "string") {
+		return { ...epoch, expected: { other: `the tag ${SPEC_TAG} records a mount this provider never makes` } };
+	}
+	const mount = { kind, disk, region, folder } as const;
+	if (read.ok && was !== read.value) {
+		return { mount, ...epoch, expected: { other: `the tag ${SPEC_TAG} records the mount under epoch ${show(was)}, yet the label ${EPOCH_LABEL} reads ${read.value}` } };
+	}
+	return { mount, ...epoch, expected: readBackOf({ ...mount, token: "" }, epoch.epoch) };
+}
+
+/** A mount read-back in words. */
+function mountWords(mount: MountReadBack): string {
+	if ("other" in mount) return mount.other;
+	if (mount.kind === "bind") return `a bind of ${mount.path}`;
+	return `archil ${mount.disk}:/${mount.folder} in ${mount.region}, ${mount.exclusive ? "exclusive" : "not exclusive"}, epoch ${mount.epoch}`;
+}
+
+/** How the mount read back from inside (undefined: nothing at /workspace) differs from the one expected. */
+function mountDrift(expected: MountReadBack, read: MountReadBack | undefined): string[] {
+	if ("other" in expected) return [`mount: ${expected.other}`];
+	if (read === undefined) return [`mount: declared ${mountWords(expected)}, yet nothing is mounted at ${WORKSPACE}`];
+	const same =
+		!("other" in read) &&
+		read.kind === expected.kind &&
+		(read.kind === "bind"
+			? expected.kind === "bind" && read.path === expected.path
+			: expected.kind === "archil" &&
+				read.disk === expected.disk &&
+				read.region === expected.region &&
+				read.folder === expected.folder &&
+				read.exclusive === expected.exclusive &&
+				read.epoch === expected.epoch);
+	return same ? [] : [`mount: declared ${mountWords(expected)}, read back ${mountWords(read)}`];
+}
+
 /** Every way the probe's report differs from what the computer should be. */
 function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
 	const found: string[] = [];
@@ -687,6 +790,7 @@ export class ModalProvider implements ComputerProvider {
 			// Never root: see ROOT.
 			user: ["uid"],
 			release: ["delete"],
+			mount: [...MOUNT],
 		};
 	}
 
@@ -700,7 +804,7 @@ export class ModalProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user } = given;
+		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
 			refuse("image", "an image is required: a registry tag for linux/amd64 that Modal can pull, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);
@@ -725,6 +829,11 @@ export class ModalProvider implements ComputerProvider {
 		}
 		if (isRootUser(user)) refuse("user", ROOT);
 		else if (user !== undefined && userOf(user) === undefined) refuse("user", `user must be ${USER_FORM}`);
+		refusals.push(...checkMount(mount, MOUNT), ...archilRefusals(given as unknown as ComputerSpec));
+		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil";
+		if (archil && user !== undefined && !isRootUser(user) && userOf(user) !== ARCHIL_USER) {
+			refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
+		}
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
 			if (field === "gpu") refuse(field, "this provider makes VM computers, and Modal offers GPUs on the gVisor runtime only");
@@ -751,11 +860,22 @@ export class ModalProvider implements ComputerProvider {
 		if (!app.ok) return app;
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
-		const user = userOf(spec.user) ?? this.#user;
+		// An Archil mount is made under the run's claim (check() held the spec to both labels), for the tool user alone.
+		const archil = spec.mount?.kind === "archil" ? { mount: spec.mount, run: spec.labels?.[RUN_LABEL] as string, epoch: claimEpoch(spec.labels) } : undefined;
+		const user = archil === undefined ? (userOf(spec.user) ?? this.#user) : ARCHIL_USER;
 		const workdir = spec.workdir ?? WORK;
 		const cpus = spec.cpus ?? DEFAULT_CPUS;
 		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
-		const recorded: Recorded = { image: spec.image, user, network: spec.network as "none" | "open", cpus, memoryMb, workdir, runtime: "vm" };
+		const recorded: Recorded = {
+			image: spec.image,
+			user,
+			network: spec.network as "none" | "open",
+			cpus,
+			memoryMb,
+			workdir,
+			runtime: "vm",
+			...(archil === undefined ? {} : { mount: readBackOf(archil.mount, archil.epoch) }),
+		};
 		const tags = { ...spec.labels, [COMPUTER_LABEL]: "1", [NAME_TAG]: name, [DEADLINE_LABEL]: deadline, [SPEC_TAG]: JSON.stringify(recorded) };
 		// With daemonImage the daemon comes in as a layer of the computer's own image, there before the command starts.
 		// Without, the command is the entrypoint, which waits for the upload below. Either way the computer needs no
@@ -766,10 +886,14 @@ export class ModalProvider implements ComputerProvider {
 			this.#daemonImage === undefined ? [] : [`COPY --from=${this.#daemonImage} /computerd ${DAEMON_IN_COMPUTER}`, `RUN ${JSON.stringify(modalCommands().hold)}`];
 		const image = this.#sdk.images.fromRegistry(spec.image).dockerfileCommands([...copy, `ENV HOME=${WORK}`, `WORKDIR ${workdir}`]);
 		const { uploadMs, callMs } = this.#timeouts;
+		// An Archil computer's command is always the entrypoint, which waits for the gate as well as the daemon: init, and
+		// so every tool, starts only once the run's folder is mounted.
+		const gate = archil === undefined ? undefined : ARCHIL_GATE;
+		const waitMs = uploadMs + callMs + (gate === undefined ? 0 : this.#archilMs());
 		const command =
-			daemon === undefined
-				? [DAEMON_IN_COMPUTER, "init", "--deadline", deadline, "--user", user]
-				: modalCommands({ deadline, user, waitSeconds: Math.ceil((uploadMs + callMs) / 1000), home: WORK }).entrypoint;
+			daemon === undefined && gate === undefined
+				? [DAEMON_IN_COMPUTER, ...initArgs({ deadline, user })]
+				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, ...(gate === undefined ? {} : { gate }) }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
 			runtime: "vm",
@@ -781,7 +905,9 @@ export class ModalProvider implements ComputerProvider {
 			cpuLimit,
 			memoryMiB: Math.min(MEMORY_REQUEST_MIB, memoryMb),
 			memoryLimitMiB: memoryMb,
-			...(spec.network === "none" ? { blockNetwork: true as const } : {}),
+			// An Archil computer's root reaches Archil, so Modal's network stays on: its tools' network none is init's own,
+			// read back by the probe from inside, as the tool user, like every network none here.
+			...(spec.network === "none" && archil === undefined ? { blockNetwork: true as const } : {}),
 			tags,
 		};
 		let creating: Promise<ModalSandbox>;
@@ -803,12 +929,21 @@ export class ModalProvider implements ComputerProvider {
 		const ref = { id: sandbox.sandboxId, name };
 		// From here the computer exists: every step takes the caller's signal, and an abort or a mismatch terminates it.
 		const uploaded = daemon === undefined ? ok(undefined) : await this.#upload(sandbox, name, daemon, signal);
-		const checked = uploaded.ok ? await this.#checkCreated(sandbox, ref, tags, recorded, signal) : uploaded;
+		// The run's folder, after the daemon is in place (serve runs it) and before init starts (the gate).
+		const root = this.#root(sandbox, name);
+		const mounted = uploaded.ok && archil !== undefined ? await this.#mountArchil(root, archil, signal) : uploaded;
+		const checked = mounted.ok ? await this.#checkCreated(sandbox, ref, tags, recorded, signal) : mounted;
+		// A folder mounted for a computer create gives up on is let go before the terminate, never signalled.
+		const letGo = async () => {
+			if (archil !== undefined && mounted.ok) await archilRelease({ root, client: undefined, timeoutMs: this.#timeouts.mountMs });
+		};
 		if (signal?.aborted) {
+			await letGo();
 			const after = await this.#terminate(sandbox, name, signal);
 			return fail("aborted", `create was aborted after Modal made the sandbox; the computer ${name} ${after}`);
 		}
 		if (checked.ok) return ok(checked.value.length > 0 ? { ...ref, notes: checked.value } : ref);
+		await letGo();
 		const after = await this.#terminate(sandbox, name, signal);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}`);
 	}
@@ -849,6 +984,75 @@ export class ModalProvider implements ComputerProvider {
 	}
 
 	/**
+	 * The longest an Archil computer's entrypoint waits for the gate after the upload: each root step (the preflight,
+	 * netlock, mount, a revoke, serve and the gate) within mountMs, and the takeover's listing and its releases.
+	 */
+	#archilMs(): number {
+		const { mountMs, listMs, releaseMs } = this.#timeouts;
+		return 6 * mountMs + listMs + 2 * releaseMs;
+	}
+
+	/**
+	 * The root channel into a sandbox: Modal's exec, which runs as root (Modal containers always do), outside computerd.
+	 * stdin, when given, is written as given and closed; otherwise stdin is closed at once. What the program printed is
+	 * both streams, stdout first. An error is the SDK's, in words that never hold what stdin was given.
+	 */
+	#root(sandbox: ModalSandbox, name: string): ArchilRoot {
+		return {
+			run: (argv, { stdin, timeoutMs, signal }) =>
+				call(
+					`root's ${argv[0] === ARCHIL_HELPER ? `agentrun-archil ${argv[1]}` : argv[0]} in ${name}`,
+					async () => {
+						const program = await sandbox.exec([...argv], { mode: "binary" });
+						const stdout = textOf(program.stdout);
+						const stderr = textOf(program.stderr);
+						try {
+							if (stdin !== undefined) await program.stdin.writeBytes(new Uint8Array(Buffer.from(stdin, "utf8")));
+						} finally {
+							await program.stdin.close().catch(() => {});
+						}
+						const exitCode = await program.wait();
+						return { exitCode, output: `${await stdout}${await stderr}` };
+					},
+					timeoutMs,
+					signal,
+				),
+		};
+	}
+
+	/** The shared Archil steps (archilMount) through root, with the takeover of this provider's lower epochs; then the gate. */
+	async #mountArchil(root: ArchilRoot, { mount, run, epoch }: { mount: ArchilMount; run: string; epoch: number }, signal?: AbortSignal): Promise<Result<void>> {
+		const { mountMs, callMs } = this.#timeouts;
+		const made = await archilMount({ root, mount, releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}), timeoutMs: mountMs, ...(signal ? { signal } : {}) });
+		if (!made.ok) return made;
+		const gate = await root.run(["touch", ARCHIL_GATE], { timeoutMs: callMs, ...(signal ? { signal } : {}) });
+		if (!gate.ok) return fail(gate.error.code, `the gate init waits for could not be made: ${gate.error.message}`);
+		if (gate.value.exitCode !== 0) return fail("refused", `the gate init waits for could not be made (exit ${gate.value.exitCode}): ${gate.value.output.trim().slice(0, 300)}`);
+		return ok(undefined);
+	}
+
+	/**
+	 * What is mounted at /workspace, read from inside through computerd (its /proc/self/mounts), exclusive when the
+	 * resident serve answers a sync; undefined when nothing is mounted there.
+	 */
+	async #readMount(connection: ComputerConnection, name: string, { mount, epoch }: Pick<RecordedArchil, "mount" | "epoch">, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
+		const bound = within(this.#timeouts.helloMs, signal);
+		try {
+			const table = await connection.client.call("files.read", { path: "/proc/self/mounts" }, { signal: bound.signal });
+			if (!table.ok) {
+				if (signal?.aborted) return fail("aborted", `reading the mount table in ${name} was aborted`);
+				return fail(table.error.code === "aborted" ? "timeout" : table.error.code, `reading the mount table in ${name}: ${table.error.message}`);
+			}
+			const synced = await connection.client.call("mount.sync", {}, { signal: bound.signal });
+			if (signal?.aborted) return fail("aborted", `the sync in ${name} was aborted`);
+			const mounts = Buffer.from(table.value.data, "base64").toString("utf8");
+			return ok(archilReadBack({ mounts, epoch, served: synced.ok && synced.value.exitCode === 0, ...(mount === undefined ? {} : { recorded: mount }) }));
+		} finally {
+			bound.clear();
+		}
+	}
+
+	/**
 	 * Terminates a sandbox create gives up on and waits, as release delete does, until poll reads it finished, so a
 	 * refused create leaves nothing listed; and says how that went. The terminate does not take the caller's signal, so
 	 * an aborted create still sends it, within callMs; the wait does, within releaseMs, so an abort ends it and the words
@@ -878,23 +1082,35 @@ export class ModalProvider implements ComputerProvider {
 		const read = await call(`getTags of ${ref.id}`, () => sandbox.getTags(), this.#timeouts.callMs, signal);
 		if (!read.ok) return read;
 		// Init may not be listening yet when create's answer, or the upload, comes back: the bridge is tried until hello.
-		const inside = await this.#inside(sandbox, ref.name, signal, true);
+		const archil = recordedArchil(tags);
+		const inside = await this.#inside(sandbox, ref.name, signal, true, archil);
 		if (!inside.ok) return inside;
 		const found = [
 			...tagDrift(tags, read.value),
 			...helloDrift(inside.value.hello, this.#expected()),
 			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network }),
+			...(archil === undefined ? [] : mountDrift(archil.expected, inside.value.mount)),
 		];
 		return found.length === 0 ? ok(probeNotes(inside.value.probe, recorded.network)) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
 	}
 
-	/** One connection's hello and the probe through it, the connection closed after. */
-	async #inside(sandbox: ModalSandbox, name: string, signal?: AbortSignal, patient = false): Promise<Result<{ hello: ComputerConnection["hello"]; probe: ProbeReport }>> {
+	/** One connection's hello and the probe through it, and an Archil computer's mount read back, the connection closed after. */
+	async #inside(
+		sandbox: ModalSandbox,
+		name: string,
+		signal?: AbortSignal,
+		patient = false,
+		archil?: RecordedArchil,
+	): Promise<Result<{ hello: ComputerConnection["hello"]; probe: ProbeReport; mount?: MountReadBack }>> {
 		const opened = patient ? await this.#openWhenListening(sandbox, name, signal) : await this.#open(sandbox, name, signal);
 		if (!opened.ok) return opened;
 		try {
 			const probe = await this.#probe(opened.value, name, signal);
-			return probe.ok ? ok({ hello: opened.value.hello, probe: probe.value }) : probe;
+			if (!probe.ok) return probe;
+			if (archil === undefined) return ok({ hello: opened.value.hello, probe: probe.value });
+			const mount = await this.#readMount(opened.value, name, archil, signal);
+			if (!mount.ok) return mount;
+			return ok({ hello: opened.value.hello, probe: probe.value, ...(mount.value === undefined ? {} : { mount: mount.value }) });
 		} finally {
 			await opened.value.close();
 		}
@@ -957,7 +1173,8 @@ export class ModalProvider implements ComputerProvider {
 		const opened = await this.#open(found.value.sandbox, ref.name);
 		if (!opened.ok) return opened;
 		const drift = helloDrift(opened.value.hello, this.#expected());
-		if (drift.length === 0) return opened;
+		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
+		if (drift.length === 0) return recordedArchil(found.value.tags) === undefined ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client) });
 		await opened.value.close();
 		return fail("refused", `the daemon in ${ref.name} does not match this provider: ${drift.join("; ")}`);
 	}
@@ -1090,17 +1307,24 @@ export class ModalProvider implements ComputerProvider {
 			// No exec in a computer whose user is root: the bridge would run what that user could have replaced.
 			if (isRootUser(user)) return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
-		const inside = await this.#inside(sandbox, name, signal);
+		const archil = recordedArchil(tags);
+		const inside = await this.#inside(sandbox, name, signal, false, archil);
 		if (!inside.ok) return inside;
-		const { hello, probe } = inside.value;
+		const { hello, probe, mount } = inside.value;
 		found.push(...helloDrift(hello, this.#expected()));
 		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network }));
+		// The mount read back from inside is the one the spec tag records, under the computer's epoch label.
+		if (archil !== undefined) found.push(...mountDrift(archil.expected, mount));
 		if (found.length > 0 || typeof recorded === "string" || deadline === undefined) {
 			return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
 		const { image, network, cpus, memoryMb, workdir } = recorded;
 		const notes = probeNotes(probe, network);
-		return ok({ ...ref, spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind }, ...(notes.length > 0 ? { notes } : {}) });
+		return ok({
+			...ref,
+			spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind, ...(archil === undefined || mount === undefined ? {} : { mount }) },
+			...(notes.length > 0 ? { notes } : {}),
+		});
 	}
 
 	/**
@@ -1145,12 +1369,15 @@ export class ModalProvider implements ComputerProvider {
 				return stop(polled);
 			}
 			if (polled.value !== null) continue;
+			// list execs into no computer: an Archil computer's mount is the one its spec tag records, under its epoch label.
+			const archil = recordedArchil(tags.value);
 			infos.push({
 				ref: { id: sandbox.sandboxId, name: tags.value[NAME_TAG] as string },
 				labels: { ...tags.value },
 				deadline: deadlineOf(tags.value),
 				state: "running",
 				network: recordedNetwork(tags.value),
+				...(archil === undefined ? {} : { mount: archil.expected }),
 			});
 		}
 		return ok(infos);
@@ -1192,7 +1419,9 @@ export class ModalProvider implements ComputerProvider {
 	 * 2238-2251), so delete then polls through untilFinished, as a refusing create does, with pauses that double from
 	 * releasePollMs to 5 s, until poll reads an exit code (null while it runs, sandbox.ts:2761-2771) or Modal no longer
 	 * knows it, within releaseMs and the caller's signal. Past releaseMs it is a timeout that says what poll last read,
-	 * never done.
+	 * never done. An Archil computer that still runs lets go of the run's folder first (archilRelease: the final sync
+	 * through computerd, then checkin as root); the terminate runs whatever that answers, and a folder not let go cleanly
+	 * is said in the result's words, after it.
 	 */
 	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
@@ -1202,7 +1431,28 @@ export class ModalProvider implements ComputerProvider {
 		const found = await this.#find(ref.id, signal);
 		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
 		if (!ours(found.value.tags, ref.name)) return fail("not_found", `no Modal computer named ${ref.name} has the id ${ref.id}`);
-		const { sandbox } = found.value;
+		const { sandbox, tags } = found.value;
+		const letGo = recordedArchil(tags) === undefined ? ok(undefined) : await this.#letGo(sandbox, ref.name, signal);
+		const deleted = await this.#delete(sandbox, ref, signal);
+		if (letGo.ok) return deleted;
+		if (!deleted.ok) return fail(deleted.error.code, `${deleted.error.message}; and ${letGo.error.message}`);
+		return fail(letGo.error.code, `${ref.name} was terminated, but ${letGo.error.message}`);
+	}
+
+	/** An Archil computer's folder let go, when the sandbox still runs: there is nothing to let go in one that finished. */
+	async #letGo(sandbox: ModalSandbox, name: string, signal?: AbortSignal): Promise<Result<void>> {
+		const polled = await call(`poll of ${name}`, () => sandbox.poll(), this.#timeouts.callMs, signal);
+		if ((polled.ok && polled.value !== null) || (!polled.ok && polled.error.code === "not_found")) return ok(undefined);
+		const opened = await this.#open(sandbox, name, signal);
+		try {
+			return await archilRelease({ root: this.#root(sandbox, name), client: opened.ok ? opened.value.client : undefined, timeoutMs: this.#timeouts.mountMs, ...(signal ? { signal } : {}) });
+		} finally {
+			if (opened.ok) await opened.value.close();
+		}
+	}
+
+	/** release delete's terminate and its wait for the end: see release. */
+	async #delete(sandbox: ModalSandbox, ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
 		const ended = await call(`terminate of ${ref.name}`, () => sandbox.terminate(), this.#timeouts.callMs, signal);
 		if (!ended.ok && ended.error.code === "not_found") return ok(undefined);
 		if (!ended.ok && (ended.error.code === "timeout" || ended.error.code === "aborted")) return ended;
@@ -1214,6 +1464,13 @@ export class ModalProvider implements ComputerProvider {
 		if (finished.ok) return ok(undefined);
 		return fail(finished.error.code, `release delete of ${ref.name} is not done: ${finished.error.message}`);
 	}
+}
+
+/** The claim epoch of labels check() has held to it. */
+function claimEpoch(labels: Record<string, string> | undefined): number {
+	const read = epochOf(labels);
+	if (!read.ok) throw new TypeError(read.error.message);
+	return read.value;
 }
 
 /** A refusal for a computer whose spec tag records a root user, before any exec in it (see ROOT); else undefined. */

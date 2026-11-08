@@ -5,7 +5,7 @@
 // (stopDeletes; see conformanceNotes).
 import { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, ENV, optionsFromEnv } from "../daytona.js";
 import type { MountKind } from "../mount.js";
-import { archilFolder, archilSettingsFromEnv } from "./archil.js";
+import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 import type { RunFolder } from "./types.js";
 
@@ -13,13 +13,17 @@ import type { RunFolder } from "./types.js";
 export { ARCHIL_ENV } from "./archil.js";
 
 /**
- * A fresh run folder for the mount cases: an Archil one when the disk's settings are given (the run's snapshot is then
- * one of box/Dockerfile, and COMPUTER_DAYTONA_USER is 2510:2510); none for a bind, which a remote computer cannot take.
+ * A fresh run folder for the mount cases: an Archil one on the disk the COMPUTER_ARCHIL_* settings name (the shared
+ * archilRunFolder; the run's snapshot is then one of box/Dockerfile, and COMPUTER_DAYTONA_USER is 2510:2510); none when
+ * they name none, and none for a bind, which a remote computer cannot take.
  */
-export async function mountFor(kind: MountKind, { env = process.env }: { env?: Record<string, string | undefined> } = {}): Promise<RunFolder | undefined> {
+export async function mountFor(
+	kind: MountKind,
+	{ env = process.env, archil = {} }: { env?: Record<string, string | undefined>; archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl"> } = {},
+): Promise<RunFolder | undefined> {
 	if (kind !== "archil") return undefined;
-	const settings = archilSettingsFromEnv(env);
-	return settings === undefined ? undefined : archilFolder(settings);
+	const settings = archilSettings(env);
+	return settings === undefined ? undefined : archilRunFolder({ ...settings, ...archil });
 }
 
 /** The environment variables this module reads, by name: the provider's, and the run's snapshot. */
