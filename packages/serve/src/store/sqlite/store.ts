@@ -128,7 +128,9 @@ class SqliteStore implements Store {
   readonly #journals = new Map<string, RunStorage>();
   /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
    *  hand out a journal that is Fenced at its first write. A newer claim of the run by this store drops it; at most
-   *  RELEASED_KEPT are kept, the oldest dropped first. */
+   *  RELEASED_KEPT are kept, the oldest dropped first. Past that cap journal() no longer refuses an old released claim,
+   *  but nothing is written through it: release moved the run's epoch on, so the journal's first commit is Fenced by the
+   *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
   constructor(db: Connection, now: () => number) {

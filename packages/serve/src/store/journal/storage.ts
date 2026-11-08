@@ -189,6 +189,8 @@ export class RunStorage implements Journal {
   #staged: Staged | undefined;
   /** Commands staged to be taken, each with the record of its effect: taken only by the commit that stores that record. */
   readonly #takes = new Map<number, number>();
+  /** Ids this journal minted and has not yet written: the only ones a staged take may name as its effect. */
+  readonly #minted = new Set<number>();
   #closed = false;
   #closing: Promise<void> | undefined;
   #admittedReads = 0;
@@ -256,13 +258,20 @@ export class RunStorage implements Journal {
    * - the commands it takes (`take`: each with the id of the record that is its effect, an id its effect's batch newly
    *   allocates): a take is written only by the commit that newly writes that record, so a command is taken with its own
    *   effect or not at all, never by another path's update of an existing record. An effect that changes or retires a
-   *   document, or updates a task, carries a marker entry minted for it in the same batch. Until then a take waits, across
-   *   commits and later stages; stage it before its effect's commit is asked. Each must be this run's untaken command,
-   *   else that commit rejects with CommandTaken.
+   *   document, or updates a task, carries a marker entry (kind `agentrun.command`, data `{ command }`) minted for it in
+   *   the same batch. A take naming an id this journal did not mint, or has already written, throws here: it could never
+   *   be taken, so it is refused rather than left waiting. Otherwise a take waits, across commits and later stages; stage
+   *   it before its effect's commit is asked. Each must be this run's untaken command, else that commit rejects with
+   *   CommandTaken.
    */
   stage(staged: Staged): void {
     for (const take of staged.take ?? []) {
       if (!Number.isSafeInteger(take?.command) || !Number.isSafeInteger(Number(take?.effect))) throw new Error(`run ${this.#runId}: a staged take names no command and effect ids: ${JSON.stringify(take)}`);
+      // Refused here, never left waiting forever: an effect must be an id this journal minted and has not yet written,
+      // so only the batch that newly writes it can take the command.
+      if (!this.#minted.has(Number(take.effect))) {
+        throw new Error(`run ${this.#runId}: command ${take.command}'s take names effect ${String(take.effect)}, which is no id this journal minted and has not yet written (an effect that updates a record takes its command through a marker entry minted for it)`);
+      }
     }
     for (const take of staged.take ?? []) this.#takes.set(take.command, Number(take.effect));
     // A stage that names a run patch or rows replaces the ones staged before; one that only takes leaves them.
@@ -349,6 +358,14 @@ export class RunStorage implements Journal {
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);
+    // Ids written now are no longer fresh: a take staged after this cannot name them.
+    for (const [index, writes] of batches.entries()) {
+      if (index >= seqs.length) break;
+      for (const write of writes) {
+        const id = writeId(write);
+        if (id !== undefined) this.#minted.delete(id);
+      }
+    }
     if (seqs.length > 0 && this.#staged === staged) this.#staged = undefined;
     // Taken with their effects, now durable: no longer waiting.
     for (const command of taking) this.#takes.delete(command);
@@ -404,7 +421,9 @@ export class RunStorage implements Journal {
     this.#assertOpen();
     await this.#opened();
     if (!Number.isSafeInteger(this.#nextId)) throw new Error("ID space is exhausted");
-    return idOf<I>(this.#nextId++);
+    const id = this.#nextId++;
+    this.#minted.add(id);
+    return idOf<I>(id);
   }
 
   async conversation(id: ConversationId, _context: Context): Promise<ConversationRecord | undefined> {
