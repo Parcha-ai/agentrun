@@ -41,7 +41,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; run?: string; schedule?: string | null; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf> };
+type Where = { section: Section; run?: string; trigger?: string | null; kind?: "schedule" | "webhook"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -57,11 +57,12 @@ export function route(h: string = location.hash): Where {
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
-  // Schedules: the list, a new one, one schedule, and its editor.
-  if (h === "#/schedules/new") return { section: "schedules", schedule: null };
-  m = h.match(/^#\/schedules\/([^/?]+)(\/edit)?$/);
-  if (m) return { section: "schedules", schedule: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
-  if (h.startsWith("#/schedules")) return { section: "schedules" };
+  // Triggers: the list, a new schedule, a new webhook, one trigger, and a schedule's editor.
+  if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
+  if (h === "#/triggers/new-webhook") return { section: "triggers", trigger: null, kind: "webhook" };
+  m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
+  if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
+  if (h.startsWith("#/triggers")) return { section: "triggers" };
   // Settings, a page per address: #/settings/keys (and #/settings), #/settings/tools and #/settings/webhook; a later one is one
   // more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
@@ -185,7 +186,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     let live = true;
     v2.listTriggers().then((r) => { if (live) setScheduleNames(new Map(r.triggers.map((t) => [t.id, t.name]))); }, () => {});
     return () => { live = false; };
-  }, [v2, scheduling, where.section, where.schedule]);
+  }, [v2, scheduling, where.section, where.trigger]);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<Problem | null>(null);
@@ -299,7 +300,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers (every server has them), and the webhook (its routes).
   const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", schedules: "#/schedules", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", triggers: "#/triggers", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
@@ -442,7 +443,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   }, [v2, modelsReady]);
   return (
     <ScheduleNames.Provider value={scheduleNames}>
-    <Shell active={where.section} settings={settingsOffered.length > 0} schedules={scheduling} onNavigate={nav} onSignOut={() => {
+    <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }} banners={<>
@@ -477,8 +478,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>
           </div>
-        : where.section === "schedules"
-        ? <SchedulesPage v2={v2} view={{ schedule: where.schedule, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} />
+        : where.section === "triggers"
+        ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />

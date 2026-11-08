@@ -1,6 +1,6 @@
 import { ClientError } from "./client";
 import { clock, when } from "./format";
-import type { Firing, Trigger, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
+import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
 
 /** A trigger this console shows: a schedule that starts a run (isScheduleTrigger). */
 export type Schedule = Trigger & { source: Extract<TriggerSource, { kind: "schedule" }>; target: TriggerTarget };
@@ -53,7 +53,18 @@ export const capOf = (own: number | undefined, agentDefault: number | undefined)
 
 /** Whether a trigger is one this console shows: a schedule that starts runs. GET /triggers also lists webhooks and
  *  schedules that send a message to a run. */
-export const isScheduleTrigger = (t: Trigger): t is Schedule => (t.source as { kind?: string })?.kind === "schedule" && (t.target as { kind?: string })?.kind === "start_run";
+export const isScheduleTrigger = (t: Trigger): t is Schedule => t.source.kind === "schedule" && t.target.kind === "start_run";
+
+/** A webhook trigger that starts a run: it fires on each request to its URL signed by its secret. */
+export type WebhookTrigger = Trigger & { source: Extract<TriggerSource, { kind: "webhook" }>; target: TriggerTarget };
+export const isWebhookTrigger = (t: Trigger): t is WebhookTrigger => t.source.kind === "webhook" && t.target.kind === "start_run";
+/** The URL a webhook trigger's requests go to: the documented path, POST /v2/hooks/{trigger_id}, on this server's address
+ *  as the page has it. */
+export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}/v2/hooks/${encodeURIComponent(t.id)}`;
+/** What a webhook's signature check takes, in words. */
+export const SIGNATURE_WORDS: Record<"standard" | "github", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)" };
+/** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
+export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request" };
 
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {
@@ -135,6 +146,29 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
       ...(d.name.trim() ? { name: d.name.trim() } : {}),
       enabled: d.enabled,
       source,
+      target: { kind: "start_run", agent_id: d.agentId, input: { content: d.content }, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
+    },
+  };
+}
+
+/** A new webhook's fields as typed: how its requests are signed, then the run each one starts (as a schedule's). */
+export type WebhookDraft = { name: string; signature: "standard" | "github"; agentId: string; content: string; maxCost: string };
+export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", agentId: "", content: "", maxCost: "" });
+
+/** A new webhook's create body, or what is missing, by the field the server would name: bodyOf's rules for the run it
+ *  starts. The URL and the signing secret are the server's, in the create's answer. */
+export function webhookBodyOf(d: WebhookDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const issues: Record<string, string> = {};
+  if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
+  if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
+  const cap = numberOf(d.maxCost);
+  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = "A cost cap is needed: every run a webhook starts is capped."; }
+  else if (cap === undefined) issues["target.max_cost_usd"] = NEEDED;
+  if (Object.keys(issues).length) return { issues };
+  return {
+    body: {
+      ...(d.name.trim() ? { name: d.name.trim() } : {}),
+      source: { kind: "webhook", signature: d.signature },
       target: { kind: "start_run", agent_id: d.agentId, input: { content: d.content }, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
     },
   };

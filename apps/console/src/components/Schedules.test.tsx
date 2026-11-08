@@ -158,7 +158,7 @@ describe("a new schedule", () => {
     await t.set("content", "Triage last night's issues.");
     await t.set("maxCost", "2");
     await t.click(/^Create schedule$/);
-    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: "/v2/triggers", key: null, body: {
+    expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: "/v2/triggers", key: expect.stringMatching(/.+/), body: {
       name: "nightly triage", enabled: true, source: { kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" },
       target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 2 },
     } }]);

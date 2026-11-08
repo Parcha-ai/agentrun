@@ -1,4 +1,4 @@
-import { ArrowLeft, CalendarClock, Pause, Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
+import { ArrowLeft, CalendarClock, Copy, KeyRound, Pause, Pencil, Play, Plus, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
@@ -10,27 +10,28 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, isScheduleTrigger, utcWhen, type Draft, draftOf, type Schedule, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords } from "@/lib/schedules";
-import type { Firing, Trigger } from "@/lib/v2";
+import { atLeast, bodyOf, capOf, dollars, FIRED_BY, hookUrlOf, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
-/** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
-export type ScheduleView = { schedule?: string | null; edit?: boolean };
+/** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
+ *  (`edit`). */
+export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook"; edit?: boolean };
 type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: string) => string };
 /** `minEvery`: the shortest interval the server takes (capabilities' features.triggers.min_every_s), when it says. */
 type FormProps = { v2: Client; go: (hash: string) => void; minEvery?: number };
 
-const hashOf = (id: string) => `#/schedules/${encodeURIComponent(id)}`;
+const hashOf = (id: string) => `#/triggers/${encodeURIComponent(id)}`;
 /** A time the server gave, as the console says every time: in the viewer's own zone. */
 const at = (iso: string) => when(iso);
 const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sent: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
 
-/** Schedules (serve's trigger/1): each starts an agent's capped runs with no one there. */
-/** `refreshMs`: how often an open schedule's page reads it again, so a firing shows as it happens (the list, twice that). */
+/** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs with no one there. */
+/** `refreshMs`: how often an open trigger's page reads it again, so a firing shows as it happens (the list, twice that). */
 export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000 }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number }) {
-  if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} />;
-  if (view.schedule === null) return <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
-  if (view.edit) return <ScheduleEdit key={view.schedule} v2={v2} go={go} id={view.schedule} minEvery={minEvery} />;
-  return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} every={refreshMs} />;
+  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} />;
+  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
+  if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} />;
+  return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} />;
 }
 
 /** `read` again every `every` ms while the tab shows, and once when it shows again; nothing while it is hidden (SWR's
@@ -62,7 +63,7 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
     if (reading.current) return;
     reading.current = true;
     v2.listTriggers()
-      .then((r) => { if (live.current) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live.current) setError(problem(e, "the schedules")); })
+      .then((r) => { if (live.current) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live.current) setError(problem(e, "the triggers")); })
       .finally(() => { reading.current = false; });
   };
   useEffect(read, [v2, tries]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -70,50 +71,52 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
   return (
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h1 className="mr-auto font-mono text-2xl font-semibold">Schedules</h1>
-        <Button size="lg" variant="solid" onClick={() => go("#/schedules/new")}><Plus aria-hidden /> New schedule</Button>
+        <h1 className="mr-auto font-mono text-2xl font-semibold">Triggers</h1>
+        <Button size="lg" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
+        <Button size="lg" variant="solid" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
       </div>
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
-        : !triggers ? <ListSkeleton label="Loading the schedules" rows={4} />
-        : !triggers.filter(isScheduleTrigger).length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">No schedules yet. A schedule starts an agent's runs at the times you set, each one capped.</p>
+        : !triggers ? <ListSkeleton label="Loading the triggers" rows={4} />
+        : !triggers.length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">No triggers yet. A schedule starts an agent's runs at the times you set; a webhook starts one on each signed request. Each run is capped.</p>
         : (
           <ul className="border">
-            {triggers.filter(isScheduleTrigger).map((t) => (
-              <li key={t.id} data-schedule={t.id} className="grid grid-cols-1 gap-x-6 gap-y-1.5 border-b px-4 py-3 last:border-b-0 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            {triggers.map((t) => (
+              <li key={t.id} data-trigger={t.id} className="grid grid-cols-1 gap-x-6 gap-y-1.5 border-b px-4 py-3 last:border-b-0 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={hashOf(t.id)} className="min-w-0 break-words text-[15px] font-semibold hover:underline">{t.name}</a>
+                    <Chip>{t.source.kind === "webhook" ? "Webhook" : "Schedule"}</Chip>
                     {!t.enabled && <Chip tone="muted">Paused</Chip>}
                   </div>
-                  <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground">{whenWords(t.source)} · {agentName(t.target.agent_id) || t.target.agent_id}</p>
+                  <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground">{whatWords(t, agentName)}</p>
                 </div>
                 <div className="min-w-0 font-mono text-[12px] text-muted-foreground md:text-right">
-                  <p>{t.next_at ? `Next ${at(t.next_at)}` : "No next time"}</p>
+                  {t.source.kind === "schedule" && <p>{t.next_at ? `Next ${at(t.next_at)}` : "No next time"}</p>}
                   <p className="mt-1 break-words">{lastWords(t)}</p>
                 </div>
               </li>
             ))}
           </ul>
         )}
-      {triggers && others(triggers) > 0 && (
-        <p className="mt-3 font-mono text-[12px] text-muted-foreground">
-          {others(triggers) === 1 ? "1 other trigger (webhooks, messages to a run) is not shown here." : `${others(triggers)} other triggers (webhooks, messages to a run) are not shown here.`}
-        </p>
-      )}
       {triggers && error && <ProblemCard problem={error} className="mt-4" />}
     </div>
   );
 }
 
-/** How many of the server's triggers this page does not show (not schedules that start runs). */
-const others = (triggers: Trigger[]) => triggers.filter((t) => !isScheduleTrigger(t)).length;
+/** A trigger's when and what, in one line: a schedule's times or a webhook's signed requests, then the agent it starts or
+ *  the run it messages. */
+function whatWords(t: Trigger, agentName: (id: string) => string): string {
+  const when = t.source.kind === "schedule" ? whenWords(t.source) : "On each signed request";
+  return `${when} · ${t.target.kind === "start_run" ? agentName(t.target.agent_id) || t.target.agent_id : `messages run ${runLabel(t.target.run_id)}`}`;
+}
 
-/** A trigger this console does not show, opened by its address: what it is, and nothing to change it. */
+/** A trigger this page doesn't open (one that sends its firings to a run), opened by its address: what it is, and nothing
+ *  to change it. */
 function NotASchedule() {
   return (
     <div className="p-5 md:p-8">
-      <a href="#/schedules" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Schedules</a>
-      <p className="mt-4 border px-4 py-6 text-[13px] text-muted-foreground">This trigger is not a schedule that starts runs (a webhook, or messages to a run): this page does not show it.</p>
+      <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
+      <p className="mt-4 border px-4 py-6 text-[13px] text-muted-foreground">This trigger sends its firings to a run: this page doesn't open it yet.</p>
     </div>
   );
 }
@@ -123,8 +126,11 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
   const [said, setSaid] = useState<Problem | null>(null);
-  const [busy, setBusy] = useState<"pause" | "fire" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"pause" | "fire" | "delete" | "secret" | null>(null);
   const [confirming, setConfirming] = useState(false);
+  // A webhook's Rotate secret: asked first (the old secret stops signing at once), then the new one shown that once.
+  const [rotating, setRotating] = useState(false);
+  const [fresh, setFresh] = useState<string | null>(null);
   const [tries, setTries] = useState(0);
   // A Run now out: a second click while it is waits for it, so a double click fires once.
   const firing = useRef(false);
@@ -140,23 +146,25 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       .then(([t, f]) => { if (asked === generation.current) { setTrigger(t); setFirings(f.firings); setError(null); } })
       .finally(() => { reading.current = false; });
   };
-  useEffect(() => { read().catch((e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { read().catch((e) => setError(problem(e, "the trigger"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   // Read again while the page is open, so a timed firing, its run and the next time show with no reload; not while a
   // read or a Run now is out. A read that fails here leaves the page as it was.
   useRereads(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every, [v2, id]);
   // A schedule with no cap of its own runs under its agent's default (definition.max_cost_usd): read it to say so.
   const [agentCap, setAgentCap] = useState<number | undefined>(undefined);
-  const capAgent = trigger && isScheduleTrigger(trigger) && typeof trigger.target.max_cost_usd !== "number" ? trigger.target.agent_id : null;
+  const capAgent = trigger && trigger.target.kind === "start_run" && typeof trigger.target.max_cost_usd !== "number" ? trigger.target.agent_id : null;
   useEffect(() => {
     if (!capAgent) return;
     let live = true;
     v2.getAgent(capAgent).then((r) => { if (live) setAgentCap(typeof r.agent.definition.max_cost_usd === "number" ? r.agent.definition.max_cost_usd : undefined); }, () => {});
     return () => { live = false; };
   }, [v2, capAgent]);
-  if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/schedules", label: "All schedules" }} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
-  if (!isScheduleTrigger(trigger)) return <NotASchedule />;
+  if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/triggers", label: "All triggers" }} /> : <ListSkeleton label="Loading the trigger" rows={4} />;
+  const hook = isWebhookTrigger(trigger) ? trigger : null;
+  if (!hook && !isScheduleTrigger(trigger)) return <NotASchedule />;
+  const runs = trigger as Schedule | WebhookTrigger;
 
-  const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
+  const act = async (what: "pause" | "delete" | "secret", work: () => Promise<unknown>, failed: string) => {
     setBusy(what); setSaid(null);
     try { await work(); } catch (e) { setSaid(problem(e, failed)); } finally { setBusy(null); }
   };
@@ -166,7 +174,8 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
     generation.current++;
     setTrigger(answer);
   }, trigger.enabled ? "the pause" : "the resume");
-  const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/schedules"); }, "the delete");
+  const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/triggers"); }, "the delete");
+  const rotate = () => act("secret", async () => { setFresh(null); const r = await v2.rotateTriggerSecret(id); setFresh(r.secret); }, "the new secret");
   const runNow = async () => {
     if (firing.current) return;
     firing.current = true; setBusy("fire"); setSaid(null);
@@ -182,21 +191,28 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       firing.current = false; setBusy(null);
     }
   };
-  const content = typeof trigger.target.input.content === "string" ? trigger.target.input.content : null;
+  const content = typeof runs.target.input.content === "string" ? runs.target.input.content : null;
   return (
     <div className="p-5 md:p-8">
-      <a href="#/schedules" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Schedules</a>
+      <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && <Chip tone="muted">Paused</Chip>}</h1>
-          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{whenWords(trigger.source)} · {trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}</p>
+          <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{hook ? `Webhook · on each signed request` : `${whenWords(runs.source as Schedule["source"])} · ${trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}`}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>
-          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>
+          {!hook && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
+          {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null}><KeyRound aria-hidden /> Rotate secret</Button> : (
+            <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Make a new secret?">
+              <span>The old secret stops signing at once.</span>
+              <Button size="sm" variant="solid" onClick={() => { setRotating(false); void rotate(); }}>Yes, make a new one</Button>
+              <Button size="sm" variant="ghost" onClick={() => setRotating(false)}>Keep</Button>
+            </span>
+          ))}
           {!confirming ? <Button size="sm" variant="destructive" onClick={() => setConfirming(true)} disabled={busy !== null}><Trash2 aria-hidden /> Delete</Button> : (
-            <span className="flex items-center gap-2 border border-destructive/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Delete this schedule?">
+            <span className="flex items-center gap-2 border border-destructive/50 px-2 py-1 text-[12px]" role="alertdialog" aria-label="Delete this trigger?">
               <span>Delete for good? Its runs stay.</span>
               <Button size="sm" variant="destructive" onClick={() => { setConfirming(false); void remove(); }}>Yes, delete</Button>
               <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>Keep</Button>
@@ -205,11 +221,17 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
         </div>
       </div>
       {said && <ProblemCard problem={said} className="mt-4" />}
+      {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-[13px] sm:grid-cols-[max-content_minmax(0,1fr)]">
-        <dt className="caps text-[11px] text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(trigger.target.agent_id)}`} className="hover:underline">{agentName(trigger.target.agent_id) || trigger.target.agent_id}</a></dd>
-        <dt className="caps text-[11px] text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(trigger.target.input)}</dd>
-        <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(trigger.target.max_cost_usd, agentCap)}</dd>
-        <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
+        <dt className="caps text-[11px] text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(runs.target.agent_id)}`} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
+        <dt className="caps text-[11px] text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
+        <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
+        {hook ? <>
+          <dt className="caps text-[11px] text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-[12px]">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /></dd>
+          <dt className="caps text-[11px] text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
+        </> : <>
+          <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
+        </>}
       </dl>
       <section className="mt-6" aria-label="Firings">
         <h2 className="text-lg font-semibold">Firings</h2>
@@ -218,7 +240,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
             {firings.map((f) => (
               <li key={f.key} data-firing={f.key} className="flex flex-col gap-1 border-b px-4 py-2.5 text-[13px] last:border-b-0 sm:flex-row sm:items-start sm:gap-4">
                 <span className="flex shrink-0 items-center gap-2"><Chip tone={TONE[f.status]}>{FIRING_LABEL[f.status]}</Chip><span className="font-mono text-[12px] text-muted-foreground">{at(f.nominal_at)}</span></span>
-                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? (f.by === "manual" ? "Run now" : "On schedule") : `${firingWords(f)}${f.by === "manual" ? " · Run now" : ""}`}</span>
+                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? FIRED_BY[f.by] : `${firingWords(f)}${f.by === "manual" ? " · Run now" : ""}`}</span>
                 {f.run_id && <a href={`#/runs/${encodeURIComponent(f.run_id)}`} className="shrink-0 font-mono text-[12px] underline-offset-2 hover:underline">Run {runLabel(f.run_id)}</a>}
               </li>
             ))}
@@ -233,7 +255,7 @@ function ScheduleEdit({ v2, go, id, minEvery }: FormProps & { id: string }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
-  useEffect(() => { v2.getTrigger(id).then(setTrigger, (e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]);
+  useEffect(() => { v2.getTrigger(id).then(setTrigger, (e) => setError(problem(e, "the trigger"))); }, [v2, id, tries]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
   // Never an editor for another kind of trigger: its save would rebuild it as a schedule that starts runs.
   if (!isScheduleTrigger(trigger)) return <NotASchedule />;
@@ -277,6 +299,8 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   const [issues, setIssues] = useState<Record<string, string>>({});
   const [rest, setRest] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  // One key per form: a create sent again (a lost answer, a second click) makes one schedule (createTrigger's Idempotency-Key).
+  const [key] = useState(uuid);
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
   const shown = new Set(["name", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd", ...(trigger ? [] : ["enabled"])]);
@@ -293,7 +317,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
     setIssues({}); setSaving(true);
     try {
       if (!trigger) {
-        const made = await v2.createTrigger(body);
+        const made = await v2.createTrigger(body as TriggerCreate, key);
         go(hashOf(made.id));
       } else {
         const patch = patchOf(trigger, body);
@@ -317,7 +341,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
   const kinds: { kind: Draft["kind"]; label: string }[] = [{ kind: "cron", label: "Cron" }, { kind: "at", label: "Once" }, { kind: "every", label: "Every" }];
   return (
     <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
-      <a href={trigger ? hashOf(trigger.id) : "#/schedules"} className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Schedules"}</a>
+      <a href={trigger ? hashOf(trigger.id) : "#/triggers"} className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Triggers"}</a>
       <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><CalendarClock className="size-5 text-primary" aria-hidden />{trigger ? "Edit schedule" : "New schedule"}</h1>
       {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-[13px] text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
       <div className="mt-5 space-y-5">
@@ -375,7 +399,130 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Sch
       </div>
       <div className="mt-6 flex flex-wrap gap-2">
         <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Saving" : trigger ? "Save changes" : "Create schedule"}</Button>
-        <Button type="button" size="lg" variant="ghost" onClick={() => go(trigger ? hashOf(trigger.id) : "#/schedules")}>Cancel</Button>
+        <Button type="button" size="lg" variant="ghost" onClick={() => go(trigger ? hashOf(trigger.id) : "#/triggers")}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
+
+/** Writes `text` to the clipboard; says Copied beside it once it is there. */
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { navigator.clipboard.writeText(text).then(() => setCopied(true), () => setCopied(false)); };
+  return (
+    <span className="inline-flex items-center gap-2">
+      <Button type="button" size="sm" onClick={copy}><Copy aria-hidden /> {label}</Button>
+      {copied && <span className="font-mono text-[11px] text-muted-foreground" role="status">Copied</span>}
+    </span>
+  );
+}
+
+/** A signing secret, shown this once (the server keeps it sealed and never sends it again), with Copy. */
+function SecretOnce({ label, secret, url }: { label: string; secret: string; url?: string }) {
+  return (
+    <section aria-label={label} className="mt-4 space-y-3 border border-primary/50 p-4 text-[13px]">
+      {url && <Copyable title="URL" text={url} label="Copy URL" />}
+      <Copyable title="Signing secret" text={secret} label="Copy secret" />
+      <p className="text-warning-text" role="note">You won't see this secret again.</p>
+    </section>
+  );
+}
+
+function Copyable({ title, text, label }: { title: string; text: string; label: string }) {
+  return (
+    <div className="min-w-0">
+      <span className="caps text-[11px] text-muted-foreground">{title}</span>
+      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all border bg-muted/40 px-2 py-1 font-mono text-[12px]">{text}</code><CopyButton text={text} label={label} /></div>
+    </div>
+  );
+}
+
+const SIGNATURES: ("standard" | "github")[] = ["standard", "github"];
+
+/** A new webhook trigger: each signed request to its URL starts a capped run of the agent. The create's answer carries
+ *  its signing secret that once (or, on a retry under the same Idempotency-Key, a note in its place): shown with the URL,
+ *  each with Copy, until Done opens the trigger. */
+function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
+  const [draft, setDraft] = useState<WebhookDraft>(emptyWebhook);
+  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [issues, setIssues] = useState<Record<string, string>>({});
+  const [rest, setRest] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [made, setMade] = useState<TriggerMade | null>(null);
+  const [key] = useState(uuid);
+  useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
+  const set = <K extends keyof WebhookDraft>(k: K) => (value: WebhookDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
+  const shown = new Set(["name", "source.signature", "target.agent_id", "target.input", "target.max_cost_usd"]);
+  const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
+  const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const { body, issues: missing } = webhookBodyOf(draft, agentCap !== undefined);
+    setRest([]);
+    if (!body) { setIssues(missing ?? {}); return; }
+    setIssues({}); setSaving(true);
+    try {
+      setMade(await v2.createTrigger(body, key));
+    } catch (err) {
+      const found = issuesOf(err);
+      setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
+      setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const back = <a href="#/triggers" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>;
+  if (made) {
+    return (
+      <div className="max-w-2xl p-5 md:p-8">
+        {back}
+        <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary" aria-hidden />{made.name}</h1>
+        <p className="mt-2 text-[13px] text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[draft.signature]}). Each one starts a run.</p>
+        {made.secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.secret} /> : (
+          <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-[13px]">
+            <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" />
+            {made.note && <p role="note">{made.note}</p>}
+          </section>
+        )}
+        <div className="mt-6"><Button type="button" size="lg" variant="solid" onClick={() => go(hashOf(made.id))}>Done</Button></div>
+      </div>
+    );
+  }
+  const live = (agents ?? []).filter((a) => !a.archived_at);
+  return (
+    <form onSubmit={(e) => void save(e)} className="max-w-2xl p-5 md:p-8" noValidate>
+      {back}
+      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary" aria-hidden />New webhook</h1>
+      <p className="mt-2 text-[13px] text-muted-foreground">Each signed request to its URL starts a capped run of the agent. Its URL and signing secret show once it is made.</p>
+      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-[13px] text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
+      <div className="mt-5 space-y-5">
+        <Field label="Name" field="name" issue={issues.name}><input name="name" className={INPUT} value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="on deploy" /></Field>
+        <fieldset className="min-w-0">
+          <legend className="caps text-[11px] text-muted-foreground">Signature</legend>
+          <div className="mt-1 flex flex-wrap gap-2" role="radiogroup">
+            {SIGNATURES.map((sig) => (
+              <label key={sig} className={`flex h-9 cursor-pointer items-center gap-2 border px-3 text-[13px] ${draft.signature === sig ? "border-primary text-primary" : ""}`}>
+                <input type="radio" name="signature" value={sig} checked={draft.signature === sig} onChange={() => set("signature")(sig)} className="accent-primary" />{SIGNATURE_WORDS[sig]}
+              </label>
+            ))}
+          </div>
+          {issues["source.signature"] && <p className="mt-1 text-[12px] text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
+        </fieldset>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
+            <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
+            {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
+          </select>
+        </Field>
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+          hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this webhook starts stops at this spend."}>
+          <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder="1" />
+        </Field>
+      </div>
+      <div className="mt-6 flex flex-wrap gap-2">
+        <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Creating" : "Create webhook"}</Button>
+        <Button type="button" size="lg" variant="ghost" onClick={() => go("#/triggers")}>Cancel</Button>
       </div>
     </form>
   );
