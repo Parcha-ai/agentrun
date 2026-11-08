@@ -162,7 +162,8 @@ function fakeDaemon(hello, computer) {
  *   folder on this machine standing for the disk. attach() and list() read the mount back, without the token.
  * - `brokenMount`: "unbound" (the mount is read back, but nothing is bound at /workspace), "no-read-back" (attach and
  *   list report no mount), "token-in-read-back" (attach reports the token), "token-in-label" (the computer carries the
- *   token as a label), "check-ignores" (check() takes any mount kind, declared or not).
+ *   token as a label), "check-ignores" (check() takes any mount kind, declared or not), "host-refuses" (check()
+ *   refuses even a kind the provider declares, as a Docker host that remaps user ids refuses a bind).
  */
 export function fakeComputers({
 	id = "fake",
@@ -224,6 +225,8 @@ export function fakeComputers({
 			const refusals = [];
 			if (spec.mount !== undefined && !(mount ?? []).includes(spec.mount.kind) && brokenMount !== "check-ignores") {
 				refusals.push({ field: "mount", message: `this provider takes no mount of kind ${spec.mount.kind}` });
+			} else if (spec.mount !== undefined && brokenMount === "host-refuses") {
+				refusals.push({ field: "mount", message: "this host cannot bind the run folder" });
 			}
 			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
 			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
