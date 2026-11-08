@@ -45,6 +45,8 @@ const ping = {
     parse(_headers, body) {
       try {
         const doc = JSON.parse(body.toString("utf8"));
+        // A body its source's own filter does not take.
+        if (doc.ignore === true) return { ignored: "filtered" };
         return Array.isArray(doc.events) ? doc.events.filter((e) => typeof e.id === "string" && typeof e.channel === "string" && typeof e.text === "string").map((e) => ({ key: e.id, text: e.text, scope: e.channel })) : [];
       } catch {
         return [];
@@ -305,13 +307,33 @@ test("with no log, what the push handler says goes to stderr, as the triggers' o
   assert.ok(written.some((line) => line.includes("condition=hook_unparsed")), `said on stderr: ${JSON.stringify(written)}`);
 });
 
+test("a server-wide source's hook answers as its document says, with the trigger hook's own shapes: a request its source does not take is 200 {ok: ignored}, and a firing may be {ok: duplicate}", { timeout: 60_000 }, async (t) => {
+  const { server, secret, lines } = await pingServer(t);
+  const doc = await (await fetch(`${server.baseUrl}/openapi.json`)).json();
+  const answer = (path) => doc.paths[path].post.responses["200"].content["application/json"].schema;
+  const options = (schema) => schema.oneOf ?? schema.anyOf ?? [schema];
+  const [own, hook] = [answer("/hooks/{trigger_id}"), answer("/hooks/ping")];
+  const shape = (ok) => options(own).find((o) => o.properties?.ok?.const === ok);
+  assert.ok(shape("ignored") && shape("duplicate"), "the trigger hook names both");
+  assert.ok(options(hook).some((o) => JSON.stringify(o) === JSON.stringify(shape("ignored"))), `the source's hook names the same ignored shape: ${JSON.stringify(hook).slice(0, 400)}`);
+  const listed = options(hook).find((o) => o.properties?.firings);
+  assert.ok(options(listed.properties.firings.items).some((o) => JSON.stringify(o) === JSON.stringify(shape("duplicate"))), "and a firing may be the same duplicate shape");
+  const ignored = await post(server.baseUrl, "/hooks/ping", JSON.stringify({ ignore: true }), { secret });
+  assert.deepEqual([ignored.status, ignored.body], [200, { ok: "ignored" }]);
+  assert.ok(lines.some((line) => line.includes("condition=hook_ignored") && line.includes("source=ping")), "said");
+  const unparsed = await post(server.baseUrl, "/hooks/ping", "not json", { secret });
+  for (const body of [ignored.body, unparsed.body, { firings: [{ ok: "duplicate" }] }, { challenge: "c-1" }]) assert.deepEqual(schemaProblems(doc, hook, body), [], JSON.stringify(body));
+});
+
 test("a server-wide hook's documented answers are its own: its firings' by names its source, and a firings answer and a handshake answer each match exactly one of its 200's shapes", () => {
   const doc = openapiDocument(() => undefined, [...TRIGGER_ADAPTERS, ping]);
   const responses = doc.paths["/hooks/ping"].post.responses;
   const body = (code) => responses[code].content["application/json"].schema;
-  const firingBy = (schema) => schema.properties.firings.items.properties.by.enum;
+  // A firings item is a firing, or the duplicate answer for a key seen within its day: the firing's by is read.
+  const firingBy = (schema) => schema.properties.firings.items.oneOf.find((item) => item.properties.by).properties.by.enum;
   assert.ok(firingBy(body("202")).includes("ping"), JSON.stringify(firingBy(body("202"))));
   const firings = body("200").oneOf.find((part) => part.properties?.firings);
   assert.ok(firings && firingBy(firings).includes("ping"), JSON.stringify(body("200")));
-  for (const answer of [{ firings: [] }, { challenge: "c-123" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
+  for (const answer of [{ firings: [] }, { challenge: "c-123" }, { ok: "ignored" }, { firings: [{ ok: "duplicate" }] }, { ok: true }, { ok: "ignored", challenge: "c-9" }]) assert.deepEqual(schemaProblems(doc, body("200"), answer), [], JSON.stringify(answer));
+  assert.deepEqual(schemaProblems(doc, body("200"), { ok: "maybe" }), [], "an ok answer of the source's own is a handshake");
 });
