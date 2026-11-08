@@ -17,7 +17,10 @@ import { quiet, sleep, until } from "./live-support.mjs";
 const { createPiLoop } = await import("../dist/runner/loop.js");
 const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
 const TICK_MS = 250;
-const TIMING = { leaseMs: 5_000, renewEveryMs: 1_000, stopMarginMs: 1_000, pollMs: 50, commandPollMs: 200 };
+// A lease no stall of a loaded machine outlasts: on a 5 s lease, 300 claims whose renews wait behind 300-row puts lapse,
+// all 300 runs are taken again, and the new loops' reports fill the ticks the window counts. This file reads the
+// ticker's batching, not leases.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 50, commandPollMs: 200 };
 
 /** `loops` runs each holding a slow tool for `holdMs`; the store's put calls counted per second while they all run. */
 async function heldWrites(t, loops, holdMs = 2_000) {
