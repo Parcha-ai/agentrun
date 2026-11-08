@@ -192,22 +192,26 @@ test("a tool call's start, update and end reach the stream, though pi 1.5 only e
   await stream.stop();
 });
 
-test("a streaming answer's partial reaches the stream as pi shows it, well before pi stores it (its hold lasts up to a second)", async (t) => {
+test("a streaming answer's partial reaches the stream as pi shows it, before pi stores it: a delivery before the answer's own", async (t) => {
+  // The partial commits every 100 ms (progress.partialIntervalMs) and is held, stored only with the answer here: the
+  // hold's deadline (persistWithinMs, 5 s) is far past the ~1.5 s stream. So the order is the test, not the clock: a
+  // partial must reach the stream in a delivery before the one that carries the answer's message_end.
   const faux = fauxProvider({ tokensPerSecond: 40, tokenSize: { min: 1, max: 2 } });
-  let asked = 0;
-  faux.setResponses([() => ((asked = Date.now()), fauxAssistantMessage([fauxText("a fairly long answer that streams for well over a second, one small token at a time, so its partial is held")], { stopReason: "stop" }))]);
+  faux.setResponses([() => fauxAssistantMessage([fauxText("a fairly long answer that streams for well over a second, one small token at a time, so its partial is held")], { stopReason: "stop" })]);
   const models = createModels();
   models.setProvider(faux.provider);
-  const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry(), onReport: () => {} }, ctx);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry(), settings: { progress: { persistWithinMs: 5_000 } }, onReport: () => {} }, ctx);
   t.after(() => harness.close(ctx));
   const model = faux.getModel();
   const root = await harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
   const stream = await watchEvents(harness, root.id, ctx);
-  let firstPartial = 0;
-  stream.start(async (batch) => { if (!firstPartial && batch.some((event) => event.type === "message_start" || event.type === "message_update")) firstPartial = Date.now(); });
+  const deliveries: { type: string; entry?: { kind?: string } }[][] = [];
+  stream.start(async (batch) => void deliveries.push(batch as (typeof deliveries)[number]));
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await new Promise((resolve) => setTimeout(resolve, 50));
   await stream.stop();
-  assert.ok(asked > 0 && firstPartial > 0, "the model was asked and a partial reached the stream");
-  // The partial commits every 100 ms (progress.partialIntervalMs), held up to 1 s (persistWithinMs) before it is stored.
-  assert.ok(firstPartial - asked < 700, `the first partial reached the stream ${firstPartial - asked} ms after the request, not at its store`);
+  const answered = deliveries.findIndex((batch) => batch.some((event) => event.type === "message_end" && event.entry?.kind === "pi.assistant"));
+  const partial = deliveries.findIndex((batch) => batch.some((event) => event.type === "message_start" || event.type === "message_update"));
+  assert.ok(answered >= 0, "the answer reached the stream");
+  assert.ok(partial >= 0 && partial < answered, `a partial in a delivery before the answer's: partial at ${partial}, answer at ${answered} of ${deliveries.length}`);
 });
