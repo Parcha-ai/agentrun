@@ -145,7 +145,7 @@ export function allowed({ name, allow, deadline = new Date(Date.now() + 600_000)
  * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
  * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
- * "info", "hello") that wait, once called, until `proceed(step)`. `desktop` is the provider's desktop option; `display`
+ * "info", "hello", "logs") that wait, once called, until `proceed(step)`. `desktop` is the provider's desktop option; `display`
  * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
  * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
  * daemon answers nothing once the server is started, as one stuck in the X connection setup, or stopped, does).
@@ -290,12 +290,11 @@ switch (args[0]) {
 		process.stdout.write(JSON.stringify(config.endpoint) + "\\n");
 		break;
 	}
-	case "logs": {
+	case "logs": held("logs", () => {
 		const found = find(load(), args.at(-1));
 		if (!found) noSuch(args.at(-1));
 		process.stdout.write(found.Logs ?? "");
-		break;
-	}
+	}); break;
 	case "volume": {
 		const all = loadVolumes();
 		if (args[1] === "create") {

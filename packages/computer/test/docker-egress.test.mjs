@@ -239,6 +239,43 @@ test("create() fails closed when the proxy never says it is ready within its bou
 	assert.deepEqual([names(), volumeNames()], [[], []]);
 });
 
+for (const step of ["logs", "inspect"]) {
+	test(`create() keeps to the proxy's readiness bound when docker ${step} stops answering in the readiness poll: timeout in words, and the proxy and its volume removed`, async () => {
+		// The proxy never says it is ready, so the poll asks docker logs, then docker inspect; the held step never answers.
+		const { provider, calls, names, volumeNames, proceed } = fakeDocker({ egress: "never", hold: [step], egressOptions: { readyMs: 400 } });
+		const started = Date.now();
+		try {
+			const made = await provider.create(SPEC);
+			const took = Date.now() - started;
+			assert.equal(made.ok, false, JSON.stringify(made));
+			assert.equal(made.error.code, "timeout", made.error.message);
+			assert.match(made.error.message, /egress proxy .* was not ready within 0\.4 s/);
+			assert.ok(took < 10_000, `create took ${took} ms, past its 0.4 s bound by far`);
+			assert.ok(calls().some((args) => args[0] === step), `docker ${step} was called`);
+			assert.equal(computerRunOf(calls()), undefined, "the computer was never run");
+			assert.deepEqual([names(), volumeNames()], [[], []], "the proxy and its volume were removed");
+		} finally {
+			proceed(step);
+		}
+	});
+}
+
+test("create() aborted by its caller during the readiness poll stays aborted, not timeout", async () => {
+	const { provider, calls, names, volumeNames, proceed } = fakeDocker({ egress: "never", hold: ["logs"], egressOptions: { readyMs: 60_000 } });
+	const controller = new AbortController();
+	try {
+		const pending = provider.create(SPEC, { signal: controller.signal });
+		for (let i = 0; i < 500 && !calls().some((args) => args[0] === "logs"); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+		controller.abort();
+		const made = await pending;
+		assert.equal(made.ok, false);
+		assert.equal(made.error.code, "aborted", made.error.message);
+		assert.deepEqual([names(), volumeNames()], [[], []]);
+	} finally {
+		proceed("logs");
+	}
+});
+
 test("create() removes the proxy and its volume with a computer that is not running after its start, or that drifts", async () => {
 	const stopped = fakeDocker({ running: false });
 	const made = await stopped.provider.create(SPEC);
