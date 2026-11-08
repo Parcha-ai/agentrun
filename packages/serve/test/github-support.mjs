@@ -9,8 +9,8 @@ import { serve, withEnv } from "./support.mjs";
 export const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 export const PUBLIC = "https://agents.example.test";
 /** Where the browser legs send the owner's browser: the console's GitHub settings (it routes by hash). */
-export const CONNECTED = "/#/settings/github?github=connected";
-export const failedWith = (reason) => `/#/settings/github?github=error&reason=${reason}`;
+export const CONNECTED = `${PUBLIC}/#/settings/github?github=connected`;
+export const failedWith = (reason) => `${PUBLIC}/#/settings/github?github=error&reason=${reason}`;
 /** The repositories the App's one installation (777, on acme) covers. */
 export const INSTALLED = new Set(["acme/widgets"]);
 
@@ -18,7 +18,7 @@ export const INSTALLED = new Set(["acme/widgets"]);
  *  each request so a test reads what was asked and with which credential. */
 export async function fakeGitHub(t) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
-  const app = { id: 4242, slug: "agentrun-test-app", client_id: `Iv1.${randomBytes(8).toString("hex")}`, client_secret: randomBytes(20).toString("hex"), webhook_secret: randomBytes(20).toString("hex"), pem: privateKey };
+  const app = { id: 4242, slug: "agentrun-test-app", client_id: `Iv1.${randomBytes(8).toString("hex")}`, client_secret: randomBytes(20).toString("hex"), webhook_secret: randomBytes(20).toString("hex"), pem: privateKey, tokenMs: 3600_000 };
   const requests = [];
   const tokens = [];
   const codes = new Set(["code-1"]);
@@ -53,7 +53,7 @@ export async function fakeGitHub(t) {
         if ((asked.repositories ?? []).some((name) => !INSTALLED.has(`acme/${name}`))) return answer(422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
         const token = `ghs_test${randomBytes(18).toString("hex")}`;
         tokens.push({ token, installation: Number(minting[1]), repositories: asked.repositories, at: Date.now() });
-        return answer(201, { token, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: { pull_requests: "write", contents: "read", metadata: "read", issues: "read" }, repository_selection: "selected" });
+        return answer(201, { token, expires_at: new Date(Date.now() + app.tokenMs).toISOString(), permissions: { pull_requests: "write", contents: "read", metadata: "read", issues: "read" }, repository_selection: "selected" });
       }
       const covering = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(req.url);
       if (req.method === "GET" && covering) {

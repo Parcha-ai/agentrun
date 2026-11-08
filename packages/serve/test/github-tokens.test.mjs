@@ -95,3 +95,35 @@ test("a run that resumes gets a token minted again; what a run shows is cut of e
   assert.notEqual(second, first);
   assert.equal(seen.at(-1).authorization, `Bearer ${second}`, "the resumed run calls with the new one");
 });
+
+test("a run whose token's hour is over has its GitHub calls answered in words, unsent; the next resume mints a fresh one", { timeout: 120_000 }, async (t) => {
+  const { server, fake } = await withGitHubMcp(t);
+  assert.equal((await server.api("POST", "/agents", agent("late", { tools: ["mcp:gh/add"], tool_settings: ALLOW }))).status, 201);
+  // GitHub's tokens last an hour; this one is past it already, as a long run's would be.
+  server.github.app.tokenMs = -1000;
+  const started = await server.api("POST", "/agents/late/runs", { input: { content: 'Call mcp__gh__add with {"a":1,"b":2}\nhttps://github.com/acme/widgets' } });
+  await follow(server.api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const answer = (await server.api("GET", `/runs/${started.body.run_id}`)).body.result?.final_answer;
+  assert.match(answer, /The GitHub token for this run expired: it is minted again when the run resumes/);
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0, "never sent");
+});
+
+test("mintInstallationToken: the repository's installation looked up with the App's JWT, a token narrowed to that one repository; not installed, no repository, and GitHub out of reach each said", { timeout: 60_000 }, async (t) => {
+  const { mintInstallationToken } = await import("../dist/github.js");
+  const { fakeGitHub } = await import("./github-support.mjs");
+  const github = await fakeGitHub(t);
+  const now = Date.now();
+  const ok = await mintInstallationToken(github.url, String(github.app.id), github.app.pem, { repo: "acme/widgets" }, now);
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.deepEqual([ok.token, github.tokens.at(-1).repositories, github.tokens.at(-1).installation], [github.tokens.at(-1).token, ["widgets"], 777]);
+  assert.ok(ok.expires_at > now, "when it ends, in ms");
+  const given = await mintInstallationToken(github.url, String(github.app.id), github.app.pem, { installation: 777, repo: "acme/widgets" }, now);
+  assert.equal(given.ok, true);
+  const missing = await mintInstallationToken(github.url, String(github.app.id), github.app.pem, { repo: "acme/private" }, now);
+  assert.deepEqual([missing.ok, missing.reason], [false, "not_installed"]);
+  assert.match(missing.message, /The GitHub App isn't installed on acme\/private/);
+  const none = await mintInstallationToken(github.url, String(github.app.id), github.app.pem, { repo: "" }, now);
+  assert.deepEqual([none.ok, none.reason], [false, "no_repo"]);
+  const away = await mintInstallationToken("http://127.0.0.1:9", String(github.app.id), github.app.pem, { repo: "acme/widgets" }, now);
+  assert.deepEqual([away.ok, away.reason], [false, "github_failed"]);
+});
