@@ -121,6 +121,18 @@ test("a spent hook's figure that is not a finite figure of 0 or more frees no ro
   }
 });
 
+test("each part of the run's spend is checked on its own: a negative part beside a positive one ($1 and -$0.50, either way round) is refused as an unknown spend, never summed to a valid $0.50", async () => {
+  for (const [runner, hook] of [[1, -0.5], [-0.5, 1]]) {
+    const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => hook });
+    assert.equal((await before({ ...ASK, spentUsd: runner })).refuse, UNKNOWN_SPEND, `runner ${runner}, hook ${hook}`);
+  }
+});
+
+test("each part of the run's holds is checked on its own: a negative held hook beside a $1 request in flight is refused as an unknown hold, never summed to a valid $0.50", async () => {
+  const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => 0, heldUsd: () => -0.5 });
+  assert.equal((await before({ ...ASK, turn: 2, inFlight: [{ turn: 1, model: SONNET.id, holdUsd: 1 }] })).refuse, UNKNOWN_HELD);
+});
+
 test("a held hook's figure that is not a finite figure of 0 or more frees no room: a negative, NaN or Infinity hold is refused as an unknown hold", async () => {
   for (const figure of [-100, Number.NaN, Number.POSITIVE_INFINITY]) {
     const before = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, spentUsd: () => 0, heldUsd: () => figure });
