@@ -630,3 +630,21 @@ test("a run of several actions over the real page driver whose snapshot is stale
   assert.match(JSON.parse(out.content[0].text).message, /navigated after its snapshot/, "the stale snapshot, as before");
   assert.deepEqual(acts, [], "nothing was sent");
 });
+
+test("take-over viewer: a gate registry that cannot hold (one from before holds) refuses the take in its own words, never as held already", async (t) => {
+  const base = createDrivingGates();
+  const HOLDS = new Set(["take", "give", "held", "holding", "settling", "epoch"]);
+  const legacy = (tag) => { const g = base(tag); return new Proxy(g, { get(target, key) { if (HOLDS.has(key)) return undefined; const v = Reflect.get(target, key, target); return typeof v === "function" ? v.bind(target) : v; } }); };
+  const calls = [];
+  const host = createLiveView({ hostOrigin: "'self'", stream: () => ({ input: async () => {}, nav: async () => {}, dialog: async () => {}, close() {} }), viewer: VIEWER, gates: legacy, takeOver: { take: async () => ({ end: (why) => calls.push(["end", why]), started: () => calls.push(["started"]), cancel: () => calls.push(["cancel"]) }) } });
+  t.after(() => host.close());
+  const view = await host.open("ar-run-to-legacy-1", "ws://127.0.0.1:9/x");
+  const u = new URL(view.fullscreen);
+  const c = await connect(`ws://${u.host}${u.pathname}/ws`, { origin: u.origin });
+  c.ws.sendJson({ type: "hello", token: new URLSearchParams(u.hash.slice(1)).get("t") });
+  await c.ws.next();
+  c.ws.sendJson({ type: "take" });
+  const refused = JSON.parse((await c.ws.until((m) => m.type === "text" && JSON.parse(m.data).type === "take_refused")).item?.data ?? "null");
+  assert.deepEqual(refused, { type: "take_refused", message: "This browser can't be handed over from the live view." });
+  assert.deepEqual(calls, [["cancel"]], "the host's take is cancelled, never ended");
+});
