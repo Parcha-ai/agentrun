@@ -777,7 +777,7 @@ export function takePaidRefusal(owner: RunSpend | undefined): { words: string; f
   return { words: refusal.words, figures: refusal.figures };
 }
 
-export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string; leastCapUsd?: number } | { result: T }> {
+export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }, options: { pauses?: boolean } = {}): Promise<{ refused: string; leastCapUsd?: number } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
@@ -795,10 +795,12 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
       // words and the least cap that sends it (leastCapUsd) are one figure, which the pause carries to its mark and serves.
       const refusal = paidRefusal(spend.cap, read, holding, name, hold);
       const room = { words: refusal.text.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd, leastCapUsd: refusal.leastCapUsd } };
+      // `pauses: false`: no step of the run's own (a person's take-over of its browser), so neither a workflow's call nor the
+      // model's next request is told: the run goes on unpaused.
       // Inside a workflow's call node: the call is told, and ends on it. Else the model's next request is refused in its words.
-      const told = capRefusals.getStore();
+      const told = options.pauses !== false ? capRefusals.getStore() : undefined;
       if (told) told({ ...room, room: true, capUsd: spend.cap });
-      else paidRoomRefusal = { owner: spend, ...room };
+      else if (options.pauses !== false) paidRoomRefusal = { owner: spend, ...room };
       return { refused: refusal.text, leastCapUsd: refusal.leastCapUsd };
     }
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.

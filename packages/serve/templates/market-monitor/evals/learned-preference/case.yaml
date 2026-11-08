@@ -1,0 +1,7 @@
+# The apply this case runs against: no channel, so the digest is returned only. The agent starts with one learned
+# note (fixtures/learning/: MEMORY.md and the note, in the learning folder's format), as if the owner had told an
+# earlier run "skip junior job posts"; the run reads it under `# Learned`.
+parameters:
+  competitors: "Quillforge (quillforge.example)"
+  lookback_days: 7
+learning: fixtures/learning

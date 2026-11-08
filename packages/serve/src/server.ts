@@ -42,7 +42,8 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveHttp, proxyLiveUpgrade, readHandover, readHandovers, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, type LiveHandover, liveRest, LiveViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { answerAsk } from "./browser-person.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON, WITHHELD_SIGN_IN } from "./runs.js";
 import { runLines } from "./usage-lines.js";
@@ -79,7 +80,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
+import { applyBodyOf, compiled, madeTriggerIssues, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -382,6 +383,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/browser$/, name: "getRunBrowser" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/browser\/hand-back$/, name: "handBackRunBrowser" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
   { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
   { method: "GET", pattern: /^\/files$/, name: "listFiles" },
@@ -589,8 +591,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
-      /** The owner watches a run's browser live, read-only (GET /runs/{id}/browser, browser-live.ts). */
-      browser_live: { read_only: true },
+      /** The owner watches a run's browser live (GET /runs/{id}/browser, browser-live.ts), takes it over from the viewer and
+       *  hands it back, and answers the agent's ask for them (POST /runs/{id}/browser/hand-back, browser-person.ts). */
+      browser_live: { read_only: false, take_over: true, ask: true },
       /** An agent's browser stays signed in between its runs (sign-ins.ts): with a seal key to keep each pointer under, and a
        *  browser vendor here (Browserbase's or Kernel's; local Chrome keeps none). */
       sign_ins: sealKeyOf(env[SEAL_KEY_ENV]) !== undefined && tools.some((tool) => tool.name === "browser" && tool.available),
@@ -740,6 +743,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
+  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
+  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
+  // new file and token.
+  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const { token: doorToken } = await tokenIn(doorTokenFile);
   const log = options.log;
@@ -1400,10 +1407,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const saved = pkg.mcp.filter((need) => mcpSource.server(need.server));
     const unsaved = pkg.mcp.filter((need) => !saved.includes(need));
     const needed = unsaved.filter((need) => need.required);
-    if (missing.length || needed.length) {
+    // A webhook trigger's secret is kept sealed, never in the clear: with no seal key, its create would be refused after
+    // the agent is made, so the apply is refused first, naming each one.
+    const unsealed = sealKeyOf(env[SEAL_KEY_ENV]) ? [] : pkg.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [i] : []));
+    if (missing.length || needed.length || unsealed.length) {
       const fix = "Add it in Settings → Model keys or Settings → Tool keys, or set it where AgentRun starts, then apply the template again.";
       const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
+      const sealing = `Start the server with its launcher, agentrun-serve, which makes and keeps a seal key, or set ${SEAL_KEY_ENV} (32 random bytes in base64) where AgentRun starts, then apply the template again.`;
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`), ...(unsealed.length ? ["a seal key for its webhook trigger's secret"] : [])].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server })), ...unsealed.map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: `This server has no seal key (${SEAL_KEY_ENV}), so it cannot keep the webhook trigger's secret.`, fix: sealing }))] });
     }
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
@@ -1415,6 +1426,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
     const kept: InputIssue[] = denied.map((tool) => ({ field: `grants.${tool}`, reason: "not_allowed", message: `${tool} is denied on this server (Settings → Tools), so the agent was not allowed it: its runs are refused it until the owner changes that setting.` }));
     const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)) });
+    // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
+    // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
+    const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
+    if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     const { entry, warnings } = await createAgentOf(made.agent);
@@ -2014,9 +2029,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     // A run's live browser view is a full-control credential for its browser: the owner's signed-in page alone, as approving
     // a note is (never a token a run, an MCP client or a script may hold).
-    if (found.name === "getRunBrowser" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "browser_without_session");
-      throw new ApiError("forbidden", owner ? "A run's live browser view takes the owner's password sign-in in the console, never a token." : "A run's live browser view takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+      throw new ApiError("forbidden", owner ? "A run's live browser takes the owner's password sign-in in the console, never a token." : "A run's live browser takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
@@ -2204,6 +2219,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
         return send(res, 200, { state: "none" }, { "cache-control": "no-store" });
+      }
+      case "handBackRunBrowser": {
+        // The owner's answer to the agent's ask for them in its browser (browser-person.ts): the first answer wins, the same
+        // one again is that answer, a different one is 409; an ask past its expiry has `expired`.
+        const run = await needRun(id);
+        const body = await bodyOf(req);
+        const issues = unknownFields(body, ["outcome"]);
+        if (body.outcome !== "done" && body.outcome !== "cancelled") issues.push({ field: "outcome", reason: body.outcome === undefined ? "missing" : "not_an_option", message: "outcome is done or cancelled" });
+        if (issues.length) throw invalid(issues);
+        const answered = answerAsk(run.dir, body.outcome as "done" | "cancelled");
+        if (!answered) throw new ApiError("not_found", "this run's agent has not asked for you in its browser");
+        if (answered.outcome !== body.outcome) throw new ApiError("handoff_answered", answered.outcome === "expired" ? "The agent's hand-over expired before this answer: the agent was told it expired." : `The agent's hand-over was already answered ${answered.outcome}.`, { details: { outcome: answered.outcome } });
+        if (answered.first) runs.remark(run.id);
+        return send(res, 200, { outcome: answered.outcome }, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
         const run = await needRun(id);
@@ -2501,8 +2530,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     res.end(text);
   }
 
-  /** A run's live viewer's page and files (browser-live.ts): the owner's signed-in page alone, GET or HEAD, to the port the
-   *  run's hand-over names, for its own viewer's path. */
+  /** A run's live viewer's page and files (browser-live.ts): the owner's signed-in page alone, GET or HEAD, for a viewer the
+   *  run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
+   *  only the viewer's WebSocket reaches the run. */
   async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
     if (!byOwnerSession(req)) {
@@ -2511,10 +2541,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     }
     const run = await needRun(runId);
     const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
-    // A viewer's page goes to that viewer's session; its two files, to the newest one's.
+    // A viewer's page, for a viewer the run has open; its two files, while the run has one open.
     const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
     if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
-    await proxyLiveHttp(req, res, handover, rest);
+    await serveViewerFile(req, res, rest);
   }
 
   /** The origin of the address people open (`publicUrl`, AGENTRUN_PUBLIC_URL), lowercased; none, undefined. */
@@ -2592,6 +2622,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const sent = String(req.headers.origin ?? "").toLowerCase();
     if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
+    // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
+    let piping = false;
     void (async () => {
       const run = await runs.get(viewing[1]!);
       const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[2]!.slice(3, -3)) : undefined;
@@ -2604,8 +2636,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!);
-    })().catch(() => deny("500 Internal Server Error"));
+      proxyLiveUpgrade(req, socket, head, handover, viewing[2]!, () => { piping = true; });
+    })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   });
   const first = options.port ?? DEFAULT_PORT;
   const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
