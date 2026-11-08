@@ -51,8 +51,14 @@ async function start(env) {
   return {
     base,
     codes,
-    /** The API token this start made (the banner's AGENTRUN_API_KEY line): typed into the field, never printed here. */
-    token: () => /^AGENTRUN_API_KEY=(\S+)$/m.exec(out)?.[1],
+    /** The API token this start made (the banner's AGENTRUN_API_KEY line), once printed (bounded): typed into the
+     *  field, never printed here. */
+    token: () => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("the server printed no token in 30 s")), 30_000);
+      const look = () => { const m = /^AGENTRUN_API_KEY=(\S+)$/m.exec(out); if (m) { clearTimeout(timer); child.stdout.off("data", look); resolve(m[1]); } };
+      child.stdout.on("data", look);
+      look();
+    }),
     /** The first setup code it printed, once it has (bounded). */
     firstCode: () => new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("the server printed no setup code in 30 s")), 30_000);
@@ -149,7 +155,7 @@ try {
   const d = await start({ AGENTRUN_PUBLIC_URL: "http://agentrun-e2e.example.test" });
   try {
     await d.firstCode();
-    const token = d.token();
+    const token = await d.token();
     check("server 4 printed the token it made", typeof token === "string" && token.length > 0);
     const { page, errors } = await open(`${d.base}/`);
     await fill(page, token);
