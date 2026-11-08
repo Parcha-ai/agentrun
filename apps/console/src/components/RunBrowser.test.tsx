@@ -264,6 +264,24 @@ describe("the run page's Browser tab", () => {
     expect(p.tabButton()?.textContent).toBe("Watch live");
   });
 
+  it("an ended run that answered off, went again with a live browser and then ended: its browser shows closed, with no iframe, and nothing more is read", async () => {
+    let restored = false;
+    const p = await moving(async () => (restored ? { state: "live", viewer: VIEWER } : { state: "off", reason: "no browser key" }), ended);
+    await settle(80);
+    restored = true;
+    await p.show({ ...ended, status: "working", state: "working", ended_at: null } as Run);
+    await settle(120);
+    expect(p.tabButton()?.textContent).toBe("Watch live");
+    // The follow-up ends: its browser is closed, whatever the last read said.
+    await p.show(ended);
+    await settle(60);
+    const endedAt = p.reads();
+    expect(p.host.querySelector("iframe"), "no viewer after the follow-up ended").toBeNull();
+    expect(p.host.textContent).toContain("The browser closed when the run ended.");
+    await settle(120);
+    expect(p.reads(), "nothing more is read").toBe(endedAt);
+  });
+
   it("a Browser tab that goes away while selected (the next read says off) leaves the run's default tab selected, with its content", async () => {
     let off = false;
     const p = await moving(async () => (off ? { state: "off", reason: "no browser key" } : { state: "live", viewer: VIEWER }));

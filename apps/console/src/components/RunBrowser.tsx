@@ -15,16 +15,15 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
   const [now, setNow] = useState<RunBrowser | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
-  // An ended run that said off: read no more until it goes again (a follow-up, its browser key restored).
-  const [offEnded, setOffEnded] = useState(false);
   // The newest reader, so a page that passes a new function each render doesn't restart the reads.
   const reader = useRef(read);
   reader.current = read;
-  // Whether a read has answered on this page: an ended run is then read no more.
+  // Whether a read has answered on this page: an ended run is then read no more (an off it said included), and a browser
+  // it showed reads as closed, until it goes again (a follow-up).
   const answered = useRef(false);
   const has = !!read;
   useEffect(() => {
-    if (!has || refused || (offEnded && !going)) return;
+    if (!has || refused) return;
     if (!going && answered.current) { setNow((prev) => (prev ? { state: "none" } : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -33,10 +32,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
         const next = await reader.current!();
         if (!alive) return;
         answered.current = true;
-        if (next.state === "off") {
-          setNow(null);
-          if (!going) { setOffEnded(true); return; }
-        }
+        if (next.state === "off") setNow(null);
         // An ended run's browser is closed, whatever it last said.
         else if (!going) setNow({ state: "none" });
         // A same answer keeps the same object, so a live viewer's iframe is not touched by a poll.
@@ -49,7 +45,7 @@ export function useRunBrowser(read: (() => Promise<RunBrowser>) | undefined, goi
     };
     void once();
     return () => { alive = false; clearTimeout(timer); };
-  }, [has, going, every, refused, offEnded]);
+  }, [has, going, every, refused]);
   return now;
 }
 
