@@ -45,6 +45,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 
 /** The phone harness's API. */
 export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
@@ -255,7 +256,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			});
 		} catch (error) {
 			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
-			return { ...fail("phone", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error).message)}`), thrown: true };
+			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error).message)}`), thrown: true };
 		}
 		const text = await response.text().catch(() => "");
 		let json: unknown;
@@ -361,6 +362,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (session.value.state !== "ready" && session.value.state !== "provisioning") return fail("gone", `${id} is ${session.value.state}`);
 		const deadline = new Date(this.#deadlineOf(session.value, Date.parse((entry as PhoneLedgerEntry).deadline)));
 		return ok({ id, name: id, spec: { image: (entry as PhoneLedgerEntry).image, user: SHELL_USER, network: "open", deadline, kind: "android" } });
+	}
+
+	/** Settings' test: one GET /sessions, the account's sessions joined to the ledger, which rents nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("Phone harness", await this.list({}, context));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

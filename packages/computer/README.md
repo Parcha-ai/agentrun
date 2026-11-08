@@ -1808,6 +1808,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   only the phones it names, never another session on the account, and forget a phone the service ended.
 - **adb** is an option too: a runner (tests give a fake), or the path of the `adb` CLI (Android platform-tools; default
   `adb` on PATH). Without it, connect says so in words.
+- **testConnection** is one `GET /sessions` joined to the ledger, which rents nothing and reaches no phone: ok with the
+  count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
+  reached.
 
 Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_API_KEY`,
 `COMPUTER_PHONE_HARNESS_PLATFORM`, `COMPUTER_PHONE_HARNESS_ADB`, `COMPUTER_PHONE_HARNESS_LEDGER` and
