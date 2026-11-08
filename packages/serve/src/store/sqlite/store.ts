@@ -148,6 +148,11 @@ function isThisVersionsStore(file: string): boolean {
  *  refuses a schema version this build does not know (SchemaVersionUnknown); a runner refuses no schema (or no data
  *  directory) too. */
 export async function openSqliteStore(options: SqliteStoreOptions): Promise<Store> {
+  // No in-memory store: a caller that names neither place (an undefined passed through) is refused before anything is
+  // opened or made, never left to open a path built from "undefined" (its owner lock in the working directory).
+  if (options.dataDir === undefined && (options as { file?: string }).file === undefined) {
+    throw new TypeError("A store is opened in its data directory (dataDir) or at its file (file): neither was given, so nothing was opened or made.");
+  }
   const role = options.role ?? "server";
   let file: string;
   if (options.dataDir !== undefined) {
