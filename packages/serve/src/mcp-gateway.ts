@@ -30,7 +30,7 @@ import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
-import type { Workspace } from "./workspace/index.js";
+import { type Workspace, workspaceAt } from "./workspace/index.js";
 
 /** The run's pinned MCP tools, in its directory: written once, at its first launch. */
 export const MCP_PIN = "mcp-tools.json";
@@ -199,8 +199,9 @@ const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
 export interface McpGatewayOptions {
   pin: McpPin;
   credentials: McpCredentials;
-  /** The run's Workspace, where an answer too long for the model is filed. */
-  work: () => Workspace;
+  /** The run's Workspace, where an answer too long for the model is filed (the run's process still hands its folder's
+   *  path). */
+  work: () => Workspace | string;
   /** For tests: the fetch the upstream client sends with. */
   fetch?: typeof fetch;
   /** For tests: the bound on one call (CALL_MS) and on a server's first connection (CONNECT_MS). */
@@ -282,7 +283,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
     const head = text.length > MCP_CLIP ? `${text.slice(0, MCP_CLIP)}\n[cut at ${MCP_CLIP} of ${text.length} characters; ` : `${text}\n[${other} block${other > 1 ? "s" : ""} that ${other > 1 ? "are" : "is"} not text; `;
     try {
-      await options.work().write(`evidence/mcp/${server}/${name}`, scrub(JSON.stringify(result), headers));
+      await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}`, scrub(JSON.stringify(result), headers));
     } catch (error) {
       return `${head}the whole answer could not be saved (${(error as { code?: string })?.code ?? "write failed"})]`;
     }

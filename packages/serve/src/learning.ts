@@ -38,7 +38,7 @@ import { DISK_DIR } from "@parcha/pi-durable-agent";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
-import { type Entry, isWorkspaceError, type Workspace, WorkspaceError } from "./workspace/index.js";
+import { type Entry, isWorkspaceError, type Workspace, WorkspaceError, workspaceAt } from "./workspace/index.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
  *  default: a run learns when its agent's definition says `learning: true`. `off`: no run this server starts does. */
@@ -1082,7 +1082,9 @@ const NOTHING_YET = "Nothing learned yet.";
  *  like one of the revision's, which is the revision's. A learned skill the work no longer holds whole, as a harness reads
  *  it through the run's Workspace (no link on the way), is left out: a learning fault never fails a run. The one path for
  *  every harness (app.ts): pi's system prompt, claude-agent's and codex's instructions, and the skills each gets. */
-export async function withLearned(runDir: string, work: Workspace, instructions: string, own: readonly string[] = []): Promise<{ instructions: string; skills: string[] }> {
+export async function withLearned(runDir: string, given: Workspace | string, instructions: string, own: readonly string[] = []): Promise<{ instructions: string; skills: string[] }> {
+  // The run's process still hands its folder's path.
+  const work = workspaceAt(given);
   const pin = await readPin(runDir);
   const section = pin?.section;
   const owned = new Set(namesIn(own));

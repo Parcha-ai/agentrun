@@ -13,7 +13,7 @@ import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { isWorkspaceError, READ_MAX, relativePath, type Workspace } from "./workspace/index.js";
+import { isWorkspaceError, READ_MAX, relativePath, type Workspace, workspaceAt } from "./workspace/index.js";
 
 export const PDF_PAGES_TOOL = "pdf_pages";
 /** The read-only directory a run's documents are read from: the server's `--documents`. */
@@ -162,8 +162,9 @@ const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "imag
 const MAX_IMAGE_BYTES = 16 << 20;
 
 /** A decision node's image by its ref, a path under the run's work directory (a page pdf_pages drew), read through the
- *  run's Workspace. */
-export const imageLoader = (work: Workspace) => async (ref: string): Promise<{ bytes: Uint8Array; mime: string }> => {
+ *  run's Workspace (the run's process still hands its folder's path). */
+export const imageLoader = (given: Workspace | string) => async (ref: string): Promise<{ bytes: Uint8Array; mime: string }> => {
+  const work = workspaceAt(given);
   const mime = IMAGE_TYPES[extname(String(ref)).toLowerCase()];
   if (!mime) throw new Error(`the image ${ref} is not a PNG, JPEG, WebP or GIF file`);
   const rel = typeof ref === "string" && !isAbsolute(ref) ? workPath(ref) : undefined;

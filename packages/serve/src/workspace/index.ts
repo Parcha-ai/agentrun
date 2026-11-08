@@ -8,4 +8,4 @@ export {
 } from "./attach.js";
 export { agentDirName, agentFolder, agentLearningFolder, DISK_DIR, relativePath, relativeSegments, runFolder } from "./paths.js";
 export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
-export { localWorkspace } from "./local.js";
+export { localWorkspace, workspaceAt } from "./local.js";

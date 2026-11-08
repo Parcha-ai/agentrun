@@ -4,7 +4,7 @@
 // MANIFEST_ENTRIES files, then how many more, and never past what the door takes in one message (FIRST_MESSAGE_BYTES):
 // a message that fits at the run's creation still fits with its line.
 import { INPUTS_DIR } from "./uploads.js";
-import type { Entry, Workspace } from "./workspace/index.js";
+import { type Entry, type Workspace, workspaceAt } from "./workspace/index.js";
 
 /** The most files the line names; the rest are counted. */
 export const MANIFEST_ENTRIES = 20;
@@ -48,8 +48,10 @@ const INPUTS_DEPTH = 513;
 
 /** The files under the run's inputs/, by their path from its root, in order, as deep as an upload's path goes: walked
  *  through the run's Workspace listing, which follows no link, so a link at inputs/ or anywhere below it is never
- *  entered; a dot-name left out. None when there is no inputs/ or a folder of it cannot be read. */
-export async function inputFiles(work: Workspace): Promise<ManifestFile[]> {
+ *  entered; a dot-name left out. None when there is no inputs/ or a folder of it cannot be read. The run's start still
+ *  hands its folder's path. */
+export async function inputFiles(given: Workspace | string): Promise<ManifestFile[]> {
+  const work = workspaceAt(given);
   const files: ManifestFile[] = [];
   const into = async (dir: string, depth: number): Promise<void> => {
     const entries: Entry[] = await work.list(dir).catch(() => []);
@@ -67,7 +69,7 @@ export async function inputFiles(work: Workspace): Promise<ManifestFile[]> {
 /** The run's first message: `content`, then, after a blank line, the files given to it, when it has any: as many named
  *  as keep the message within `budget` (FIRST_MESSAGE_BYTES), else only how many, else no line at all, so the line never
  *  turns a message the run took into one its door refuses. */
-export async function firstMessage(content: string, work: Workspace, budget = FIRST_MESSAGE_BYTES): Promise<string> {
+export async function firstMessage(content: string, work: Workspace | string, budget = FIRST_MESSAGE_BYTES): Promise<string> {
   const files = await inputFiles(work);
   for (let entries = Math.min(files.length, MANIFEST_ENTRIES); entries >= 0 && files.length > 0; entries--) {
     const message = `${content}\n\n${filesLine("Files for this run", files, entries)}`;

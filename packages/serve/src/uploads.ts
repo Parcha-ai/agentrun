@@ -11,7 +11,7 @@ import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { typeOf } from "./file-types.js";
 import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
 import { ID, type Json, unknownFields } from "./validate.js";
-import { type Entry, isWorkspaceError, type Workspace } from "./workspace/index.js";
+import { type Entry, isWorkspaceError, type Workspace, workspaceAt } from "./workspace/index.js";
 
 /** `limits.max_upload_bytes`: the largest file a reservation names and a PUT sends. */
 export const MAX_UPLOAD_BYTES = 50 * 2 ** 20;
@@ -409,8 +409,9 @@ export class Uploads {
    *  the run's process exists: a name taken already (the same path twice, a file where another's folder goes, or what
    *  the folder held before) gets the next free suffix (`notes-2.txt`, `docs-2/`), the same for the same files in the
    *  same order. Each copy is a new file written whole by the Workspace, never a link to the upload; a link on the way
-   *  fails the copy (ESCAPE), and nothing is written through it. */
-  async copyInto(workspace: Workspace, files: readonly UploadedFile[]): Promise<void> {
+   *  fails the copy (ESCAPE), and nothing is written through it. The run's start still hands its folder's path. */
+  async copyInto(work: Workspace | string, files: readonly UploadedFile[]): Promise<void> {
+    const workspace = workspaceAt(work);
     await uploadTestHooks.beforeCopy?.(workspace);
     const names = takenNames(workspace);
     for (const file of files) {

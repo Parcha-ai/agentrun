@@ -286,3 +286,7 @@ export function assertHardlinkProtection(read = () => readFileSync("/proc/sys/fs
   }
   if (value !== "1") throw new Error(`agentrun-serve: fs.protected_hardlinks is ${value}, not 1; a run's workspace could hold a link to this server's files`);
 }
+
+/** Does nothing: the run's host tools file through its Workspace, and nothing copies their files into a remote box any
+ *  more. Kept only so the run's start (app.ts) compiles until its rewrite drops the call. */
+export function mirrorWrites(_work: string, _mirror: (path: string, data: string | Uint8Array) => Promise<void>): void {}

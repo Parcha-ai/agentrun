@@ -9,7 +9,7 @@
 // all.
 import { learnedFront } from "./learn/skills.js";
 import { skillNames } from "./validate.js";
-import type { Workspace } from "./workspace/index.js";
+import { type Workspace, workspaceAt } from "./workspace/index.js";
 
 /** A skill: its name (its directory under `.agents/skills/`), and each of its files' text by its path inside that
  *  directory (`SKILL.md`, `reference/sources.md`). */
@@ -25,8 +25,10 @@ export const READS_AT_ONCE = 16;
 const skillPath = (path: string) => [".agents", "skills", path].join("/");
 
 /** Each of `paths` under the run's skills directory as text, in order, READS_AT_ONCE at a time, read through the run's
- *  Workspace, which follows no link: a skill directory or file linked out of it is refused, and the read fails. */
-async function readSkillFiles(work: Workspace, paths: readonly string[]): Promise<string[]> {
+ *  Workspace, which follows no link: a skill directory or file linked out of it is refused, and the read fails. The
+ *  run's process still hands its folder's path. */
+async function readSkillFiles(given: Workspace | string, paths: readonly string[]): Promise<string[]> {
+  const work = workspaceAt(given);
   const texts: string[] = [];
   for (let at = 0; at < paths.length; at += READS_AT_ONCE) {
     texts.push(...(await Promise.all(paths.slice(at, at + READS_AT_ONCE).map(async (path) => Buffer.from(await work.read(skillPath(path))).toString("utf8")))));
@@ -68,7 +70,7 @@ function promptWith(instructions: string, skills: readonly { name: string; files
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name: whole, or, with
  *  `onDemand` (the run reads its files: readsFiles), as a line naming it, what it is for and its path. */
-export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: Workspace, { onDemand = false }: { onDemand?: boolean } = {}): Promise<string> {
+export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: Workspace | string, { onDemand = false }: { onDemand?: boolean } = {}): Promise<string> {
   const names = skillNames(skillFiles);
   const texts = await readSkillFiles(work, names.map((name) => `${name}/SKILL.md`));
   const skills = names.map((name, i) => ({ name, files: { "SKILL.md": texts[i]! } }));
@@ -81,7 +83,7 @@ export async function promptOf(instructions: string, skillFiles: Iterable<string
  * file under no skill is no skill's. Only the revision's own files are read, through the run's Workspace: a refused read
  * fails, as promptOf's does.
  */
-export async function skillsOf(skillFiles: Iterable<string>, work: Workspace): Promise<SkillFiles[]> {
+export async function skillsOf(skillFiles: Iterable<string>, work: Workspace | string): Promise<SkillFiles[]> {
   const paths = [...skillFiles].sort();
   const names = skillNames(paths);
   // The deepest first, so the first a path is under is the nearest.
@@ -108,7 +110,7 @@ export function splitSkills(skills: readonly SkillFiles[], check: SkillCheck): {
 /** A run's system prompt, and the skills its harness loads itself. With the harness's `check`, the skills it takes are
  *  its own and leave the prompt, and the ones it refuses stay inlined; with none, the skills are as promptOf gives them
  *  (on demand, with `onDemand`). */
-export async function systemOf(instructions: string, skillFiles: Iterable<string>, work: Workspace, check?: SkillCheck, { onDemand = false }: { onDemand?: boolean } = {}): Promise<{ system: string; native: SkillFiles[] }> {
+export async function systemOf(instructions: string, skillFiles: Iterable<string>, work: Workspace | string, check?: SkillCheck, { onDemand = false }: { onDemand?: boolean } = {}): Promise<{ system: string; native: SkillFiles[] }> {
   if (!check) return { system: await promptOf(instructions, skillFiles, work, { onDemand }), native: [] };
   const { native, inlined } = splitSkills(await skillsOf(skillFiles, work), check);
   return { system: promptWith(instructions, inlined), native };

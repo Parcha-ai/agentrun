@@ -48,7 +48,7 @@ import { promptOf, readsFiles, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
-import { localWorkspace } from "./workspace/index.js";
+import { mirrorWrites } from "./workspace.js";
 import { deniedText, runGate } from "./tool-gate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
@@ -156,6 +156,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // an earlier process's, destroyed before this one makes its own (run-box.ts fenceRunBoxes).
   const epoch = Number(process.env[RUN_EPOCH_ENV] ?? "0");
   const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place, epoch: Number.isSafeInteger(epoch) ? epoch : 0 }) : undefined;
+  // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
+  if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
   // Every tool call the run's model makes passes the run's tool gate (tool-gate.ts): pi's tools wrapped by name where the
   // registry composes each agent's, another harness's host tools in their call. An approved call runs on this coding
@@ -167,7 +169,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // the run is open.
   let runHarness: Harness | undefined;
   const commit = () => runHarness && (<T>(change: (tx: unknown) => Promise<T>) => runHarness!.commit(change as never, BACKGROUND) as Promise<T>);
-  const gateway = pinned && Object.keys(pinned).length ? mcpGateway({ pin: pinned, credentials: mcpCredentials(), work: () => localWorkspace(where.work), commit, gate: toolGate }) : undefined;
+  const gateway = pinned && Object.keys(pinned).length ? mcpGateway({ pin: pinned, credentials: mcpCredentials(), work: () => where.work, commit, gate: toolGate }) : undefined;
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
   // installed first so it comes before every other extension's and the instructions.
@@ -175,7 +177,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(coding.extension);
   // What the run's agent learned goes into its instructions, and the skills it wrote join the revision's, the one path for
   // every harness (learning.ts).
-  const learned = revision.kind === "agentic" ? await withLearned(where.root, localWorkspace(where.work), revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
+  const learned = revision.kind === "agentic" ? await withLearned(where.root, where.work, revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
   // The workflows the agent learned that its run may run, as one tool (learned-workflow.ts), when its pin names any: on
   // the run's models, as the run's own requests under its cap, each model node and `llm` call on the run's model of its
   // tier, else the run's own (the only one the run was made with, and handed the key of); on another harness, the
@@ -197,7 +199,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // names each skill and its file when the run reads its files (it reads the SKILL.md when it fits), else keeps every
     // skill whole (skills.ts).
     const check = await entry.skillCheck?.();
-    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, localWorkspace(where.work), check, { onDemand: readsFiles(revision.body.tools) });
+    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(facts, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
@@ -275,7 +277,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     }
     registry.install(toolGate.extension(tools));
     // Each skill named with its file when the run reads its files (it reads the SKILL.md when it fits), else whole.
-    const instructions = [await promptOf(learned.instructions, learned.skills, localWorkspace(where.work), { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
+    const instructions = [await promptOf(learned.instructions, learned.skills, where.work, { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
     // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
     const onOpen = async (durable: DurableRun) => {
       runHarness = durable.harness;
@@ -304,7 +306,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const gatedTools = toolGate.extension([...nodeTools.values()].flatMap((binding) => binding.tools));
   registry.install(gatedTools);
   // A decision node's images are files of the run's work directory (pdf_pages draws them there).
-  const loadImage = imageLoader(localWorkspace(where.work));
+  const loadImage = imageLoader(where.work);
   const log = nodeLog(where.root);
   // The receipts earlier processes recorded, read before this one opens the store, which then holds it exclusively.
   // Lock-free, as the server reads it: nothing made beside the store (a plain read leaves a -shm there).

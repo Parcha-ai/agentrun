@@ -533,3 +533,7 @@ class LocalWorkspace implements Workspace {
 
 /** A Workspace on folder `root` of this machine. The folder must be there when it is first used (else UNAVAILABLE). */
 export const localWorkspace = (root: string): Workspace => new LocalWorkspace(root);
+
+/** `work` as a Workspace: a folder of this machine, by its path, becomes its LocalWorkspace. For the callers that still
+ *  hand a run's folder by its path (the run's start and its process), until they hand the run's Workspace. */
+export const workspaceAt = (work: string | Workspace): Workspace => (typeof work === "string" ? localWorkspace(work) : work);
