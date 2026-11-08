@@ -1,57 +1,24 @@
 // Slack: a trigger source pushed to the server by its Slack app. A mention of the app in one of a trigger's channels
 // starts a run for its thread, and a person's reply in that thread steers the run (the kernel's conversations,
 // triggers.ts receiveEvent). Served by the one push handler at /v2/hooks/slack: each request checked by Slack's v0
-// signature under the app's signing secret (its settings', the server's), Slack's url_verification answered after that
-// check, and each message read here, purely, into the kernel's event. The app's settings (PUT /v2/settings/slack) and
-// the lines posted in a thread are slack.ts's.
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { closedSchema, type Headers, type PushEvent, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
+// signature (the signature schemes' `slack` row, trigger-signatures.ts) under the app's signing secret, Slack's
+// url_verification answered after that check, and each message read here, purely, into the kernel's event. The app's
+// settings are the server's (PUT /v2/settings/sources/slack, source-settings.ts, checked by `check` below); the lines
+// posted in a thread are slack.ts's.
+import { closedSchema, type PushEvent, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
+import { SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { ApiError, invalid } from "./errors.js";
 import { isObject, type Json } from "./validate.js";
 
 /** Slack's Web API. */
 export const SLACK_API = "https://slack.com/api";
 
-/** How far a request's X-Slack-Request-Timestamp may be from this server's clock, either way. */
-export const SLACK_TOLERANCE_S = 300;
 /** The most channels a Slack trigger lists. */
 export const SLACK_CHANNELS_MAX = 50;
 /** A Slack channel's id: a public channel's (C...) or a private one's (G...). */
 const SLACK_CHANNEL = /^[CG][A-Z0-9]{2,20}$/;
 /** The largest event body taken, as a webhook's. */
 const SLACK_MAX_BODY = 256 * 1024;
-
-const SLACK_SIGNATURE = /^v0=[0-9a-f]{64}$/;
-
-function slackPrecheck(headers: Headers, nowMs: number): string | undefined {
-  const timestamp = headers["x-slack-request-timestamp"];
-  const signature = headers["x-slack-signature"];
-  if (typeof timestamp !== "string" || typeof signature !== "string") return "missing_headers";
-  if (!/^\d{1,12}$/.test(timestamp) || !SLACK_SIGNATURE.test(signature)) return "malformed_headers";
-  if (Math.abs(nowMs / 1000 - Number(timestamp)) > SLACK_TOLERANCE_S) return "stale_timestamp";
-  return undefined;
-}
-
-/** Slack's request signature ("Verifying requests from Slack"), in the shape of a signature scheme (a webhook trigger's
- *  table of them): `X-Slack-Signature: v0=<hex HMAC-SHA256 of "v0:{X-Slack-Request-Timestamp}:{body}">` under the app's
- *  signing secret, its timestamp within SLACK_TOLERANCE_S of this server's clock. Its firing key is the signed body's
- *  `event_id`, which Slack's retries repeat. */
-export const SLACK_SCHEME = {
-  signatureHeader: "x-slack-signature",
-  describe: `\`slack\` takes a Slack app's request: \`X-Slack-Signature: v0=<hex HMAC-SHA256 of "v0:{X-Slack-Request-Timestamp}:{body}">\` under the app's signing secret, \`X-Slack-Request-Timestamp\` (Unix seconds, within ${SLACK_TOLERANCE_S} s of this server's clock either way).`,
-  precheck: slackPrecheck,
-  verify(key: string, headers: Headers, body: Buffer, nowMs: number): string | undefined {
-    const early = slackPrecheck(headers, nowMs);
-    if (early) return early;
-    const expected = Buffer.from(`v0=${createHmac("sha256", key).update(`v0:${headers["x-slack-request-timestamp"] as string}:`).update(body).digest("hex")}`);
-    return timingSafeEqual(expected, Buffer.from(headers["x-slack-signature"] as string)) ? undefined : "bad_signature";
-  },
-  firingKeyOf: (_headers: Headers, body: Buffer): string => {
-    const doc = jsonOf(body);
-    return isObject(doc) && typeof doc.event_id === "string" ? doc.event_id : "";
-  },
-  eventOf: (_headers: Headers, json: unknown): string | undefined => (isObject(json) && isObject(json.event) && typeof json.event.type === "string" ? json.event.type : undefined),
-};
 
 const jsonOf = (body: Buffer): unknown => {
   try {
@@ -142,8 +109,9 @@ export const slack: TriggerAdapter = {
   push: {
     maxBodyBytes: SLACK_MAX_BODY,
     key: "signing_secret",
-    headers: SLACK_SCHEME.precheck,
-    verify: SLACK_SCHEME.verify,
+    // Slack's signature, a row of the signature schemes (trigger-signatures.ts).
+    headers: SIGNATURE_SCHEMES.slack.precheck,
+    verify: SIGNATURE_SCHEMES.slack.verify,
     // Slack's check that the URL is the app's, answered only after the request's own check.
     handshake(_headers, body) {
       const doc = jsonOf(body);
