@@ -205,6 +205,8 @@ test("syncingClient: every call that may change the folder syncs before it answe
 		["files.mkdir", { path: "/workspace/d" }],
 		["tar.push.end", { id: "t" }],
 		["exec.run", { argv: ["true"], timeoutMs: 1000 }],
+		// Review (#1994, P1): process.start makes its log file, and any missing folder above it, which may be in /workspace.
+		["process.start", { argv: ["sleep", "60"], log: "/workspace/logs/run.log" }],
 		["process.write", { id: "p", data: "" }],
 		["process.signal", { id: "p", signal: "TERM" }],
 		["process.wait", { id: "p" }],
