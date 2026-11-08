@@ -22,7 +22,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A store with one queued run, a runner on the adapter loop running `script` with `beforeRequest`, until the run is
  *  not running or `ms` passes. `asked`: each request the host was asked about; `sent`: each body the provider got. */
-export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, ms = 20_000 }) {
+export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, during, ms = 20_000 }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -49,6 +49,9 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, ms
     },
   }), { restartLimit: MAX_RESTARTS });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  // `during(server)`: what a test does while the run runs (a person's stop once a request is out), awaited before the read.
+  const acting = during ? during(server) : undefined;
+  acting?.catch(() => undefined);
   const from = Date.now();
   let row;
   for (;;) {
@@ -57,6 +60,7 @@ export async function capRun(t, { script, beforeRequest, cap: runCap, specOf, ms
     if (Date.now() - from > ms) break;
     await sleep(20);
   }
+  await acting;
   return { row, asked, sent, ms: Date.now() - from, server, store };
 }
 
