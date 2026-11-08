@@ -133,13 +133,28 @@ test("the validator refuses a malformed package, naming each problem", async (t)
 
 test("a package's model: its preferred one where this server runs it on the harness, else this server's model for its tier", async () => {
   const model = { tier: "fast", prefer: "openrouter/particle-ai/particle-1" };
-  assert.equal(await packageModel({ OPENROUTER_API_KEY: "fake-test-key" }, model, "pi"), model.prefer, "a key for its provider runs it");
-  assert.equal(await packageModel({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-5-mini" }, model, "pi"), "openai/gpt-5-mini", "no OpenRouter key: the fast tier's");
-  assert.equal(await packageModel({ OPENAI_API_KEY: "fake-test-key" }, { tier: "strong", prefer: model.prefer }, "pi"), "openai/gpt-6.1-sol", "no tier model set: the default of the key it has");
-  assert.equal(await packageModel({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-5" }, { tier: "balanced" }, "pi"), "openai/gpt-5", "balanced is the server's default");
-  assert.equal(await packageModel({ ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key" }, model, "claude-agent"), "anthropic/claude-sonnet-5-5", "a harness that cannot run it takes the tier's");
-  assert.equal(await packageModel({}, model, "pi"), undefined, "no key at all: none, so the agent runs on the server's default");
-  assert.equal(await packageModel({ OPENROUTER_API_KEY: "fake-test-key" }, undefined, "pi"), undefined, "a package that names none");
+  const pick = async (env, m, harness = "pi") => (await packageModel(env, m, harness)).model;
+  assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, model), model.prefer, "a key for its provider runs it");
+  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-5-mini" }, model), "openai/gpt-5-mini", "no OpenRouter key: the fast tier's");
+  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key" }, { tier: "strong", prefer: model.prefer }), "openai/gpt-6.1-sol", "no tier model set: the default of the key it has");
+  assert.equal(await pick({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-5" }, { tier: "balanced" }), "openai/gpt-5", "balanced is the server's default");
+  assert.equal(await pick({ ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key" }, model, "claude-agent"), "anthropic/claude-sonnet-5-5", "a harness that cannot run it takes the tier's");
+  assert.equal(await pick({}, model), undefined, "no key at all: none, so the agent runs on the server's default");
+  assert.equal(await pick({ OPENROUTER_API_KEY: "fake-test-key" }, undefined), undefined, "a package that names none");
+});
+
+test("on a gateway server, a package's model is never one the gateway has not said it serves: a bare gateway id is left to the server's default, and a preferred model is not used, said in a warning", async () => {
+  const gateway = { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENT_MODEL_API_KEY: "fake-test-key", AGENT_MODEL: "gpt-6-luna" };
+  // A tier-only package: the tier's model is the gateway's own id, which a definition can't name ("provider/model-id").
+  const tierOnly = await packageModel(gateway, { tier: "balanced" }, "pi");
+  assert.equal(tierOnly.model, undefined, "left out: the agent runs on the server's default, the gateway's model");
+  const fast = await packageModel({ ...gateway, AGENT_MODEL_FAST: "gpt-6-mini" }, { tier: "fast" }, "pi");
+  assert.equal(fast.model, undefined);
+  assert.match(fast.warning ?? "", /fast tier's model gpt-6-mini .* server's default/);
+  // A preferred model the gateway never confirmed is not used, even where a key for its provider is also here.
+  const preferred = await packageModel({ ...gateway, OPENROUTER_API_KEY: "fake-test-key" }, { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "pi");
+  assert.notEqual(preferred.model, "openrouter/particle-ai/particle-1");
+  assert.match(preferred.warning ?? "", /openrouter\/particle-ai\/particle-1 is not used: this server reaches its models through a gateway.*overrides\.model/);
 });
 
 test("code-review through the API: listed, applied with a repo it makes the agent with the review skill, and its model, and a run's answer meets its findings schema", { timeout: 120_000 }, async (t) => {
@@ -150,6 +165,11 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.equal(listed.status, 200);
   meets("/templates", "get", "200", listed.body);
   assert.deepEqual(listed.body.templates.map((x) => x.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  for (const view of listed.body.templates) {
+    assert.deepEqual(view.author, { name: "Parcha Labs" }, `${view.name} names its author`);
+    assert.equal(typeof view.output?.schema, "string", `${view.name} names its answer's schema file`);
+    assert.equal(view.output.json_schema.type, "object", `${view.name} shows the schema itself, for the console`);
+  }
   const review = listed.body.templates.find((x) => x.name === "code-review");
   assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.repo.required], ["0.1.0", [], ["review"], ["clean-refactor", "injection", "null-name", "off-by-one", "re-review", "repo-rule"], true]);
 

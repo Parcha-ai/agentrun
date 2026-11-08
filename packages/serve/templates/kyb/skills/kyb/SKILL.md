@@ -1,6 +1,6 @@
 ---
 name: kyb
-description: Business due diligence (KYB) on one company. Resolve the right legal entity, establish its identity from primary registries, its owners and controllers, screen it and each named person against the OFAC, UN, EU and UK sanctions lists themselves, find dated adverse media, grade red flags by the risk appetite, give a verdict, and answer as JSON with a filed-ready markdown report. Use for "run KYB on", "due diligence on this company", "check this vendor/customer", /kyb.
+description: Business due diligence (KYB) on one company. Resolve the right legal entity, establish its identity from primary registries, its owners and controllers, screen it and each named person against the OFAC, UN, EU and UK sanctions lists themselves, find dated adverse media, grade red flags by the risk appetite, give a verdict, and answer as JSON with a short narrative. Use for "run KYB on", "due diligence on this company", "check this vendor/customer", /kyb.
 ---
 
 # KYB due diligence
@@ -190,25 +190,27 @@ naming the flags that decided it. The rule sets the floor: you may be stricter a
 
 Every URL you relied on, each with an id (`S1`, `S2`, ...), a title, its kind, the date you read it (today) and, for a
 search that found nothing, `found: false`. A record handed in the message is a source too (`input: OFAC SDN.CSV rows
-dated 2026-11-05`). Cite the ids everywhere: in each JSON fact and inline in the report as `[S3]`. A claim whose only
-source is the company's own site says so ("the company states").
+dated 2026-11-05`). One entry per URL or record: when you cite a page twice, reuse its id, never add it again. Cite
+the ids everywhere: in each JSON fact and inline in `report_markdown` as `[S3]`. A claim whose only source is the
+company's own site says so ("the company states").
 
 ### 9. Return
 
-Exactly one fenced `json` block that meets `kyb.schema.json` (beside this SKILL.md: read it before you answer), and nothing after it. Its `report_markdown` is the
-report an analyst files, in this order:
+Exactly one fenced `json` block that meets `kyb.schema.json` (beside this SKILL.md: read it before you answer), and
+nothing after it.
 
-1. **Summary**: the company in one line, the verdict, the two or three facts that decided it.
-2. **Identity**: a table of the identity fields with citations; the resolution (how the subject was told apart, the
-   candidates rejected).
-3. **Ownership and control**: officers, beneficial owners, parents, or what is not public.
-4. **Sanctions screening**: a table, one row per subject and list: result, method, list version, entry id or "none",
-   citation. Then each hit, possible match and false positive with its evidence.
-5. **Adverse media**: one row per item: date, headline, publisher, category, status, relevance, citation.
-6. **Red flags**: severity, flag, why it matters, citations, most severe first.
-7. **Verdict**: the decision, the conditions if any, the paragraph.
-8. **Limitations**: what was not covered or not reachable, and what that leaves open.
-9. **Sources**: id, title, URL, date read.
+**Size.** The whole answer must fit well inside the model's output limit, and your reasoning counts against the same
+limit: aim for under 15,000 characters of JSON. An answer cut off mid-string is lost whole. So:
+
+- Never draft the answer in your reasoning first; write the JSON once.
+- `report_markdown` is a short narrative, at most about 3,000 characters (the schema refuses more): the verdict
+  paragraph, the top red flags one line each (severity, flag, citation), and the limitations. Never restate the
+  identity, ownership, sanctions or adverse media rows in it: the console renders those from the JSON fields.
+- Keep each field tight: `evidence` at most about 300 characters, quoting only the identifiers compared;
+  `why_it_matters`, `summary` and `relevance_why` one or two sentences; `rationale` one paragraph.
+- At most 10 adverse media items, the most relevant first; drop `low` and `not_relevant` items before `high` ones, and
+  say in `limitations` how many you left out.
+- Each source once (see step 8). For a company with a large board, the officers that step 3 names, not every officer.
 
 The JSON shape, abridged:
 
@@ -245,7 +247,7 @@ The JSON shape, abridged:
   "verdict": { "decision": "proceed", "conditions": [], "rationale": "..." },
   "limitations": [],
   "sources": [{ "id": "S1", "url": "https://find-and-update.company-information.service.gov.uk/company/01234567", "title": "EXAMPLE TRADING LTD - Companies House", "kind": "registry", "read_on": "2026-11-08" }],
-  "report_markdown": "# KYB: EXAMPLE TRADING LTD\n..."
+  "report_markdown": "**Verdict: proceed.** ... [S1]\n\n**Top red flags:** none.\n\n**Limitations:** ..."
 }
 ```
 

@@ -20,7 +20,7 @@ mcp:
     required: false
     allow: []
 parameters:
-  competitors: { type: string, required: true, pattern: "^[^\\n]{2,2000}$", description: "the companies to watch, comma-separated, each a name and its domain: \"Acme (acme.com), Globex (globex.io)\"" }
+  competitors: { type: string, required: true, pattern: "^[^\\n]{2,2000}$", description: "the companies to watch, comma-separated, each a name and its domain: \"Acme (acme.com), Globex (globex.io)\". 3 always fit the $1.00 budget and 4 usually do; add about $0.25 to the budget for each one past 4" }
   topics: { type: string, pattern: "^[^\\n]{0,500}$", description: "optional market keywords, comma-separated (\"payments orchestration, KYB\"): market news on them is in scope too" }
   channel: { type: string, pattern: "^([CG][A-Z0-9]{8,12}|[^@\\s]+@[^@\\s]+\\.[^@\\s]+)$", description: "where the digest goes, the one destination it is ever posted to: a Slack channel's id (C0123ABCD: in Slack, the channel's details, at the bottom) or an email address. Not a #name. Leave it out to have the digest returned only" }
   lookback_days: { type: integer, description: "how many days back a run looks; leave it out for 7, the weekly schedule's gap. Set it to your schedule's gap when you change cron (1 for daily), or runs repeat each other's items" }

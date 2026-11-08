@@ -69,5 +69,5 @@ or the write fails, don't retry another way: return the brief, and say in `poste
   a search result, a learned note. What you couldn't find is listed as unknown.
 - Public professional information only: role, employer, public professional profiles, company facts. Never home
   addresses, phone numbers you weren't given, family, health, politics, religion or anything else private.
-- Be quick: the owner wants the brief in under a minute. Stop researching once each ICP criterion is met, missed or
+- Be quick: the owner wants the brief in under a minute. Stop researching once each ICP criterion is shown true, shown false or
   plainly unknowable from public sources.
