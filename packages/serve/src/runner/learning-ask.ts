@@ -1,8 +1,24 @@
-// The learning run's grader call (learning-loop.ts LearningLoopDeps.ask). This first form calls the provider raw: one
-// Messages request straight to its origin, priced from its usage, booked nowhere and asked of no cap.
-import type { BeforeRequest } from "@parcha/agentrun-kernel";
+// The learning run's grader call (learning-loop.ts LearningLoopDeps.ask): a paid model request like a pi turn, on the
+// same path. Its session ("learning.grade") lives in the learning run's own journal (journalSessions); the host's check
+// before it leaves is the learning run's cap, asked with the run's totals (runBooking, the run's one booking); its record
+// is written and made durable before it leaves, and its cost booked when it answers (modelPortFor); and it reaches the
+// provider only through the kernel's model proxy, which admits and books it (startModelProxy with the booking's port).
+// What it spent is that booking's, and its tokens the answer's usage: the grade's cost_usd and tokens.
+import { randomBytes } from "node:crypto";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { createModels, createProvider } from "@earendil-works/pi-ai/models";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
+import { type BeforeRequest, modelPortFor, type Refusal, runBooking } from "@parcha/agentrun-kernel";
+import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import type { Tokens } from "../learning.js";
 import type { LearningLoopDeps } from "./learning-loop.js";
+import { journalSessions } from "./sessions.js";
+
+/** The session the grader's requests are booked under, in the learning run's journal. */
+export const GRADE_SESSION = "learning.grade";
+const PROVIDER = "agentrun-grade";
 
 /** Where the grader's request goes: Anthropic's Messages API at `origin`, for `model`, priced by `price`. */
 export interface GraderRoute {
@@ -19,30 +35,83 @@ export interface BookedAskOptions extends GraderRoute {
   readonly beforeRequest?: BeforeRequest;
 }
 
-type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number };
+/** `journal` as its Harness sees it: every method its own, but close, which is the claim's to do, not the ask's. */
+function unclosed<T extends object>(journal: T): T {
+  return new Proxy(journal, {
+    get(target, key) {
+      if (key === "close") return async () => undefined;
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+type Answer = { content: { type: string; text?: string }[]; usage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; stopReason?: string; errorMessage?: string };
 
 export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
-  return async (request, signal) => {
-    const send = options.fetch ?? fetch;
-    const response = await send(`${options.provider.origin}/v1/messages`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": await options.provider.credential(), ...(options.provider.headers ?? {}) },
-      body: JSON.stringify({ model: options.model, max_tokens: request.maxTokens, stream: true, messages: [{ role: "user", content: request.prompt }] }),
-      signal,
-    });
-    let text = "";
-    const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    for (const line of (await response.text()).split("\n")) {
-      if (!line.startsWith("data: ")) continue;
-      const event = JSON.parse(line.slice(6)) as { type?: string; delta?: { text?: string }; message?: { usage?: Record<string, number> }; usage?: Record<string, number> };
-      if (event.type === "content_block_delta") text += event.delta?.text ?? "";
-      const seen = event.message?.usage ?? event.usage;
-      if (seen?.input_tokens !== undefined) usage.input = seen.input_tokens;
-      if (seen?.output_tokens !== undefined) usage.output = seen.output_tokens;
-      if (seen?.cache_read_input_tokens !== undefined) usage.cacheRead = seen.cache_read_input_tokens;
-      if (seen?.cache_creation_input_tokens !== undefined) usage.cacheWrite = seen.cache_creation_input_tokens;
+  const { model } = options;
+  return async (request, signal, run) => {
+    const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    // The claim's journal (a store hands one storage per claim, the loop's too) under a Harness of the ask's own, whose
+    // close leaves the storage open: the loop goes on writing its entries there after the grade.
+    const harness = await Harness.open(unclosed(run.journal()), { models: createModels(), registry: createRegistry(), onReport: () => {} }, context);
+    try {
+      const sessions = journalSessions(harness, context, { flush: () => run.flush() });
+      const writer = await sessions.open(GRADE_SESSION);
+      // The cap is the learning run's: asked with every session of the run summed, never this one's alone.
+      const hostCheck = options.beforeRequest ? runBooking(sessions, options.beforeRequest) : undefined;
+      let refused: Refusal | undefined;
+      const booking = await modelPortFor(writer, {
+        key: GRADE_SESSION,
+        label: "grade",
+        ...(hostCheck ? { beforeRequest: async (asked) => {
+          const answer = await hostCheck(asked);
+          if (answer && "refuse" in answer) refused = answer;
+          return answer;
+        } } : {}),
+        // The rule before a side effect: the request's record is durable before the request leaves.
+        onEvent: async (event) => {
+          if (event.type === "request_start") await run.flush();
+        },
+      });
+      // A grade request an earlier attempt sent and a crash cut is booked first, at its held figure.
+      await booking.bookCut();
+      const before = booking.spentUsd();
+      const proxy = await startModelProxy({
+        policy: anthropicPolicy({ model, tools: [] }),
+        hooks: booking.models,
+        model,
+        origin: options.provider.origin,
+        credential: async () => (await options.provider.credential()) ?? "",
+        ...(options.price ? { price: options.price as never } : {}),
+        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      }, randomBytes(32).toString("base64url"));
+      try {
+        const models = createModels();
+        models.setProvider(createProvider({
+          id: PROVIDER,
+          baseUrl: proxy.url,
+          auth: { apiKey: { name: "AGENTRUN_GRADE_KEY", resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
+          models: [{ id: model, name: model, api: "anthropic-messages", provider: PROVIDER, baseUrl: proxy.url, headers: { authorization: `Bearer ${proxy.key}` }, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: request.maxTokens }],
+          api: anthropicMessagesApi(),
+        } as never));
+        const target = models.getModel(PROVIDER, model);
+        const answer = (await models.completeSimple(target as never, { messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }] } as never, { signal, maxTokens: request.maxTokens } as never)) as unknown as Answer;
+        if (refused) throw new Error(refused.refuse);
+        if (answer.stopReason === "error" || answer.stopReason === "aborted") throw new Error(`the grade's request failed: ${answer.errorMessage ?? answer.stopReason}`);
+        const text = answer.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("");
+        const after = booking.spentUsd();
+        const usd = before === null || after === null ? null : after - before;
+        // pi-ai counts cache reads and writes apart from input, as the grade's tokens do.
+        const used = answer.usage;
+        const tokens: Tokens | null = used ? { input: used.input, cache_read: used.cacheRead ?? 0, cache_write: used.cacheWrite ?? 0, output: used.output } : null;
+        return { text, usd, tokens };
+      } finally {
+        await proxy.close().catch(() => undefined);
+      }
+    } finally {
+      await harness.close(context).catch(() => undefined);
     }
-    const tokens: Tokens = { input: usage.input, cache_read: usage.cacheRead, cache_write: usage.cacheWrite, output: usage.output };
-    return { text, usd: options.price?.(options.model, usage) ?? null, tokens };
   };
 }
