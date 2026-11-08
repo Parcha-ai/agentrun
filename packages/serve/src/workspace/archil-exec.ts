@@ -150,11 +150,12 @@ const LINUX_SIGNALS: Readonly<Record<number, string>> = {
   26: "SIGVTALRM", 27: "SIGPROF", 28: "SIGWINCH", 29: "SIGIO", 30: "SIGPWR", 31: "SIGSYS",
 };
 
-/** What the line answered, found by `mark` anywhere in the call's stdout, or undefined when it is not there. */
+/** What the line answered: the LAST line carrying `mark` in the call's stdout (the line answers last, so a line the
+ *  program printed before it cannot stand in for it), or undefined when there is none. */
 export function parseExec(stdout: string, mark: string): { readonly status: Exclude<Status, "ran"> } | {
   readonly status: "ran"; readonly code: number; readonly timedOut: boolean; readonly signal: string | undefined;
 } | undefined {
-  const line = stdout.split("\n").find((candidate) => candidate.startsWith(`${mark} `));
+  const line = stdout.split("\n").findLast((candidate) => candidate.startsWith(`${mark} `));
   if (line === undefined) return undefined;
   const head = new RegExp(`^${mark} (ran|noroot|link|notdir|nocwd|nostdin|noprog|notmp|notools)(?: (\\d+) ([01]) (-|\\d+))?$`).exec(line);
   if (head === null) return undefined;
@@ -193,6 +194,7 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
     timer = setTimeout(() => reject(new WorkspaceError("TIMEOUT", `the Archil exec did not answer in ${deadline} ms (it may still be running, holding the folder)`, { path })), deadline);
   });
   let answer;
+  const started = Date.now();
   try {
     const request = {
       mounts: { [EXEC_MOUNT]: job.root, [SPILL_MOUNT]: job.spill }, queueMs: job.queueMs, command: execLine(job, mark),
@@ -202,13 +204,18 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
   } catch (error) {
     if (error instanceof WorkspaceError) throw error;
     const status = (error as { status?: unknown })?.status;
-    const why = status === 400 ? "Archil refused the exec (another client may hold the folder past the queue's wait)"
+    // A 400 is a mount Archil refused (a folder missing, or held by another client past the queue's wait): its own
+    // words say which.
+    const why = status === 400 ? "Archil refused to mount the exec's folders"
       : status === 401 || status === 403 ? "Archil refused the key, or the account's exec allowance is spent"
         : "the Archil exec failed";
     throw new WorkspaceError("UNAVAILABLE", `${why}: ${describe(error)}`, { path, cause: error });
   } finally {
     clearTimeout(timer);
   }
+  // The status line is the program's own word as much as the line's (it runs as the same user), but not the clock: a
+  // deadline is believed only if the call lasted that long.
+  const lasted = Date.now() - started;
   const parsed = parseExec(answer.stdout, mark);
   if (parsed === undefined) {
     throw new WorkspaceError("UNAVAILABLE", `the Archil exec's answer does not hold its line's (exit ${answer.exitCode}): ${describe(answer.stderr || answer.stdout)}`, { path });
@@ -224,13 +231,14 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
         throw new WorkspaceError("UNAVAILABLE", `the Archil exec ran, but its output could not be read back: ${describe(error)}`, { path, cause: error });
       }
       const truncated = out.length > job.maxOutput || err.length > job.maxOutput;
+      const timedOut = parsed.timedOut && lasted >= Math.min(job.timeoutMs, COMMAND_MAX_MS);
       return {
         stdout: out.subarray(0, job.maxOutput),
         stderr: Buffer.from(err.subarray(0, job.maxOutput)).toString("utf8"),
         // null whenever a signal ended it: its own (named), or the deadline's kill.
-        code: parsed.timedOut || parsed.signal !== undefined ? null : parsed.code,
-        ...(parsed.signal === undefined || parsed.timedOut ? {} : { signal: parsed.signal }),
-        timedOut: parsed.timedOut,
+        code: timedOut || parsed.signal !== undefined ? null : parsed.code,
+        ...(parsed.signal === undefined || timedOut ? {} : { signal: parsed.signal }),
+        timedOut,
         truncated,
       };
     }

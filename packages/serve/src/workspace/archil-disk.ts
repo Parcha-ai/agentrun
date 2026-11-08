@@ -17,7 +17,8 @@
 // - A ranged read is the S3 Range header, which the SDK has no option for: it is a plain GET of
 //   <S3 endpoint>/<disk>/<key> with the same Bearer key and a Range header, tried again on a 429, a 5xx or a failed
 //   connection, as the SDK does its own reads. A redirect is never followed (the key would go with it), and each try
-//   gives up after readTimeoutMs.
+//   gives up after readTimeoutMs. No more than the range is read: a 206 whose Content-Range is another slice is refused,
+//   and a 200 that ignored the range is read only up to the range's end.
 // - grep: ripgrep's regex, a directory, recursive or not, a deadline of at most 30 s, 1,000 results by default; when it
 //   stops early its matches are a sample, not the first ones.
 // - exec: Archil.exec({ disks, command, baseImage | imageId }) runs one shell line in a fresh container with each disk
@@ -81,8 +82,9 @@ export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: str
  */
 export interface ArchilDisk {
   readonly id: string;
-  /** GET `key` with the Range header `range` ("bytes=a-b"): 206 with the slice, 200 with the whole object if the
-   *  range was ignored, or 416 (an empty body) when it starts past the end. */
+  /** GET `key` with the Range header `range` ("bytes=a-b"): 206 with the slice (a Content-Range other than one starting
+   *  at a is refused), 200 with the object from its start up to b at most if the range was ignored (the rest is not
+   *  read), or 416 (an empty body) when it starts past the end. */
   getRange(key: string, range: string): Promise<{ readonly status: number; readonly body: Uint8Array }>;
   /** Resolves once the disk answered 200: the object is committed. */
   putObject(key: string, body: Uint8Array): Promise<void>;
@@ -158,6 +160,26 @@ const READ_TIMEOUT_MS = 60_000;
 const transient = (status: number): boolean => status === 429 || status >= 500;
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** At most `limit` bytes of `response`'s body; the rest is not read (the stream is cancelled). */
+async function upTo(response: Response, limit: number): Promise<Uint8Array> {
+  const out = new Uint8Array(limit);
+  let filled = 0;
+  const reader = response.body?.getReader();
+  if (reader === undefined) return out.subarray(0, 0);
+  try {
+    while (filled < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const take = Math.min(value.length, limit - filled);
+      out.set(value.subarray(0, take), filled);
+      filled += take;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return out.subarray(0, filled);
+}
+
 class SdkArchilDisk implements ArchilDisk {
   readonly id: string;
   readonly #options: ArchilDiskOptions;
@@ -208,6 +230,10 @@ class SdkArchilDisk implements ArchilDisk {
 
   async getRange(key: string, range: string): Promise<{ readonly status: number; readonly body: Uint8Array }> {
     const url = `${this.#s3}/${encodeURIComponent(this.id)}/${key.replace(/^\//, "").split("/").map(encodeURIComponent).join("/")}`;
+    const asked = /^bytes=(\d+)-(\d+)$/.exec(range);
+    if (asked === null) throw new Error(`a ranged read asks for "bytes=<first>-<last>", not ${JSON.stringify(range)}`);
+    const start = Number(asked[1]);
+    const end = Number(asked[2]);
     const headers = { Authorization: `Bearer ${await this.#key()}`, Range: range };
     for (let attempt = 1; ; attempt++) {
       let response: Response;
@@ -221,7 +247,17 @@ class SdkArchilDisk implements ArchilDisk {
         await pause(100 * 2 ** attempt);
         continue;
       }
-      if (response.ok) return { status: response.status, body: new Uint8Array(await response.arrayBuffer()) };
+      if (response.status === 206) {
+        // The slice asked for, or a refusal: other bytes are never taken for it.
+        const sent = /^bytes (\d+)-(\d+)\/(?:\d+|\*)$/.exec(response.headers.get("content-range") ?? "");
+        if (sent === null || Number(sent[1]) !== start || Number(sent[2]) > end) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new Error(`the Archil S3 endpoint answered ${range} of ${key} with Content-Range ${JSON.stringify(response.headers.get("content-range"))}, not that slice`);
+        }
+        return { status: 206, body: await upTo(response, end - start + 1) };
+      }
+      // A 200 ignored the range: the object from its start, read no further than the range's end.
+      if (response.ok) return { status: response.status, body: await upTo(response, end + 1) };
       const body = await response.text().catch(() => "");
       if (response.status === 416) return { status: 416, body: new Uint8Array(0) };
       if (transient(response.status) && attempt < RANGE_TRIES) {

@@ -59,6 +59,9 @@ export type ArchilWorkspaceOptions = {
    *  images API with its digest. With none, Archil's default exec image, whose git (2.34.1, measured) is older than
    *  learning's floor. */
   readonly image?: ArchilImage;
+  /** Told when an exec's cleanup leaves spill files behind (a failed delete, tried twice), with the keys and why; the
+   *  exec's own result stands. Default: a process warning. */
+  readonly onCleanupFailed?: (message: string) => void;
 };
 
 /** Why an Archil workspace is not yet put in a computer. */
@@ -113,6 +116,7 @@ class ArchilWorkspace implements Workspace {
   readonly #spill: string;
   readonly #queueMs: number;
   readonly #image: ArchilImage | undefined;
+  readonly #onCleanupFailed: (message: string) => void;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
   #execs: Promise<unknown> = Promise.resolve();
   #rooted = false;
@@ -131,6 +135,7 @@ class ArchilWorkspace implements Workspace {
     this.#spill = spillFolderOf(root);
     this.#queueMs = options.queueMs ?? DEFAULT_QUEUE_MS;
     this.#image = image;
+    this.#onCleanupFailed = options.onCleanupFailed ?? ((message) => process.emitWarning(message, "ArchilWorkspaceCleanup"));
   }
 
   /** The key of relative path `rel` ("" for the root). */
@@ -341,7 +346,6 @@ class ArchilWorkspace implements Workspace {
     } catch (error) {
       throw await this.#writeFailed(error, rel, "dir", "mkdir");
     }
-    if (rel === "") this.#rooted = true;
   }
 
   async grep(pattern: string, options: GrepOptions = {}): Promise<GrepResult> {
@@ -527,8 +531,9 @@ class ArchilWorkspace implements Workspace {
         }
         return result;
       } finally {
-        // Every path (done, timed out, failed): this exec's files go. What a killed exec leaves, sweep() takes.
-        await this.#disk.deleteObjects([files.in, files.out, files.err]).catch(() => undefined);
+        // Every path (done, timed out, failed): this exec's files go. A delete that fails is tried once more; what
+        // still stays is reported, and it (or what a killed exec leaves) the next sweep() takes, or names if it cannot.
+        await this.#deleteSpill([files.in, files.out, files.err]);
       }
     };
     const done = this.#execs.then(run, run);
@@ -545,18 +550,53 @@ class ArchilWorkspace implements Workspace {
     this.#rooted = true;
   }
 
-  /** What a killed exec, or a crash, left in the spill folder, removed: for the run's start and its end. It waits for
-   *  this workspace's execs, and touches nothing in the workspace's folder. */
+  /** One exec's spill files deleted, failed deletes tried once more. Whatever still stays is reported (onCleanupFailed)
+   *  and is the next sweep's. */
+  async #deleteSpill(keys: readonly string[]): Promise<void> {
+    let left: readonly { readonly key: string; readonly why: string }[] = keys.map((key) => ({ key, why: "" }));
+    for (let attempt = 0; attempt < 2 && left.length > 0; attempt++) {
+      if (attempt > 0) await pause(200);
+      const keysLeft = left.map(({ key }) => key);
+      left = await this.#disk.deleteObjects(keysLeft).then(
+        (errors) => errors.map((error) => ({ key: error.key, why: `${error.code ?? ""} ${error.message ?? ""}`.trim() })),
+        (error: unknown) => keysLeft.map((key) => ({ key, why: describe(error) })),
+      );
+    }
+    if (left.length === 0) return;
+    const message = `${left.length} of an exec's spill files stayed after its cleanup (the next sweep() takes them): ${left.map(({ key, why }) => `${key}${why === "" ? "" : ` (${why})`}`).join(", ")}`;
+    try { this.#onCleanupFailed(message); } catch { /* the caller's callback */ }
+  }
+
+  /** What a killed exec, a crash or a failed cleanup left in the spill folder, removed, its folders included: for the
+   *  run's start and its end. It takes its turn in this workspace's exec queue (after the execs before it, before those
+   *  after it), touches nothing in the workspace's folder, and fails, naming what stayed, if it cannot clear it. */
   async sweep(): Promise<void> {
-    await this.#execs;
+    const run = (): Promise<void> => this.#sweep();
+    const done = this.#execs.then(run, run);
+    this.#execs = done.catch(() => undefined);
+    return done;
+  }
+
+  async #sweep(): Promise<void> {
     const prefix = `${this.#spill}/`;
-    const left: string[] = [];
+    const files: string[] = [];
+    const folders = new Set<string>();
     try {
-      for await (const page of this.#pages(prefix, true)) for (const { key } of page.objects) if (key !== prefix && !key.endsWith("/")) left.push(key);
-      if (left.length > 0) {
-        const errors = await this.#disk.deleteObjects(left);
-        if (errors.length > 0) throw new Error(`${errors.length} of ${left.length} were not removed: ${errors[0]!.key}`);
+      for await (const page of this.#pages(prefix, true)) {
+        for (const { key } of page.objects) {
+          if (key === prefix || !key.startsWith(prefix)) continue;
+          if (key.endsWith("/")) folders.add(key);
+          else files.push(key);
+          // Every folder between the spill folder and what is in it.
+          for (let cut = key.indexOf("/", prefix.length); cut !== -1 && cut < key.length - 1; cut = key.indexOf("/", cut + 1)) folders.add(key.slice(0, cut + 1));
+        }
       }
+      if (files.length > 0) {
+        const errors = await this.#disk.deleteObjects(files);
+        if (errors.length > 0) throw new Error(`${errors.length} of ${files.length} files stayed, ${errors[0]!.key} first: ${errors[0]!.code ?? ""} ${errors[0]!.message ?? ""}`.trim());
+      }
+      // Folders deepest first, so each is empty when it goes.
+      for (const folder of [...folders].sort((a, b) => b.split("/").length - a.split("/").length || byName(b, a))) await this.#disk.deleteObject(folder);
     } catch (error) {
       throw failed(error, "", "sweep of the exec spill folder");
     }

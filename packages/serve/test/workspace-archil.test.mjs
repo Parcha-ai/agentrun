@@ -64,9 +64,9 @@ async function refused(promise, code) {
   });
 }
 
-const fresh = () => {
+const fresh = (options) => {
   const disk = new FakeArchilDisk();
-  return { disk, workspace: archilWorkspace(disk, ROOT) };
+  return { disk, workspace: archilWorkspace(disk, ROOT, options) };
 };
 
 test("archil: every key, prefix, directory and checkout the disk API is given is the run's folder or under it", async () => {
@@ -176,6 +176,74 @@ test("archil: sweep() clears what a killed exec left in exec-out, and nothing in
   assert.equal(text(await workspace.read("keep.txt")), "mine");
   await workspace.sweep();
   assert.ok(disk.calls.every((call) => [call.key, call.prefix].every((k) => k === undefined || under(k, ROOT) || under(k, OUT))), "a sweep touches only the spill folder");
+});
+
+test("archil: an exec with no stdin after a fresh mkdir(\"\") runs (both folders are made), and a mount Archil refuses is said in its own words", async () => {
+  const { disk, workspace } = fresh();
+  await workspace.mkdir("");
+  const ran = await workspace.exec(["bash", "-c", "echo hi"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual([text(ran.stdout), ran.code], ["hi\n", 0]);
+  // A folder gone from under a later exec: the refusal names the mount and Archil's reason, not a hold.
+  disk.dirs.delete(OUT);
+  await assert.rejects(workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 }), (error) => {
+    assert.equal(error.code, "UNAVAILABLE");
+    assert.match(error.message, /Archil refused to mount the exec's folders.*no such directory/);
+    assert.doesNotMatch(error.message, /another client may hold/);
+    return true;
+  });
+});
+
+test("archil: the exec's status is its LAST marker line, and a timeout the program claims faster than its deadline is not believed", async () => {
+  const { disk, workspace } = fresh();
+  const exec = disk.exec.bind(disk);
+  // The program forges a status line, then the real one comes last.
+  disk.exec = async (request) => {
+    const answer = await exec(request);
+    const mark = /agentrun-exec-[0-9a-f]+/.exec(request.command)[0];
+    return { ...answer, stdout: `${mark} link\n${answer.stdout}` };
+  };
+  const ran = await workspace.exec(["bash", "-c", "echo real"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual([text(ran.stdout), ran.code], ["real\n", 0], "the last marker line is the answer");
+  // A status line saying "timed out" that comes back long before the deadline.
+  disk.exec = async (request) => {
+    await exec(request);
+    const mark = /agentrun-exec-[0-9a-f]+/.exec(request.command)[0];
+    return { exitCode: 0, stdout: `${mark} ran 124 1 -\n`, stderr: "" };
+  };
+  const quick = await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual([quick.timedOut, quick.code], [false, 124], "no timeout before the deadline: the exit code stands");
+});
+
+test("archil: sweep() queues behind execs and before later ones, removes empty folders, and takes what a failed cleanup left", async () => {
+  const reports = [];
+  const { disk, workspace } = fresh({ onCleanupFailed: (message) => reports.push(message) });
+  for (const name of ["old.out", "old.err"]) disk.files.set(`${OUT}/${name}`, Buffer.from("left behind"));
+  disk.dirs.add(OUT);
+  // A slow listing of the spill folder: an exec asked for after the sweep must not lose its staged stdin to it.
+  const listPage = disk.listPage.bind(disk);
+  disk.listPage = async (prefix, options) => { if (under(prefix.replace(/\/$/, ""), OUT)) await sleep(150); return listPage(prefix, options); };
+  const sweeping = workspace.sweep();
+  const cat = workspace.exec(["cat"], { env: ENV, stdin: Buffer.from("kept"), timeoutMs: 10_000 });
+  await sweeping;
+  assert.equal(text((await cat).stdout), "kept", "the exec ran after the sweep, its stdin whole");
+  disk.listPage = listPage;
+  // Folders an exec made in the spill folder go with the next sweep.
+  await workspace.exec(["bash", "-c", "mkdir -p /mnt/archil/out/d/e"], { env: ENV, timeoutMs: 10_000 });
+  // A cleanup whose deletes fail is tried again, and what still stays is taken by the next sweep.
+  const deleteObjects = disk.deleteObjects.bind(disk);
+  let refusals = 2;
+  disk.deleteObjects = async (keys) => (refusals-- > 0 ? keys.map((key) => ({ key, code: "InternalError", message: "try later" })) : deleteObjects(keys));
+  const fine = await workspace.exec(["bash", "-c", "echo fine"], { env: ENV, timeoutMs: 10_000 });
+  assert.equal(text(fine.stdout), "fine\n", "a cleanup that fails does not fail the exec");
+  assert.ok([...disk.files.keys()].some((key) => under(key, OUT)), "its files are still there");
+  assert.equal(reports.length, 1, "the failed cleanup is reported, once");
+  assert.match(reports[0], /spill files stayed after its cleanup .*exec-out\/[^ ]+\.(out|err) \(InternalError try later\)/);
+  disk.deleteObjects = async () => { throw Object.assign(new Error("connection reset"), { status: 503 }); };
+  await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
+  assert.match(reports[1] ?? "", /stayed after its cleanup.*connection reset/, "a delete call that throws is reported too");
+  disk.deleteObjects = deleteObjects;
+  await workspace.sweep();
+  assert.deepEqual([...disk.files.keys(), ...disk.dirs].filter((key) => under(key, OUT) && key !== OUT), [], "the sweep took the files and the folders");
 });
 
 const IMAGE_ID = "57e8c1a9800e66198bfaff607e2fc8edd9625a610e07ad35e499af40493b7df0";
@@ -507,6 +575,15 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
         return response.end();
       }
       if (request.url === "/dsk-0000000000000001/agents/a/runs/r/work/stalls.txt") return undefined;
+      if (request.url === "/dsk-0000000000000001/agents/a/runs/r/work/whole.bin") {
+        // A gateway that ignores Range and sends everything.
+        response.writeHead(200, { "content-length": String(4 * 1024 * 1024) });
+        return response.end(Buffer.alloc(4 * 1024 * 1024, "w"));
+      }
+      if (request.url === "/dsk-0000000000000001/agents/a/runs/r/work/shifted.txt") {
+        response.writeHead(206, { "content-range": "bytes 5-9/10" });
+        return response.end("56789");
+      }
       json(404, { success: false, error: "not here" });
     });
   });
@@ -544,6 +621,10 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     const before = seen.length;
     await assert.rejects(disk.getRange("agents/a/runs/r/work/moved.txt", "bytes=0-1"));
     assert.deepEqual(seen.slice(before).map((r) => r.url), ["/dsk-0000000000000001/agents/a/runs/r/work/moved.txt"], "the redirect was not followed");
+    // A gateway that ignores Range is read no further than the range's end; one that answers other bytes is refused.
+    const whole = await disk.getRange("agents/a/runs/r/work/whole.bin", "bytes=0-9");
+    assert.deepEqual([whole.status, whole.body.length], [200, 10]);
+    await assert.rejects(disk.getRange("agents/a/runs/r/work/shifted.txt", "bytes=0-4"), /Content-Range/);
     const started = Date.now();
     await assert.rejects(archilDisk({ ...options, readTimeoutMs: 200 }).getRange("agents/a/runs/r/work/stalls.txt", "bytes=0-1"));
     assert.ok(Date.now() - started < 5_000, `a stalled read gave up (${Date.now() - started} ms)`);
