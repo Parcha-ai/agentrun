@@ -1,7 +1,9 @@
 // DockerProvider's network "allow" against the fake docker in test/fake-docker.mjs: the egress proxy container and its
 // volume, made, read back, held to the computer and removed with it. No Docker and no network are needed.
 import assert from "node:assert/strict";
-import { networkInterfaces } from "node:os";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { networkInterfaces, tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { DockerProvider, EGRESS_IMAGE, sweep } from "../dist/index.js";
 import { checkAddress } from "../dist/docker/egress-table.js";
@@ -120,6 +122,34 @@ test("the egress option: another image for the proxy, a hint after its refusal's
 	assert.deepEqual(proxy.slice(-2), ["--hint", "ask the operator to add it"]);
 	for (const egress of [{ hint: "add it\r\nx: y" }, { hint: "café" }, { image: "" }, { image: "-x" }, { readyMs: 0 }, { readyMs: 2 ** 31 }]) {
 		assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", egress }), /egress/, JSON.stringify(egress));
+	}
+});
+
+test("the proxy's code must be built and readable by the computer's user, its directory searchable: the proxy runs as that user", async () => {
+	const { egressCodeProblem } = await import("../dist/docker/egress.js");
+	const dir = mkdtempSync(join(tmpdir(), "computer-egress-code-"));
+	const mine = `${process.getuid()}:${process.getgid()}`;
+	const other = "4242:4242";
+	try {
+		const packageJson = join(dir, "package.json");
+		const code = { dir, packageJson };
+		assert.match(egressCodeProblem(code, mine), /is not built .*egress-main\.js.*npm run build/);
+		for (const file of ["egress-main.js", "egress-proxy.js", "egress-table.js", "package.json"]) {
+			writeFileSync(join(dir, file), "");
+			chmodSync(join(dir, file), 0o644);
+		}
+		chmodSync(dir, 0o755);
+		assert.equal(egressCodeProblem(code, other), undefined);
+		chmodSync(join(dir, "egress-proxy.js"), 0o600);
+		chmodSync(dir, 0o700);
+		assert.equal(egressCodeProblem(code, mine), undefined, "the owner reads its own 0600 build");
+		const problem = egressCodeProblem(code, other);
+		assert.match(problem, /not readable by the computer's user 4242:4242/);
+		assert.ok(problem.includes(join(dir, "egress-proxy.js")) && problem.includes(`${dir},`), problem);
+		assert.match(egressCodeProblem({ dir: `${dir},x`, packageJson }, mine), /not built|a comma/);
+	} finally {
+		chmodSync(dir, 0o700);
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 

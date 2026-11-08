@@ -2,6 +2,7 @@ package egress_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -127,8 +129,16 @@ func TestTheRelayCarriesBytesBothWaysAndEachSidesEnd(t *testing.T) {
 func TestAConnectionWhoseProxyIsGoneIsClosedAtOnceAndSaysWhy(t *testing.T) {
 	socket := socketPath(t)
 	listener, words := relay(t, socket)
-	if got := roundTrip(t, listener.Addr().String(), "GET http://pypi.org/ HTTP/1.1\r\n\r\n"); got != "" {
-		t.Fatalf("with no proxy at its socket the relay answered %q; want nothing, the connection closed", got)
+	conn, err := net.DialTimeout("tcp", listener.Addr().String(), patience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(patience))
+	_, _ = conn.Write([]byte("GET http://pypi.org/ HTTP/1.1\r\n\r\n"))
+	// Closed with the request unread, the connection may end in a reset rather than an end of file: either is closed.
+	if got, err := io.ReadAll(conn); len(got) != 0 || (err != nil && !errors.Is(err, syscall.ECONNRESET)) {
+		t.Fatalf("with no proxy at its socket the relay answered %q (%v); want nothing, the connection closed", got, err)
 	}
 	deadline := time.Now().Add(patience)
 	for !strings.Contains(words.String(), socket) {

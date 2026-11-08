@@ -6,7 +6,8 @@ export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
-export { type DockerDesktopOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
+export { type DockerDesktopOptions, type DockerEgressOptions, DockerProvider, type DockerProviderOptions } from "./docker.js";
+export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
 export { DAYTONA_DEFAULT_SNAPSHOT, DaytonaProvider, type DaytonaProviderOptions, type DaytonaTimeouts, type WebSocketFactory, type WebSocketLike } from "./daytona.js";
 export {
 	ModalProvider,

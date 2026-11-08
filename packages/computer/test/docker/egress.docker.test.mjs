@@ -80,7 +80,8 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		const recipe = `FROM ${EGRESS_IMAGE}\nCOPY preload.mjs /fake/preload.mjs\nENV NODE_OPTIONS=--import=/fake/preload.mjs\n`;
+		// Into a directory the image has: a --chmod would give one COPY makes the file's mode, with no search bit.
+		const recipe = `FROM ${EGRESS_IMAGE}\nCOPY --chmod=0644 preload.mjs /usr/local/lib/fake-egress-preload.mjs\nENV NODE_OPTIONS=--import=/usr/local/lib/fake-egress-preload.mjs\n`;
 		const hash = createHash("sha256").update(recipe).update(readFileSync(join(FIXTURE, "preload.mjs"))).digest("hex").slice(0, 12);
 		image = `agentrun-computer-egress-test:${hash}`;
 		execFileSync("docker", ["build", "--quiet", "--tag", image, "-f", "-", FIXTURE], { input: recipe, stdio: ["pipe", "ignore", "inherit"] });

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
@@ -49,12 +50,20 @@ func SocketPath() string {
 	return DefaultSocket
 }
 
+// Egress is init's relay for a computer whose network is an allowlist: it listens on Listen, the computer's loopback,
+// and carries each connection to the egress proxy's Unix socket at Socket. An empty Socket is no relay.
+type Egress struct {
+	Listen string
+	Socket string
+}
+
 // Init runs as the computer's first process. It is a child subreaper (PID 1 is one anyway), serves every connection on
 // socket with one process table and the display DISPLAY names, if any, and sweeps: a child of its own that is not one
 // of its guards is an orphan whose guard died, and is killed with everything under it. SIGTERM, SIGINT or the deadline
 // ends every process, guards first, and returns 0, which ends the computer. deadline.extend moves the deadline, never
-// past the maximum the provider gave, and is refused once init has decided to end the computer.
-func Init(version, socket string, deadline *lifetime.Deadline, logger *log.Logger) int {
+// past the maximum the provider gave, and is refused once init has decided to end the computer. With a relay, init
+// refuses to start unless it can listen, and every program it starts is told the relay is its HTTP and HTTPS proxy.
+func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, logger *log.Logger) int {
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
 		logger.Printf("init: cannot become a child subreaper: %v", errno)
 		return 1
@@ -63,6 +72,17 @@ func Init(version, socket string, deadline *lifetime.Deadline, logger *log.Logge
 	stop := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGCHLD)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	if relay.Socket != "" {
+		relayed, err := egress.Relay(relay.Listen, relay.Socket, logger)
+		if err != nil {
+			logger.Printf("init refuses to start: %v", err)
+			return 1
+		}
+		defer relayed.Close()
+		address := relayed.Addr().String()
+		execrun.SetProxyEnv(egress.Env(address))
+		logger.Printf("init: the egress relay listens on %s and relays to %s", address, relay.Socket)
+	}
 	listener, err := listen(socket)
 	if err != nil {
 		logger.Printf("init: %v", err)
