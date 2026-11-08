@@ -291,8 +291,6 @@ export interface SessionPort {
 }
 
 export interface AdapterCapabilities {
-  /** Whether the adapter can start a session from another's transcript. */
-  fork: boolean;
   /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
    *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
   mcpClient?: McpClient;
@@ -307,8 +305,6 @@ export interface McpClient {
 
 export interface AgentAdapter {
   readonly id: string;
-  /** The harness version the adapter is pinned to. */
-  readonly version: string;
   capabilities(): AdapterCapabilities;
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];

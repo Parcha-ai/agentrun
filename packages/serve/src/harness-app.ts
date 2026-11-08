@@ -384,6 +384,22 @@ export function adapterRun(
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
+  // The session's open while it is under way, and whether the door's close has come: a session that lands after the
+  // close is closed then (closeOnce), never left open by a process that is going.
+  let opening: Promise<AdapterSession> | undefined;
+  let closing = false;
+  // One close per session, its promise shared: whichever caller starts it (the door's close, or an open that lands after
+  // it), every caller awaits the same close to its end, and its failure reaches the door (its log line).
+  const closes = new WeakMap<AdapterSession, Promise<void>>();
+  const closeOnce = (it: AdapterSession | undefined): Promise<void> => {
+    if (!it) return Promise.resolve();
+    let done = closes.get(it);
+    if (!done) {
+      done = Promise.resolve().then(() => it.close());
+      closes.set(it, done);
+    }
+    return done;
+  };
   let opened: Promise<void> | undefined;
   let openedDone: () => void = () => {};
   opened = new Promise((resolve) => (openedDone = resolve));
@@ -912,6 +928,17 @@ export function adapterRun(
       await stopping;
       return "aborted";
     },
+    // The process is letting the run go (the door's stop, busy or idle, after its abort): the session closes, which stops
+    // the harness's own processes (its CLI, its app-server), so none outlives this one.
+    async close() {
+      closing = true;
+      if (session) return closeOnce(session);
+      // An open still under way is stopped where the adapter can stop it (its signal), and the session it lands with is
+      // closed here, within the door's bound, or by the open itself once it lands (above).
+      stop.abort();
+      await closeOnce(await opening?.catch(() => undefined));
+    },
+    harness,
     busy: () => turn !== undefined,
   };
 
@@ -992,7 +1019,14 @@ export function adapterRun(
         onEvent: onModel,
         // The booking's spend is the run's one meter (a learned node's requests are the session's: no side spend of their own).
         note: (model: string, request?: NoteRequest) => takeNote(plus(booking.spentUsd(), charged), model, request),
-        stopped: (request) => halted ?? cancelStop() ?? (parked === undefined || (approved && request.host !== undefined) ? undefined : PARKED),
+        stopped: (request) => {
+          const why = halted ?? cancelStop() ?? (parked === undefined || (approved && request.host !== undefined) ? undefined : PARKED);
+          // A stop refuses this request, and each one after it but an approved host request (which never carries the
+          // note): a note an admission gave a request the stop then refused never left, so the next request takes it,
+          // before the model proxy asks for it (takeNote), not only at that request's own check.
+          if (why && wrap.pending && wrap.pending.turn === undefined) wrap.pending = undefined;
+          return why;
+        },
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {
@@ -1036,7 +1070,12 @@ export function adapterRun(
         if (call.callId) results.set(call.callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true });
         return result;
       } };
-      session = await adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      opening = adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined, extra) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      session = await opening;
+      // The door closed while it opened (the process is going): this session is closed now, and nothing goes on in it.
+      // `closing` is set by the door's close alone, which awaits this same close (closeOnce) and logs its failure; the open
+      // waits for it too, and does not fail on it a second time.
+      if (closing) return void (await closeOnce(session).catch(() => undefined));
       // Only a new session's first request records the run's floor: one opened again (a follow-up's, a resume's) carries
       // the conversation before it.
       if (session.state !== "new") floorDue = false;

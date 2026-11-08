@@ -1,6 +1,6 @@
 // A Docker box's way out to the network: the hosts on the server's list (AGENTRUN_BOX_ALLOW), and nothing else. The box
-// stays `--network none`, with its own loopback alone. The run's process starts the kernel's egress proxy with the list
-// (@parcha/agentrun-kernel/host), on a Unix socket in a directory of its own, which is bound into the box read-only at
+// stays `--network none`, with its own loopback alone. The run's process starts serve's egress proxy with the list
+// (egress-proxy.ts), on a Unix socket in a directory of its own, which is bound into the box read-only at
 // EGRESS_MOUNT; a socat in the box relays its own loopback port EGRESS_PORT to it, and the box's fixed environment
 // names that port as its HTTP(S) proxy. The proxy refuses, before any lookup, a host off the list, an IP literal and any port but 80 and
 // 443, and a listed name that resolves to a private or metadata address; it holds no key and adds none. A program in the
@@ -16,7 +16,7 @@ import { connect } from "node:net";
 import { release } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type EgressProxy, type EgressProxyOptions, parseAllow, startEgressProxy } from "@parcha/agentrun-kernel/host";
+import { type EgressProxy, type EgressProxyOptions, parseAllow, startEgressProxy } from "./egress-proxy.js";
 import { FAUX_ENV } from "./model.js";
 import { withoutSecrets } from "./secrets.js";
 
