@@ -52,6 +52,30 @@ test("the run-folder Archil case records both directions while the computer hold
 	assert.match(result.observed[3], /^inside out, while held: a file files\.write made \(synced before it answered\) is read through the file API as written$/);
 });
 
+test("the run-folder Archil case records Archil's exclusive hold refusing an outside write while the computer holds the folder, and does not fail on it", async () => {
+	// The Daytona live run: the file API's write while held answered 409 OperationAborted (another client holds a write
+	// delegation), which is the exclusive mount doing its job.
+	const HOLD = "S3 PutObject failed: 409 OperationAborted — The path /work cannot be written because another client holds a write delegation. Release the delegation before retrying.";
+	const mountFor = async (kind) => {
+		const folder = await folders.mountFor(kind);
+		if (folder === undefined) return undefined;
+		return {
+			...folder,
+			write: async (path, data) => {
+				if (path.startsWith("outside-")) throw new Error(HOLD);
+				return folder.write(path, data);
+			},
+		};
+	};
+	const report = await run({ mount: ["archil"] }, { ids: ["mount.run-folder-archil"], mountFor });
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+	assert.ok(
+		result.observed.some((line) => line.startsWith("outside in, while held: the file API's write was refused: ") && line.includes("409 OperationAborted")),
+		JSON.stringify(result.observed),
+	);
+});
+
 test("the run-folder Archil case labels its computer for the folder's own run, as the helper's rule asks, even when the run folder does not say its run", async () => {
 	const run = "r42";
 	const folder = `agents/conformance/runs/${run}/work`;
