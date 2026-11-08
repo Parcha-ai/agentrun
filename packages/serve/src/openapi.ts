@@ -606,7 +606,7 @@ const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { t
 const HOOK_TIMEOUT = { description: `\`request_timeout\`: the body did not arrive, whole, within ${HOOK_BODY_MS / 1000} s; the socket is closed after this answer.`, headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } };
 /** What a pushed request made: one firing for each event it held that a trigger takes, in order; none for a request
  *  with no event, or whose events no trigger takes. */
-const HOOK_FIRINGS = closed({ firings: { type: "array", items: TRIGGER_FIRING } });
+const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } } } });
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
@@ -1819,13 +1819,16 @@ function serverHooks(adapters: readonly TriggerAdapter[]): Record<string, Json> 
     const push = adapter.push;
     if (!push || adapter.settings?.scope !== "server") continue;
     const handshake = push.handshake ? " A handshake its sender asks for (a URL check) is answered as the source answers it, after the check, never before." : "";
+    // Its firings name the sources the server has, its own among them.
+    const made = hookFiringsOf(adapters);
     paths[`/hooks/${adapter.id}`] = {
       post: {
         operationId: `receiveHook_${adapter.id}`, tags: ["local"], summary: `Fire a ${adapter.label}: a request it checks, no token`,
         description: `A pushed source's own route, with no token: the request is checked by the source's own check against its settings' \`${push.key}\` (the server's, PUT through its settings), on the raw body before anything else. The body is at most ${push.maxBodyBytes} bytes (413 at once past it, the socket closed) and arrives within ${HOOK_BODY_MS / 1000} s (408). Every refusal is the same 401. Each event the request holds fires the one trigger of this source that listens where it happened; an event no trigger takes, and a request with none, is answered 200 with no firing for it, and said in the server's log.${handshake}`,
         security: [],
         requestBody: { required: true, content: { "*/*": { schema: {} } } },
-        responses: { "202": json(HOOK_FIRINGS, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [HOOK_FIRINGS, { type: "object", description: "The source's handshake answer." }] } : HOOK_FIRINGS, "Nothing new: each event's firing as it stands, or none."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
+        // A handshake's answer is any object but a firings one, so each answer is exactly one of the 200's shapes.
+        responses: { "202": json(made, "Recorded: each firing's run starts (or its message goes) after this answer."), "200": json(push.handshake ? { oneOf: [made, { type: "object", not: { required: ["firings"] }, description: "The source's handshake answer." }] } : made, "Nothing new: each event's firing as it stands, or none."), "408": HOOK_TIMEOUT, ...errors(401, 413, 429, 500) },
         ...TRIGGER_MARK,
       },
     };
