@@ -14,6 +14,7 @@ import {
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
+  type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
 import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
@@ -91,6 +92,8 @@ type SettingRecord = { key: string; value: string; updated_at: number };
 const settingOf = (r: SettingRecord): SettingRow => ({ key: r.key, value: JSON.parse(r.value), updatedAt: r.updated_at });
 type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
+type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; updated_at: number };
+const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), updatedAt: r.updated_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; working: string | null; expires_at: number };
@@ -210,6 +213,7 @@ class SqliteStore implements Store {
   readonly learning: Learning;
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
+  readonly computerLedger: ComputerLedger;
   readonly triggerSettings: TriggerSettings;
   readonly mcpOauth: McpOauth;
   readonly #db: Connection;
@@ -539,6 +543,20 @@ class SqliteStore implements Store {
         await db.write([{ sql: "DELETE FROM sealed_keys WHERE name = ?", params: [name] }]);
       },
       all: async () => (await db.all<SealedKeyRecord>("SELECT name, sealed, updated_at FROM sealed_keys ORDER BY name")).map(sealedKeyOf),
+    };
+
+    this.computerLedger = {
+      put: async (provider, sessionId, labels) => {
+        await db.write([{ sql: "INSERT INTO computer_ledger (provider, session_id, labels, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (provider, session_id) DO UPDATE SET labels = excluded.labels, updated_at = excluded.updated_at", params: [provider, sessionId, JSON.stringify(labels), now()] }]);
+      },
+      get: async (provider, sessionId) => {
+        const row = await db.get<ComputerLedgerRecord>("SELECT provider, session_id, labels, updated_at FROM computer_ledger WHERE provider = ? AND session_id = ?", provider, sessionId);
+        return row === undefined ? undefined : ledgerRowOf(row);
+      },
+      list: async (provider) => (await db.all<ComputerLedgerRecord>("SELECT provider, session_id, labels, updated_at FROM computer_ledger WHERE provider = ? ORDER BY session_id", provider)).map(ledgerRowOf),
+      remove: async (provider, sessionId) => {
+        await db.write([{ sql: "DELETE FROM computer_ledger WHERE provider = ? AND session_id = ?", params: [provider, sessionId] }]);
+      },
     };
 
     this.triggerSettings = {
