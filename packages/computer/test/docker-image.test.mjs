@@ -20,6 +20,7 @@ import {
 	recipeHash,
 	recipeTag,
 } from "../dist/index.js";
+import { ENV, fromEnv } from "../dist/docker.js";
 import { alive, fakeImageDocker, until } from "./fake-image-docker.mjs";
 
 const RECIPE = "FROM alpine:3.20\nRUN echo one > /one\n";
@@ -354,4 +355,26 @@ test("DockerProvider.image(): the default recipe, or the source it was given, th
 	assert.deepEqual(failure(await built.image({ timeoutMs: 1_000 })).code, "timeout", "image() takes a bound");
 	assert.deepEqual(failure(await built.image({ signal: AbortSignal.abort() })).code, "aborted", "and a signal");
 	assert.throws(() => new DockerProvider({ daemonPath: fake.docker, image: { recipe: "no base" } }), /^Error: the provider's image: a recipe is the text of a Dockerfile with a FROM line/);
+});
+
+test("fromEnv reads COMPUTER_DOCKER_IMAGE: an image by name; absent or empty, the provider's own recipe; an option wins; a name that is not one is refused naming the variable", async () => {
+	assert.equal(ENV.image, DOCKER_IMAGE_ENV, "ENV lists it");
+	assert.equal(ENV.image, "COMPUTER_DOCKER_IMAGE");
+	const fake = fakeImageDocker();
+	const daemon = { COMPUTER_DOCKER_DAEMON: fake.docker };
+	fake.keep(IMAGE, {});
+	const named = await fromEnv({ ...daemon, COMPUTER_DOCKER_IMAGE: IMAGE }, { docker: fake.docker });
+	assert.deepEqual(await named.image(), { ok: true, value: IMAGE });
+	assert.deepEqual(fake.calls(), [[...INSPECT, IMAGE]], "the named image, found: no build, no pull");
+	for (const env of [daemon, { ...daemon, COMPUTER_DOCKER_IMAGE: "" }]) {
+		const own = await fromEnv(env, { docker: fake.docker });
+		assert.deepEqual(await own.image(), { ok: true, value: DEFAULT_DOCKER_IMAGE }, JSON.stringify(env));
+	}
+	assert.deepEqual(fake.builds().map((build) => build.recipe), [DOCKER_RECIPE], "the provider's own recipe, built once");
+	const given = await fromEnv({ ...daemon, COMPUTER_DOCKER_IMAGE: IMAGE }, { docker: fake.docker, image: { recipe: RECIPE } });
+	assert.deepEqual(await given.image(), { ok: true, value: TAG }, "options win over the environment");
+	await assert.rejects(fromEnv({ ...daemon, COMPUTER_DOCKER_IMAGE: "-v" }, { docker: fake.docker }), (error) => {
+		assert.equal(error.message, 'COMPUTER_DOCKER_IMAGE: an image is a name such as debian:bookworm-slim: not empty, with no space or NUL byte, not starting with "-"');
+		return true;
+	});
 });
