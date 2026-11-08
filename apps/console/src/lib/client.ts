@@ -57,9 +57,14 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
+/** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
+const SIGNING_IN = new Set(["/auth/sign-in", "/setup"]);
+
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
- *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
-export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
+ *  every write is same-origin JSON (the server refuses a cookie write from another origin). `onSignedOut`: called on
+ *  every 401 but signing in's own, so the console knows its session ended (a sign-out in another tab, an expiry) at
+ *  the first read the server refuses, whichever page made it. */
+export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2", onSignedOut }: { fetch?: typeof fetch; base?: string; onSignedOut?: () => void } = {}) {
   async function call<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
     return (await callTagged<T>(method, path, opts)).body;
   }
@@ -76,6 +81,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
+      if (res.status === 401 && !SIGNING_IN.has(path)) onSignedOut?.();
       const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;

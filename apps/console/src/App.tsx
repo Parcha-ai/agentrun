@@ -116,8 +116,12 @@ function importLine(s: ImportState): string {
  *  ride out the server going away (lib/connection): they wait, and carry on once it answers. */
 export function App() {
   const [connection] = useState(createConnection);
-  const v2 = useMemo(() => createClient({ fetch: connection.fetch }), [connection]);
   const [auth, setAuth] = useState<AuthMode | null>(null);
+  // Signed out elsewhere (another tab's Sign out, an expiry): the first read refused (401) turns a signed-in console to
+  // its sign-in page, saying why; the address stays, so signing in again opens the same page.
+  const [signedOutElsewhere, setSignedOutElsewhere] = useState(false);
+  const signedOut = () => setAuth((now) => { if (now !== "signed_in") return now; setSignedOutElsewhere(true); return "sign_in"; });
+  const v2 = useMemo(() => createClient({ fetch: connection.fetch, onSignedOut: signedOut }), [connection]); // eslint-disable-line react-hooks/exhaustive-deps
   // The setup code, taken from the address once and removed from it (and from the history entry).
   const [setupCode, setSetupCode] = useState(setupCodeOnce);
   // A setup link opened in this same tab once the page is up changes only the address's fragment: its code is taken
@@ -172,8 +176,8 @@ export function App() {
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} onSubmit={async (password, code, importSessions) => {
-        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setAuth("signed_in"); return null; }
+      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importSessions) => {
+        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
@@ -182,7 +186,7 @@ export function App() {
       }} />
     );
   }
-  return <ConnectionProvider connection={connection}><Console v2={v2} onSignedOut={() => setAuth("sign_in")} /></ConnectionProvider>;
+  return <ConnectionProvider connection={connection}><Console v2={v2} onSignedOut={() => { setSignedOutElsewhere(false); setAuth("sign_in"); }} /></ConnectionProvider>;
 }
 
 /** Before the console knows who is signed in: a quiet page, or, while the server can't be reached, that said with the
