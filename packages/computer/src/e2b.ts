@@ -753,12 +753,30 @@ export class E2BProvider implements ComputerProvider {
 		return fail(error.code, `the computer ${ref.name} ${after}: ${error.message}`);
 	}
 
-	/** Every sandbox carrying a name create gave, killed: for a create whose answer never came. Best effort, in words. */
+	/**
+	 * Every sandbox carrying a name create gave, killed and read back gone: for a create whose answer never came. The
+	 * listing shows a new sandbox a moment after E2B makes it, so it is read for the name until one shows or listedMs
+	 * passes. Best effort, in words.
+	 */
 	async #killNamed(name: string): Promise<string> {
-		const listed = await this.#listPages({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name });
-		if (!listed.ok) return `; a sandbox named ${name} may be left (${listed.error.message}), which E2B ends at its timeout`;
-		for (const sb of listed.value) await this.#kill(sb.sandboxId);
-		return listed.value.length > 0 ? `; the sandbox named ${name} it made was killed` : "";
+		const { listedMs, pollMs } = this.#timeouts;
+		const until = Date.now() + listedMs;
+		let found: E2BListedSandbox[];
+		for (;;) {
+			const listed = await this.#listPages({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name });
+			if (!listed.ok) return `; a sandbox named ${name} may be left (${listed.error.message}), which E2B ends at its timeout`;
+			found = listed.value;
+			if (found.length > 0 || Date.now() >= until) break;
+			await pause(Math.min(LISTED_POLL_MS, pollMs));
+		}
+		if (found.length === 0) return `; no sandbox named ${name} was listed within ${seconds(listedMs)}, and E2B ends any it made at its timeout`;
+		const said: string[] = [];
+		for (const sb of found) {
+			const killed = await this.#kill(sb.sandboxId);
+			const gone = killed.ok ? await this.#settle({ id: sb.sandboxId, name }) : killed;
+			said.push(gone.ok ? `${sb.sandboxId} was killed and read back gone` : `${sb.sandboxId} may be left (${gone.error.message}), which E2B ends at its timeout`);
+		}
+		return `; the sandbox named ${name} it made: ${said.join("; ")}`;
 	}
 
 	/** Sandbox.kill, never signalled: a kill that cleans up after an abort must outlive it. Not found is done. */

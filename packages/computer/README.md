@@ -1271,6 +1271,8 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    `network.allowPublicTraffic: false`, and `lifecycle.onTimeout: "kill"`, explicitly, so a timeout never pauses and
    keeps the computer (`index.mjs:5674-5699`). The create is raced against the caller's signal and its bound, never
    cancelled: one that lands after create gave up is killed by its id, one whose answer never comes by its name label.
+   The listing shows a new sandbox a moment late, so the name is listed again until it shows or `listedMs` (15 s)
+   passes, and the sandbox found is killed and read back gone, as release waits for one.
 2. `getInfo` reads the sandbox back (below).
 3. `files.write` uploads the daemon as root to `/tmp/agentrun-computerd-<random>` (`index.mjs:2332-2435`), and the
    same install command as Daytona's (`src/child.ts`) moves it to `/opt/agentrun/computerd`, root-owned, and prints its
