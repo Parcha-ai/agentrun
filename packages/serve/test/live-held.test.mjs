@@ -17,12 +17,18 @@ test("a running tool reaches the stream from run_live while it runs, then its st
   await w.run([{ call: "slow" }, { say: "done" }], { live: { tickMs: 100 } });
   await w.tools.slowStarted;
   // While the tool runs, before pi stores its running status: the start is on the stream from the held row.
-  await until(() => got.events().some((event) => event.type === "tool_execution_start" && event.toolName === "slow"), "the slow tool's start, held");
-  const held = await w.server.live.read([RUN]);
-  assert.equal(held.length, 1, "the run's run_live row holds its running tool");
+  await until(() => got.events().some((event) => event.type === "tool_execution_start" && event.toolName === "slow"), "the slow tool's start");
+  // The start can reach the stream from the stored intent (flushed before the tool runs) before the ticker's first tick
+  // writes the run's row (and a row written earlier may hold only the answer's partial), so the row holding the tool is
+  // waited for, not read once: the tool is held until it is seen.
+  await until(async () => {
+    const rows = await w.server.live.read([RUN]);
+    return rows.length === 1 && (rows[0].state?.tools ?? []).some((tool) => tool.name === "slow");
+  }, "the run's run_live row holds its running tool", 5_000);
   w.tools.letSlowGo();
   await w.ended("ended");
   await until(() => settled(got.types()), "the run's end on the stream");
+  assert.deepEqual(await w.server.live.read([RUN]), [], "no run_live row after the run's end");
   const slow = got.events().filter((event) => event.toolName === "slow").map((event) => event.type);
   assert.equal(slow.filter((type) => type === "tool_execution_start").length, 1, `one start for the slow tool: ${JSON.stringify(slow)}`);
   assert.ok(slow.indexOf("tool_execution_start") < slow.indexOf("tool_execution_end"), `its start, then its end: ${JSON.stringify(slow)}`);
