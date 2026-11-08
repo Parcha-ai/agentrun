@@ -50,7 +50,7 @@ const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 
 /**
  * The Archil rule every provider's check() adds to checkMount's, with no vendor call: network "none" (the tools have no
- * network; netlock holds them to it), the run's agentrun.run and agentrun.epoch labels (the claim the mount is made
+ * network: init's own namespace, loopback alone), the run's agentrun.run and agentrun.epoch labels (the claim the mount is made
  * under), a disk, region and folder of the helper's shapes, the folder of the labelled run, and a token of a disk
  * token's shape. No word holds a value of the mount but the folder's run, and only once the folder has the folder's shape.
  */
@@ -59,7 +59,7 @@ export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	if (mount?.kind !== "archil") return [];
 	const found: Refusal[] = [];
 	const refuse = (field: string, message: string) => found.push({ field, message });
-	if (spec.network !== "none") refuse("network", 'a computer with an Archil mount takes network "none": its tools have no network, and netlock holds them to it');
+	if (spec.network !== "none") refuse("network", 'a computer with an Archil mount takes network "none": its tools have no network, only loopback in init\'s own namespace');
 	const labels = spec.labels ?? {};
 	const run = labels[RUN_LABEL];
 	const runWrong = runProblem(run);
@@ -123,8 +123,7 @@ function preflightDrift(output: string, expectedSha: string): string[] {
 const HELD = "has an outstanding delegation";
 
 /** The helper's argv for a verb. */
-function helper(verb: "netlock" | "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMount): string[] {
-	if (verb === "netlock") return [ARCHIL_HELPER, verb, mount!.region];
+function helper(verb: "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMount): string[] {
 	if (verb === "mount" || verb === "revoke") return [ARCHIL_HELPER, verb, mount!.disk, mount!.region, mount!.folder];
 	return [ARCHIL_HELPER, verb];
 }
@@ -144,12 +143,13 @@ export interface ArchilMountOptions {
  * tool program runs before it. Each step runs as root through the provider's own exec, and each failure stops the next:
  *   1. preflight: the image is as the package's recipe makes it (root exec, the helper's sha256 and mode, archil's
  *      version, the tool user, no sudo);
- *   2. netlock: the tool user sends nothing, loopback included; root reaches Archil alone;
- *   3. the takeover: every computer of the run with a lower epoch is released; one that could not be (or a higher epoch,
+ *   2. the takeover: every computer of the run with a lower epoch is released; one that could not be (or a higher epoch,
  *      fenced) stops here, and nothing is revoked;
- *   4. mount, with the token on fd 0; or revoke (mount --force) when the takeover released any, or the mount found the
+ *   3. mount, with the token on fd 0; or revoke (mount --force) when the takeover released any, or the mount found the
  *      folder held by a client that no listing shows: a forced-off client's later writes are lost, which is the fence;
- *   5. serve: the resident sync server, which holds no token.
+ *   4. serve: the resident sync server, which holds no token.
+ * The archil client and serve run in the computer's own network namespace, which reaches Archil; the tools' network is
+ * init's own namespace, loopback alone (computerd init --own-network), so there is no firewall to set here.
  */
 export async function archilMount({ root, mount, releaseOlder, timeoutMs, signal }: ArchilMountOptions): Promise<Result<void>> {
 	const step = async (argv: readonly string[], what: string, stdin?: string) => {
@@ -166,10 +166,6 @@ export async function archilMount({ root, mount, releaseOlder, timeoutMs, signal
 	if (pre.value.exitCode !== 0 || drift.length > 0) {
 		return fail("refused", `the computer is not as the Archil image makes it: ${drift.length > 0 ? drift.join("; ") : `the preflight exited ${pre.value.exitCode}`}`);
 	}
-	const lock = await step(helper("netlock", mount), "netlock");
-	if (!lock.ok) return lock;
-	if (lock.value.exitCode !== 0) return failed("netlock (the tools' network)", lock.value);
-
 	const older = await releaseOlder();
 	if (!older.ok) return fail(older.error.code, `the takeover could not release the run's lower epochs, so nothing was revoked or mounted: ${older.error.message}`);
 	let verb: "mount" | "revoke" = older.value.released.length > 0 || older.value.unproven.length > 0 ? "revoke" : "mount";
@@ -276,33 +272,6 @@ export function archilReadBack({ mounts, epoch, served, recorded }: { mounts: st
 	if (region === undefined) return { other: `an Archil mount of ${disk}:/${folder} whose region neither the mount table nor a label shows` };
 	const read = readBackOf({ kind: "archil", disk, region, folder, token: "" }, epoch);
 	return "kind" in read && read.kind === "archil" ? { ...read, exclusive: served } : read;
-}
-
-/** Prints, as root, the two rules netlock puts first: OUTPUT's jump to its chain, and the chain's drop of the tool
- *  user, for IPv4, and for IPv6 when the computer has it ("ip6tables none" when it has none). */
-const NETLOCK_READ = [
-	"# agentrun-computer: archil network",
-	"for t in iptables ip6tables; do",
-	'  if [ "$t" = ip6tables ] && [ -z "$(cat /proc/net/if_inet6 2>/dev/null)" ]; then echo "$t none"; continue; fi',
-	'  echo "$t jump $(/usr/sbin/$t -w -S OUTPUT 2>/dev/null | sed -n 2p)"',
-	'  echo "$t first $(/usr/sbin/$t -w -S AGENTRUN-NET 2>/dev/null | sed -n 2p)"',
-	"done",
-].join("\n");
-
-/**
- * An Archil computer's network, read back from inside it as root: "none" only when netlock's rules are in place (OUTPUT
- * jumps first to its chain, whose first rule drops every packet of the tool user, loopback included), for IPv4 and for
- * IPv6 where the computer has it; else `{ other }` in words. The vendor's own network for it is open for root, which
- * netlock holds to Archil alone, so the vendor's read-back is not the tools' network.
- */
-export async function archilNetwork({ root, timeoutMs, signal }: { root: ArchilRoot; timeoutMs: number; signal?: AbortSignal }): Promise<Result<{ other: string } | "none">> {
-	const ran = await root.run(["sh", "-c", NETLOCK_READ, "sh"], { timeoutMs, ...(signal ? { signal } : {}) });
-	if (!ran.ok) return fail(ran.error.code, `netlock's rules could not be read back: ${ran.error.message}`);
-	const lines = new Set(ran.value.output.split("\n").map((line) => line.trim()));
-	const locked = (t: string) => lines.has(`${t} jump -A OUTPUT -j AGENTRUN-NET`) && lines.has(`${t} first -A AGENTRUN-NET -m owner --uid-owner ${ARCHIL_TOOL_UID} -j DROP`);
-	const missing = [locked("iptables") ? undefined : "IPv4", lines.has("ip6tables none") || locked("ip6tables") ? undefined : "IPv6"].filter(Boolean);
-	if (ran.value.exitCode === 0 && missing.length === 0) return ok("none");
-	return ok({ other: `open at the provider, and netlock's rules do not read back for ${missing.join(" and ") || "it"} (exit ${ran.value.exitCode}), so the tools' network is not known to be none` });
 }
 
 /** What Archil answers a checkin by a client that holds no delegation there: EROFS (30), measured on 0.10.1. */

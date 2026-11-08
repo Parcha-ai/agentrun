@@ -1,21 +1,22 @@
 #!/bin/sh
 # agentrun-archil: the root helper of a remote computer, which keeps one run's work folder on the owner's Archil disk
-# at /workspace. It does five things and nothing else, each with fixed arguments to the archil client, to iptables and
-# ip6tables, or to computerd:
+# at /workspace. It does four things and nothing else, each with fixed arguments to the archil client or to computerd:
 #
-#   netlock <region>
 #   mount  <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
 #   revoke <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
 #   serve
 #   checkin
 #
-# netlock the computer's firewall, run first: the tool user sends nothing, loopback included; root reaches Archil alone.
 # mount   archil mount <disk>:/<path> /workspace --region <region>: exclusive, so no other client writes the folder.
 # revoke  the same with --force: takes the folder back from a computer that is gone and left its delegation behind.
 # serve   becomes `computerd sync-serve`, resident, holding no token: on its socket it takes one fixed byte and answers
 #         the exit code of `archil sync /workspace` (every write so far durable), coalesced; it exits when the mount
 #         goes or its socket is taken away.
 # checkin takes serve's socket away, then archil checkin /workspace: lets go of the folder.
+#
+# The archil client and serve run as root in the computer's own network namespace, which reaches Archil; init and every
+# tool run in a namespace of their own with loopback alone (computerd init --own-network), so the tools have no network
+# and reach no daemon of the provider's. This helper sets no firewall.
 #
 # Install it root:root 0755 at /usr/local/sbin/agentrun-archil. The provider runs it as root through its own exec (the
 # image's user is root), never through sudo: the image has none. The run's tools run as agentrun-tool, through
@@ -27,27 +28,22 @@
 # or extra segment), a mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing.
 # A serve or checkin with nothing mounted exits 3 and runs nothing. A mount or revoke in a computer whose /proc lets a
 # user see another's processes (no hidepid=2 or invisible) exits 4 and runs nothing; each first remounts /proc with
-# hidepid=2, which a computer whose root may not remount leaves as it was. A netlock that cannot lock the tools' network
-# exits 4, and so does a serve whose computerd is not root's alone.
+# hidepid=2, which a computer whose root may not remount leaves as it was. A serve whose computerd is not root's alone
+# exits 4.
 set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
-IFS=' 	
-'
+# Space, tab and newline, as a shell starts: written so no line ends in white space.
+IFS=$(printf ' \t\nx')
+IFS=${IFS%x}
 unset ENV CDPATH
 
 ARCHIL=/usr/bin/archil
 MP=/workspace
 MOUNTS=/proc/self/mounts
 MOUNT=/usr/bin/mount
-IPTABLES=/usr/sbin/iptables
-IP6TABLES=/usr/sbin/ip6tables
-GETENT=/usr/bin/getent
-STATUS=/proc/self/status
-IF_INET6=/proc/net/if_inet6
 TOOL=agentrun-tool
-CHAIN=AGENTRUN-NET
 COMPUTERD=/opt/agentrun/computerd
 SOCK=/run/agentrun-archil/archil.sock
 ROOT_UID=0
@@ -78,16 +74,16 @@ take() {
   matches "$disk" 'dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}' || refuse "the disk is a disk id (dsk-...) or owner/name"
   matches "$region" '[a-z0-9][a-z0-9-]{0,63}' || refuse "the region is lowercase letters, digits and dashes"
   matches "$folder" 'agents/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/runs/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/work' || refuse "the folder is agents/<agent>/runs/<run>/work, nothing else"
-  # The box's /proc (its last mount there) must hide each user's processes from the others, hidepid=2 or invisible as
-  # newer kernels name it: else the run's tools could see this root archil client's. No image sets it, so it is
-  # remounted so first, as root may where it holds CAP_SYS_ADMIN; a box where that fails is refused by the check.
+  # The computer's /proc (its last mount there) must hide each user's processes from the others, hidepid=2 or invisible
+  # as newer kernels name it: else the run's tools could see this root archil client's. No image sets it, so it is
+  # remounted so first, as root may where it holds CAP_SYS_ADMIN; a computer where that fails is refused by the check.
   "$MOUNT" -o remount,hidepid=2 /proc >/dev/null 2>&1 || :
   if ! awk '$2 == "/proc" && $3 == "proc" { o = $4 } END { exit !(o ~ /(^|,)hidepid=(2|invisible)(,|$)/) }' "$MOUNTS"; then
     printf 'agentrun-archil: /proc is not mounted with hidepid=2 (or invisible): the run'"'"'s tools could see the root archil client'"'"'s processes\n' >&2
     exit 4
   fi
   if listed fuse.archil; then
-    # This folder, mounted here already (a box the server finds again): nothing to do. Any other is refused.
+    # This folder, mounted here already (a computer found again): nothing to do. Any other is refused.
     awk -v m="$MP" -v a="$disk:/$folder" -v b="$disk:/$folder[$region]" '$2 == m && $3 == "fuse.archil" && ($1 == a || $1 == b) { f = 1 } END { exit !f }' "$MOUNTS" || refuse "$MP holds another archil mount"
     printf 'agentrun-archil: %s is mounted already\n' "$MP" >&2
     exit 0
@@ -143,102 +139,14 @@ serve() {
   exec "$COMPUTERD" sync-serve --socket "$SOCK" --mountpoint "$MP" --mounts "$MOUNTS" --archil "$ARCHIL" --gid "$gid" </dev/null
 }
 
-# netlock <region>: the box's firewall, before any tool runs and before the mount. In a chain of its own, jumped to
-# first from OUTPUT, for IPv4 and IPv6 alike. Its first rule: the tool user sends nothing at all, loopback and replies
-# included. A box's loopback is not the tools' own: the provider's control daemon may listen there with no
-# authentication (Daytona's toolbox, on 2280), and it runs commands as the box's own user, who has sudo and an open
-# network; and a reply to an inbound connection (a provider's preview address) is the tool user answering the outside.
-# The tools need no port of their own: they have no network yet. Then loopback and replies pass for everyone else; root
-# sends DNS, TCP 8100 to the region's mount endpoint alone (resolved here, from the region) and TCP 32050 (the file
-# servers, whose addresses the endpoint gives only at the mount, so any address: root's one wide rule); everything else
-# of root's is dropped; other users (the box's own, which holds sudo anyway) are left as they are. IPv6 is locked when
-# the box has it (an address in /proc/net/if_inet6, ::1 included); a box with none has no IPv6 to lock. The rules are
-# read back whole. No CAP_NET_ADMIN, no iptables (or no ip6tables in a box with IPv6), no such user, no address for
-# the endpoint, or a read-back that differs exits 4.
-lockfail() {
-  printf 'agentrun-archil: the box cannot lock its tools'"'"' network: %s\n' "$1" >&2
-  exit 4
-}
-
-rules() {
-  # $1 iptables or ip6tables, $2 the endpoint's addresses, $3 their prefix length. One rule a line, as -S prints it.
-  printf '%s\n' "-N $CHAIN" \
-    "-A $CHAIN -m owner --uid-owner $uid -j DROP" \
-    "-A $CHAIN -o lo -j ACCEPT" \
-    "-A $CHAIN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" \
-    "-A $CHAIN -p udp -m owner --uid-owner 0 -m udp --dport 53 -j ACCEPT" \
-    "-A $CHAIN -p tcp -m owner --uid-owner 0 -m tcp --dport 53 -j ACCEPT"
-  for a in $2; do printf '%s\n' "-A $CHAIN -d $a/$3 -p tcp -m owner --uid-owner 0 -m tcp --dport 8100 -j ACCEPT"; done
-  printf '%s\n' "-A $CHAIN -p tcp -m owner --uid-owner 0 -m tcp --dport 32050 -j ACCEPT" \
-    "-A $CHAIN -m owner --uid-owner 0 -j DROP"
-}
-
-lockwith() {
-  # $1 the binary, $2 the addresses, $3 their prefix length: applied, then read back whole. A box locked before (a found
-  # box, locked again) has its chain flushed and refilled: for that while, a guard first in OUTPUT drops the tool user's
-  # every packet, so a tool program left running never meets an open network. The guard goes only once the read-back
-  # passes; a lock that fails keeps it, closed.
-  t=$1
-  guard="-m owner --uid-owner $uid -j DROP"
-  "$t" -w -I OUTPUT 1 $guard || lockfail "$t cannot guard the tool user while it locks"
-  "$t" -w -N "$CHAIN" 2>/dev/null || "$t" -w -F "$CHAIN" || lockfail "$t cannot make its chain"
-  n=0
-  while "$t" -w -C OUTPUT -j "$CHAIN" 2>/dev/null; do
-    n=$((n + 1))
-    [ "$n" -le 8 ] && "$t" -w -D OUTPUT -j "$CHAIN" || lockfail "$t cannot move its jump"
-  done
-  "$t" -w -I OUTPUT 1 -j "$CHAIN" || lockfail "$t cannot jump to its chain"
-  rules "$t" "$2" "$3" | while IFS= read -r line; do
-    case "$line" in -N*) continue ;; esac
-    # Each line is the rule's own words, split on spaces: none holds one.
-    "$t" -w $line || exit 1
-  done || lockfail "$t refused a rule"
-  [ "$("$t" -w -S "$CHAIN")" = "$(rules "$t" "$2" "$3")" ] || lockfail "$t reads back other rules than it was given"
-  [ "$("$t" -w -S OUTPUT | sed -n 2p)" = "-A OUTPUT -j $CHAIN" ] || lockfail "$t does not jump to its chain first"
-  n=0
-  while "$t" -w -C OUTPUT $guard 2>/dev/null; do
-    n=$((n + 1))
-    [ "$n" -le 8 ] && "$t" -w -D OUTPUT $guard || lockfail "$t cannot lift its guard"
-  done
-}
-
-netlock() {
-  [ "$#" -eq 1 ] || refuse "netlock takes <region>"
-  region=$1
-  matches "$region" '[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}' || refuse "the region is a provider, a dash and its region, such as aws-us-east-1"
-  cap=$(awk '$1 == "CapEff:" { print $2 }' "$STATUS")
-  matches "$cap" '[0-9a-f]{1,16}' || lockfail "its capabilities cannot be read"
-  [ $(( (0x$cap >> 12) & 1 )) -eq 1 ] || lockfail "root has no CAP_NET_ADMIN here"
-  [ -x "$IPTABLES" ] || lockfail "iptables is not installed"
-  v6on=
-  # Read, never sized: a /proc file's size is 0 whatever it holds.
-  [ -n "$(cat "$IF_INET6" 2>/dev/null)" ] && v6on=1
-  [ -z "$v6on" ] || [ -x "$IP6TABLES" ] || lockfail "the box has IPv6, and ip6tables is not installed"
-  uid=$(id -u "$TOOL" 2>/dev/null) || lockfail "there is no user $TOOL"
-  matches "$uid" '[1-9][0-9]{0,9}' || lockfail "the user $TOOL is root"
-  endpoint="mount.green.${region#*-}.${region%%-*}.prod.archil.com"
-  v4=$("$GETENT" ahostsv4 "$endpoint" 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1 }' | sort -u | tr '\n' ' ')
-  v6=$("$GETENT" ahostsv6 "$endpoint" 2>/dev/null | awk '$1 ~ /^[0-9a-f:]+$/ && $1 !~ /^::ffff:/ { print $1 }' | sort -u | tr '\n' ' ')
-  [ -n "$v6on" ] || v6=
-  [ -n "$v4$v6" ] || lockfail "$endpoint has no address"
-  lockwith "$IPTABLES" "$v4" 32
-  if [ -n "$v6on" ]; then
-    lockwith "$IP6TABLES" "$v6" 128
-  else
-    printf 'agentrun-archil: the box has no IPv6, so there are no IPv6 rules to lock\n' >&2
-  fi
-  printf 'agentrun-archil: the tools'"'"' network is locked; root reaches %s on 8100 and any address on 32050\n' "$endpoint" >&2
-}
-
-[ "$#" -ge 1 ] || refuse "say netlock, mount, revoke, serve or checkin"
+[ "$#" -ge 1 ] || refuse "say mount, revoke, serve or checkin"
 verb=$1
 shift
 case "$verb" in
-  netlock) netlock "$@" ;;
   mount) force= && take "$@" ;;
   revoke) force=--force && take "$@" ;;
   serve) serve "$@" ;;
   # serve's socket goes first, so serve exits and no sync is asked of a folder let go.
   checkin) held "$@" && rm -f -- "$SOCK" && exec "$ARCHIL" checkin "$MP" ;;
-  *) refuse "say netlock, mount, revoke, serve or checkin" ;;
+  *) refuse "say mount, revoke, serve or checkin" ;;
 esac

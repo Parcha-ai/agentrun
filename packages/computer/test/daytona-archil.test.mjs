@@ -100,7 +100,6 @@ test("attach and list read the mount back under the epoch label, exclusive; netw
 	const attached = await provider.attach({ id: made.value.id });
 	assert.equal(attached.ok, true, attached.ok ? "" : attached.error.message);
 	assert.deepEqual(attached.value.spec.mount, readBackOf(MOUNT, 3));
-	assert.equal(attached.value.spec.network, "none");
 	const listed = await provider.list(LABELS);
 	assert.equal(listed.ok, true);
 	assert.deepEqual(listed.value[0].mount, readBackOf(MOUNT, 3));

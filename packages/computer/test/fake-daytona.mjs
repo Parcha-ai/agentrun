@@ -69,10 +69,7 @@ export const ARCHIL_PREFLIGHT = [
 	"tool 2510:2510",
 	"sudo none",
 ].join("\n");
-/** What a locked computer's netlock read-back prints, with no IPv6. */
-export const ARCHIL_LOCKED = ["iptables jump -A OUTPUT -j AGENTRUN-NET", "iptables first -A AGENTRUN-NET -m owner --uid-owner 2510 -j DROP", "ip6tables none"].join("\n");
-
-/** The verb of a root command's argv: the helper's, or the shared script's by its marker (preflight, network). */
+/** The verb of a root command's argv: the helper's, or the shared script's by its marker (preflight). */
 export function rootVerb(argv) {
 	if (argv[0] === ARCHIL_HELPER) return argv[1];
 	return /^# agentrun-computer: archil (\w+)/.exec(argv[2] ?? "")?.[1] ?? "other";
@@ -253,7 +250,6 @@ export function fakeDaytona(initial = {}) {
 		let output = answer?.output ?? "";
 		if (answer === undefined) {
 			if (verb === "preflight") output = ARCHIL_PREFLIGHT;
-			else if (verb === "network") output = archil.locked ? ARCHIL_LOCKED : "iptables jump \niptables first \nip6tables none";
 			else if (verb === "checkin") {
 				exitCode = archil.mounted ? 0 : 3;
 				archil.mounted = undefined;
@@ -261,7 +257,6 @@ export function fakeDaytona(initial = {}) {
 			}
 		}
 		if (exitCode === 0) {
-			if (verb === "netlock") archil.locked = true;
 			if (verb === "mount" || verb === "revoke") archil.mounted = `${command.args[2]}:/${command.args[4]}[${command.args[3]}]`;
 			if (verb === "serve") archil.served = true;
 		}

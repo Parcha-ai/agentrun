@@ -5,7 +5,9 @@
 #   - the archil client at /usr/bin/archil, 0.10.1 (the version the live checks ran), checked by sha256;
 #   - the root helper, this folder's agentrun-archil, at /usr/local/sbin/agentrun-archil, root:root 0755;
 #   - the tool user agentrun-tool, uid and gid 2510, which computerd runs every tool as;
-#   - iptables and ip6tables (the helper's netlock), FUSE (fuse3, and the client's own FUSE library), getent;
+#   - FUSE (fuse3, and the client's own FUSE library). No firewall: init and every tool run in a network namespace of
+#     their own with loopback alone (computerd init --own-network), while the archil client and serve, as root, stay in
+#     the computer's, which reaches Archil;
 #   - /workspace, empty and root's, where the helper mounts the run's folder.
 #
 # No sudo and no sudoers file: the image's user is root, so the provider's own exec (Daytona's toolbox, Modal's exec,
@@ -33,7 +35,7 @@ RUN set -eu; \
     case "$sum" in unpinned) echo "archil ${ARCHIL_VERSION} for $arch has no pinned sha256 yet: set ARCHIL_SHA256_$(echo "$arch" | tr a-z A-Z) to the package's sum" >&2; exit 1 ;; esac; \
     apt-get update -qq; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      git curl ca-certificates nodejs npm ripgrep iptables fuse3 >/dev/null; \
+      git curl ca-certificates nodejs npm ripgrep fuse3 >/dev/null; \
     curl -fsSL -o /tmp/archil.deb "https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb"; \
     echo "$sum  /tmp/archil.deb" | sha256sum -c -; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /tmp/archil.deb >/dev/null; \
@@ -49,8 +51,7 @@ COPY agentrun-archil /usr/local/sbin/agentrun-archil
 RUN set -eu; \
     chown root:root /usr/local/sbin/agentrun-archil; \
     chmod 0755 /usr/local/sbin/agentrun-archil; \
-    for x in /usr/bin/archil /usr/sbin/iptables /usr/sbin/ip6tables /usr/bin/getent /usr/bin/awk /usr/bin/realpath \
-      /usr/bin/mount /usr/bin/id /usr/bin/ls; do \
+    for x in /usr/bin/archil /usr/bin/awk /usr/bin/realpath /usr/bin/mount /usr/bin/id /usr/bin/ls; do \
       [ -x "$x" ] || { echo "the image has no $x" >&2; exit 1; }; \
     done; \
     ! command -v sudo >/dev/null 2>&1 || { echo "the image has sudo" >&2; exit 1; }; \

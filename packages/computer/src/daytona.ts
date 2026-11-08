@@ -19,7 +19,6 @@ import {
 	type ArchilRoot,
 	archilLabels,
 	archilMount,
-	archilNetwork,
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
@@ -267,6 +266,13 @@ const ROOT_RUN = [
 	'[ "$(id -u)" = 0 ] || { echo "the toolbox runs commands as $(id -un), not root: a Daytona computer with an Archil mount needs a snapshot of box/Dockerfile, whose user is root"; exit 126; }',
 	'exec "$@"',
 ].join("\n");
+/**
+ * SEAM: an Archil computer's tools' network as this provider reports it until the loopback branch lands: Daytona's own
+ * network is open for root (the archil client reaches Archil), and the tools' is init's own namespace, which the
+ * daemon reads back once init runs with --own-network; the merge replaces this with that read-back ("none").
+ */
+const ARCHIL_TOOLS_NETWORK: NetworkPolicy = { other: "open at Daytona for root; the tools' network is init's own namespace, read back by the daemon once init runs with --own-network" };
+
 /** An Archil spec's mount, or undefined. */
 const archilOf = (spec: ComputerSpec): ArchilMount | undefined => (spec.mount?.kind === "archil" ? spec.mount : undefined);
 
@@ -777,7 +783,8 @@ export class DaytonaProvider implements ComputerProvider {
 			ttlMinutes: Math.max(1, Math.ceil(spec.lifetimeMs / 60_000)),
 			autoStopInterval: this.#autoStop,
 			autoDeleteInterval: this.#autoDelete,
-			// An Archil computer's root reaches Archil: Daytona's network is open, and netlock holds the tools to none.
+			// An Archil computer's root reaches Archil: Daytona's network is open, and init's own namespace (loopback alone)
+			// holds the tools to none.
 			...(networkBody(archil ? "open" : spec.network) ?? { networkBlockAll: true }),
 		};
 		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: this.#timeouts.createMs }, signal);
@@ -818,7 +825,7 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!started.ok) return started;
 		const sb = started.value;
 		const archil = archilOf(spec);
-		// An Archil computer's network at Daytona is open for root; netlock holds the tools to the spec's none.
+		// An Archil computer's network at Daytona is open for root; init's own namespace holds the tools to the spec's none.
 		const vendor = sandboxDrift(archil ? { ...spec, network: "open" } : spec, sb, this.#sandboxExpected(deadline));
 		if (vendor.length > 0) return fail("refused", `it did not match its spec: ${vendor.join("; ")}`);
 		const toolbox = await this.#toolbox(sb, signal);
@@ -828,13 +835,16 @@ export class DaytonaProvider implements ComputerProvider {
 		form.append("file", new Blob([new Uint8Array(daemon)]), "computerd");
 		const uploaded = await this.#rest.call("POST", `${toolbox.value}/files/upload-v2?${new URLSearchParams({ path: staging })}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs }, signal);
 		if (!uploaded.ok) return fail(uploaded.error.code, `the daemon's upload was refused: ${uploaded.error.message}`);
+		// SEAM: init's flags are built here. Every remote computer, an Archil one included, starts init with --own-network
+		// (init and every tool in a network namespace of their own, loopback alone), which the loopback branch adds to
+		// daytonaCommands; the archil client and serve, run as root through the toolbox, stay in the computer's namespace.
 		const commands = daytonaCommands({ staging, deadline, user: `${this.#uid}:${this.#gid}` });
 		const install = await this.#execute(toolbox.value, commands.install, signal);
 		if (!install.ok) return install;
 		if (install.value.exitCode !== 0) return fail("refused", `installing the daemon failed (exit ${install.value.exitCode}): ${install.value.result.trim().slice(0, 500)}`);
 		const read = /^sha256 ([0-9a-f]{64})$/m.exec(install.value.result)?.[1];
 		if (read !== sha256) return fail("refused", `it did not match its spec: daemon: uploaded sha256 ${sha256}, the installed binary reads back ${show(read)}`);
-		// The run's folder, mounted before init starts, so no tool program runs before it is there and the network locked.
+		// The run's folder, mounted before init starts, so no tool program runs before it is there.
 		let epoch: number | undefined;
 		if (archil) {
 			const labels = spec.labels ?? {};
@@ -1175,10 +1185,10 @@ export class DaytonaProvider implements ComputerProvider {
 		let user = `${this.#uid}:${this.#gid}`;
 		let workdir: string | undefined;
 		let kind: AttachedComputer["spec"]["kind"];
-		// An Archil computer: its mount read back from inside it, and its tools' network from netlock's rules.
+		// An Archil computer: its mount read back from inside it; its tools' network is init's own namespace.
 		const recorded = recordedMount(sb.labels);
 		let mount: MountReadBack | undefined;
-		let toolsNetwork: NetworkPolicy = spec.network;
+		const toolsNetwork: NetworkPolicy = recorded ? ARCHIL_TOOLS_NETWORK : spec.network;
 		if (sb.state === "started") {
 			const toolbox = await this.#toolbox(sb, signal);
 			if (!toolbox.ok) return toolbox;
@@ -1198,10 +1208,6 @@ export class DaytonaProvider implements ComputerProvider {
 				if (mount === undefined || !("kind" in mount) || mount.kind !== "archil" || mount.disk !== recorded?.disk || mount.folder !== recorded.folder || mount.region !== recorded.region) {
 					found.push(`mount: labelled ${show(recorded)}, read back ${show(mount ?? "nothing")}`);
 				}
-				const tools = await archilNetwork({ root: this.#root(toolbox.value), timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
-				if (!tools.ok) return tools;
-				toolsNetwork = tools.value;
-				if (typeof toolsNetwork === "object") found.push(`network: ${toolsNetwork.other}`);
 			}
 		}
 		if (found.length > 0) return fail("refused", `the computer ${ref.name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
@@ -1281,12 +1287,12 @@ export class DaytonaProvider implements ComputerProvider {
 				if (read.value === undefined) continue;
 				sb = read.value;
 			}
-			// An Archil computer: its mount as labelled, under its epoch label (attach reads it back from inside), and Daytona's
-			// open network, which netlock holds the tools from (network() reads that back).
+			// An Archil computer: its mount as labelled, under its epoch label (attach reads it back from inside), and its
+			// tools' network, init's own namespace.
 			const recorded = recordedMount(sb.labels);
 			const claim = epochOf(sb.labels);
 			const mount = recorded ? readBackOf({ ...recorded, token: "" }, claim.ok ? claim.value : undefined) : undefined;
-			const network = recorded ? { other: "open at Daytona for root, which netlock holds the tools from: network() reads the tools' network back" } : networkOf(sb);
+			const network = recorded ? ARCHIL_TOOLS_NETWORK : networkOf(sb);
 			infos.push({ ref: { id: sb.id, name: sb.name as string }, labels: { ...(sb.labels ?? {}) }, deadline: deadlineOf(sb), state: stateOf(sb), network, ...(mount ? { mount } : {}) });
 		}
 		return ok(infos);
@@ -1300,13 +1306,10 @@ export class DaytonaProvider implements ComputerProvider {
 		}
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
-		// An Archil computer's tools have no network: netlock holds them to none, read back from inside, and it takes no other.
+		// An Archil computer's tools have no network: init's own namespace, loopback alone. It takes no other policy.
 		if (recordedMount(found.value.labels)) {
-			if (policy !== undefined && policy !== "none") return fail("refused", `${ref.name} has an Archil mount: its tools' network is none, held by netlock, and it takes no other`);
-			if (found.value.state !== "started") return fail("refused", `${ref.name} is ${found.value.state ?? "in no state Daytona reports"}, so netlock's rules cannot be read back`);
-			const toolbox = await this.#toolbox(found.value, signal);
-			if (!toolbox.ok) return toolbox;
-			return archilNetwork({ root: this.#root(toolbox.value), timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+			if (policy !== undefined && policy !== "none") return fail("refused", `${ref.name} has an Archil mount: its tools' network is none, init's own namespace, and it takes no other`);
+			return ok(ARCHIL_TOOLS_NETWORK);
 		}
 		const current = networkOf(found.value);
 		if (policy === undefined || samePolicy(current, policy)) return ok(current);
