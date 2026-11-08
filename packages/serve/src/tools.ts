@@ -34,6 +34,7 @@ import { keyNeeded } from "./key-words.js";
 import { handedSignIn, hostSecrets } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
+import { answerIn } from "./runner/hand-back.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
@@ -75,6 +76,10 @@ export type ToolHost = {
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
   /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
   beforeRelease(stop: (harness: Harness) => void | Promise<void>): void;
+  /** The run is on the runner: its browser hand-over's answers are entries of its journal (a browser_hand_back row the
+   *  runner applies, the live view's hand-back, the ask's expiry), read and written there, never as answer files
+   *  (browser-person.ts personHands `answered`). */
+  handoverInJournal?: boolean;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -292,6 +297,18 @@ const browserTool: ToolEntry = {
           cursor = page.next;
         }
       }, context)) ?? 0,
+      // On the runner: an ask's answer is the root's first answered hand-over entry for it (runner/hand-back.ts).
+      ...(host.handoverInJournal ? {
+        answered: async (id: string) => (await opened?.commit(async (tx) => {
+          for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+            const found = answerIn(page.items, id);
+            if (found) return { outcome: found.state, at: found.at, ...(found.reason !== undefined ? { reason: found.reason } : {}) };
+            if (page.next === undefined) return undefined;
+            cursor = page.next;
+          }
+        }, context)) ?? undefined,
+      } : {}),
       // Tests only (--faux): the process dies once between an ask's record and its row.
       afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
         const mark = host.env[person.FAUX_ASK_DIES_ENV]!;
