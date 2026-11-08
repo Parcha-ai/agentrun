@@ -114,6 +114,10 @@ describe("the agent's computer (definition.computer)", () => {
     expect(body.computer).toEqual({ kind: "desktop", provider: "orgo" });
     expect(body).not.toHaveProperty("place");
   });
+  it("a new agent's first revision never carries a place, whatever the form held: the computer is the setting", () => {
+    const body = createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [], place: { mode: "sandbox", box: "docker" } } as never).definition;
+    expect(body).not.toHaveProperty("place");
+  });
   it("a new agent with no computer picked sends none: the server gives it its default", () => {
     const body = createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] }).definition;
     expect(body).not.toHaveProperty("computer");
