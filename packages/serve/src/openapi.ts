@@ -535,6 +535,9 @@ const TRIGGER_SOURCE = {
   ],
   description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), or a signed request to /hooks/{trigger_id} (\`webhook\`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
 };
+/** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
+ *  start always set, to UTC and to when it was written when the write left them out. */
+const TRIGGER_SOURCE_SENT = { ...TRIGGER_SOURCE, oneOf: TRIGGER_SOURCE.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) };
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
@@ -571,7 +574,7 @@ const TRIGGER = closed({
   id: { type: "string" },
   name: { type: "string", maxLength: 200 },
   enabled: { type: "boolean" },
-  source: TRIGGER_SOURCE,
+  source: TRIGGER_SOURCE_SENT,
   target: TRIGGER_TARGET,
   catchup_window_s: { type: "integer", minimum: 0, maximum: MAX_EVERY_S, description: `How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one \`missed\` firing. 0: a missed time never fires. Default ${CATCHUP_WINDOW_S}.` },
   failures_in_a_row: { type: "integer", minimum: 0, description: `Failed firings since the last that started a run; at ${FAILURES_TO_PAUSE} the trigger turns itself off (\`disabled\`). Turned on again, it counts from 0.` },
@@ -1308,6 +1311,8 @@ const LEARNING_SHORT = {
  *  `serve/1`. */
 /** consoleurl/1: the console's page of a run or an agent, where a person opens it. */
 const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", description: `The ${what}'s page in this server's console, at the address people open it (the server's public URL when it has one, else the address this request reached it at): the link to give a person.`, "x-agentrun-serve": "consoleurl/1" });
+/** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
+export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
 const RUN_FIELDS: Record<string, Json> = {
   console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
@@ -1767,6 +1772,12 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       object.properties[field] = schema;
       fields.push([name, ...down, field].join("."));
     }
+  }
+  // This server's own run fields it always sends, on a run and in a list (runs.ts view and summary): required with the
+  // contract's, so a client may read them as there.
+  for (const name of ["Run", "RunSummary"]) {
+    const schema = schemas[name] as Json & { required: string[] };
+    schema.required = [...schema.required, ...RUN_FIELDS_SENT];
   }
   // The contract's definition fields this server refuses (validate.ts), each marked with the reason its 422 gives.
   const definition = schemas.DefinitionInput as Json & { properties: Record<string, Json> };

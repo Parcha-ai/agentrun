@@ -18,8 +18,6 @@ const ALLOWED = new Map([
   ['packages/pi-durable-disk/test/store-record.test.ts', 'a refusal test: no lease file is written, and a leftover one is neither read nor written'],
   ['packages/dsl/test/graph-status-escalated.test.mjs', 'a fixture named escalated-run.json'],
   ['packages/dsl/test/validation-issues.test.mjs', 'a fixture named not-run.json'],
-  ['packages/pi-agent-learn/test/fixtures/guard-corpus.mjs', 'a fixture path other-run.json'],
-  ['packages/pi-agent-learn/test/guard.test.mjs', 'a fixture path b2-run.json'],
   ['packages/pi/test/native-journey.test.mjs', 'a fixture named dry-run.jsonl'],
 ]);
 

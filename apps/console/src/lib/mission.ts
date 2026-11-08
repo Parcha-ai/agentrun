@@ -9,7 +9,7 @@ export type MissionView = {
   runs: { total: number; active: number; needsInput: number; failed: number; statusUnknown: number; needsReview: number };
   perAgent: { agentId: string; name: string; runs: number }[];
   /** `usd` sums the runs whose cost is known; `unknownRuns` counts the rest. No known cost at all is null, never 0. */
-  cost: { usd: number | null; basis: "reported" | "estimate" | null; unknownRuns: number };
+  cost: { usd: number | null; basis: "estimate" | null; unknownRuns: number };
   recent: Run[];
   /** The runs' tokens, time, tools and success over the range the page asked for. */
   analytics: Analytics;
@@ -26,7 +26,7 @@ export function costLine(c: MissionView["cost"]): string {
  *  known sum. */
 export function costParts(c: MissionView["cost"]): { total: string; note?: string } {
   if (c.usd === null) return { total: "Unknown" };
-  const total = cost({ usd: c.usd, basis: c.basis === "reported" ? "reported" : "estimate", charge_state: null, cap_usd: null });
+  const total = cost({ usd: c.usd, basis: "estimate", charge_state: null, cap_usd: null });
   return { total, ...(c.unknownRuns ? { note: `${c.unknownRuns} ${c.unknownRuns === 1 ? "run" : "runs"} unknown` } : {}) };
 }
 
@@ -36,8 +36,8 @@ export type Stats = {
   agents: number;
   runs: { total: number; active: number; needs_input: number; failed: number; status_unknown: number; needs_review: number };
   per_agent: { agent_id: string; name: string; runs: number }[];
-  /** `basis` is the contract's Cost.basis: "charge" or "estimate" (serve says estimate), null when `usd` is null. */
-  cost: { usd: number | null; basis: "charge" | "estimate" | null; unknown_runs: number };
+  /** `basis`: "estimate" when `usd` is a number, null when it is null (GET /v2/stats). */
+  cost: { usd: number | null; basis: "estimate" | null; unknown_runs: number };
   archived?: { agents: number; runs: number };
   /** Over the runs `from`, `to` and `agent` pick (every other number is the whole store's). */
   analytics: Analytics;
@@ -123,7 +123,7 @@ export function missionFrom(s: Stats, recent: Run[]): MissionView {
     agents: s.agents,
     runs: { total: s.runs.total, active: s.runs.active, needsInput: s.runs.needs_input, failed: s.runs.failed, statusUnknown: s.runs.status_unknown, needsReview: s.runs.needs_review },
     perAgent: s.per_agent.map((a) => ({ agentId: a.agent_id, name: a.name, runs: a.runs })),
-    cost: { usd: s.cost.usd, basis: s.cost.basis === "charge" ? "reported" : s.cost.basis, unknownRuns: s.cost.unknown_runs },
+    cost: { usd: s.cost.usd, basis: s.cost.basis, unknownRuns: s.cost.unknown_runs },
     recent,
     analytics: s.analytics,
   };

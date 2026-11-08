@@ -1,4 +1,4 @@
-import type { Permission, ToolSettings } from "./v2";
+import type { Permission, ToolSetting, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
 export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
@@ -109,7 +109,7 @@ function withField<K extends "provider" | "permission">(settings: ToolSettings, 
 /** `settings` with `tool`'s provider set to `provider`, its permission kept. One equal to `fallback` (what applies when this
  *  layer sets none: the built-in default for the server's, the server's for an agent's), or undefined, is no setting: the
  *  row takes its default again. Never changes `settings`. */
-export const withProvider = (settings: ToolSettings, tool: string, provider: string | undefined, fallback: string): ToolSettings => withField(settings, tool, "provider", provider, fallback);
+export const withProvider = (settings: ToolSettings, tool: string, provider: ToolSetting["provider"], fallback: string): ToolSettings => withField(settings, tool, "provider", provider, fallback);
 
 /** `settings` with `tool`'s permission set to `permission`, its provider kept. One equal to `fallback` (the owner's default
  *  for the server's, the server's for an agent's), or undefined, is no setting. Never changes `settings`. */
