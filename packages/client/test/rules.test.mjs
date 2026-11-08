@@ -314,3 +314,26 @@ test("runs.follow waits out a gateway's Retry-After before it reconnects", async
   assert.deepEqual(pages, [done]);
   assert.ok(at[1] - at[0] >= 1000, `it waited the gateway's second: ${at[1] - at[0]} ms`);
 });
+
+test("a caller's abort while a refusal's body is still coming is the caller's abort, never a refusal or a bad key", async (t) => {
+  let headed;
+  const server = await listener(t, (req, res) => {
+    const status = req.url === "/v2/agents" ? 400 : 401;
+    const body = Buffer.from(JSON.stringify({ error: { code: status === 400 ? "bad_request" : "unauthorized", message: "no" } }));
+    res.writeHead(status, { ...JSON_HEADERS, "content-length": String(body.length) });
+    res.write(body.subarray(0, 8));
+    headed();
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
+  for (const call of [(signal) => client.agents.list({ signal }), (signal) => client.agents.get("a", { signal })]) {
+    const controller = new AbortController();
+    const reason = new Error("the caller let go");
+    const head = new Promise((resolve) => (headed = resolve));
+    const pending = thrown(call(controller.signal));
+    await head;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort(reason);
+    const error = await pending;
+    assert.equal(error, reason, `the abort's own reason, not ${error?.name}: ${error?.message}`);
+  }
+});
