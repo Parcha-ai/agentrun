@@ -28,7 +28,17 @@ export const KINDS = {
    *  budget the run waits on a raise with; its commit carries the run parked, in the cap's words. Neither a call nor a
    *  message, so the reader passes over it. */
   budget: "agentrun.budget",
+  /** A raise of the run's cap, taken: the cap it raised to, and the raise rows its commit takes (the kernel cap's
+   *  takeRaises, all a claim found at once). A budget entry with a raise entry after it is answered. Neither a call nor a
+   *  message, so the reader passes over it. */
+  raise: "agentrun.raise",
 } as const;
+
+/** A raise taken (KINDS.raise): the cap the run goes on under, and the raise rows taken with it. */
+export interface RaiseData {
+  readonly capUsd: number;
+  readonly takes: readonly number[];
+}
 
 /** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
  *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */

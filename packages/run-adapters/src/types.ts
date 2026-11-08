@@ -251,8 +251,9 @@ export type SessionState = "new" | "open_turn" | "idle";
 
 export interface AdapterSession {
   readonly state: SessionState;
-  /** Place the input, then send it: a new turn. */
-  send(text: string): Promise<void>;
+  /** Place the input, then send it: a new turn. `id`: the input's own request id (a follow-up's, such as a raised run's
+   *  turn), so placing it again is the same input, never the run's first one. */
+  send(text: string, options?: { id?: string }): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and

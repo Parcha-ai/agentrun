@@ -158,8 +158,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     get state() {
       return state;
     },
-    async send(text) {
-      input = await root.submit({ type: "input", content: text, requestId: INPUT_REQUEST }, context);
+    async send(text, options) {
+      // The run's first input under INPUT_REQUEST; a follow-up (a raised run's turn) under its own id, a turn of its own.
+      input = await root.submit({ type: "input", content: text, requestId: options?.id ?? INPUT_REQUEST }, context);
       state = "open_turn";
       watch(input);
     },

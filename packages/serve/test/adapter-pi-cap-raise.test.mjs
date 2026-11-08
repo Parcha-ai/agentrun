@@ -39,7 +39,8 @@ async function cappedRun(t, script) {
   let capUsd = CAP;
   const sent = [];
   const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
-  const runCap = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd) };
+  // The cap's rules as E2 hands them to the loop (which imports no cap): its park, raise check and follow-up.
+  const runCap = { get capUsd() { return capUsd; }, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
     cap: runCap,

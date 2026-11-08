@@ -18,12 +18,21 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, Harness, LiveDoc } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, runBooking, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS } from "./journal-kinds.js";
+import { type AnswerData, type AskData, type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 import { approvalOf, CLOSE_MS, STOP_SETTLE_MS, commandRequest, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, Interrupted, KernelFault, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { journalSessions } from "./sessions.js";
 import { sideEffect } from "./side-effects.js";
+
+/** What a raise meets, as the kernel cap's checkRaise reads it (run-adapters/src/kernel/cap/park.ts): the run's cap, the
+ *  pause it waits at (none while it works) and its last raise, with the pause that one answered. */
+export type RaiseState = { capUsd: number | undefined; final?: boolean; pause?: string | undefined; lastRaise?: { to: number; pause?: string | undefined } };
+/** The kernel cap's answer to a raise: raised (and whether it resumes a paused run), a retry of the last, or refused. */
+export type RaiseCheck =
+  | { raised: true; resumes: boolean; pause?: string; refused?: undefined; retry?: undefined }
+  | { retry: true; resumed: boolean; raised?: undefined; refused?: undefined }
+  | { refused: string; raised?: undefined; retry?: undefined };
 
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
@@ -41,6 +50,11 @@ export interface AdapterRunSpec {
   readonly cap?: {
     readonly capUsd: number;
     park(refusal: { message: string; forGood: boolean; figures?: Refusal["figures"] }): { outcome: "parked"; pending: BudgetData["pending"]; words: string } | { outcome: "failed"; error: string };
+    /** The kernel cap's raise rule (checkRaise), as E2 hands it in: the loop never imports the cap. Absent: a raise is
+     *  refused, the run having no cap rule to raise by. */
+    checkRaise?(state: RaiseState, raiseUsd: number): RaiseCheck;
+    /** The kernel cap's follow-up (followUpOf): the server's words a raised run goes on with. */
+    followUpOf?(capUsd: number): { readonly text: string };
   };
   /** How long a person's stop waits for the turn to settle before the run is failed in words (a tool call that ignores
    *  its abort). Default STOP_SETTLE_MS. */
@@ -84,6 +98,66 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let opened: () => void = () => {};
   const ready = new Promise<void>((resolve) => (opened = resolve));
   let held: { detach(): void } | undefined;
+  /** This claim's spec, once known: a raise is checked by its cap's rule. */
+  let specNow: AdapterRunSpec | undefined;
+  /** The raises this claim has: the state the ones before left (the kernel cap's takeRaises, in arrival order), the rows
+   *  to take in the raise entry's commit, whether any resumes a paused run, and the budget it answered. */
+  const raising: { state?: RaiseState; takes: number[]; resumes: boolean; capUsd?: number; budget?: BudgetData; resuming: boolean } = { takes: [], resumes: false, resuming: false };
+
+  /** The run's raise state, read from its root: the newest budget entry with no raise entry after it is the pause it
+   *  waits at (its pending cap is the cap a raise is checked against); the newest raise entry is its last raise. */
+  async function raiseStateOf(): Promise<RaiseState> {
+    let budget: { id: string; data: BudgetData } | undefined;
+    let last: { data: RaiseData; pause?: string } | undefined;
+    for (const entry of await entriesOf(gate!.journal, root!.id, context)) {
+      if (entry.kind === KINDS.budget) budget = { id: String(entry.id), data: entry.data as unknown as BudgetData };
+      if (entry.kind === KINDS.raise) {
+        const data = entry.data as unknown as RaiseData & { pause?: string };
+        last = { data, ...(data.pause ? { pause: data.pause } : {}) };
+        if (budget && data.pause === budget.id) budget = undefined;
+      }
+    }
+    raising.budget = budget?.data;
+    const capUsd = budget ? budget.data.pending.cap_usd : (last?.data.capUsd ?? specNow?.cap?.capUsd);
+    return { capUsd, ...(budget ? { pause: budget.id } : {}), ...(last ? { lastRaise: { to: last.data.capUsd, pause: last.pause } } : {}) };
+  }
+
+  /** A raise row: checked by the cap's rule against the state the raises before it left. Refused in the rule's words;
+   *  else taken by the raise entry's commit, now for a working run, or once the claim's delivery is done for a paused run
+   *  it woke (raises taken together resume it once). */
+  const raise = async (command: Command): Promise<CommandOutcome> => {
+    await ready;
+    const check = specNow?.cap?.checkRaise;
+    if (!check) return { refused: "This run has no cap to raise: a cap is named when a run starts." };
+    raising.state ??= await raiseStateOf();
+    const usd = (command.body as { capUsd?: unknown } | null)?.capUsd;
+    const answer = check(raising.state, typeof usd === "number" ? usd : Number.NaN);
+    if (answer.refused !== undefined) return { refused: answer.refused };
+    raising.takes.push(command.id);
+    if (answer.raised) {
+      raising.resumes ||= answer.resumes;
+      raising.capUsd = usd as number;
+      raising.state = { ...raising.state, capUsd: usd as number, lastRaise: { to: usd as number, pause: raising.state.pause } };
+    }
+    if (!raising.resuming) await takeRaises();
+    return { taken: true };
+  };
+
+  /** The raise entry, taking every raise row this claim has in its one commit (each take keyed to the entry). */
+  async function takeRaises(): Promise<void> {
+    const takes = raising.takes.splice(0);
+    if (takes.length === 0) return;
+    const data: RaiseData & { pause?: string } = { capUsd: raising.state?.capUsd ?? raising.capUsd ?? 0, takes, ...(raising.state?.lastRaise?.pause ? { pause: raising.state.lastRaise.pause } : {}) };
+    // A raise that resumes the pause answers it: the run's row no longer says the cap's words, in the same commit.
+    const landed = gate!.expect(writesEntry(KINDS.raise), { take: takes, ...(raising.resumes ? { run: { summary: null } } : {}) });
+    try {
+      await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.raise, data: data as unknown as JsonValue }), context);
+    } catch (error) {
+      landed.catch(() => undefined);
+      throw error;
+    }
+    await landed;
+  }
 
   const steer = async (command: Command): Promise<CommandOutcome> => {
     // Handed over before the session is open: placed once it is, its outcome the real one (never taken and then dropped).
@@ -132,6 +206,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         harness = await Harness.open(gate.journal, { models: () => models, registry, settings: { restartLimit }, onReport: () => {} }, context);
         const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given) };
         const spec = await specOf(claim, runOf);
+        specNow = spec;
         const hooks = spec.hooks ?? quiet;
         const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
         const writer = await sessions.open(spec.session.key);
@@ -182,12 +257,36 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const io: PiSessionIO = { writer, models: booking.models, signal: deps.signal, onEvent: () => {}, gate: gateOf };
         session = await spec.adapter.open({ ...spec.session, tools }, io);
         root = await harness.root(context);
+        // A run brought back from a park: the raises its claim has are taken together, once its delivery is done.
+        if (restarts === 0 && claim.from === "parked") {
+          raising.resuming = true;
+          raising.state ??= await raiseStateOf();
+        }
         opened();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
           return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, []);
         }
-        if (session!.state === "new") await session!.send(spec.input);
+        let followedUp = false;
+        if (raising.resuming) {
+          // Every row that woke it has reached its command() first (deps.delivered), so raises sent together are taken
+          // together: one raise entry, and the run resumes once, at the latest cap, with one follow-up in the server's
+          // words (the kernel cap's takeRaises and followUpOf). Parked at its cap with no raise that resumes it, it parks
+          // again on the same budget; its next refusal (a raise short of the need) parks it anew through the cap's rule.
+          await deps.delivered;
+          raising.resuming = false;
+          const paused = raising.budget;
+          const resumes = raising.resumes;
+          await takeRaises();
+          if (paused) {
+            if (!resumes || raising.capUsd === undefined || !spec.cap?.followUpOf) return await parkAtCap(harness, root, gate, paused);
+            await session!.send(spec.cap.followUpOf(raising.capUsd).text, { id: `agentrun:raise:${raising.state?.lastRaise?.pause ?? "follow-up"}` });
+            followedUp = true;
+          }
+        }
+        if (followedUp) {
+          // The follow-up is the turn this claim runs.
+        } else if (session!.state === "new") await session!.send(spec.input);
         else if (session!.state === "open_turn") await session!.recover();
         const turn = session!.state === "idle" ? Promise.resolve({ status: "completed" as const }) : session!.turnEnd();
         const end = await Promise.race([turn.then(() => "answered" as const), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
@@ -414,6 +513,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         wakeInbox();
         return { taken: true };
       }
+      if (command.kind === "raise") return raise(command);
       return { refused: `an adapter loop takes no ${command.kind} command` };
     },
     async stop(reason) {
