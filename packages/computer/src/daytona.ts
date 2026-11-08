@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, SOCKET_DIR, WORK } from "./drift.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
@@ -138,6 +139,61 @@ interface CallInit {
 	/** Any answer below 500 but 429 is a value, with its status, not a failure. */
 	anyStatus?: boolean;
 }
+
+/**
+ * The environment fromEnv reads, by name. Every name is COMPUTER_DAYTONA_*: a bare DAYTONA_API_KEY may hold another
+ * organization's key on a host that runs other Daytona work, so it is never read, not even as a fallback.
+ */
+export const ENV = {
+	/** Required: the Daytona API key. */
+	key: "COMPUTER_DAYTONA_API_KEY",
+	/** Default https://app.daytona.io/api. */
+	url: "COMPUTER_DAYTONA_API_URL",
+	/** Default this package's dist/computerd-linux-<arch>. */
+	daemon: "COMPUTER_DAYTONA_DAEMON",
+	/** amd64 (default) or arm64: the sandboxes' architecture. */
+	arch: "COMPUTER_DAYTONA_ARCH",
+	/** The Daytona target (region); default the organization's. */
+	target: "COMPUTER_DAYTONA_TARGET",
+	/** container (default) or linux-vm: the class the snapshot makes. */
+	sandboxClass: "COMPUTER_DAYTONA_CLASS",
+	/** uid:gid the daemon runs as; default 1000:1000. */
+	user: "COMPUTER_DAYTONA_USER",
+} as const;
+
+/** What fromEnv takes besides the environment: any option but the key, which comes from COMPUTER_DAYTONA_API_KEY alone. */
+export type DaytonaFromEnvOptions = Partial<Omit<DaytonaProviderOptions, "apiKey">>;
+
+/**
+ * The provider's options from COMPUTER_DAYTONA_* alone, options winning over the environment; throws in words when a
+ * setting is missing or wrong. The key is read here, and only here.
+ */
+export function optionsFromEnv(env: Record<string, string | undefined> = process.env, options: DaytonaFromEnvOptions = {}): DaytonaProviderOptions {
+	const apiKey = env[ENV.key];
+	if (apiKey === undefined || apiKey === "") throw new Error(`set ${ENV.key} to a Daytona API key: the Daytona provider reads it there and nowhere else, never from DAYTONA_API_KEY`);
+	const arch = options.arch ?? (env[ENV.arch] || "amd64");
+	if (arch !== "amd64" && arch !== "arm64") throw new Error(`${ENV.arch} is amd64 or arm64, not ${arch}`);
+	const sandboxClass = options.sandboxClass ?? (env[ENV.sandboxClass] || "container");
+	if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`${ENV.sandboxClass} is container or linux-vm, not ${sandboxClass}`);
+	return {
+		daemonPath: env[ENV.daemon] || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)),
+		...(env[ENV.url] ? { apiUrl: env[ENV.url] } : {}),
+		...(env[ENV.target] ? { target: env[ENV.target] } : {}),
+		...(env[ENV.user] ? { daemonUser: env[ENV.user] } : {}),
+		...options,
+		apiKey,
+		arch,
+		sandboxClass,
+	};
+}
+
+/** A DaytonaProvider from COMPUTER_DAYTONA_* alone (see optionsFromEnv). */
+export function fromEnv(env: Record<string, string | undefined> = process.env, options: DaytonaFromEnvOptions = {}): DaytonaProvider {
+	return new DaytonaProvider(optionsFromEnv(env, options));
+}
+
+/** The conformance CLI's module for Daytona: the run's idle stop and auto-delete, its snapshot, notes and drifted twin. */
+export const conformance = () => import("./conformance/daytona.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const DEFAULT_API_URL = "https://app.daytona.io/api";

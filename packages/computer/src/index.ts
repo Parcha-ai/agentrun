@@ -23,4 +23,5 @@ export {
 export { drift, helloDrift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected, type HelloExpected } from "./drift.js";
 export { sweep, type SweepOptions, type Swept } from "./janitor.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
+export { type ConformanceModule, isProviderId, type ProviderEnv, type ProviderId, providerFromEnv, providerIds, type ProviderModule, providerModule, providers } from "./providers.js";
 export * from "./conformance/index.js";

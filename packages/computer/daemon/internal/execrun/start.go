@@ -24,6 +24,12 @@ type Program struct {
 	// Terminal says stdin, stdout and stderr are one terminal, which becomes the program's controlling terminal in a
 	// session of its own.
 	Terminal bool
+	// WaitGroup: the run ends once the program and every process left in its group (with a terminal, its session) have
+	// ended, and reports the program's own end. A signal goes to what is left of them once the program is gone.
+	WaitGroup bool
+	// KeepOrphans: when the run ends, what it left running is not ended: it runs on under the guard until it ends, or
+	// the guard is told to end (the computer's end).
+	KeepOrphans bool
 }
 
 // Guarded is a program running under its guard.
@@ -41,6 +47,9 @@ type Guarded struct {
 	awaiting uint64
 	answered chan groupSignalled
 	done     chan struct{}
+	// over is closed once the guard reports how the run ended, or at done if it never does; endOnce closes it.
+	over     chan struct{}
+	endOnce  sync.Once
 	final    guardStatus
 	reported bool
 }
@@ -212,10 +221,10 @@ func Start(ctx context.Context, p Program, stdin, stdout, stderr *os.File) (*Gua
 		closeAll(specWriter, statusReader)
 		return nil, fmt.Errorf("cannot start the guard for %s: %w", p.Argv[0], err)
 	}
-	g := &Guarded{guard: cmd, control: specWriter, done: make(chan struct{})}
+	g := &Guarded{guard: cmd, control: specWriter, done: make(chan struct{}), over: make(chan struct{})}
 	started := make(chan struct{})
 	go g.follow(statusReader, started)
-	if err := json.NewEncoder(specWriter).Encode(guardSpec{Path: path, Argv: p.Argv, Env: env, Dir: dir, Credential: cred, Terminal: p.Terminal}); err != nil {
+	if err := json.NewEncoder(specWriter).Encode(guardSpec{Path: path, Argv: p.Argv, Env: env, Dir: dir, Credential: cred, Terminal: p.Terminal, WaitGroup: p.WaitGroup, KeepOrphans: p.KeepOrphans}); err != nil {
 		_ = syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)
 		<-g.done
 		g.Close()
@@ -297,6 +306,8 @@ func (g *Guarded) follow(status *os.File, started chan<- struct{}) {
 			continue
 		}
 		g.final, g.reported = s, true
+		// A guard that keeps what the run left (KeepOrphans) runs on after this line; the run itself has ended.
+		g.end()
 	}
 	_ = status.Close()
 	if beforeGuardWait != nil {
@@ -307,10 +318,29 @@ func (g *Guarded) follow(status *os.File, started chan<- struct{}) {
 	delete(guards.pids, g.guard.Process.Pid)
 	guards.Unlock()
 	close(g.done)
+	g.end()
+}
+
+// end closes over, once.
+func (g *Guarded) end() {
+	g.endOnce.Do(func() {
+		if g.over != nil {
+			close(g.over)
+		}
+	})
 }
 
 // Done is closed once the program and everything under it have ended and the guard is reaped.
 func (g *Guarded) Done() <-chan struct{} { return g.done }
+
+// Ended is closed once the run has ended: the guard reported how, or is done. Before Done only with KeepOrphans, whose
+// guard runs on for what the run left. Exit says how it ended once Ended.
+func (g *Guarded) Ended() <-chan struct{} {
+	if g.over == nil {
+		return g.done
+	}
+	return g.over
+}
 
 // Exit is how the program ended, once Done: an exit code, or the name of the signal that ended it, without SIG ("TERM"). When the
 // guard was killed before it could report, it is the guard's own end, and reported is false.

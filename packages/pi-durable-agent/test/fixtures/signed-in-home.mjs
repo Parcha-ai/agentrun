@@ -17,7 +17,7 @@ export const FIXTURE_HOST_KEY = localHostKey("fixture-host-key", Buffer.alloc(32
  *  only. Pass it as a test's `skip`. */
 export const signedInHomeSkip = process.platform === "linux" ? undefined : "pi-durable-disk runs a local directory on Linux only";
 
-const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
+const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({}) });
 
 /** An agent home in `dir/home` after one run under pi-durable-disk signed in to the practice site and was carried back:
  *  the marker is the profile's `ref` in both `agent.sqlite` and the run's `store/run.sqlite`, and a saved session's

@@ -27,7 +27,8 @@ const dieAt = (point) => { if (process.env.KILL_AT === point) { process.kill(pro
 const faux = fauxProvider();
 faux.setResponses(Array.from({ length: 8 }, () => (context) => {
   appendFileSync(counter, 'request\n');
-  const system = context.messages.filter((message) => message.role === 'system');
+  // The system messages that carry sections: pi 1.5 also sends a tool-set change as a system message, with none.
+  const system = context.messages.filter((message) => message.role === 'system' && message.sections);
   say({ event: 'request', sections: system.at(-1)?.sections ?? null, submit: context.messages.flatMap((message) => message.toolsAdded ?? []).filter((tool) => tool.name === 'submit').at(-1)?.description });
   dieAt('mid-model');
   return fauxAssistantMessage([fauxToolCall('submit', { verdict: 'buy' })], { stopReason: 'toolUse' });

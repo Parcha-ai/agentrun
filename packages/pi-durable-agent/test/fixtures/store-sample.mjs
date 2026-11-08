@@ -6,6 +6,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { workspaceFiles } from "@parcha/agentrun-dsl/recovery";
@@ -83,7 +84,7 @@ export async function recordWorkflow(started, { page = PUBLIC_PAGE, stopAt, fail
   });
   const registry = createRegistry();
   registry.install(workflows.extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(started.storePath), { registry, models: {} }, ctx);
+  const harness = await Harness.open(await openNodeSqliteStorage(started.storePath), { registry, models: createModels() }, ctx);
   try {
     const { carry } = await runWorkflowRevision({ harness, workflows, context: ctx, run: started, input: { site: "https://example.org" }, tools: started.revision.body.tools });
     await stopping;

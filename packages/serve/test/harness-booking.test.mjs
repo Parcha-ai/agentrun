@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { AssistantEntry, createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, timelineOf } from "@parcha/pi-durable-agent/timeline";
@@ -111,7 +112,7 @@ function scripted(turns) {
 const runOf = (harness) => ({ harness, env: async () => ({ confinePrefix: () => ["/usr/bin/setpriv", "--no-new-privs", "--"] }) });
 
 async function opened(storage, adapter, wrap = (harness) => harness, watch = () => {}) {
-  const harness = wrap(await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx));
+  const harness = wrap(await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx));
   const app = adapterRun(async () => adapter, "late", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
   const events = [];
   app.door.attach((e) => (events.push(e.type), watch(e, app)));
@@ -469,7 +470,7 @@ test("the next open re-books what the session booked with its tokens and model; 
   // A journal as an earlier process left it, written before runner.turn kept tokens but for its last request: three
   // requests booked in the session. The first was written on the root at unknown cost, and its cost never reached the
   // root; the other two have no entry there (the process went before the boundary).
-  const earlier = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const earlier = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   const writer = await durableSessions(earlier, ctx).open(key);
   await writer.append([
     { kind: RUNNER_RECORDS.request, data: { turn: 1, model: "late-model-1" } },
