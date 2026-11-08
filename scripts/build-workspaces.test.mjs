@@ -77,15 +77,15 @@ test("no package's build builds, or skips building, a dependency: each compiles 
 // A build of some workspaces goes through the same order: the set, in dependency order (`--only`). npm's own `-w a -w b`
 // order is the workspaces' directory order, which built decisions before dsl and harness before pi-durable-disk once no
 // package built its dependencies itself.
-test("a subset builds in dependency order: dsl before decisions, pi-durable-disk and pi-browser before harness, pi-git-remote before pi-agent-learn", async () => {
+test("a subset builds in dependency order: dsl before decisions, pi-durable-disk and pi-browser before harness, pi before pi-durable-agent", async () => {
   const mod = await ordering();
   assert.ok(mod?.subsetOrder, 'scripts/build-workspaces.mjs exports subsetOrder');
   // Given in directory order, the order npm's -w would build them in.
-  const built = ['@parcha/agentrun-decisions', '@parcha/agentrun-dsl', '@parcha/agentrun-harness', '@parcha/pi-agent-learn', '@parcha/pi-browser', '@parcha/pi-durable-disk', '@parcha/pi-git-remote'];
+  const built = ['@parcha/agentrun-decisions', '@parcha/agentrun-dsl', '@parcha/agentrun-harness', '@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-durable-agent', '@parcha/pi-durable-disk'];
   const order = mod.subsetOrder(mod.workspaces(), built, () => true);
   assert.deepEqual([...order].sort(), [...built].sort(), 'the set, each once, nothing else');
   const at = (name) => order.indexOf(name);
-  for (const [later, earlier] of [['@parcha/agentrun-decisions', '@parcha/agentrun-dsl'], ['@parcha/agentrun-harness', '@parcha/pi-durable-disk'], ['@parcha/agentrun-harness', '@parcha/pi-browser']]) {
+  for (const [later, earlier] of [['@parcha/agentrun-decisions', '@parcha/agentrun-dsl'], ['@parcha/agentrun-harness', '@parcha/pi-durable-disk'], ['@parcha/agentrun-harness', '@parcha/pi-browser'], ['@parcha/pi-durable-agent', '@parcha/agentrun-pi']]) {
     assert.ok(at(earlier) >= 0 && at(earlier) < at(later), `${later} after ${earlier}: ${order.join(', ')}`);
   }
 });
