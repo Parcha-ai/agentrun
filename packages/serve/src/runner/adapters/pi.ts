@@ -17,6 +17,7 @@ import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { type ModelProxy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
+import { DEFAULT_HARNESS } from "../../harness.js";
 import { KINDS } from "../journal-kinds.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
@@ -58,7 +59,7 @@ const INPUT_REQUEST = "agentrun:input";
 /** pi as an AgentAdapter for one claim's run. */
 export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   return {
-    id: "pi",
+    id: DEFAULT_HARNESS,
     capabilities: () => ({}),
     check: () => [],
     open: (spec, io) => openPi(options, spec, io as PiSessionIO),
