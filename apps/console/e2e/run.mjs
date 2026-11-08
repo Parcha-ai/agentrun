@@ -28,7 +28,9 @@ for (const flow of chosen) {
   const started = Date.now();
   let server, context;
   try {
-    server = await startServer({ checkout, ...(flow.server ?? {}) });
+    // A flow's server options, or a function making them (a flow whose server must know its port first).
+    const options = typeof flow.server === "function" ? await flow.server() : flow.server ?? {};
+    server = await startServer({ checkout, ...options });
     const opened = await newContext(browser, flow.origin?.(server) ?? server.origin, { allow: flow.allow ?? [] });
     context = opened.context;
     const { page, errors } = await newPage(context);

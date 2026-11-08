@@ -6,6 +6,7 @@
 // on a clock: every wait is on the server's output, a selector, or a response.
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,11 +28,11 @@ const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>")
  *  Its environment holds only PATH, HOME, TMPDIR and `env` (e.g. AGENTRUN_PUBLIC_URL), so nothing of this machine reaches
  *  it. `faux`: the model fixture (the faux model by default). Resolves once its banner names its URL. Its output stays in
  *  memory: `log()` gives it with keys redacted, `line(re)` waits for a line. */
-export async function startServer({ env = {}, faux = "faux-model.mjs", args = [], checkout = ROOT, timeoutMs = 30_000 } = {}) {
+export async function startServer({ env = {}, faux = "faux-model.mjs", args = [], port = 0, checkout = ROOT, timeoutMs = 30_000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-e2e-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
-  const child = spawn(process.execPath, [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", "0", "--listen", "127.0.0.1", ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...args], {
+  const child = spawn(process.execPath, [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", "127.0.0.1", ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...args], {
     env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -74,6 +75,21 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", args = []
     await stop();
     throw new Error(`${error.message}\n${lines.map(redact).join("\n")}`);
   }
+}
+
+/** A port free on 127.0.0.1 now: for a flow whose server must know its own address before it starts (its public URL). */
+export function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+  });
+}
+
+/** The server's token, from its banner (AGENTRUN_API_KEY=...): in memory only, for a flow that sets up through the API. */
+export async function tokenOf(server) {
+  const [, token] = await server.line(/^AGENTRUN_API_KEY=(\S+)$/);
+  return token;
 }
 
 /** Headless Chrome: CHROME_PATH (CI's Chrome for Testing), else E2E_CHROME. */
