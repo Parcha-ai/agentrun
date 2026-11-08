@@ -10,11 +10,18 @@
 // dist/session/session.js: followCommits listeners at :1083 and :1186-1236, observeCommits dispatch at :1109). So the
 // snapshot's documents miss no commit that lands while it is taken. Its entries are the view a watch acquires
 // (`Conversation.watch`), every entry; an entry the snapshot already holds is not appended again (by its ID).
-// After the snapshot: each commit is translated with its own document changes, value and operations, whenever it is
-// translated: a commit held before `start()` keeps its own history, never the documents as they are later. A commit
-// dispatched before the snapshot was set (not fresh) is already in it, through the observers; one dispatched after it
-// whose document value the snapshot already holds (the observer's value is the commit's own object, session.js:1225-1231)
-// changes nothing again. A document absent when the stream attaches has no observer: every change to it is applied.
+// After the snapshot, the documents move in steps: each observer call (a stored commit's change, or a held one pi shows
+// only to its own observers: a tool slot's `running` status, its output, a streaming partial, session.js #hold :920-955)
+// is queued as a step, its value and operations, in the order pi made them. pi stores held changes later as one change
+// per document at its latest value (#storeHolds :959), so the stored commits alone skip states the stream must show.
+// Each stored commit, when observeCommits dispatches it, takes the steps queued so far (`upTo`); translated, it gives the
+// events of each step in turn, its own entries, tasks and submissions with its last. Steps no commit takes (a held change
+// with no stored commit yet) are translated a microtask later on their own, so the stream shows them as pi does.
+// Steps queued before the snapshot was set are in it. A commit held before `start()` keeps its own steps, never the
+// documents as they are later. In a group commit (two stored in one storage call, published back to back) the first
+// commit's dispatch already finds the second's steps: their document events come out a little ahead of the second
+// commit's entries; every event arrives, in step order. A document absent when the stream attaches has no observer:
+// every change to it in a stored commit is applied.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
 import type { CommitPublication, ConversationId, EntryRecord, Harness, JsonObject, Observation, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
@@ -70,7 +77,7 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
   const closed = new Promise<LiveEnd>((resolve) => (endIt = (end) => { if (!ended) { ended = end; resolve(end); } }));
   // Held until the snapshot is taken, then until a listener starts; each translated in order, one delivery at a time. A
   // commit published before the snapshot was taken is marked not fresh.
-  const held: { publication: CommitPublication; fresh: boolean }[] = [];
+  const held: { publication: CommitPublication; fresh: boolean; upTo: number }[] = [];
   let listener: ((events: LiveEvent[], context: Context) => Promise<void>) | undefined;
   let state: State | undefined;
   let snapshotNewest = -1;
@@ -78,26 +85,45 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
   let delivering = Promise.resolve();
   // Each followed document's newest value, as its observer heard it: the snapshot's documents.
   const docs: Followed = { now: {}, observed: new Set() };
+  // The document steps not yet translated, and how many were ever queued (`queued`) and taken (`taken`): a step's place
+  // is absolute, so a commit's `upTo` stays right as the queue is drained.
+  const steps: Step[] = [];
+  let queuedSteps = 0;
+  let takenSteps = 0;
+  const take = (upTo: number): Step[] => {
+    const taken = steps.splice(0, Math.max(0, upTo - takenSteps));
+    takenSteps = Math.max(takenSteps, upTo);
+    return taken;
+  };
+  const deliver = (events: LiveEvent[]) => {
+    if (!events.length || !listener) return;
+    const to = listener;
+    delivering = delivering.then(() => (ended ? undefined : to(events, context))).catch((error) => {
+      detachAll();
+      endIt({ reason: "failed" });
+      void error;
+    });
+  };
   const flush = () => {
     if (!state || !listener || ended) return;
     while (held.length) {
-      const { publication, fresh } = held.shift()!;
-      const events = translate(conversationId, publication, state, completing, snapshotNewest, fresh, docs);
-      if (events.length) {
-        const deliver = listener;
-        delivering = delivering.then(() => (ended ? undefined : deliver(events, context))).catch((error) => {
-          detachAll();
-          endIt({ reason: "failed" });
-          void error;
-        });
-      }
+      const { publication, fresh, upTo } = held.shift()!;
+      deliver(translate(conversationId, publication, state, completing, snapshotNewest, fresh, docs, take(upTo)));
     }
+  };
+  // Steps no stored commit took: held changes pi has shown and not stored yet. A stored commit's own steps are taken by
+  // its dispatch first: observeCommits queues it before the observers that queue its steps run (session.js :1079, :1083).
+  let pending = false;
+  const flushSteps = () => {
+    pending = false;
+    if (!state || !listener || ended || held.length || queuedSteps === takenSteps) return;
+    deliver(translate(conversationId, NO_CHANGES, state, completing, snapshotNewest, true, docs, take(queuedSteps)));
   };
   const observation = harness.observeCommits({
     // Never throws out to pi (a throw would detach it for good): a commit it cannot translate ends the stream, failed.
     advance: (publication) => {
       try {
-        held.push({ publication, fresh: state !== undefined });
+        held.push({ publication, fresh: state !== undefined, upTo: queuedSteps });
         flush();
       } catch {
         endIt({ reason: "failed" });
@@ -117,10 +143,24 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
       const attached = await harness.observeDoc(token as never, conversationId, {
         // pi 1.5 detaches a document observer whose advance throws, for good, and the stream would go on with this
         // document stale, silently: a change it cannot follow ends the stream failed instead, as a commit's does.
-        advance: (call: { kind: string; value?: JsonObject; ops?: readonly Op[] }) => {
+        advance: (call: { kind: string; value?: JsonObject; ops?: readonly Op[]; retired?: boolean }) => {
           try {
             if (call.kind !== "value") return;
-            docs.now[kind] = call.value;
+            const value = call.retired ? undefined : call.value;
+            docs.now[kind] = value;
+            steps.push({ kind, value, ops: call.retired ? [] : call.ops ?? [] });
+            queuedSteps += 1;
+            if (!pending) {
+              pending = true;
+              queueMicrotask(() => {
+                try {
+                  flushSteps();
+                } catch {
+                  detachAll();
+                  endIt({ reason: "failed" });
+                }
+              });
+            }
           } catch {
             detachAll();
             endIt({ reason: "failed" });
@@ -139,6 +179,8 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
     await watch.stop();
     // The followed documents as they are now (every commit so far); one absent at the attachment, as the view has it.
     state = { entries: [...view.entries], docs: Object.fromEntries(DOCS.map((kind) => [kind, docs.observed.has(kind) ? docs.now[kind] : view.docs[kind]])) };
+    // Every step queued so far is in the snapshot's documents.
+    take(queuedSteps);
     snapshotNewest = view.entries.reduce((max, entry) => Math.max(max, Number(entry.id)), -1);
     for (const record of await scanCompleting(harness, conversationId, context)) completing.add(Number(record.id));
   } catch (error) {
@@ -157,6 +199,8 @@ export async function watchEvents(harness: Harness, conversationId: Conversation
     start: (given) => {
       listener = given;
       flush();
+      // Held changes shown before the start, which no stored commit has taken yet.
+      flushSteps();
     },
     stop: async () => {
       detachAll();
@@ -186,8 +230,19 @@ async function scanCompleting(harness: Harness, conversationId: ConversationId, 
  *  commit held while the snapshot was taken (`fresh` false) appends no entry the snapshot holds and leaves its documents. */
 /** The followed documents: each one's newest value from its observer (the snapshot's), and which kinds have one. */
 type Followed = { now: Record<string, JsonObject | undefined>; observed: Set<string> };
+/** One change of a followed document, as its observer heard it: its value (undefined once retired) and operations. */
+type Step = { kind: string; value: JsonObject | undefined; ops: readonly Op[] };
+const NO_CHANGES = { seq: 0, changes: [] } as unknown as CommitPublication;
 
-function translate(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed): LiveEvent[] {
+/** A commit and the document steps it took: the events of each step in turn, the commit's own changes with its last. */
+function translate(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed, steps: readonly Step[]): LiveEvent[] {
+  if (steps.length <= 1) return translateOne(conversationId, publication, state, completing, snapshotNewest, fresh, followed, steps[0]);
+  const events: LiveEvent[] = [];
+  for (const [at, step] of steps.entries()) events.push(...translateOne(conversationId, at === steps.length - 1 ? publication : NO_CHANGES, state, completing, snapshotNewest, fresh, followed, step));
+  return events;
+}
+
+function translateOne(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed, step: Step | undefined): LiveEvent[] {
   const entries: EntryRecord[] = [];
   const tasks = new Map<number, TaskRecord<JsonValue, JsonValue, JsonValue>>();
   const submissions: SubmissionRecord[] = [];
@@ -199,14 +254,17 @@ function translate(conversationId: ConversationId, publication: CommitPublicatio
     else if (change.type === "submission" && change.value.conversationId === conversationId) submissions.push(change.value as SubmissionRecord);
     else if (change.type === "document" && change.conversationId === conversationId && (DOCS as readonly string[]).includes(change.record.kind) && change.record.key === undefined) {
       const kind = change.record.kind;
-      // A followed document's commit dispatched before the snapshot was set is in the snapshot already, through its
-      // observer; one whose value the snapshot holds (the same object) too. Anything else is this commit's own change.
-      if (followed.observed.has(kind) && (!fresh || (change.kind === "change" && change.value === state.docs[kind]))) continue;
+      // A followed document moves by its observer's steps, held changes included; only an unfollowed one by its commits.
+      if (followed.observed.has(kind)) continue;
       if (change.kind === "change") {
         state.docs[kind] = change.value;
         if (kind === "pi.live") for (const op of change.ops as unknown as Op[]) docOps.push([op[0], ["docs", kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
       } else state.docs[kind] = undefined;
     }
+  }
+  if (step) {
+    state.docs[step.kind] = step.value;
+    if (step.kind === "pi.live") for (const op of step.ops) docOps.push([op[0], ["docs", step.kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
   }
   if (docOps.length === 0 && entries.length === 0 && tasks.size === 0 && submissions.length === 0 && !docsMoved(before, state)) return [];
   state.entries = entries.length ? [...state.entries, ...entries] : state.entries;
