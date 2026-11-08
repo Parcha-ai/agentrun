@@ -4,7 +4,7 @@
 // first: a newer start is refused meanwhile, never starving the run that waited.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -310,4 +310,45 @@ test("the place queue's test-only retry has no effect outside a test runner, and
   assert.equal(placeRetryMs({ [PLACE_RETRY_ENV]: "30000", NODE_TEST_CONTEXT: "child-v8" }), 30_000);
   assert.equal(placeRetryMs({ [PLACE_RETRY_ENV]: "600000", NODE_TEST_CONTEXT: "child-v8" }), 60_000, "capped");
   assert.equal(placeRetryMs({ NODE_TEST_CONTEXT: "child-v8" }), 1_000, "unset: every second");
+});
+
+/** A capped twoNodes run paused at its cap and let go on `api`/`data`, whose next launch cannot open its process log (a
+ *  directory in its place: openSync EISDIR), so a launch throws after its place is taken. Its id and that path. */
+async function pausedWithBrokenLaunch(api, data, id) {
+  assert.equal((await api("POST", "/agents", flowAgent(id, twoNodes()))).status, 201);
+  const { run_id: runId } = (await api("POST", `/agents/${id}/runs`, { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  await letGo(data, runId);
+  const log = join(runDir(data, runId), "process.log");
+  await rm(log, { force: true });
+  await mkdir(log);
+  return { runId, log };
+}
+
+test("a raise whose launch throws once its place is taken (its process log cannot be opened) keeps the run paused, its pause's mark on disk and the raise queued: the next try opens it", { timeout: 180_000 }, async (t) => {
+  // The queue's next try 3 s after the failed one: room to put the log back before it.
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000", AGENTRUN_SERVE_TEST_PLACE_RETRY_MS: "3000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED });
+  const { runId, log } = await pausedWithBrokenLaunch(api, data, "broken-launch");
+  const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
+  const kept = existsSync(join(runDir(data, runId), "budget.json"));
+  assert.deepEqual([raised.status, kept], [200, true], `the raise is taken and the pause stays for the next try: ${JSON.stringify(raised.body)}`);
+  await rm(log, { recursive: true, force: true });
+  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  assert.equal((await view(api, runId)).status, "completed", "the next try opened it under the raised cap");
+});
+
+test("a raise whose launch keeps throwing ends its tries still paused at its cap, saying why on a row of its own, never silently stranded", { timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_BUDGET_HOLD_MS: "1000" }, KEYS);
+  const { api, data } = await serve(t, { faux: PRICED });
+  const { runId } = await pausedWithBrokenLaunch(api, data, "always-broken");
+  assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
+  // Past its three tries, a second apart: the row that says why, once they have run out.
+  const gaveUp = (row) => /^The cap was raised to \$1, but the run could not be started: /.test(row.summary ?? "");
+  let rows = [];
+  for (const end = Date.now() + 20_000; Date.now() < end && !rows.some(gaveUp); await sleep(500)) ({ rows } = await follow(api, runId, ["queued", "input_required", ...ENDED], { deadlineMs: 5_000 }));
+  const run = await view(api, runId);
+  const said = rows.find(gaveUp);
+  assert.deepEqual([run.status, run.pending?.kind, Boolean(said), existsSync(join(runDir(data, runId), "budget.json"))], ["input_required", "budget", true, true], JSON.stringify({ status: run.status, pending: run.pending, rows: rows.map((row) => row.summary).slice(-4) }));
+  assert.match(said.summary, /EISDIR/, "the launch's own error, in its words");
 });
