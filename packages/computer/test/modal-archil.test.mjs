@@ -147,6 +147,25 @@ test("Modal create of an Archil computer: preflight, the takeover, mount with th
 	noToken(runs.map(({ argv }) => argv), "the root commands' argv");
 });
 
+test("Modal create from the image box/build-modal.py printed (im-...) opens it by its id, never as a registry tag; a registry tag still goes to the registry", async () => {
+	// The Modal live run: images.fromRegistry("im-...") made Modal try to pull a registry image of that name, and every
+	// create failed in its image build.
+	const BUILT = "im-JcS2xw55AOTVhNc2WgJUwp";
+	const { provider, fake } = setup();
+	const created = await provider.create({ ...SPEC, image: BUILT });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.ok(fake.calls.some(([name, id]) => name === "images.fromId" && id === BUILT), "the image is opened by its id");
+	assert.ok(!fake.calls.some(([name]) => name === "images.fromRegistry"), "and never pulled as a registry tag");
+	const [, , image] = fake.calls.find(([name]) => name === "sandboxes.create");
+	assert.equal(image.tag, BUILT);
+	assert.ok(image.layers.length > 0, "the provider's layers go on top of it");
+
+	const tagged = setup();
+	assert.equal((await tagged.provider.create(SPEC)).ok, true);
+	assert.ok(tagged.fake.calls.some(([name, tag]) => name === "images.fromRegistry" && tag === IMAGE));
+	assert.ok(!tagged.fake.calls.some(([name]) => name === "images.fromId"));
+});
+
 test("Modal create of an Archil computer whose tools reach an address is refused: Modal's network is on, so the probe from inside holds network none", async () => {
 	const { provider, fake } = setup({}, { box: { network: "open" } });
 	const created = await provider.create(SPEC);

@@ -429,6 +429,16 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 		},
 	});
 
+	/** An Image as the SDK makes one, named tag: each dockerfileCommands adds a layer. */
+	const layered = (tag, layers) => ({
+		tag,
+		layers,
+		dockerfileCommands(commands) {
+			record("image.dockerfileCommands", commands);
+			return layered(tag, [...layers, commands]);
+		},
+	});
+
 	const sdk = {
 		apps: {
 			async fromName(name, params) {
@@ -439,15 +449,12 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 		images: {
 			fromRegistry(tag) {
 				record("images.fromRegistry", tag);
-				const image = (layers) => ({
-					tag,
-					layers,
-					dockerfileCommands(commands) {
-						record("image.dockerfileCommands", commands);
-						return image([...layers, commands]);
-					},
-				});
-				return image([]);
+				return layered(tag, []);
+			},
+			// An image Modal already holds, by its id (im-...), as box/build-modal.py prints it.
+			async fromId(id) {
+				record("images.fromId", id);
+				return layered(id, []);
 			},
 		},
 		sandboxes: {
