@@ -3,6 +3,7 @@
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
+import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
 import {
   type AcquireMachine,
@@ -120,6 +121,12 @@ export interface CodexHarnessOptions {
    * next to the built-ins. Default none.
    */
   tools?: HostTool[];
+  /**
+   * The host's gate (SessionIO.gate), asked by the tool bridge about each call
+   * of `tools` before its intent: a deny is the call's result in the host's
+   * words, nothing written and nothing run; a park holds it. Default none.
+   */
+  gate?: (call: GateCall) => Promise<GateAnswer>;
   /**
    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
    * in the session's VM. Default false (tool-less: `tools` are its only
@@ -411,7 +418,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     // Codex's key: the attach's model key, which the relay checks (its hash armed the relay; only the attach's processes may use it). Never a credential: the handler adds that.
     const key = machine.modelKey;
     // A `never` tool waits for the journal: its call is in the log before its intent (the barrier ran first, below).
-    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush() });
+    // The host's gate first, inside the bridge: after the call's line is in the log (the barrier) and before its intent, so
+    // a refused or parked call leaves no intent, and a parked one's line is there for the resume to settle it.
+    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush(), ...(options.gate ? { gate: options.gate } : {}) });
     /** What the model must hear about this attach (a lost Drive), once per invocation, with its first message; acknowledged after that turn. */
     let notes = machine.notes.length && !invocation.notesShown ? machine.notes.map((n) => `[Sandbox] ${n}`).join('\n') : undefined;
     let proc: SessionProcess | undefined;
