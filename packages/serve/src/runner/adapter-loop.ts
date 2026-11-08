@@ -107,7 +107,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const hooks = spec.hooks ?? quiet;
         const sessions = journalSessions(harness, context, { flush: () => deps.flush() });
         const writer = await sessions.open(spec.session.key);
-        const booking = await modelPortFor(writer, { key: spec.session.key, label: spec.session.label, ...(spec.beforeRequest ? { beforeRequest: spec.beforeRequest } : {}) });
+        // The rule before a side effect for every paid model request, on the path every adapter's requests take: the
+        // booking writes the request's record, then awaits request_start before the request leaves, so the flush here
+        // makes that record and everything before it durable first (each send, a retry's included).
+        const booking = await modelPortFor(writer, {
+          key: spec.session.key,
+          label: spec.session.label,
+          ...(spec.beforeRequest ? { beforeRequest: spec.beforeRequest } : {}),
+          onEvent: async (event) => {
+            if (event.type === "request_start") await deps.flush();
+          },
+        });
         const gateOf = preIntentGate(spec, hooks);
         const tools: HostTool[] = spec.session.tools.map((tool) => ({
           ...tool,
