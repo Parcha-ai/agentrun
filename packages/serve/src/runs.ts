@@ -48,7 +48,7 @@ import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { BUDGET_PAUSE, budgetPausedIn, capStoppedIn, clearBudgetPause, raiseFinishes, writeRaisedCap } from "./budget.js";
 import { durationMs } from "./print.js";
 import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
-import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, permissionOf, RESUME_PREFIX, resumeHead, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -68,10 +68,10 @@ import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import { BehindReadError, checkpointRunDb, MonotonicReads, readRunDb } from "./run-db.js";
 import { holderLives, holderOfClaim, holderOfProcess, holderState, killHolder, LAUNCH_HOLDER, RUN_EPOCH_ENV, RUN_LAUNCH_ENV, type RunHolder, signal } from "./run-holder.js";
 import { firstDoorLine, untilOpened, verifyDoor } from "./door-line.js";
-import { BUDGET_PAUSED, cents, centsUp, costOf, costView, knownToolCostOf, overByMiss, type SoFar, soFarOf, toolCostOf, withOverCap, withPaused } from "./run-view.js";
-// The cost reads and the served row transforms kept their import path here for the server routes and tests that read them
-// from this module.
-export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused };
+import { BUDGET_PAUSED, type Approval, type ApprovalAnswer, actingOn, approvalOf, browserPending, budgetPending, cents, centsUp, continuationOf, costOf, costView, knownToolCostOf, meaningful, micro, microUp, overByMiss, pauseOf, pausedAt, type Pending, pendingOf, raisedToGo, type SoFar, soFarOf, type State, type Status, statusOf as statusOfView, stopped, stoppedAt, SUGGESTED_RAISE_FACTOR, suggestedCap, shownArgs, toolCostOf, usersOf, waitingApproval, withdrawn, withOverCap, withPaused } from "./run-view.js";
+// The cost reads, the served row transforms and the status and pending views kept their import path here for the server
+// routes and tests that read them from this module.
+export { costOf, costView, knownToolCostOf, soFarOf, type SoFar, toolCostOf, withOverCap, withPaused, stoppedAt, suggestedCap, SUGGESTED_RAISE_FACTOR, type State, type Status };
 
 /** `holder` with this launch's door nonce, which the row keeps so a next server can prove the door too. */
 const withNonce = (holder: RunHolder | undefined, nonce: string): RunHolder | undefined => holder && { ...holder, nonce };
@@ -83,8 +83,7 @@ import type { RemoteLimits } from "./run-box.js";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Emitted } from "./webhooks.js";
 
-export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
-export type State = "working" | "waiting" | "idle";
+// Status and State move to run-view.ts (the run's served view), re-exported above.
 export const STATUSES: readonly Status[] = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
 type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
@@ -272,15 +271,7 @@ type RunMeta = {
    *  MessageOrigin): sent with that message, and with it again by a relaunch. Absent: the person's. */
   input_origin?: MessageOrigin;
 };
-/** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
- *  process acted on the answer. */
-type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
-/** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
-/** `by`: "message", a deny a person's message gave while the call waited (Runs.message). */
-/** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, kept as it was given. */
-type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" } };
-/** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
-const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
+// Approval, ApprovalAnswer and withdrawn move to run-view.ts (the run's served view), imported above.
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -556,17 +547,7 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
   if (snapshot) run.turns.snapshot(snapshot, reflect);
 }
 
-/** Read only on a run's `rows`, which hold no QUIET row (take). */
-const shows = (r: TimelineEvent) => r.kind !== "usage" && r.kind !== "phase";
-const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => shows(r) && r.agent_label !== LEARNING_LABEL);
-/** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
- *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
- *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number; overshoot_bound_usd?: number; said: string; at: string; node?: string | null } | { kind: "browser"; instruction: string; completion_condition: string; asked_at: string; expires_at: string } | null;
-const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
-  const last = meaningful(rows);
-  return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
-};
+// shows, meaningful, the Pending type and pendingOf move to run-view.ts (the run's served view), imported above.
 /** The ask its agent made for the person in its browser (browser-person.ts) that the run waits on, once its waiting row
  *  is in the run's rows. */
 const browserAsk = (run: Run): PendingAsk | undefined => (run.dir ? askShown(run.dir, run.rows) : undefined);
@@ -581,13 +562,7 @@ const handoffOpen = (rows: readonly TimelineEvent[]): boolean => {
   const done = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_name === HANDOFF_TOOL && row.tool_result_size_bytes !== null).map((row) => row.tool_use_id));
   return rows.some((row) => row.kind === "tool_use" && row.tool_name === HANDOFF_TOOL && !done.has(row.tool_use_id));
 };
-/** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
- *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
- *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
-const browserPending = (run: Run, redact: (text: string) => string): Pending | undefined => {
-  const ask = browserAsk(run);
-  return ask && { kind: "browser", instruction: redact(ask.instruction), completion_condition: redact(ask.completion_condition), asked_at: ask.asked_at, expires_at: ask.expires_at };
-};
+// browserPending moves to run-view.ts (the run's served view), taking the ask as input; imported above.
 /** Notes the tool calls that wait for approval in `entries` (the run's stored entries), and those whose answer its process
  *  acted on. */
 function noteApprovals(run: Run, entries: readonly unknown[]): void {
@@ -600,11 +575,7 @@ function noteApprovals(run: Run, entries: readonly unknown[]): void {
     else if (data.phase === "resolved" && known) known.resolved = true;
   }
 }
-/** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
-const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
-/** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
- *  no cut leaves the head of a held key. */
-const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
+// waitingApproval and shownArgs move to run-view.ts (the run's served view), imported above.
 /** `entries` with the gate's resume messages (RESUME_PREFIX) redacted whole with `redact`, before the timeline cuts
  *  them: the message carries a call's arguments and its result, which may hold a held key. The marker that names a
  *  resume the server's (its origin, on pi) is redacted alike, so its text is still the message's, which it matches. */
@@ -621,13 +592,7 @@ function redactGateMessages<T>(entries: readonly T[], redact: (text: string) => 
     return { ...(entry as Json), model: [{ ...first, content: redacted }, ...((entry as Json).model as Json[]).slice(1)] } as T;
   });
 }
-/** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval | undefined => {
-  const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
-};
-/** One answered (allow or deny) whose answer the run's process has not acted on yet. */
-const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
+// approvalOf and actingOn move to run-view.ts (the run's served view), imported above.
 /** The row after each tool call that waited for approval, beside its result's row. Its arguments are redacted whole
  *  (`redact`, the Timeline's own: no held key), before any cut. */
 function withApprovals(given: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta" | "resumeRows">, redact: (text: string) => string): TimelineEvent[] {
@@ -741,10 +706,7 @@ function resumeShows(approval: Approval, given: { decision: string; by?: string;
   if (given?.decision === "deny") return `${said}.${rest.trim() ? `\n${rest.trim()}` : ""}`;
   return `${said}. Its result:\n${rest.replace(/^ They allowed it, and it ran(?: and failed)?\. Its result:\n?/, "")}`;
 }
-/** A dollar figure to a millionth, as the timeline's cost.usd is. */
-const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
-/** A bound to a millionth, rounded up, so "at most" holds. */
-const microUp = (usd: number): number => Math.ceil(usd * 1e6 - 1e-9) / 1e6;
+// micro and microUp move to run-view.ts (the run's served view), imported above.
 /** For tests only: how long each launch path waits where it refreshes a run's MCP OAuth tokens (mcpFresh). */
 export const REFRESH_DELAY_ENV = "AGENTRUN_SERVE_TEST_REFRESH_DELAY_MS";
 /** The refresh step's test-only wait, in ms: none unless the server runs under a test runner (node --test's
@@ -758,35 +720,8 @@ export function refreshDelayMs(env: NodeJS.ProcessEnv = process.env): number {
 /** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
 const CONTINUE_TRIES = 3;
 const CONTINUE_RETRY_MS = [1_000, 3_000];
-/** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
-export const SUGGESTED_RAISE_FACTOR = 10;
-/** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
- *  refused request's least, rounded up to a whole dollar, and always above the cap (the next dollar above it, if not),
- *  so a PATCH with it is a raise. */
-export const suggestedCap = (cap: number, spentUsd: number, needsUsd: number): number => {
-  // A hair under, so a sum a float puts just past a whole dollar (3.0000000000000004) stays that dollar.
-  const up = Math.ceil(spentUsd + SUGGESTED_RAISE_FACTOR * needsUsd - 1e-9);
-  // Above the cap as a raise must be (by more than CAP_TOLERANCE, takeRaise), so a PATCH with it is always taken.
-  return up > cap + CAP_TOLERANCE ? up : Math.floor(cap + CAP_TOLERANCE) + 1;
-};
-/** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
- *  needs (its refusal's mark; none from a store written before it kept them), the raise it is offered (suggestedCap),
- *  the refusal's words, and when it came (its error row's time). The figures are as the cap counts them, never rounded.
- *  What was taken is the store's spend once its process is gone (`spentNow`), when that is lower: the refusal counted
- *  requests still answering at what it held for them, and they have settled. */
-const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
-  const said = pausedAt(run);
-  const cap = run.meta.max_cost_usd;
-  if (said === undefined || cap === undefined) return undefined;
-  const r = run.capRefusal;
-  const spent = r && spentNow !== undefined ? Math.min(r.spentUsd, spentNow) : r?.spentUsd;
-  // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them. The least cap
-  // that sends the refused request is the one its words name (`said`), carried from the refusal that wrote them, never
-  // worked out again here from figures that may have moved since. With them, the most a cache miss could make the refused
-  // request cost beyond what it needs (cap.ts), 0 for none.
-  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), least_cap_usd: r.leastCapUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd), overshoot_bound_usd: microUp(r.boundUsd ?? 0) } : {};
-  return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
-};
+// SUGGESTED_RAISE_FACTOR and suggestedCap move to run-view.ts (the run's served view), re-exported above.
+// budgetPending moves to run-view.ts (the run's served view), imported above.
 /** A workflow run paused at its cap (budget.ts): its step waits for a raise in its process, or with none (let go). */
 const budgetWaiting = (run: Run): boolean => run.kind === "workflow" && !!run.dir && existsSync(join(run.dir, BUDGET_PAUSE));
 /** A workflow run's pause at its cap, as its process wrote it: the refusal's words and figures, as an agentic run's
@@ -843,53 +778,10 @@ function answerOfRun(run: Run): string | null {
   const imported = run.imported ? importAnswerOf(run.rows) : undefined;
   return lastAnswer(run) ?? imported?.text ?? imported?.summary ?? null;
 }
-// A run's messages are its message rows (isMessageRow): a person's, and those the server wrote, the message its turn took.
-const usersOf = (rows: readonly TimelineEvent[]) => rows.filter(isMessageRow).length;
+// usersOf moves to run-view.ts (the run's served view), imported above.
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast(isMessageRow)?.id;
-// A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
-// order rows across conversations and the conversation is no part of the order.
-const placeOf = (id: string) => Number(id.slice(id.lastIndexOf(":") + 1));
-/** Whether the turn a stop ended is still where the run stands: no message shown is newer than the stop's. By order,
- *  never by a count or by the stopped message itself, which a compaction can take off the rows. */
-export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number }, rows: readonly TimelineEvent[]): boolean => {
-  if (meta.stopped_at === undefined) return meta.stopped_after !== undefined && meta.stopped_after === usersOf(rows);
-  const at = placeOf(meta.stopped_at);
-  return !rows.some((r) => isMessageRow(r) && placeOf(r.id) > at);
-};
-const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
-/** The words of the cap's refusal for room an agentic run stands paused at: its newest message's turn ended on it (cap.ts
- *  roomRefusal: what is left of its cap cannot buy the next request's least, which a higher cap would send), and nothing
- *  came since. The run then waits for its cap to be raised (input_required, `pending.kind` budget), never failed; a
- *  refusal no cap fixes (an unknown spend, no price) still fails it (decide). Undefined for any other run. */
-const refusedAt = (run: Run, { inFlight = true }: { inFlight?: boolean } = {}): string | undefined => {
-  // `inFlight: false`: a message counted but not yet shown does not move the run past its refusal (one that may not
-  // answer its person reads the pause through it).
-  if (run.kind !== "agentic" || run.cancel || (inFlight && run.submitted > 0) || run.turns.open > 0 || stopped(run)) return undefined;
-  const end = run.turns.end();
-  return end?.status === "failed" ? roomRefusal(end.error) : undefined;
-};
-/** The pause a run stands at, by its refusal's own start mark (its entry), so no row shown after it moves it; a store
- *  with no such mark keys it to the refusal's row. Undefined when it stands at no refusal for room. */
-const pauseOf = (run: Run, read: { inFlight?: boolean } = {}): string | undefined => {
-  if (refusedAt(run, read) === undefined) return undefined;
-  if (run.capMark !== undefined) return `mark:${run.capMark}`;
-  const row = meaningful(run.rows)?.id;
-  return row === undefined ? undefined : `row:${row}`;
-};
-/** Its cap was raised since the refusal it stands at (a raise names that pause): it waits for its follow-up then, not
- *  for a raise (input_required, idle). */
-const raisedSince = (run: Run, read: { inFlight?: boolean } = {}): boolean => {
-  const pause = pauseOf(run, read);
-  return pause !== undefined && run.meta.cap_raised?.some((raise) => raise.pause === pause) === true;
-};
-/** The follow-up a raise of the pause it stands at asked for and that has not gone yet: one per pause. */
-const continuationOf = (run: Run): NonNullable<RunMeta["cap_continue"]> | undefined => {
-  // A run that has ended, or is ending (its follow-up's tries spent: failRaised, a cancel), sends none any more.
-  if (run.outcome || run.finishing || run.cancel) return undefined;
-  const pause = pauseOf(run);
-  const next = run.meta.cap_continue;
-  return pause !== undefined && next?.pause === pause && !next.sent ? next : undefined;
-};
+// placeOf, stoppedAt, stopped, refusedAt, pauseOf, raisedSince and continuationOf move to run-view.ts (the run's served
+// view), imported above (stoppedAt re-exported).
 /** A process by its pid and start ticks (Linux /proc; the pid alone elsewhere): a pid used again is another process. */
 function processIdentity(pid: number | undefined): string | undefined {
   if (pid === undefined) return undefined;
@@ -900,7 +792,7 @@ function processIdentity(pid: number | undefined): string | undefined {
     return String(pid);
   }
 }
-const pausedAt = (run: Run, read: { inFlight?: boolean } = {}): string | undefined => (raisedSince(run, read) ? undefined : refusedAt(run, read));
+// pausedAt moves to run-view.ts (the run's served view), imported above.
 /** Whether the run waits on its person: a tool call parked for its owner's approval, a pause at its cap, or a question
  *  (ask_person) its turn ended on. Read from the run itself, so a message in flight (which reads working) hides none. */
 const waitsOnPerson = (run: Run): boolean => {
@@ -911,9 +803,7 @@ const waitsOnPerson = (run: Run): boolean => {
 };
 /** The refusal of a message that may not answer a person, as the door's WAITING is read: a trigger's firing is skipped. */
 const waitingRefusal = () => new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
-/** Raised at the pause it stands at, and that raise's follow-up still to go (continuationOf): the run goes on without a
- *  person, once the follow-up opens its next process (resumeRaised). */
-const raisedToGo = (run: Run): boolean => raisedSince(run) && continuationOf(run) !== undefined;
+// raisedToGo moves to run-view.ts (the run's served view), imported above.
 /** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
 export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
 
@@ -944,41 +834,13 @@ async function untilDeadline(work: Promise<unknown> | undefined, deadline: numbe
   clearTimeout(timer);
 }
 
-/** A run's status and state, by the contract's table. */
+/** A run's status and state, by the contract's table (run-view.ts statusOf). The table is read over the run's rows, its
+ *  turns and its store entries; the file-backed facts (a workflow paused at its cap or in its process, the browser ask)
+ *  this server reads from the run's directory and passes in. The store-backed view builds the same facts from the run's
+ *  row and journal, so the status a person or a model sees is the same. The facts are thunks, read only where the table
+ *  reaches them, so the hot path (an ended or stopped run) touches no file, as it did when the reads lived here. */
 export function statusOf(run: Run): { status: Status; state: State } {
-  if (run.outcome) return { status: run.outcome, state: "idle" };
-  if (run.finishing) return { status: run.finishing, state: "idle" };
-  // A paused workflow run finishes what it has in flight and starts nothing new until it is resumed (pause.ts). A held run
-  // read without its directory (a view built for a count) has no mark to read.
-  // One paused at its cap waits for a raise (budget.ts): input_required and waiting, with or without its process.
-  // Raised, it waits for a place to open again in (finishRaise): queued, as a run not yet started is.
-  if (run.kind === "workflow" && run.placeWait && !run.cancel) return { status: "queued", state: "working" };
-  if (run.kind === "workflow") return budgetWaiting(run) ? { status: "input_required", state: "waiting" } : run.dir && pausedIn(run.dir) ? { status: "paused", state: "idle" } : { status: run.working ? "working" : "queued", state: "working" };
-  const users = usersOf(run.rows);
-  if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
-  // No rows is a run not shown yet (adopted, before its first snapshot), whatever an old stop says. Rows with no
-  // message of the person's are a compaction's (it shows its summary), which can summarize every message of a stop.
-  if (!run.rows.length) return { status: "queued", state: "working" };
-  if (stopped(run)) return { status: "input_required", state: "idle" };
-  if (!users) return { status: "queued", state: "working" };
-  // A tool call parked for approval (tool-gate.ts) waits for the person; once answered, its process acts on it.
-  if (run.kind === "agentic" && run.submitted === 0 && !run.working) {
-    if (waitingApproval(run)) return { status: "input_required", state: "waiting" };
-    if (actingOn(run)) return { status: "working", state: "working" };
-  }
-  // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
-  // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
-  if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
-  // Paused at its cap: it waits for the cap to be raised. Raised, it is queued while the raise's follow-up is still to go
-  // (raisedToGo: from the moment the raise is taken, through its paused process's let-go and the follow-up's tries), since
-  // nothing waits on a person; for a message only if that follow-up will not go.
-  if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : raisedToGo(run) ? { status: "queued", state: "working" } : { status: "input_required", state: "idle" };
-  // Its agent asked for the person in its browser (browser-person.ts): its turn is still open, the tool call waiting for
-  // the hand-back, and the run waits on the person until they answer or the ask expires.
-  if (browserAsk(run)) return { status: "input_required", state: "waiting" };
-  if (run.working) return { status: "working", state: "working" };
-  if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
-  return { status: "working", state: "idle" };
+  return statusOfView(run, { budgetWaiting: () => budgetWaiting(run), paused: () => !!run.dir && pausedIn(run.dir), browserAsk: () => browserAsk(run) });
 }
 
 /** A run's first message's origin as its serve.json keeps it. A run with a trigger (`trigger`, read from the same file)
@@ -4308,7 +4170,7 @@ export class Runs {
       // Cut as its rows and answer are (shown): an error can quote what the run said, or a process's last line.
       error: status === "failed" ? this.servedRunError(run, run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : this.servedReview(run, reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt)),
-      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? workflowBudgetPending(run) ?? browserPending(run, this.redactor(run)) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? workflowBudgetPending(run) ?? browserPending(browserAsk(run), this.redactor(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       // How its cap prices a request (cap.ts CapMode): its own, else expected; null with no cap.
       cap_mode: run.meta.max_cost_usd === undefined ? null : (run.meta.cap_mode ?? "expected"),
