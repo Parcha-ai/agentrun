@@ -1447,7 +1447,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
-    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...warnings] };
+    // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
+    const unpinned: InputIssue[] = made.unpinned.map(({ tool, parameters: named }) => ({ field: `pins.${tool}`, reason: NOT_SET_UP, message: `${tool}'s arguments are fixed by ${named.map((one) => `the ${one} parameter`).join(" and ")}, which was not given, so the agent was made with ${tool} set to deny: it can't call it at all. Apply again with ${named.join(" and ")} set to let it.` }));
+    return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...kept, ...unpinned, ...warnings] };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's `{content: string}`,
