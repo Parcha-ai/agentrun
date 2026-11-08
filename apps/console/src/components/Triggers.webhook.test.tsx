@@ -29,7 +29,8 @@ const AGENTS = [{ agent_id: "triage", kind: "agentic", definition: { name: "Tria
 type Call = { method: string; path: string; body: unknown; key: string | null };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-function server({ triggers = [NIGHTLY, HOOK], create }: { triggers?: Trigger[]; create?: (call: Call) => Response } = {}) {
+// `held`: the new secret's answer waits for it (a rotation still out).
+function server({ triggers = [NIGHTLY, HOOK], create, held }: { triggers?: Trigger[]; create?: (call: Call) => Response; held?: Promise<void> } = {}) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, key: new Headers(init?.headers).get("idempotency-key") };
@@ -37,11 +38,12 @@ function server({ triggers = [NIGHTLY, HOOK], create }: { triggers?: Trigger[]; 
     if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
     if (call.path === "/v2/triggers" && call.method === "POST") return create ? create(call) : json(201, { ...HOOK, ...(call.body as object), id: "trg_new", secret: SECRET });
-    const m = /^\/v2\/triggers\/([^/]+)(\/firings|\/secret)?$/.exec(call.path);
+    const m = /^\/v2\/triggers\/([^/]+)(\/firings|\/secret|\/fire)?$/.exec(call.path);
     const t = m && triggers.find((x) => x.id === decodeURIComponent(m[1]));
     if (m && !t) return json(404, { error: { code: "not_found", message: "no trigger", retryable: false } });
     if (m?.[2] === "/firings") return json(200, { firings: [fired({})] });
-    if (m?.[2] === "/secret") return json(200, { secret: "CANARY-VALUE-0b2d4e6f" });
+    if (m?.[2] === "/secret") { await held; return json(200, { secret: "CANARY-VALUE-0b2d4e6f" }); }
+    if (m?.[2] === "/fire") return json(201, fired({ key: "fir_2", by: "manual" }));
     if (m && call.method === "PATCH") { Object.assign(t!, call.body); return json(200, t); }
     if (m && call.method === "DELETE") return new Response(null, { status: 204 });
     if (m) return json(200, t);
@@ -153,5 +155,45 @@ describe("Triggers: schedules and webhooks", () => {
     await t.click(/^Yes, delete$/);
     expect(s.calls.some((c) => c.method === "DELETE" && c.path === "/v2/triggers/trg_w")).toBe(true);
     expect(t.went).toContain("#/triggers");
+  });
+
+  it("one rotation at a time: a Run now that ends while a rotation is out leaves Rotate secret off until the new secret is in", async () => {
+    let release!: () => void;
+    const s = server({ held: new Promise<void>((r) => { release = r; }) });
+    const t = await open(s.v2, { trigger: "trg_w" });
+    await t.click(/^Rotate secret$/);
+    await t.click(/^Yes, make a new one$/);
+    await t.click(/^Run now$/);
+    expect(s.calls.some((c) => c.path === "/v2/triggers/trg_w/fire")).toBe(true);
+    expect(t.button(/^Rotate secret$/)!.disabled).toBe(true);
+    await act(async () => { release(); });
+    await t.settle();
+    expect(s.calls.filter((c) => c.path === "/v2/triggers/trg_w/secret")).toHaveLength(1);
+    expect(t.text()).toContain("CANARY-VALUE-0b2d4e6f");
+    expect(t.button(/^Rotate secret$/)!.disabled).toBe(false);
+  });
+
+  it("a create sent again unchanged keeps its Idempotency-Key; an edited one gets a new key", async () => {
+    const s = server({ create: () => json(503, { error: { code: "unavailable", message: "Try again.", retryable: true } }) });
+    const t = await open(s.v2, { trigger: null, kind: "webhook" });
+    await t.set("name", "on deploy");
+    await t.set("agent", "triage");
+    await t.set("content", "Check the deploy.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create webhook$/);
+    await t.click(/^Create webhook$/);
+    await t.set("name", "on release");
+    await t.click(/^Create webhook$/);
+    const keys = s.calls.filter((c) => c.method === "POST" && c.path === "/v2/triggers").map((c) => c.key);
+    expect(keys).toHaveLength(3);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it("with no clipboard (plain http on another host), Copy says to select the text instead of failing silently", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    const t = await open(server().v2, { trigger: "trg_w" });
+    await t.click(/^Copy URL$/);
+    expect(t.text()).toContain("Select it and copy it");
   });
 });
