@@ -16,12 +16,15 @@ import type { Storage } from "@earendil-works/pi-durable";
 export type RunState = "queued" | "running" | "parked" | "ended" | "stopped" | "failed";
 export const FINAL_STATES: readonly RunState[] = ["ended", "stopped", "failed"];
 
-/** A runner's hold on a run: the epoch every write it makes for the run carries, until `until` (ms) unless renewed. */
+/** A runner's hold on a run: the epoch every write it makes for the run carries, until `until` (ms) unless renewed. `from`:
+ *  the run's state before this claim (queued; parked: woken by a command or its wake_at; running: released, or its last
+ *  claim lapsed). */
 export interface Claim {
   readonly runId: string;
   readonly runner: string;
   readonly epoch: number;
   readonly until: number;
+  readonly from: RunState;
 }
 
 /** A command the server wrote for a run (stop, steer, approve, deny, raise): one row, read by the run's runner in id order
@@ -34,6 +37,8 @@ export interface Command {
   readonly createdAt: number;
   readonly takenAt: number | null;
   readonly refused: string | null;
+  /** The resumes it woke that failed (retry), across runners and restarts. */
+  readonly tries: number;
 }
 
 export interface AgentRow {
@@ -80,6 +85,8 @@ export interface RunRow {
   readonly runner: string | null;
   readonly claimedUntil: number | null;
   readonly wakeAt: number | null;
+  /** A parked run's backoff after a failed resume: its untaken commands wait for it, a stop and its wake_at do not. */
+  readonly backoffUntil: number | null;
   readonly costUsd: number | null;
   readonly metrics: unknown;
   readonly summary: string | null;
@@ -208,6 +215,9 @@ export interface Runs {
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
   claimable(options?: { limit?: number }): Promise<string[]>;
+  /** Claims up to `k` claimable runs for `runner`, oldest first, in one transaction: each at its own epoch + 1, with its
+   *  `from`. A runner fills its free loops with one call. */
+  claimMany(runner: string, k: number, options?: { leaseMs?: number }): Promise<Claim[]>;
   /** Changes the run's row under `claim`, and writes `also` in the same commit: refused (Fenced) and nothing written when
    *  the run's epoch is not the claim's. */
   update(claim: Claim, patch: RunPatch, also?: readonly AlsoRow[]): Promise<RunRow>;
@@ -227,9 +237,9 @@ export interface Store {
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
   /** Moves the claim's end to now + `leaseMs`. Fenced when the run's epoch moved on. */
   renew(claim: Claim, options?: { leaseMs?: number }): Promise<Claim>;
-  /** Gives the run back (no runner, no claimed_until; `state` when given, `wakeAt` or none), in a durable commit (as
-   *  flush). Fenced when the epoch moved on. */
-  release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null }): Promise<void>;
+  /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
+   *  durable commit (as flush). Fenced when the epoch moved on. */
+  release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
@@ -243,6 +253,9 @@ export interface Store {
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;
+  /** Counts a failed resume on the untaken command that woke the run, under the claim, and answers its tries; the command
+   *  stays untaken. Fenced on a stale claim; StoreConstraint when the command is taken or not the run's. */
+  retry(claim: Claim, commandId: number): Promise<number>;
   /** Waits for every write asked for before it, then closes (and lets the owner lock go). A call after it is refused
    *  (StoreClosed). */
   close(): Promise<void>;

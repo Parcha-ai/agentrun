@@ -52,6 +52,7 @@ export const STORE_DDL: readonly string[] = [
     runner TEXT,
     claimed_until INTEGER,
     wake_at INTEGER,
+    backoff_until INTEGER,
     cost_usd REAL,
     ${json("metrics", true)},
     summary TEXT,
@@ -70,7 +71,8 @@ export const STORE_DDL: readonly string[] = [
     ${json("body")},
     created_at INTEGER NOT NULL,
     taken_at INTEGER,
-    refused TEXT
+    refused TEXT,
+    tries INTEGER NOT NULL DEFAULT 0
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS commands_by_run ON commands (run_id, id)`,
   `CREATE INDEX IF NOT EXISTS commands_untaken ON commands (run_id) WHERE taken_at IS NULL`,

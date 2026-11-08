@@ -8,14 +8,14 @@ import type { SqliteExecutor, SqliteValue } from "./connection.js";
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
-  wake_at: number | null; cost_usd: number | null; metrics: string | null; summary: string | null; started_at: number; ended_at: number | null;
+  wake_at: number | null; backoff_until: number | null; cost_usd: number | null; metrics: string | null; summary: string | null; started_at: number; ended_at: number | null;
 };
 
-export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, cost_usd, metrics, summary, started_at, ended_at";
+export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, metrics, summary, started_at, ended_at";
 
 export const runOf = (r: RunRecord): RunRow => ({
   id: r.id, agentId: r.agent_id, revisionId: r.revision_id, state: r.state, epoch: r.epoch, runner: r.runner, claimedUntil: r.claimed_until,
-  wakeAt: r.wake_at, costUsd: r.cost_usd, metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary, startedAt: r.started_at,
+  wakeAt: r.wake_at, backoffUntil: r.backoff_until, costUsd: r.cost_usd, metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary, startedAt: r.started_at,
   endedAt: r.ended_at,
 });
 

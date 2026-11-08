@@ -37,25 +37,32 @@ export type SqliteStoreOptions = (
 
 type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null };
 type RevisionRecord = { id: string; agent_id: string; kind: string; body: string; package: string | null; created_at: number };
-type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null };
+type CommandRecord = { id: number; run_id: string; kind: string; body: string; created_at: number; taken_at: number | null; refused: string | null; tries: number };
 type TriggerRecord = { id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null };
 
 const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at";
 const REVISION_COLUMNS = "id, agent_id, kind, body, package, created_at";
-const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused";
+const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
-/** The runs a runner may claim, at a time bound twice (`?`, `?`): queued; running with no runner (released) or its claim
- *  run out; parked with its wake_at passed or an untaken command. */
+/** The runs a runner may claim, at a time bound three times (CLAIMABLE_AT): queued; running with no runner (released) or
+ *  its claim run out; parked with its wake_at passed, an untaken stop, or an untaken command once its backoff (a failed
+ *  resume's) has passed. */
 const CLAIMABLE = `(state = 'queued'
   OR (state = 'running' AND (runner IS NULL OR claimed_until < ?))
-  OR (state = 'parked' AND ((wake_at IS NOT NULL AND wake_at <= ?) OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL))))`;
+  OR (state = 'parked' AND (
+    (wake_at IS NOT NULL AND wake_at <= ?)
+    OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'stop')
+    OR ((backoff_until IS NULL OR backoff_until <= ?) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL)))))`;
+const CLAIMABLE_AT = (at: number): number[] => [at, at, at];
+/** What a claim sets: the next epoch, the runner and its lease, running, no backoff. */
+const CLAIM_SET = "epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running', backoff_until = NULL";
 
 const agentOf = (r: AgentRecord): AgentRow => ({ id: r.id, name: r.name, description: r.description, currentRevision: r.current_revision, createdAt: r.created_at, archivedAt: r.archived_at });
 const revisionOf = (r: RevisionRecord): RevisionRow => ({
   id: r.id, agentId: r.agent_id, kind: r.kind, body: JSON.parse(r.body), package: r.package === null ? null : (JSON.parse(r.package) as TemplatePackage), createdAt: r.created_at,
 });
-const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused });
+const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, kind: r.kind, body: JSON.parse(r.body), createdAt: r.created_at, takenAt: r.taken_at, refused: r.refused, tries: r.tries });
 const triggerOf = (r: TriggerRecord): TriggerRow => ({
   id: r.id, agentId: r.agent_id, name: r.name, enabled: r.enabled === 1, source: JSON.parse(r.source), target: JSON.parse(r.target), nextAt: r.next_at, lastRunId: r.last_run_id,
 });
@@ -253,22 +260,37 @@ class SqliteStore implements Store {
       claimable: async ({ limit } = {}) => {
         const at = now();
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
-        const rows = await db.all<{ id: string }>(`SELECT id FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id${bounded ? " LIMIT ?" : ""}`, at, at, ...(bounded ? [limit] : []));
+        const rows = await db.all<{ id: string }>(`SELECT id FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id${bounded ? " LIMIT ?" : ""}`, ...CLAIMABLE_AT(at), ...(bounded ? [limit] : []));
         return rows.map((row) => row.id);
       },
+      claimMany: (runner, k, { leaseMs = DEFAULT_LEASE_MS } = {}) => this.#claimRuns(runner, leaseMs, { k }),
       update: async (claim: Claim, patch: RunPatch, also: readonly AlsoRow[] = []): Promise<RunRow> => db.transaction((tx) => applyRunPatch(tx, claim, patch, also, now())),
     };
   }
 
   async claim(runId: string, runner: string, { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<Claim | null> {
+    return (await this.#claimRuns(runner, leaseMs, { runId }))[0] ?? null;
+  }
+
+  /** Claims, in one transaction, the run `runId` when it is claimable, or up to `k` claimable runs oldest first: each read
+   *  with its state (the claim's `from`) and moved to its next epoch under the same BEGIN IMMEDIATE, so no other claimer
+   *  takes it between. */
+  async #claimRuns(runner: string, leaseMs: number, pick: { runId: string } | { k: number }): Promise<Claim[]> {
+    if ("k" in pick && !(Number.isSafeInteger(pick.k) && pick.k > 0)) return [];
     const at = this.#now();
     const until = at + leaseMs;
-    const [result] = await this.#db.write([{
-      sql: `UPDATE runs SET epoch = epoch + 1, runner = ?, claimed_until = ?, state = 'running' WHERE id = ? AND ${CLAIMABLE} RETURNING epoch`,
-      params: [runner, until, runId, at, at],
-    }]);
-    const row = result!.rows[0] as { epoch: number } | undefined;
-    return row ? { runId, runner, epoch: row.epoch, until } : null;
+    return this.#db.transaction(async (tx) => {
+      const picked = "runId" in pick
+        ? await tx.all<{ id: string; state: RunState }>(`SELECT id, state FROM runs WHERE id = ? AND ${CLAIMABLE}`, pick.runId, ...CLAIMABLE_AT(at))
+        : await tx.all<{ id: string; state: RunState }>(`SELECT id, state FROM runs WHERE ${CLAIMABLE} ORDER BY started_at, id LIMIT ?`, ...CLAIMABLE_AT(at), pick.k);
+      if (picked.length === 0) return [];
+      const rows = await tx.all<{ id: string; epoch: number }>(
+        `UPDATE runs SET ${CLAIM_SET} WHERE id IN (${picked.map(() => "?").join(", ")}) RETURNING id, epoch`,
+        runner, until, ...picked.map((row) => row.id),
+      );
+      const epochs = new Map(rows.map((row) => [row.id, row.epoch]));
+      return picked.map(({ id, state }) => ({ runId: id, runner, epoch: epochs.get(id)!, until, from: state }));
+    });
   }
 
   async renew(claim: Claim, { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<Claim> {
@@ -277,12 +299,12 @@ class SqliteStore implements Store {
     return { ...claim, until };
   }
 
-  async release(claim: Claim, { state, wakeAt = null }: { state?: RunState; wakeAt?: number | null } = {}): Promise<void> {
+  async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
     const ending = state !== undefined && FINAL_STATES.includes(state);
     await this.#db.write([fenced(
       claim,
-      `UPDATE runs SET runner = NULL, claimed_until = NULL, wake_at = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
-      [wakeAt, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
+      `UPDATE runs SET runner = NULL, claimed_until = NULL, wake_at = ?, backoff_until = ?, state = coalesce(?, state)${ending ? ", ended_at = coalesce(ended_at, ?)" : ""} WHERE id = ? AND epoch = ? AND runner = ?`,
+      [wakeAt, backoffUntil, state ?? null, ...(ending ? [this.#now()] : []), claim.runId, claim.epoch, claim.runner],
     )], { full: true });
   }
 
@@ -312,6 +334,16 @@ class SqliteStore implements Store {
       fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]),
       { sql: "UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", params: [this.#now(), outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId] },
     ]);
+  }
+
+  async retry(claim: Claim, commandId: number): Promise<number> {
+    const [, counted] = await this.#db.write([
+      fenced(claim, "UPDATE runs SET epoch = epoch WHERE id = ? AND epoch = ?", [claim.runId, claim.epoch]),
+      { sql: "UPDATE commands SET tries = tries + 1 WHERE id = ? AND run_id = ? AND taken_at IS NULL RETURNING tries", params: [commandId, claim.runId] },
+    ]);
+    const row = counted!.rows[0] as { tries: number } | undefined;
+    if (!row) throw new StoreConstraint(`run ${claim.runId}: command ${commandId} is taken, or not the run's: no try to count`);
+    return row.tries;
   }
 
   close(): Promise<void> {
