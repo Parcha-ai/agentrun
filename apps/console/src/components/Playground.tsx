@@ -77,7 +77,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
   const attachments = useAttachments({ upload, remove: removeUpload, limits, frozen: sending });
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds });
+  // The cap box is an agentic agent's: a cap typed for one never rides, unseen, on a workflow agent's request after a switch.
+  const built = startBody(kind, { text, revision, effort, maxCostUsd: kind === "agentic" ? cap : undefined, fileIds: attachments.fileIds });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
