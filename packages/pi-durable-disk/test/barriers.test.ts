@@ -2,7 +2,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, posix, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
@@ -171,8 +171,14 @@ const MATCHED = new RegExp([CALL.source, OPENS.source, EFFECTFUL.source].join("|
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
 const inRepo = (file: string): boolean => existsSync(join(REPO, file));
 
+/** The relative modules a file imports or re-exports (a type import too), resolved from its own directory. */
+const IMPORTS = /\b(?:import|export)\b[^;'"]*?\bfrom\s*["'](\.[^"']*)["']|\bimport\s*\(\s*["'](\.[^"']*)["']\s*\)/g;
+function importsOf(file: string, text: string): string[] {
+  return [...text.matchAll(IMPORTS)].map((match) => posix.normalize(posix.join(posix.dirname(file), match[1] ?? match[2]!)));
+}
+
 function violations(table: Table, journal: Synchronous, given: ReadonlyMap<string, string>, exists: (file: string) => boolean = inRepo): string[] {
-  const vias = Object.values(table.barriers).flatMap((row) => (row.via ? [row.via.text] : []));
+  const vias = Object.values(table.barriers).flatMap((row) => [...(row.via ? [row.via.text] : []), ...(row.call ? [row.call] : [])]);
   const sources = new Map([...given].map(([file, text]) => [file, MATCHED.test(text) || vias.some((via) => text.includes(via)) ? withoutComments(text, file) : text]));
   const out: string[] = [];
   const called = new Map<string, Set<string>>();
@@ -193,15 +199,17 @@ function violations(table: Table, journal: Synchronous, given: ReadonlyMap<strin
   }
   for (const [name, row] of Object.entries(table.barriers)) {
     if (!(row.store in table.stores)) out.push(`${name}: store ${row.store} is not listed`);
-    if (row.status === "active" && !called.has(name)) out.push(`${name}: active, but ${row.site} has no syncNow(…, BARRIER.${name})`);
+    if (row.status === "active" && row.call !== undefined) {
+      if (!(sources.get(row.site) ?? "").includes(row.call)) out.push(`${name}: active, but ${row.site} has no ${JSON.stringify(row.call)}`);
+    } else if (row.status === "active" && !called.has(name)) out.push(`${name}: active, but ${row.site} has no syncNow(…, BARRIER.${name})`);
     if (row.status === "active" && row.via && !(sources.get(row.via.file) ?? "").includes(row.via.text)) out.push(`${name}: ${row.via.file} no longer has ${JSON.stringify(row.via.text)}`);
     if (row.status === "planned" && row.store === "run-journal" && journal === "NORMAL") out.push(`${name}: still planned, and the run journal is NORMAL: it may not go NORMAL before every barrier on it is active`);
     if (row.status === "active") {
-      const proof = (row as { proof?: string | null }).proof;
+      const proof = (row as { proof?: string | readonly string[] | null }).proof;
       if (proof === undefined) out.push(`${name}: active, and names no box-loss proof (proof: its end-to-end test file, or null while it has none)`);
       else if (proof === null) {
         if (journal === "NORMAL") out.push(`${name}: has no box-loss proof, and the run journal is NORMAL`);
-      } else if (!exists(proof)) out.push(`${name}: its proof ${proof} does not exist`);
+      } else for (const file of typeof proof === "string" ? [proof] : proof) if (!exists(file)) out.push(`${name}: its proof ${file} does not exist`);
     }
   }
   for (const [name, pre] of Object.entries(table.preconditions ?? {})) if (!pre.done && journal === "NORMAL") out.push(`${name}: not done, and the run journal is NORMAL: ${pre.what}`);
@@ -212,6 +220,16 @@ function violations(table: Table, journal: Synchronous, given: ReadonlyMap<strin
     const level = store.synchronous === "journal" ? journal : store.synchronous;
     if (store.effects === "none") {
       for (const file of store.opens) if (EFFECTFUL.test(sources.get(file) ?? "")) out.push(`${id}: listed with no effects, but ${file} runs a tool, a model or a barrier on it`);
+      // Its interface's users: a file outside the interface that imports from it and runs a tool or a model.
+      const face = store.interface;
+      if (face !== undefined) {
+        for (const [file, text] of sources) {
+          if (file.startsWith(face) || store.opens.includes(file)) continue;
+          if (importsOf(file, text).some((module) => module.startsWith(face)) && EFFECTFUL.test(text)) {
+            out.push(`${id}: listed with no effects, but ${file} runs a tool, a model or a barrier on it through its interface`);
+          }
+        }
+      }
     } else if (level === "NORMAL") {
       const chokepoints = Object.entries(table.barriers).filter(([, row]) => row.store === id && row.status === "active");
       if (chokepoints.length === 0) out.push(`${id}: NORMAL with effects, and no active barrier`);

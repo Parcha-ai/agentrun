@@ -21,17 +21,22 @@ export type BarrierStatus = "active" | "planned";
 export interface BarrierRow {
   /** Where the effect is written. */
   readonly store: StoreId;
-  /** The file, under packages/, that calls `syncNow()` for it. */
+  /** The file, under packages/, that calls `syncNow()` for it (or `call`). */
   readonly site: string;
   /** For a chokepoint whose sync is reached through a hook: the file and text that call it. */
   readonly via?: { readonly file: string; readonly text: string };
+  /** For a store whose sync is not `syncNow()` (the one store's `flush()`, behind its Store interface): the exact code
+   *  line in `site` that is the barrier, checked as code only (never in a comment), in place of a `syncNow(…)` call. */
+  readonly call?: string;
   readonly status: BarrierStatus;
   /**
    * An active barrier's proof: its box-loss end-to-end test, the one file (relative to the repository) that loses a box
-   * while the effect it guards is in flight and shows the effect is not sent again. `null` while it has none: the run
+   * while the effect it guards is in flight and shows the effect is not sent again; or a list of files that together are
+   * the proof, the box-loss test among them (one shows the sync holds through a box loss, the others that the site syncs
+   * before the effect and that the effect then runs once). Each file must exist. `null` while it has none: the run
    * journal may not go NORMAL then (NORMAL_PRECONDITIONS.barrierProofs).
    */
-  readonly proof?: string | null;
+  readonly proof?: string | readonly string[] | null;
   readonly why: string;
 }
 
@@ -123,6 +128,10 @@ export interface StoreRow {
   readonly synchronous: "journal" | "FULL" | "NORMAL";
   /** `barriers`: its side effects pass the barriers whose `store` is this one. `none`: no tool and no model runs on it. */
   readonly effects: "barriers" | "none";
+  /** The source directory, under packages/, of the interface others reach it through (the one store's Store): a file
+   *  outside it that imports from it and runs a tool or a model is the store's user, and counts as `opens` does for the
+   *  effects check. */
+  readonly interface?: string;
   readonly what: string;
 }
 
