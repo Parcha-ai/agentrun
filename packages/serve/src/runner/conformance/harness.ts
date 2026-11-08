@@ -526,8 +526,10 @@ const CASES: readonly Case[] = [
       assert.deepEqual(answers, [{ callId, approved: false, note: "not on a Friday" }], "the answer keeps the note");
       const said = messages.filter((message) => message.role === "model").map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
-      // The harness may frame a refusal its own way (pi: a blocked call's error): the kernel's words and the reason are in it.
-      assert.ok(said[0]!.includes("a person denied asked. Reason: not on a Friday"), `the model read the person's reason: ${JSON.stringify(said)}`);
+      // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
+      // refusal its own way (pi: a blocked call's error) around them.
+      const refused = "The user denied this asked call. It was not run: nothing was sent and nothing was charged. Reason: not on a Friday";
+      assert.ok(said[0]!.includes(refused), `the model read main's refusal with the person's reason: ${JSON.stringify(said)}`);
     },
   },
   {
