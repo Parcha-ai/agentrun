@@ -3,7 +3,7 @@
 // runner/journal-kinds.ts. A run's stop reason is on its run row (its end commit's summary), never in the journal.
 import type { Context } from "@earendil-works/chord";
 import type { ConversationId, ConversationRecord, EntryRecord } from "@earendil-works/pi-durable";
-import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole } from "./journal-kinds.js";
+import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
 import type { Journal } from "./loop-contract.js";
 
 export interface CallRecord {
@@ -48,8 +48,15 @@ export async function journalEntries(journal: Journal, context: Context): Promis
 const entryNumber = (entry: EntryRecord): number => Number(entry.id);
 const dataOf = <T>(entry: EntryRecord): T => entry.data as unknown as T;
 
+/** The run's own record: every entry but those inside a CLI session's conversation (its resume log), whatever their kind. */
+export function recordOf(entries: readonly EntryRecord[]): EntryRecord[] {
+  const sessions = new Set(entries.filter((entry) => entry.kind === KINDS.sessionKey).map((entry) => String(dataOf<SessionKeyData>(entry).conversation)));
+  return entries.filter((entry) => !sessions.has(String(entry.conversationId)));
+}
+
 /** The run's tool calls, in the order they started. */
-export function callsOf(entries: readonly EntryRecord[]): CallRecord[] {
+export function callsOf(all: readonly EntryRecord[]): CallRecord[] {
+  const entries = recordOf(all);
   const ends = new Map<string, EntryRecord>();
   for (const entry of entries) if (entry.kind === KINDS.callEnd) ends.set(dataOf<CallEndData>(entry).callId, entry);
   return entries
@@ -69,8 +76,8 @@ export function callsOf(entries: readonly EntryRecord[]): CallRecord[] {
 }
 
 /** The run's messages, oldest first. */
-export function messagesOf(entries: readonly EntryRecord[]): MessageRecord[] {
-  return entries.filter((entry) => entry.kind === KINDS.message).map((entry) => ({ ...dataOf<MessageData>(entry), entry: entryNumber(entry) }));
+export function messagesOf(all: readonly EntryRecord[]): MessageRecord[] {
+  return recordOf(all).filter((entry) => entry.kind === KINDS.message).map((entry) => ({ ...dataOf<MessageData>(entry), entry: entryNumber(entry) }));
 }
 
 export async function calls(journal: Journal, context: Context): Promise<CallRecord[]> {
