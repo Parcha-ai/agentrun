@@ -1,6 +1,6 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--egress <socket>]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
@@ -9,11 +9,16 @@
 //	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
 //	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
 //	                    capability in any set and no_new_privs set, or refuses to start.
+//	                    With --own-network (and --user), for a remote computer whose vendor runs its own agent in it,
+//	                    init, still root, refuses to start while another process holds uid, moves itself into a network
+//	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock and io_uring to
+//	                    every thread: its programs reach their own loopback and nothing else (internal/isolate)
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
 //	computerd probe [--connect <host:port>[/udp]]...
-//	                    print one JSON line: this process's uid and gid, the kernel's release, the addresses that
+//	                    print one JSON line: this process's uid and gid, the kernel's release, the network interfaces
+//	                    it sees (interfaces), the addresses that
 //	                    answered (reached: bytes came back), those that accepted a TCP connection and sent nothing back
 //	                    (accepted), and each target's outcome (results). A TCP target gets a request by its port (443 a
 //	                    TLS ClientHello, 80 an HTTP HEAD, 53 a DNS query, any other an HTTP HEAD), a host:port/udp one
@@ -64,7 +69,7 @@ func main() {
 		}
 		var dropped error
 		if opts.user != nil {
-			dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath())
+			dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), daemon.Isolation{OwnNetwork: opts.ownNetwork})
 		} else {
 			dropped = daemon.Unprivileged()
 		}
@@ -103,7 +108,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--egress <socket>] | stdio | probe [--connect <host:port>[/udp]]... | probe --diagnose | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--connect <host:port>[/udp]]... | probe --diagnose | version")
 	os.Exit(2)
 }
 
@@ -115,11 +120,14 @@ type initOptions struct {
 	user     *account
 	// egress is the egress proxy's socket init relays to; empty is none.
 	egress string
+	// ownNetwork: init, as root, gives itself and its programs a network of their own (daemon.Isolation).
+	ownNetwork bool
 }
 
 const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid> and --egress <socket> may follow, each once"
 const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
 const egressWords = "--egress takes the egress proxy's socket, one absolute path, given once"
+const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (such a computer's network is none)"
 
 // initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>` and `--egress <socket>`,
 // in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum before the deadline, it
@@ -130,6 +138,15 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	var sawDeadline, sawMost, sawUser, sawEgress bool
 	for i := 0; i < len(args); i += 2 {
 		flag := args[i]
+		if flag == "--own-network" {
+			if opts.ownNetwork {
+				logger.Printf("init: %s", ownNetworkWords)
+				return opts, false
+			}
+			opts.ownNetwork = true
+			i-- // a flag with no value
+			continue
+		}
 		if i+1 >= len(args) {
 			switch flag {
 			case "--user":
@@ -187,6 +204,10 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	}
 	if !sawDeadline {
 		logger.Printf("init: %s", deadlineWords)
+		return opts, false
+	}
+	if opts.ownNetwork && (opts.user == nil || opts.egress != "") {
+		logger.Printf("init: %s", ownNetworkWords)
 		return opts, false
 	}
 	if sawMost && most.Before(deadline) {

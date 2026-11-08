@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 )
 
 const (
@@ -29,20 +31,54 @@ const (
 // (Daytona: the default snapshot's setpriv is BusyBox's). As root it makes HOME and the socket's directory
 // uid:gid's alone (0700), then drops its privileges as Unprivileged does, becoming uid:gid with no supplementary groups
 // on the way. Root included: a uid of 0 keeps every capability through the uid change, so the sets are emptied as well.
-// It must run before Init.
-func Become(uid, gid int, home, socket string) error {
+// It must run before Init. With isolation, see Isolation.
+func Become(uid, gid int, home, socket string, isolation Isolation) error {
 	if !filepath.IsAbs(home) {
 		return fmt.Errorf("--user needs HOME to be an absolute path, the computer's user's own; it is %q", home)
 	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("--user needs init to start as root, to give HOME and %s to uid %d and then become it; it runs as uid %d, so the provider gives the user itself (Docker: --user)", filepath.Dir(socket), uid, os.Geteuid())
 	}
+	if isolation.OwnNetwork {
+		if err := isolate.RefuseStrangers(procRoot, uid, os.Getpid()); err != nil {
+			return err
+		}
+	}
 	for _, dir := range []string{home, filepath.Dir(socket)} {
 		if err := prepareDir(dir, uid, gid); err != nil {
 			return err
 		}
 	}
-	return dropPrivileges(func() error {
+	if isolation.OwnNetwork {
+		if err := isolate.OwnNetwork(); err != nil {
+			return err
+		}
+	}
+	if err := dropPrivileges(becomeUser(uid, gid)); err != nil {
+		return err
+	}
+	if isolation.OwnNetwork {
+		return isolate.DenySockets()
+	}
+	return nil
+}
+
+// Isolation is what init, still root, does beyond the drop, for a remote computer whose vendor runs its own agent in it
+// (Daytona's toolbox, E2B's envd), one that runs commands as root or with sudo for whoever reaches it. With OwnNetwork,
+// Become refuses while another process holds uid (isolate.RefuseStrangers), moves init into a network namespace of
+// its own whose loopback alone is up (isolate.OwnNetwork), drops, and then refuses vsock and io_uring to every thread
+// (isolate.DenySockets): init and every program it starts reach their own loopback and nothing else, and a failure of
+// any step refuses to start.
+type Isolation struct {
+	OwnNetwork bool
+}
+
+// procRoot is the /proc RefuseStrangers reads.
+const procRoot = "/proc"
+
+// becomeUser is the uid change Become makes inside dropPrivileges: no supplementary groups, then gid, then uid.
+func becomeUser(uid, gid int) func() error {
+	return func() error {
 		if err := syscall.Setgroups([]int{}); err != nil {
 			return fmt.Errorf("cannot drop the supplementary groups: %w", err)
 		}
@@ -56,7 +92,7 @@ func Become(uid, gid int, home, socket string) error {
 			return fmt.Errorf("asked to become %d:%d, init is %d:%d (effective %d:%d)", uid, gid, os.Getuid(), os.Getgid(), os.Geteuid(), os.Getegid())
 		}
 		return nil
-	})
+	}
 }
 
 // Unprivileged is init's start as the user the provider gave it (Docker: --user). It leaves every thread of init, and so

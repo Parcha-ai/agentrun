@@ -72,14 +72,17 @@ type Target struct {
 }
 
 // Result is the probe's report, one JSON line. Reached holds the targets that answered, Accepted those that accepted
-// a connection and sent nothing back, each in the order given; Results has every target, refused ones too.
+// a connection and sent nothing back, each in the order given; Results has every target, refused ones too. Interfaces
+// names the network interfaces the probe's network namespace holds: ["lo"] alone in a computer whose programs have a
+// network of their own (init --own-network); null when they cannot be listed.
 type Result struct {
-	UID      int      `json:"uid"`
-	GID      int      `json:"gid"`
-	Kernel   string   `json:"kernel"`
-	Reached  []string `json:"reached"`
-	Accepted []string `json:"accepted"`
-	Results  []Target `json:"results"`
+	UID        int      `json:"uid"`
+	GID        int      `json:"gid"`
+	Kernel     string   `json:"kernel"`
+	Interfaces []string `json:"interfaces"`
+	Reached    []string `json:"reached"`
+	Accepted   []string `json:"accepted"`
+	Results    []Target `json:"results"`
 }
 
 // ProtocolOf is the request a target gets: a UDP target dns (a DNS query, the request a UDP server most commonly
@@ -119,7 +122,7 @@ func Run(targets []string, bounds Bounds) Result {
 		}()
 	}
 	wg.Wait()
-	result := Result{UID: os.Getuid(), GID: os.Getgid(), Kernel: kernel(), Reached: []string{}, Accepted: []string{}, Results: results}
+	result := Result{UID: os.Getuid(), GID: os.Getgid(), Kernel: kernel(), Interfaces: interfaces(), Reached: []string{}, Accepted: []string{}, Results: results}
 	for _, one := range results {
 		switch one.Outcome {
 		case "answered":
@@ -364,6 +367,20 @@ func framedDNS(id uint16) func([]byte) (string, int) {
 		what, need := response(read[2:])
 		return what, need + 2
 	}
+}
+
+// interfaces names the network interfaces of the probe's network namespace, in the kernel's order; nil when they
+// cannot be listed.
+func interfaces() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(ifaces))
+	for _, iface := range ifaces {
+		names = append(names, iface.Name)
+	}
+	return names
 }
 
 // kernel is uname's release, or "" when it cannot be read.
