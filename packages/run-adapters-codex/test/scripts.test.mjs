@@ -208,3 +208,14 @@ test("a session written before the host's bound: both records hold the same uncu
   const whole = `charged ${'x'.repeat(130_000)}`;
   assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(whole))), { kind: 'completed', text: whole }, 'both records, the same uncut text');
 });
+
+test("a parked nested call (it waited for a person's approval) is never told as completed: it did not run, and it was not run again", () => {
+  const waiting = "This mcp:fake/add call waits for a person's approval; the run pauses here and continues with the result when they answer.";
+  const parked = { ...nested('e1', 'mcp__fake__add', done(waiting)), parked: true };
+  assert.equal(settle(parked).kind, 'parked', 'its own kind, whatever its record says');
+  assert.equal(settle({ ...nested('e1', 'mcp__fake__add', done(waiting), rolled(waiting)), parked: true }).kind, 'parked', 'the rollout agreeing changes nothing');
+  const text = execRecoveryOutput([parked, nested('e2', 'record', done('recorded'))]);
+  assert.match(text, /1\. mcp__fake__add was waiting for a person's approval and did not run; it was not run again\./);
+  assert.ok(!/1\. mcp__fake__add completed/.test(text) && !/waits for a person's approval/.test(text), text);
+  assert.match(text, /2\. record completed: "recorded"/);
+});

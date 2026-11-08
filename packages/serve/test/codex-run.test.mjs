@@ -3,7 +3,7 @@
 // catalog, and the stand-in, Codex's own process, runs under the run's confinement: setpriv's no_new_privs, as pi's
 // commands do, under the same user.
 import assert from "node:assert/strict";
-import { copyFile, readdir, readFile, readlink } from "node:fs/promises";
+import { readdir, readFile, readlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -11,10 +11,10 @@ import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
 import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
-const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 
 /** serve's gateway, on loopback: each Responses request streamed back as one short answer with its usage, once the
  *  test lets it go. */
@@ -55,7 +55,7 @@ const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(statu
 async function codexServe(t, gw, model = "gpt-test") {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

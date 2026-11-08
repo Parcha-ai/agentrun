@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-decisions
+kind: feature
+---
+A node naming `provider: "parallel"` runs with only an OpenRouter key. With `PARALLEL_API_KEY` it uses Parallel's own API, as before; without it, it runs on Parallel's model through OpenRouter (`parallel/decisions-fast`), on the OpenRouter key the server already reads. The same evidence on both routes: its web citations (OpenRouter's `url_citation` annotations), and its cost is what OpenRouter reports. `workflows.decisions.providers` gives parallel's `route` (`"parallel"` or `"openrouter"`); the mark is `decisions/3`. With neither key, the refusal names both. OpenRouter's Decisions provider now reads any model's `url_citation` annotations as evidence (its capability is `citations`), and books a reported cost only above 0: a $0 report, from a model OpenRouter's catalog prices at 0, is an unknown cost, never $0. Upgrading: a client that validated `workflows.decisions` against `decisions/2` refuses the new `route` field.

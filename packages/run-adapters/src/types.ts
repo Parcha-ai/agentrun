@@ -46,10 +46,11 @@ export interface HostTool {
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
   /** The tool's answer: its text (cut at HOST_RESULT_MAX_CHARS on its way to the harness), and any images it shows (a
-   *  screenshot), which a harness that can show them sends the model with the text. `sessionDir` is the runner's own,
+   *  screenshot), which a harness that can show them sends the model with the text; `parked`: the host parked the call
+   *  for a person's approval, so it did not run, and the text says it waits. `sessionDir` is the runner's own,
    *  when it has one: a tool that runs a node of its own (the delegate) gives its child a private directory the same
    *  way, by the child's key. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -65,6 +66,9 @@ export interface McpTool {
 export interface McpCallResult {
   content: { type: "text"; text: string }[];
   isError?: boolean;
+  /** The host parked the call for a person's approval: it did not run, and the text says it waits. The harness's own
+   *  client never sees this flag (the door sends `content` and `isError`). */
+  parked?: true;
 }
 
 /** A session's remote MCP servers: each one's granted tools, and the call that reaches them through the host, which holds
@@ -99,6 +103,10 @@ export interface SessionWriter {
   /** Resolves once the records are durable, in order. Rejects with `SessionFenced`, writing none of them, once a newer
    *  `open` of the key has resolved. */
   append(records: readonly SessionRecord[]): Promise<void>;
+  /** Make every record appended so far survive a lost box, not only a dead process: the kernel calls it after an
+   *  effect's start and before the effect runs. A writer whose appends are durable already resolves at once. A wrapper
+   *  passes it on (serialWriter): a writer without one is refused at the first effect that needs it. */
+  sync(): Promise<void>;
 }
 
 /** What one session is. */
@@ -129,6 +137,17 @@ export interface ModelRequest {
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
    *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
   outputTokensLeast?: number;
+  /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
+   *  host's own request beside the harness's (`host`). */
+  side?: true;
+  /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
+   *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
+  noted?: true;
+  inputTokensMaxWithoutNote?: number;
+  /** A request the host sent beside the harness's own, on the session's own route (its model proxy, under a side key
+   *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
+   *  requests carry none, and it cannot send one that does: it holds only the session's key. */
+  host?: string;
 }
 
 /** What a paid request cost, once it completed. */
@@ -172,7 +191,15 @@ export interface ModelPort {
   afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
+  /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
+   *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
+   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+  note?(model: string, request?: NoteRequest): string | undefined;
 }
+
+/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
+ *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {
@@ -180,6 +207,9 @@ export interface ModelTicket {
   /** The most output tokens, thinking included, the request may be sent with: what is left of its host's spend cap can
    *  buy. The session's model proxy writes it into the body; absent, the request goes as asked. */
   outputTokensMax?: number;
+  /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
+   *  request goes as its client sent it, and the note waits for another request. */
+  noteDropped?: true;
 }
 
 /** What the host lends a session. */
@@ -241,11 +271,38 @@ export interface AdapterSession {
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;
+  /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
+   *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
+   *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of
+   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. */
+  port?(label: string): SessionPort | undefined;
+}
+
+/** A session's model proxy, as the host reaches it for its own requests beside the harness's (AdapterSession.port). */
+export interface SessionPort {
+  /** The proxy's origin, on the loopback interface with a port of its own (ModelProxy.url). */
+  url: string;
+  /** The side key the request presents, as a bearer token. */
+  key: string;
+  /** The model the session's policy takes (its own id, as the harness sends it). */
+  model: string;
+  /** The API the proxy serves: Anthropic's Messages (claude-agent) or OpenAI's Responses (codex, opencode). */
+  api: "anthropic-messages" | "openai-responses";
 }
 
 export interface AdapterCapabilities {
   /** Whether the adapter can start a session from another's transcript. */
   fork: boolean;
+  /** Its harness's own MCP client, when it has one: it calls `spec.mcp`'s servers at the session proxy's `/mcp/<server>`,
+   *  which the kernel's model proxy mounts from the session's MCP and this fact (ModelProxyOptions.mcp). */
+  mcpClient?: McpClient;
+}
+
+/** A harness's own MCP client, as its adapter declares it: the `_meta` key of a `tools/call` that carries the harness's
+ *  own id for the call (Claude Code's `claudecode/toolUseId`, Codex's `callId`), the id its timeline and gate know the
+ *  call by. The route reads that key and no other. */
+export interface McpClient {
+  callIdMeta: string;
 }
 
 export interface AgentAdapter {

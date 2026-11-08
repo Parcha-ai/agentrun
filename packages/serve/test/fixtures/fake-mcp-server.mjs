@@ -1,9 +1,10 @@
 // A remote MCP server for tests, on loopback: Streamable HTTP through the official SDK (@modelcontextprotocol/server),
 // speaking the 2026-07-28 revision (with the SDK's 2025 fallback) or, with `era: "legacy"`, 2025-era `initialize` only.
 // With a `token` it answers 401 to a request without `Authorization: Bearer <token>`; with `oauth` too, its 401 names
-// protected-resource metadata, as a server behind OAuth does. Every request is logged: method, tool, and whether an
-// Authorization header came, never its value; a tool call whose client closed its request before the answer is logged
-// again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it).
+// protected-resource metadata, as a server behind OAuth does: `oauth` may name its authorization server's URL, and `token`
+// may be a check of the Authorization header (fake-oauth-server.mjs `accepts`). Every request is logged: method, tool, and
+// whether an Authorization header came, never its value; a tool call whose client closed its request before the answer is
+// logged again as `closed` (its tool under `closed`, so a count of a tool's calls is not changed by it).
 import { createServer } from "node:http";
 import { createMcpHandler, fromJsonSchema, legacyStatelessFallback, McpServer } from "@modelcontextprotocol/server";
 
@@ -45,10 +46,10 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     if (req.url === "/.well-known/oauth-protected-resource" || req.url === "/.well-known/oauth-protected-resource/mcp") {
       if (!oauth) return void res.writeHead(404).end();
       res.writeHead(200, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [`${base}/auth`] }));
+      return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
     if (req.url !== "/mcp") return void res.writeHead(404).end();
-    if (token !== undefined && req.headers.authorization !== `Bearer ${token}`) {
+    if (token !== undefined && !(typeof token === "function" ? token(req.headers.authorization) : req.headers.authorization === `Bearer ${token}`)) {
       res.writeHead(401, { "content-type": "application/json", "www-authenticate": oauth ? `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` : 'Bearer realm="fake"' });
       return void res.end('{"error":"unauthorized"}');
     }
