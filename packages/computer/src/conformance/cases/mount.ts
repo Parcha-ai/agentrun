@@ -193,8 +193,19 @@ const archilToken = mount(
 	{ needs: ["mount:archil", "exec"], timeoutMs: 600_000 },
 );
 
-/** Where a vendor's own agent listens in its computers: Daytona's toolbox, E2B's envd. */
-const VENDOR_AGENTS = ["127.0.0.1:2280", "127.0.0.1:49983"];
+/** Where a vendor's own agent listens in its computers, on IPv4 and IPv6 loopback: Daytona's toolbox, E2B's envd. */
+const VENDOR_AGENTS: Array<[string, string]> = [
+	["127.0.0.1", "2280"],
+	["::1", "2280"],
+	["127.0.0.1", "49983"],
+	["::1", "49983"],
+];
+/** Addresses a tool must not reach: a public IP literal on 443, and a DNS name (which must not even resolve). */
+const OUTSIDE: Array<[string, string]> = [
+	["1.1.1.1", "443"],
+	["8.8.8.8", "53"],
+	["example.com", "443"],
+];
 
 /**
  * "isolated, and durable through the root side", on one Archil computer: a tool sees loopback alone and reaches neither a
@@ -213,10 +224,11 @@ const archilIsolatedDurable = mount(
 		t.deepEqual(links.out.split(/\s+/).filter(Boolean), ["lo"], "the network links a tool sees");
 		const bash = await t.exec(["sh", "-c", "command -v bash"], {}, connected.client);
 		t.equal(bash.exitCode, 0, "the image has bash, which the connection probes use");
-		for (const target of [...VENDOR_AGENTS, "1.1.1.1:443", "8.8.8.8:53"]) {
-			const [host, port] = target.split(":");
+		const resolved = await t.exec(["getent", "hosts", "example.com"], { timeoutMs: 15_000 }, connected.client);
+		t.assert(resolved.exitCode !== 0, `a tool resolved a DNS name: ${resolved.out.trim()}`);
+		for (const [host, port] of [...VENDOR_AGENTS, ...OUTSIDE]) {
 			const tried = await t.exec(["bash", "-c", `exec 3<>/dev/tcp/${host}/${port} && echo connected`], { timeoutMs: 15_000 }, connected.client);
-			t.assert(!tried.out.includes("connected"), `a tool connected to ${target}`);
+			t.assert(!tried.out.includes("connected"), `a tool connected to ${host} port ${port}`);
 		}
 		const nonce = randomBytes(6).toString("hex");
 		const ran = await t.exec(["sh", "-c", `printf '%s\\n' ${nonce} > exec-${nonce}.txt`], { cwd: WORKSPACE }, connected.client);
