@@ -540,7 +540,8 @@ const sourceSchemaOf = (adapters: readonly TriggerAdapter[]) => ({
 const TRIGGER_SOURCE = sourceSchemaOf(TRIGGER_ADAPTERS);
 /** A trigger's source as the server holds and sends it (triggers.ts Schedule): a cron line's zone and an interval's
  *  start always set, to UTC and to when it was written when the write left them out. */
-const TRIGGER_SOURCE_SENT = { ...TRIGGER_SOURCE, oneOf: TRIGGER_SOURCE.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) };
+const sentOf = (sources: ReturnType<typeof sourceSchemaOf>) => ({ ...sources, oneOf: sources.oneOf.map((source) => ({ ...source, required: Object.keys(source.properties) })) });
+const TRIGGER_SOURCE_SENT = sentOf(TRIGGER_SOURCE);
 const START_RUN = closedWith(
   {
     kind: { const: "start_run" },
@@ -561,7 +562,9 @@ const TRIGGER_TARGET = {
   description: "What each firing does: start a run of an agent, capped, or send a message to one run.",
 };
 /** A firing's `by`, as `adapters` give it. */
-const firedByOf = (adapters: readonly TriggerAdapter[]) => ({ enum: [...adapters.map((a) => a.id), "manual"], description: ["`manual`: a run now, its key from the trigger and its Idempotency-Key.", ...adapters.flatMap((a) => (a.firedBy ? [a.firedBy] : []))].join(" ") });
+/** A firing's `by`, as `adapters` give it: the clock's sources, then a run now, then the pushed ones, the order the
+ *  document has always served. */
+const firedByOf = (adapters: readonly TriggerAdapter[]) => ({ enum: [...adapters.filter((a) => a.delivery === "clock").map((a) => a.id), "manual", ...adapters.filter((a) => a.delivery === "push").map((a) => a.id)], description: adapters.flatMap((a) => (a.firedBy ? [a.firedBy] : [])).join(" ") });
 const TRIGGER_FIRING = closedWith(
   {
     key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
@@ -1789,12 +1792,13 @@ export const REQUEST_EXAMPLES: Record<string, Record<string, { summary: string; 
 /** `doc` with every source schema and firing `by` the registry gives made `adapters'`, and a hook path for each pushed
  *  source whose settings are the server's: a server given other sources (a test's) documents its own. */
 function withAdapters(doc: Json, adapters: readonly TriggerAdapter[]): void {
-  const [source, by] = [JSON.stringify(TRIGGER_SOURCE), JSON.stringify(firedByOf(TRIGGER_ADAPTERS))];
+  const [source, sent, by] = [JSON.stringify(TRIGGER_SOURCE), JSON.stringify(TRIGGER_SOURCE_SENT), JSON.stringify(firedByOf(TRIGGER_ADAPTERS))];
   const walk = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(walk);
     if (!value || typeof value !== "object") return value;
     const text = JSON.stringify(value);
     if (text === source) return sourceSchemaOf(adapters);
+    if (text === sent) return sentOf(sourceSchemaOf(adapters));
     if (text === by) return firedByOf(adapters);
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
   };
