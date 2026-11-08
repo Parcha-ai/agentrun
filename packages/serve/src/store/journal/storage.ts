@@ -77,6 +77,9 @@ function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
 
 const TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
 
+/** A run's first id to mint: pi's root conversation is 1. */
+const FIRST_ID = 2;
+
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 type Row = Record<string, SqliteValue>;
 type DocumentContent = { readonly kind: "base"; readonly version: number; readonly value: JsonValue } | { readonly kind: "delta"; readonly version: number; readonly ops: unknown };
@@ -214,14 +217,11 @@ export class RunStorage implements Journal {
     return storage;
   }
 
-  /** The run's id namespace, read once (pi_metadata's row, made on first use). */
+  /** The run's id namespace, read once: pi_metadata's row, or pi's first id after the root when the run has none yet. A
+   *  read only: nothing but a commit writes, so every write of the journal is under the claim's fence. */
   #opened(): Promise<void> {
-    this.#opening ??= this.#transaction(async (tx) => {
-      await tx.run(`INSERT OR IGNORE INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, '2', 1)`, this.#runId);
-      return tx.get<{ next_id: string }>(`SELECT next_id FROM ${T.metadata} WHERE run_id = ?`, this.#runId);
-    }).then((metadata) => {
-      if (metadata === undefined) throw new Error(`run ${this.#runId}: the journal's metadata is missing`);
-      this.#nextId = Number(metadata.next_id);
+    this.#opening ??= this.#read.get<{ next_id: string }>(`SELECT next_id FROM ${T.metadata} WHERE run_id = ?`, this.#runId).then((metadata) => {
+      this.#nextId = Number(metadata?.next_id ?? FIRST_ID);
     });
     return this.#opening;
   }
@@ -293,7 +293,10 @@ export class RunStorage implements Journal {
         candidateNextId = Math.max(candidateNextId, this.#candidateNextId(writes));
       }
       if (seqs.length > 0) {
-        await tx.run(`UPDATE ${T.metadata} SET next_id = ?, next_seq = ? WHERE run_id = ?`, String(Math.max(Number(metadata.next_id), candidateNextId)), next, this.#runId);
+        await tx.run(
+          `INSERT INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, ?, ?) ON CONFLICT (run_id) DO UPDATE SET next_id = excluded.next_id, next_seq = excluded.next_seq`,
+          this.#runId, String(Math.max(Number(metadata.next_id), candidateNextId)), next,
+        );
         if (staged?.run !== undefined) await this.#writeRun(tx, staged.run);
         for (const also of staged?.also ?? []) await this.#insert(tx, also);
         if ((staged?.take ?? []).length > 0) {
@@ -349,9 +352,9 @@ export class RunStorage implements Journal {
   }
 
   async #readMetadata(executor: SqliteExecutor): Promise<{ next_id: string; next_seq: number }> {
+    // A run with no row yet starts at pi's first id after the root and seq 1; its first stored commit writes the row.
     const metadata = await executor.get<{ next_id: string; next_seq: number }>(`SELECT next_id, next_seq FROM ${T.metadata} WHERE run_id = ?`, this.#runId);
-    if (metadata === undefined) throw new Error(`run ${this.#runId}: the journal's metadata is missing`);
-    return metadata;
+    return metadata ?? { next_id: String(FIRST_ID), next_seq: 1 };
   }
 
   async #checkBatch(executor: SqliteExecutor, writes: readonly StorageWrite[], documentActions: Map<number, DocumentAction>): Promise<void> {
