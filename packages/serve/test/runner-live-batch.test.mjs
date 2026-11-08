@@ -64,9 +64,20 @@ test("a held-state write is never in a run's journal: no commit, no seq", async 
   const { server, release } = await heldWrites(t, 3, 1_000);
   const row = await server.runs.get("run-0");
   const journal = server.journal({ runId: "run-0", runner: "reader", epoch: row.epoch, until: 0, from: row.state });
-  const before = (await journal.commitsAfter(0, 10_000, ctx)).commits.map((commit) => commit.seq);
+  const seqs = async () => (await journal.commitsAfter(0, 10_000, ctx)).commits.map((commit) => commit.seq);
+  // pi's own last write as the tool starts (its pi.live document marking it running) can land just after the held row is
+  // seen: the count starts once the journal has been still for longer than two ticks, which a tick that wrote to the
+  // journal would never allow.
+  let before = await seqs();
+  await until(async () => {
+    await sleep(TICK_MS * 2 + 100);
+    const now = await seqs();
+    const still = now.length === before.length;
+    before = now;
+    return still;
+  }, "the run's journal still for two ticks", 10_000);
   await sleep(1_000);
-  const after = (await journal.commitsAfter(0, 10_000, ctx)).commits.map((commit) => commit.seq);
+  const after = await seqs();
   assert.ok((await server.live.read(["run-0"])).length === 1, "the run's held row was written meanwhile");
   assert.deepEqual(after, before, "a second of held-state ticks added no commit to the run's journal");
   release();
