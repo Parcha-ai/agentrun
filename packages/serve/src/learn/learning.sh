@@ -19,7 +19,8 @@
 #                        main must not be there yet (else 3, with main on stdout)
 #   commit <old> [run]   commit on main from <old>; with <run>, a run's merge, which writes its diff file
 #   snapshot <main>      the working tree and snapshot.json written again at <main>, which must be main (else 3)
-#   read                 main's tree, its first-parent log and its blobs, for the host to build a snapshot from
+#   read [commit]        main's (or <commit>'s) tree, its first-parent log and its blobs, for the host to build a
+#                        snapshot from; 1 when <commit> is not in the repository
 #   before-retire <main> <path>
 #                        the text <path> had just before the newest person's retire of it on <main>'s line (else 1)
 #   has <main> <path>    whether <main> holds anything at <path>, any mode, any type (0 yes, 1 no)
@@ -316,7 +317,13 @@ case $op in
     printf '%s\n' "$old"
     ;;
   read)
-    main=$(main_now)
+    if [ -n "${2:-}" ]; then
+      hex40 "$2" || die "read takes a commit"
+      g cat-file -e "$2^{commit}" 2> /dev/null || exit 1
+      main=$2
+    else
+      main=$(main_now)
+    fi
     : > "$tmp/tree"
     : > "$tmp/log"
     : > "$tmp/blobs"

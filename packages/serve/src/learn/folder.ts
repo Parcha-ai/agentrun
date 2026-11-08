@@ -1,7 +1,8 @@
 // The agent's learning folder through its Workspace: the one way serve reads and writes it. The folder is a git
 // repository in the agent's own workspace (a local folder, or the owner's Archil disk), never touched with git here:
 // - Every write to main is ONE exec of the checked-in script (learning.sh), one hold of the folder: a person's edit,
-//   create, retire, approve or restore and a run's merge alike (learningCommit), and the folder's first commit
+//   create, retire, approve or restore and a run's merge alike (commitChange; learn/commit.ts learningCommit is the
+//   API callers use), and the folder's first commit
 //   (learningInit). The script is written into the folder once per version, `.agentrun/learning-<sha8>.sh`, and run
 //   there: an Archil exec takes one command line of bounded length, so its text never travels in argv.
 // - This side computes everything it can: the tree's changes, the commit's message and time, the front matter, each
@@ -618,9 +619,11 @@ export type Committed =
  * working tree, a merge's diff file, and the next snapshot (nextSnapshot), last. Nothing is retried here: writeLearning
  * computes again on a main that moved.
  */
-export async function learningCommit(ws: Workspace, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
+export async function commitChange(ws: Workspace, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
   const seconds = Math.floor(Date.now() / 1000);
   const { snapshot, changed } = nextSnapshot(base, change, seconds);
+  // A change that changes nothing on main is no commit: main stays, and nothing is run.
+  if (base && change && !changed.length) return { landed: true, main: base.main, snapshot: base };
   const writes = change?.writes ?? [{ path: INDEX_FILE, text: "" }];
   for (const { path } of writes) checkPath(path);
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);
@@ -650,6 +653,16 @@ export async function learningCommit(ws: Workspace, base: Snapshot | undefined, 
 
 /** The snapshot rebuilt from main whole, and the working tree brought in line: the script's `read`, then its `snapshot`
  *  op at the main it read. For a folder whose snapshot is not main's. Undefined for a folder with no main. */
+/** The snapshot of `commit` as main would have it (the script's read at that commit), or undefined when the folder has
+ *  no such commit. One exec, read-only: for a run's seed that is no longer main. */
+export async function snapshotAt(ws: Workspace, commit: string): Promise<Snapshot | undefined> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  const read = await runScript(ws, ["read", commit]);
+  if (read.code === 1) return undefined;
+  if (read.code !== 0) throw failed("read", read);
+  return snapshotOfRead(parseRead(read.stdout));
+}
+
 export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {
   for (let tries = 0; tries < WRITE_TRIES; tries++) {
     const read = await runScript(ws, ["read"]);
@@ -686,7 +699,7 @@ export async function heldOnMain(ws: Workspace, main: string, path: string): Pro
 export async function learningInit(ws: Workspace): Promise<string> {
   const known = await readSnapshot(ws);
   if (known) return known.main;
-  const result = await learningCommit(ws, undefined, undefined);
+  const result = await commitChange(ws, undefined, undefined);
   if ("landed" in result) return result.main;
   if ("stale" in result && result.main) {
     const repaired = await learningRepair(ws);
@@ -713,15 +726,15 @@ export class FolderRefused extends Error {
 
 /**
  * A write to the folder's main: `compute` reads the snapshot and the bodies it needs (as readLearning gives them) and
- * says what to write, or nothing (its result stands alone). Committed by learningCommit; a main that moved under it, or
+ * says what to write, or nothing (its result stands alone). Committed by commitChange; a main that moved under it, or
  * a body that changed as it was read, computes it again on the folder as it is then (WRITE_TRIES in all). A folder with
  * no main yet is made first (learningInit). A snapshot that is not main's is rebuilt (learningRepair). Throws
  * FolderRefused when a precondition fails on main.
  */
-export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRead) => Promise<{ result: T; change?: FolderChange }>): Promise<{ result: T; main?: string; snapshot?: Snapshot }> {
+export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRead) => Promise<{ result: T; change?: FolderChange }>, maxTries = WRITE_TRIES): Promise<{ result: T; main?: string; snapshot?: Snapshot }> {
   for (let tries = 0; ; tries++) {
     // A folder that kept moving, or whose bodies kept changing as they were read: a write in flight elsewhere.
-    if (tries >= WRITE_TRIES) throw new FolderBusy();
+    if (tries >= maxTries) throw new FolderBusy();
     let snapshot = await readSnapshot(ws);
     let out: { result: T; change?: FolderChange };
     try {
@@ -737,7 +750,7 @@ export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRe
       // Computed again on the folder just made.
       continue;
     }
-    const done = await learningCommit(ws, snapshot, out.change);
+    const done = await commitChange(ws, snapshot, out.change);
     if ("landed" in done) return { result: out.result, main: done.main, snapshot: done.snapshot };
     if ("refused" in done) throw new FolderRefused(done.refused);
     if ("unaligned" in done) {
