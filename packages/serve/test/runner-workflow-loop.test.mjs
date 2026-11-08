@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { createWorkflowExtension, nodeRunner, taskScope } from "@parcha/agentrun-pi/durable";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
 import { startWorkflowRevision } from "@parcha/pi-durable-agent/workflow";
@@ -13,7 +13,32 @@ import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 
 const { createWorkflowLoop, isWorkflowRevision } = await import("../dist/runner/workflow-loop.js");
+const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { runModels, FAUX_ENV } = await import("../dist/model.js");
+
+/** The cap refusal the host hands the loop on a hold, and a fake of the kernel cap's rule (parkOf/checkRaise): the loop
+ *  never imports the cap, so a test hands its rule in. The real cap's figures are the money-parity red's, not this test's. */
+const REFUSAL = { message: "SPEND_CAP_REACHED spend cap reached", forGood: false };
+const FAKE_CAP = {
+  park: (refusal) => refusal.forGood
+    ? { outcome: "failed", error: refusal.message }
+    : { outcome: "parked", pending: { kind: "budget", cap_usd: 1, spent_usd: 1, needs_usd: 2, least_cap_usd: 2, suggested_cap_usd: 5 }, words: "spend cap reached" },
+  checkRaise: (state, usd) => (usd > (state.capUsd ?? 0) ? { raised: true, resumes: state.pause !== undefined, ...(state.pause ? { pause: state.pause } : {}) } : { refused: "A cap is only raised." }),
+  followUpOf: (capUsd) => ({ text: `The cap was raised to ${capUsd}.` }),
+};
+
+/** The kinds of a run's root-conversation entries, in order (to see the budget and raise entries the loop wrote). */
+async function rootKinds(store, runId) {
+  const reads = store.readJournal(runId);
+  const kinds = [];
+  for (let cursor; ; ) {
+    const page = await reads.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 500, cursor, BACKGROUND_CONTEXT);
+    kinds.push(...page.items.map((entry) => entry.kind));
+    if (page.next === undefined) break;
+    cursor = page.next;
+  }
+  return kinds;
+}
 
 /** A workflow agent, its revision and one claimed run. */
 async function claimedWorkflow(t, workflow = answerFlow()) {
@@ -151,11 +176,11 @@ test("a claim lost before the end commit resumes the workflow from its journal a
 
 /** A loop whose host holds the first model node at the cap once (it parks the run), then runs it for real. `state.held` is
  *  shared across claims, so the resumed run's node completes. */
-function cappedLoopOn(store, workflow, input, state, signal = new AbortController().signal) {
+function cappedLoopOn(store, workflow, input, state, signal = new AbortController().signal, delivered = undefined) {
   const specOf = async () => {
     const { models, byTier } = await runModels({ [FAUX_ENV]: FAUX }, undefined, ["default"]);
     return {
-      models, workflow, input, tools: inspectWorkflow(workflow).requires.tools, agentId: "agent-1", revisionId: "rev-1",
+      models, workflow, input, tools: inspectWorkflow(workflow).requires.tools, agentId: "agent-1", revisionId: "rev-1", cap: FAKE_CAP,
       build: (hooks) => {
         const nodes = nodeRunner({ agent: (node) => ({ model: byTier.get(node.tier ?? "default"), extensions: [], tools: [] }) });
         return {
@@ -165,8 +190,9 @@ function cappedLoopOn(store, workflow, input, state, signal = new AbortControlle
             return { durableNodes: true, adapters: { runNode: async (params) => {
               if (!state.held) {
                 state.held = true;
-                // The cap holds this step for a raise: let the node's signal (the loop aborts it) end the wait.
-                hooks.park({ detail: { words: "spend cap reached" } });
+                // The cap holds this step for a raise: hand the loop the refusal and let the node's signal (the loop aborts
+                // it) end the wait.
+                hooks.park(REFUSAL);
                 await new Promise((_, reject) => {
                   const s = params.signal;
                   if (s?.aborted) return reject(s.reason);
@@ -180,23 +206,36 @@ function cappedLoopOn(store, workflow, input, state, signal = new AbortControlle
       },
     };
   };
-  return createWorkflowLoop(specOf)({ journal: (claim) => store.journal(claim), flush: () => store.flush(), signal });
+  return createWorkflowLoop(specOf)({ journal: (claim) => store.journal(claim), flush: () => store.flush(), signal, ...(delivered ? { delivered } : {}) });
 }
 
-test("a step the cap holds parks the run; a raise wakes it and the resume ends it from the journal", async (t) => {
+test("a step the cap holds parks the run on an agentrun.budget entry; a raise takes an agentrun.raise entry and the resume ends it", async (t) => {
   const { store, claim, workflow } = await claimedWorkflow(t);
   const state = { held: false };
   const loop1 = cappedLoopOn(store, workflow, { question: "What is six times seven?" }, state);
   assert.deepEqual(await loop1.start(claim), { state: "parked" }, "the held step parks the run");
-  assert.equal((await store.runs.get("run-1")).state, "parked");
+  const parked = await store.runs.get("run-1");
+  assert.equal(parked.state, "parked");
+  assert.equal(parked.summary, "spend cap reached", "the run's row is in the cap's words");
+  assert.ok((await rootKinds(store, "run-1")).includes(KINDS.budget), "the park wrote an agentrun.budget entry");
 
   // The runner releases the parked run; a raise makes it claimable again, and the resume reads the raised cap.
   await store.release(claim, {});
-  await store.command("run-1", { kind: "raise", body: { max_cost_usd: 10 } });
+  const raise = await store.command("run-1", { kind: "raise", body: { capUsd: 10 } });
   const claim2 = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  const loop2 = cappedLoopOn(store, workflow, { question: "What is six times seven?" }, state);
-  assert.deepEqual(await loop2.start(claim2), { state: "ended" }, "the resume runs the once-held step and ends the run");
+  // The runner hands the raise row to the loop and signals its first delivery done, as the real runner does.
+  let deliver;
+  const delivered = new Promise((resolve) => (deliver = resolve));
+  const loop2 = cappedLoopOn(store, workflow, { question: "What is six times seven?" }, state, undefined, delivered);
+  const started = loop2.start(claim2);
+  const raiseOutcome = loop2.command(raise);
+  deliver();
+  assert.deepEqual(await raiseOutcome, { taken: true }, "the raise is taken");
+  assert.deepEqual(await started, { state: "ended" }, "the resume runs the once-held step and ends the run");
   const run = await store.runs.get("run-1");
   assert.equal(run.state, "ended");
   assert.equal(run.summary, "answer");
+  assert.ok((await rootKinds(store, "run-1")).includes(KINDS.raise), "the raise wrote an agentrun.raise entry");
+  const rows = await store.commands("run-1", 0);
+  assert.equal(rows.find((row) => row.id === raise.id).takenAt !== null, true, "the raise row is taken");
 });
