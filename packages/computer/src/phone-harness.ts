@@ -106,6 +106,38 @@ export function memoryLedger(): PhoneLedger {
 	};
 }
 
+/** A ledger call that threw: the store could not be read or written. */
+class LedgerFailure extends Error {}
+
+/** The ledger with every throw, sync or async, made a LedgerFailure in words. */
+function guardedLedger(ledger: PhoneLedger): PhoneLedger {
+	const guard =
+		<A extends unknown[], T>(how: "read" | "written", call: (...args: A) => T | Promise<T>) =>
+		async (...args: A): Promise<T> => {
+			try {
+				return await call(...args);
+			} catch (error) {
+				throw new LedgerFailure(`the phone ledger could not be ${how}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		};
+	return {
+		put: guard("written", (entry: PhoneLedgerEntry) => ledger.put(entry)),
+		get: guard("read", (id: string) => ledger.get(id)),
+		list: guard("read", () => ledger.list()),
+		remove: guard("written", (id: string) => ledger.remove(id)),
+	};
+}
+
+/** fn's result, or a ledger that failed as a result in words: a provider's calls answer, never throw. */
+async function ledgerSafe<T>(fn: () => Promise<Result<T>>): Promise<Result<T>> {
+	try {
+		return await fn();
+	} catch (error) {
+		if (error instanceof LedgerFailure) return fail("phone", error.message);
+		throw error;
+	}
+}
+
 /** What one adb call gave: its exit code and output. */
 export interface AdbResult {
 	exitCode: number;
@@ -281,7 +313,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			throw new Error("options.adb is the adb CLI's path, or a transport with run() and server()");
 		}
 		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
-		this.#ledger = options.ledger ?? memoryLedger();
+		this.#ledger = guardedLedger(options.ledger ?? memoryLedger());
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
 		if (!(Number.isSafeInteger(this.#maxLifetimeMs) && this.#maxLifetimeMs > 0)) throw new Error(`maxLifetimeMs ${show(options.maxLifetimeMs)} is not a whole number of milliseconds above 0`);
 		this.#readyMs = options.readyMs ?? DEFAULT_READY_MS;
@@ -378,7 +410,31 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	// --- the provider ----------------------------------------------------------------------------------------------
 
-	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+	create(spec: ComputerSpec, context: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+		return ledgerSafe(() => this.#create(spec, context));
+	}
+
+	attach(ref: { id: string } | { labels: Record<string, string> }, context: CallContext = {}): Promise<Result<AttachedComputer>> {
+		return ledgerSafe(() => this.#attach(ref, context));
+	}
+
+	list(labels: Record<string, string>, context: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+		return ledgerSafe(() => this.#list(labels, context));
+	}
+
+	network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
+		return ledgerSafe(() => this.#network(ref, policy));
+	}
+
+	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+		return ledgerSafe(() => this.#release(ref, how));
+	}
+
+	connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+		return ledgerSafe(() => this.#connect(ref));
+	}
+
+	async #create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
@@ -405,8 +461,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const first = sessionOf(posted.value.json, "POST /sessions");
 		if (!first.ok) return first;
 		const id = first.value.id;
-		await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
-		await this.#ledger.remove(pending);
+		try {
+			await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
+			await this.#ledger.remove(pending);
+		} catch (error) {
+			// A phone no ledger names would bill unseen: it is ended at once, by the API alone.
+			const ended = await this.#api("DELETE", `/sessions/${encodeURIComponent(id)}`);
+			const after = ended.ok || ended.error.code === "not_found" ? "the phone was ended" : `the phone ${id} could not be ended (${ended.error.message})`;
+			return fail("phone", `${error instanceof Error ? error.message : String(error)}; ${after}`);
+		}
 		const ended = async (code: ComputerErrorCode, words: string) => {
 			const gone = await this.#end(id);
 			return fail(code, `${words}; ${gone.ok ? "it was ended" : `it could not be ended (${gone.error.message})`}`);
@@ -431,7 +494,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok({ id, name: id });
 	}
 
-	async attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
+	async #attach(ref: { id: string } | { labels: Record<string, string> }, { signal }: CallContext = {}): Promise<Result<AttachedComputer>> {
 		let entry: PhoneLedgerEntry | undefined;
 		if ("id" in ref) {
 			entry = await this.#ledger.get(ref.id);
@@ -459,7 +522,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return listTested("Phone harness", await this.list({}, context));
 	}
 
-	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
+	async #list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const got = await this.#api("GET", "/sessions", undefined, {}, signal);
 		if (!got.ok) return got;
 		if (!Array.isArray(got.value.json)) return fail("phone", `GET /sessions answered ${show(got.value.json).slice(0, 200)}, not a list`);
@@ -501,13 +564,13 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok(out);
 	}
 
-	async network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
+	async #network(ref: ComputerRef, policy?: NetworkSpec): Promise<Result<NetworkPolicy>> {
 		if ((await this.#ledger.get(ref.id)) === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		if (policy === undefined || policy === "open") return ok("open");
 		return fail("refused", `network ${show(policy)}: a cloud phone's network is open, and it cannot be closed or narrowed`);
 	}
 
-	async release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	async #release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
 		if (how === "stop") return fail("unsupported", "a cloud phone has no stop: release it with delete, which ends the session");
 		return this.#end(ref.id);
 	}
@@ -531,7 +594,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return fail("phone", `adb connected to the phone, and the adb server still lists it as ${last}, not a device`);
 	}
 
-	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+	async #connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		if ((await this.#ledger.get(ref.id)) === undefined) return fail("not_found", `${ref.id} is not a phone this provider made`);
 		const session = await this.#session(ref.id);
 		if (!session.ok) return session;
