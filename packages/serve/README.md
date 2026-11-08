@@ -1637,7 +1637,9 @@ callback and setup URLs, the permissions (pull requests write; contents, metadat
 (`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
 "GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
 `AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
-App. Disconnect it first."). Its `state` is random, used once, good for an hour, and bound to the browser that started it
+App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
+(`409 github_wrong_origin`, "Open this server at <public URL> to connect GitHub.", the URL in `details.open`). Its
+`state` is random, used once, good for an hour, and bound to the browser that started it
 by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`.
 
 GitHub sends the browser back to `GET /v2/integrations/github/callback` with a code. The server converts it with GitHub
@@ -1648,8 +1650,12 @@ records the installation once GitHub, asked with the App's own JWT, says it is t
 console at the public URL, `<public>/#/settings/github?github=connected`. Neither leg ever answers an error body: a state
 that is unknown, used, older than an hour or from another browser sends the browser to
 `<public>/#/settings/github?github=error&reason=state_invalid`,
-a code GitHub does not convert to `...&reason=conversion_failed`, and an installation GitHub does not confirm to
-`...&reason=installation_unverified`; nothing is kept. The App's `installation` events keep the list current.
+a code GitHub does not convert to `...&reason=conversion_failed`, one whose App GitHub made while another Connect kept
+its App to `...&reason=already_connected` (the first App stays), and an installation GitHub does not confirm, or one
+checked while GitHub was disconnected or connected again, to `...&reason=installation_unverified`; nothing is kept. The
+App's `installation` events keep the list current, each taken only in its own shape (the installation, its account and
+this App's id) and as GitHub, asked with the App's JWT, bears it out: `X-GitHub-Event` is not signed, so another
+event's signed body sent as one changes nothing.
 `GET /v2/integrations/github` shows `{app_id, slug, installations}`, never a secret.
 
 A trigger with `source: {kind: "github", accept: [...]}` takes the App's events its `accept` names (the same rules as a
@@ -1658,7 +1664,9 @@ is checked by `X-Hub-Signature-256` under the App's webhook secret, and one even
 `accept` takes it, each its own firing, keyed by the SHA-256 of the signed body, and its own run (github triggers may
 take the same events; `max_active_runs` caps each). Every other github trigger keeps the body's key for its day, so the
 same body sent again under another `X-GitHub-Event`, which GitHub does not sign, starts nothing: where it matters, a rule
-also tests a field only that event's body has. An event no trigger takes is `200 {"ok": "ignored"}`; GitHub's `ping` is
+also tests a field only that event's body has. When a trigger that takes an event holds too many firings due, the delivery is refused `429` with `Retry-After`
+though the others recorded theirs: the retry records it there once it has room, and is the others' duplicate. An event no
+trigger takes is `200 {"ok": "ignored"}`; GitHub's `ping` is
 `200 {"ok": "pong"}`. The payload's tag also names the installation and the repository (`installation="..."
 repo="owner/name"`). A github trigger made or turned on with no App connected is `409 github_not_connected` ("Connect GitHub
 in Settings"). A `{kind: "webhook", signature: "github"}` trigger is unchanged: a repository webhook with its own secret.
