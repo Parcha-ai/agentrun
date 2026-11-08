@@ -17,6 +17,7 @@ const MUTANT = process.env.CONFORMANCE_MUTANT ?? "";
 /** The subject the suite runs: reference loops for `setup`. */
 export const referenceSubject = {
   name: "reference",
+  process: { module: import.meta.url, export: "referenceSubject" },
   createLoop: (setup) => (deps) => referenceLoop(setup, deps),
 };
 
@@ -60,7 +61,11 @@ function referenceLoop({ script, tools, hooks }, deps) {
   const invoke = async (call) => {
     const tool = tools[call.tool];
     const start = { callId: call.callId, tool: call.tool, input: call.args, replaySafe: tool.replaySafe };
-    if (MUTANT !== "intent-after-route") {
+    if (MUTANT === "intent-unawaited") {
+      // Its start sent and not waited for: a loop frozen in-process still lands it; a process killed at once does not.
+      await hooks.beforeIntent(call);
+      void append(KINDS.callStart, start).catch(() => {});
+    } else if (MUTANT !== "intent-after-route") {
       await hooks.beforeIntent(call);
       await append(KINDS.callStart, start);
       if (!tool.replaySafe) await deps.flush();
