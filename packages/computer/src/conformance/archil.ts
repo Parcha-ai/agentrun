@@ -10,6 +10,7 @@
 // computer), and the account API key, which only the SDK takes, for the object API. The settings are options; each
 // module reads them from the COMPUTER_ARCHIL_* names ARCHIL_ENV lists (archilSettings).
 import { randomBytes } from "node:crypto";
+import { ARCHIL_REGION } from "../mount-archil.js";
 import type { RunFolder } from "./types.js";
 
 /** The settings of the Archil mount cases, by the names a conformance module reads them from. */
@@ -67,7 +68,7 @@ export interface ArchilRunFolderOptions {
 const ARCHIL_PACKAGE: string = "disk";
 // The shapes the root helper takes (box/agentrun-archil), so a run folder is one a computer can mount.
 const DISK = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
-const REGION = /^[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}$/;
+const REGION = new RegExp(`^${ARCHIL_REGION}$`);
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 /** Why an S3 endpoint is not one the account key may go to, or undefined: https, on an Archil host of the region. */

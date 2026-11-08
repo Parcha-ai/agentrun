@@ -51,7 +51,12 @@ export type ProviderNote = (note: { computer: string; note: string }) => void;
 
 // The shapes the helper itself checks (box/agentrun-archil), so a spec it would refuse is refused before any vendor call.
 const DISK = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
-const REGION = /^[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}$/;
+/**
+ * The region's one rule: a provider, a dash and its region, lowercase letters, digits and dashes. A pattern string, so the
+ * helper's `grep -Ex` (box/agentrun-archil, where it is written out the same) and this RegExp read the same text.
+ */
+export const ARCHIL_REGION = "[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}";
+const REGION = new RegExp(`^${ARCHIL_REGION}$`);
 const FOLDER = /^agents\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/work$/;
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 

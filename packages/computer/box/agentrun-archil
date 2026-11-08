@@ -76,7 +76,7 @@ take() {
   [ "$#" -eq 3 ] || refuse "$verb takes <disk> <region> agents/<agent>/runs/<run>/work"
   disk=$1 region=$2 folder=$3
   matches "$disk" 'dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}' || refuse "the disk is a disk id (dsk-...) or owner/name"
-  matches "$region" '[a-z0-9][a-z0-9-]{0,63}' || refuse "the region is lowercase letters, digits and dashes"
+  matches "$region" '[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}' || refuse "the region is a provider, a dash and its region, lowercase letters, digits and dashes"
   matches "$folder" 'agents/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/runs/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/work' || refuse "the folder is agents/<agent>/runs/<run>/work, nothing else"
   # The computer's /proc (its last mount there) must hide each user's processes from the others, hidepid=2 or invisible
   # as newer kernels name it: else the run's tools could see this root archil client's. No image sets it, so it is
