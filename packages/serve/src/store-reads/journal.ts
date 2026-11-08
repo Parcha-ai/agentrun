@@ -1,6 +1,6 @@
 // The reads the server made from a run's own database, now from A's journal (store.readJournal): a run's entries in log
 // order, its timeline (the renderer unchanged), and what was said to it (its hearing). The old path read each run's
-// store.sqlite ("SELECT record FROM entries ORDER BY id") and fed the same pure renderer; these read the one store instead.
+// its own database file ("SELECT record FROM entries ORDER BY id") and fed the same pure renderer; these read the one store instead.
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import type { Context } from "@earendil-works/chord";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "@parcha/pi-durable-agent/timeline";

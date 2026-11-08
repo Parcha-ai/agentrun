@@ -6,15 +6,15 @@
 // named only by an agent whose place is a box (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "typebox";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
-import { writeInWork } from "./workspace.js";
+import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
@@ -31,7 +31,8 @@ import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickab
 import type { SettingFrom } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
-import { handedSignIn } from "./secrets.js";
+import { handedSignIn, hostSecrets } from "./secrets.js";
+import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 
 export const ASK_TOOL = "ask_person";
@@ -145,28 +146,45 @@ const fileTool = (name: string, summary: string, sandboxOnly = false): ToolEntry
   },
 });
 
-/** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
- *  text body follows one line of the read's facts; a capture's bytes go beside its facts. Each read takes the next free
- *  number, reserved by an exclusive create, so reads at once (parallel nodes, one turn's calls) and the reads of a later
- *  process never overwrite one another. */
-export const evidenceIn = (work: string) => {
-  let seq = 0;
+/** The folder the browser files what it reads in. */
+const EVIDENCE = "evidence";
+/** How many names taken by a link a read steps past before it gives up. */
+const EVIDENCE_TRIES = 100;
+
+/** The highest number a file in the run's evidence/ is named by (`0007-browser_read.md`), 0 for none or no folder. A
+ *  link at evidence/ itself throws (ESCAPE): nothing is filed through it. */
+async function lastEvidence(work: Workspace): Promise<number> {
+  try {
+    return Math.max(0, ...(await work.list(EVIDENCE)).map((entry) => Number(/^(\d+)-/.exec(entry.name)?.[1] ?? 0)));
+  } catch (error) {
+    if (isWorkspaceError(error, "NOT_FOUND")) return 0;
+    throw error;
+  }
+}
+
+/** Where the browser files what it reads: the run's `evidence/`, through its Workspace, so the run's files show it and
+ *  the agent can read it back. A text body follows one line of the read's facts; a capture's bytes go beside its facts.
+ *  Each read takes the next number after the highest the folder holds when the sink first files, so a later process's
+ *  sink never overwrites one, and reads at once (parallel nodes, one turn's calls) each take their own. A name a link
+ *  holds is never written through: the read takes the next. */
+export const evidenceIn = (work: Workspace) => {
+  let seq: Promise<{ n: number }> | undefined;
   return {
     file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
       const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
       const text = typeof record.body === "string";
-      for (;;) {
-        const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
+      const counter = await (seq ??= lastEvidence(work).then((n) => ({ n })));
+      for (let tries = 0; ; tries++) {
+        const name = `${String(++counter.n).padStart(4, "0")}-${record.tool}`;
         try {
-          // Never through a link a box's command planted in work/ (files.ts).
-          await writeInWork(work, ["evidence"], text ? `${name}.md` : `${name}.json`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
+          await work.write(`${EVIDENCE}/${text ? `${name}.md` : `${name}.json`}`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          if (isWorkspaceError(error, "ESCAPE") && tries < EVIDENCE_TRIES) continue;
           throw error;
         }
-        if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
-        await writeInWork(work, ["evidence"], `${name}.${record.ext ?? "bin"}`, record.body);
-        return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
+        if (text) return { path: `${EVIDENCE}/${name}.md`, bodyLine: 3 };
+        await work.write(`${EVIDENCE}/${name}.${record.ext ?? "bin"}`, record.body);
+        return { path: `${EVIDENCE}/${name}.json`, bodyPath: `${EVIDENCE}/${name}.${record.ext ?? "bin"}` };
       }
     },
   };
@@ -206,8 +224,9 @@ export const savedOnRelease = (row: { session: { resourceId: string | null; rele
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
  *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
- *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
- *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
+ *  lives in the run's own store. No recording; the owner watches it live, takes it over and hands it back, and the agent
+ *  may ask them to (browser-live.ts, browser-person.ts). A session the run still holds is released when the run is let
+ *  go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
  *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). A run handed its agent's
  *  saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the profile `default`,
  *  saving only where it holds the agent's save lease; one that saved says so in its run directory. */
@@ -219,12 +238,13 @@ const browserTool: ToolEntry = {
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
       import("@parcha/pi-browser/live-view"),
       import("./browser-live.js"),
+      import("./browser-person.js"),
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
     const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
@@ -243,11 +263,44 @@ const browserTool: ToolEntry = {
         };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
     const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
-    // The owner's live view (browser-live.ts): pi-browser's own viewer, read-only, on a loopback port of this process's,
-    // over every provider (the handed one, the run's own), on the same person/model registry as the toolset; framed by
-    // the console's own origin alone.
-    const gates = createDrivingGates();
-    const view = createLiveView({ hostOrigin: "'self'", gates, readOnly: true });
+    // The owner's live view (browser-live.ts): pi-browser's own viewer on a loopback port of this process's, over every
+    // provider (the handed one, the run's own), on the same person/model registry as the toolset; framed by the console's
+    // own origin alone. The owner drives only after Take over, and the agent may ask them to (browser-person.ts): the
+    // person's time is held under the run's cap first, and their turns are rows of the run's timeline.
+    const windows = person.personWindows(host.env, Boolean(host.env[FAUX_ENV]));
+    const gates = createDrivingGates({ holdIdleMs: windows.holdMs, holdAwayMs: windows.awayMs });
+    let opened: Harness | undefined;
+    const hands = person.personHands({
+      root: host.where.root,
+      gates,
+      personTime: (what, seconds, options) => spend.personTime(what, seconds, options),
+      carry: (tag, seconds) => spend.carry(tag, seconds),
+      // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound.
+      redact: (text) => redactedAnswer(text, [...hostSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
+      holdMs: windows.holdMs,
+      // The run's waiting rows for a session: each is an agent.handover entry of the root's, waiting, naming it.
+      waiting: async (tag) => (await opened?.commit(async (tx) => {
+        let count = 0;
+        for (let cursor: Parameters<Tx["scanEntries"]>[2] | undefined; ; ) {
+          const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, 200, cursor);
+          for (const entry of page.items) {
+            const data = entry.data as { state?: unknown; session?: unknown } | undefined;
+            if (entry.kind === "agent.handover" && data?.state === "waiting" && data.session === tag) count += 1;
+          }
+          if (page.next === undefined) return count;
+          cursor = page.next;
+        }
+      }, context)) ?? 0,
+      // Tests only (--faux): the process dies once between an ask's record and its row.
+      afterRecord: host.env[FAUX_ENV] && host.env[person.FAUX_ASK_DIES_ENV] ? () => {
+        const mark = host.env[person.FAUX_ASK_DIES_ENV]!;
+        if (existsSync(mark)) return;
+        writeFileSync(mark, "");
+        process.kill(process.pid, "SIGKILL");
+      } : undefined,
+    });
+    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
@@ -280,7 +333,7 @@ const browserTool: ToolEntry = {
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, gates, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -290,6 +343,7 @@ const browserTool: ToolEntry = {
       Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy });
     });
     host.beforeResume(async (harness) => {
+      opened = harness;
       // Its charges move what the process counts once each is committed, reconcile's own among them.
       spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
       // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
@@ -298,6 +352,18 @@ const browserTool: ToolEntry = {
       // unless a call uses it.
       await browser.reconcile(harness as never, () => true, context);
       await spend.reopened(harness, browser.docs, context);
+      // A session kept across the restart has no viewer in this process yet, and reconcile tells no session's change: each
+      // one's viewer is opened here and handed over, as a launch's is. It starts with nobody holding the browser.
+      const kept = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
+      for (const row of kept.filter((r) => (r.state === "live" || r.state === "held") && r.resourceId !== null)) {
+        try {
+          const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
+          const handover = opened?.fullscreen ? live.handoverOf(opened.fullscreen, row.tag) : undefined;
+          if (handover) await live.writeHandover(host.where.root, handover);
+        } catch {
+          // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
+        }
+      }
     });
     host.beforeRelease(async (harness) => {
       try {
@@ -309,9 +375,12 @@ const browserTool: ToolEntry = {
         }
         await browser.drain(harness as never, context);
       } finally {
-        // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it.
+        // Every viewer's token dies with the process's hold on its sessions, and the hand-over with it; the person's
+        // holds go, and the asks with them.
         await view.close();
+        hands.close();
         await live.dropHandover(host.where.root);
+        person.dropAsks(host.where.root);
       }
     });
     return { tools, extensions: [extension] };
@@ -350,7 +419,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.run": monidTool("run"),
   [PDF_PAGES_TOOL]: callOnly(
     "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
-    (args, run) => pdfPages(args, { work: run.work, documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
+    (args, run) => pdfPages(args, { work: localWorkspace(run.work), documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
   ),
   [LLM_TOOL]: callOnly(
     "A workflow call: { prompt, system?, maxTokens?, tier? } -> { text, model, usage, cost_usd }; one completion on the model of the tier (default), no tools and no loop.",

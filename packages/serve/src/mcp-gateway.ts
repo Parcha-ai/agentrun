@@ -20,8 +20,6 @@
 //    tool cost, as any paid call (cap.ts paidCall): refused unsent when the cap cannot take it. A tool with no price runs,
 //    marked "not metered" on the run's root (TOOL_UNMETERED), outside the run's cost.
 import { randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
 import { TOOL_COST, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
@@ -32,7 +30,7 @@ import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
-import { writeInWork } from "./workspace.js";
+import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
 /** The run's pinned MCP tools, in its directory: written once, at its first launch. */
 export const MCP_PIN = "mcp-tools.json";
@@ -201,8 +199,9 @@ const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
 export interface McpGatewayOptions {
   pin: McpPin;
   credentials: McpCredentials;
-  /** The run's work/, where an answer too long for the model is filed. */
-  work: () => string;
+  /** The run's Workspace, where an answer too long for the model is filed (the run's process still hands its folder's
+   *  path). */
+  work: () => Workspace | string;
   /** For tests: the fetch the upstream client sends with. */
   fetch?: typeof fetch;
   /** For tests: the bound on one call (CALL_MS) and on a server's first connection (CONNECT_MS). */
@@ -281,7 +280,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   };
 
   /** The model's text of `result`: its text blocks joined, its structured content when it has no text; past MCP_CLIP, or
-   *  with blocks that are not text, the whole result is filed under work/evidence/mcp/<server>/ and the text says where. */
+   *  with blocks that are not text, the whole result is filed in the run's evidence/mcp/<server>/, through its Workspace
+   *  (never through a link), and the text says where. */
   const textOf = async (server: string, tool: string, result: Record<string, unknown>, headers: Record<string, string>): Promise<string> => {
     const blocks = Array.isArray(result.content) ? (result.content as { type?: unknown; text?: unknown }[]) : [];
     const texts = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string);
@@ -292,11 +292,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
     const head = text.length > MCP_CLIP ? `${text.slice(0, MCP_CLIP)}\n[cut at ${MCP_CLIP} of ${text.length} characters; ` : `${text}\n[${other} block${other > 1 ? "s" : ""} that ${other > 1 ? "are" : "is"} not text; `;
     try {
-      await writeInWork(options.work(), ["evidence", "mcp", server], name, scrub(JSON.stringify(result), headers)).catch(async (error: NodeJS.ErrnoException) => {
-        if (error.code !== "EEXIST" || !(await lstat(join(options.work(), "evidence", "mcp", server, name)).then((held) => held.isFile(), () => false))) throw error;
-      });
+      await workspaceAt(options.work()).write(`evidence/mcp/${server}/${name}`, scrub(JSON.stringify(result), headers));
     } catch (error) {
-      return `${head}the whole answer could not be saved (${(error as NodeJS.ErrnoException)?.code ?? "write failed"})]`;
+      // The Workspace's code and the port's line for it, never the error's message, which names paths.
+      return `${head}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
     }
     return `${head}the whole answer is in the run's files at evidence/mcp/${server}/${name}]`;
   };

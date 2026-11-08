@@ -463,12 +463,14 @@ export interface TriggerSettings {
 
 /** An MCP OAuth sign-in in flight (store schema `mcp_oauth_pending`): its state the key, the server it is for, the PKCE
  *  verifier sealed (store/seal.ts, AAD mcp_oauth_pending|<state>|verifier) as bytes the store never opens, the cookie it is
- *  bound to, and when it expires (ms). */
+ *  bound to, the non-secret working state the callback needs (`working`: the client, discovery, kind, scope, resource and
+ *  url, plain JSON — not sealed), and when it expires (ms). */
 export interface McpOauthPendingRow {
   readonly state: string;
   readonly server: string;
   readonly verifierSealed: Uint8Array;
   readonly cookieBinding: string;
+  readonly working: unknown;
   readonly expiresAt: number;
 }
 
@@ -526,6 +528,9 @@ export interface Store {
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
   /** Moves the claim's end to now + `leaseMs`. Fenced when the run's epoch moved on. */
   renew(claim: Claim, options?: { leaseMs?: number }): Promise<Claim>;
+  /** Renews every claim in one transaction, each to now + `leaseMs`: a runner's renew of all it holds. Each answer is the
+   *  renewed claim, or Fenced for one whose epoch moved on (nothing written to it; the others renew). */
+  renewMany(claims: readonly Claim[], options?: { leaseMs?: number }): Promise<(Claim | Fenced)[]>;
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
    *  durable commit (as flush). Fenced when the epoch moved on. */
   release(claim: Claim, options?: { state?: RunState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
@@ -550,6 +555,9 @@ export interface Store {
   command(runId: string, command: { kind: string; body?: unknown }): Promise<Command>;
   /** The run's commands with an id above `after`, in id order. */
   commands(runId: string, after: number): Promise<Command[]>;
+  /** Every run's commands with an id above its own cursor, in id order, in one read: a runner's poll of all it holds. A run
+   *  with none is absent from the map. */
+  commandsOf(cursors: readonly { runId: string; after: number }[]): Promise<Map<string, Command[]>>;
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;
