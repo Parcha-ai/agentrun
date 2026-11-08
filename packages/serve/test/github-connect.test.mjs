@@ -10,7 +10,6 @@ import { test } from "node:test";
 import { callback, CONNECTED, connect, connectable, deliver, failedWith, held, install, PUBLIC, SEAL, startConnect } from "./github-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { runDir, serve, withEnv } from "./support.mjs";
-import { setTimeout as sleep } from "node:timers/promises";
 import { firings, keyOf, made } from "./trigger-support.mjs";
 
 const target = (agentId, content = "Review it.") => ({ kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 });
@@ -392,8 +391,9 @@ test("a repair whose list GitHub answers after a verified installation event lan
   const hold = held();
   server.github.holds.installations = hold.promise;
   const asked = server.github.requests.length;
+  const listed = server.github.asked("/app/installations?");
   const read = server.api("GET", "/integrations/github");
-  while (!server.github.requests.slice(asked).some((r) => r.url.startsWith("/app/installations?"))) await sleep(20);
+  await listed;
   server.github.installations.set(778, { account: "other", suspended_at: null });
   const event = await deliver(server.baseUrl, secret, "installation", { action: "created", installation: { id: 778, account: { login: "other" }, app_id: 4242 } });
   assert.equal(event.status, 200, JSON.stringify(event.body));
@@ -406,7 +406,7 @@ test("a repair whose list GitHub answers after a verified installation event lan
   assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], JSON.stringify(trigger));
 });
 
-test("a server that closes while its start's repair waits on GitHub stops waiting: close resolves, nothing is written after it, and nothing rejects unhandled", { timeout: 60_000 }, async (t) => {
+test("a server that closes while its start's repair waits on GitHub stops waiting: close resolves, the repair's request dropped, nothing written, and nothing rejects unhandled", { timeout: 60_000 }, async (t) => {
   const first = await connectable(t);
   await made(first.api, "review");
   await connect(first);
@@ -420,19 +420,18 @@ test("a server that closes while its start's repair waits on GitHub stops waitin
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   t.after(() => process.off("unhandledRejection", onUnhandled));
-  const asked = first.github.requests.length;
+  const listed = first.github.asked("/app/installations?");
+  const dropped = first.github.dropped("/app/installations?");
   const lines = [];
   const second = await serve(t, { data: first.data, publicUrl: PUBLIC, githubApi: first.github.url, log: (line) => lines.push(line) });
-  while (!first.github.requests.slice(asked).some((r) => r.url.startsWith("/app/installations?"))) await sleep(20);
-  const triggersFile = join(first.data, "triggers.json");
-  const settingsFile = join(first.data, "trigger-settings-github.json");
+  await listed;
+  // Close, with GitHub's answer still held: it resolves, having stopped the repair's request (the fake sees it dropped)
+  // and waited for the repair, so there is nothing left to write when the answer is let go.
   await second.close();
-  const [triggersAtClose, settingsAtClose] = await Promise.all([readFile(triggersFile, "utf8"), readFile(settingsFile, "utf8")]);
+  await dropped;
   hold.release();
-  await sleep(500);
-  assert.equal(await readFile(triggersFile, "utf8"), triggersAtClose, "no trigger written after close");
-  assert.equal(await readFile(settingsFile, "utf8"), settingsAtClose, "no installation list written after close");
-  const trigger = JSON.parse(triggersAtClose).triggers.find((x) => x.id === id);
+  const triggers = JSON.parse(await readFile(join(first.data, "triggers.json"), "utf8"));
+  const trigger = triggers.triggers.find((x) => x.id === id);
   assert.deepEqual([trigger.enabled, trigger.disabled], [true, null], "still on");
   assert.deepEqual(lines.filter((line) => /github_installations_repaired|connection_lost/.test(line)), [], "no repair taken");
   assert.deepEqual(unhandled, [], "no unhandled rejection");

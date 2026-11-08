@@ -18,7 +18,9 @@ export const INSTALLED = new Set(["acme/widgets"]);
  *  App's installations as GitHub holds them now (`installations`: id → {account, suspended_at}, which a test changes as
  *  GitHub would), installation tokens and a repository's installation. It keeps each request so a test reads what was
  *  asked and with which credential; `holds` keeps an answer back until a test lets it go (a conversion by its code, an
- *  installation's read by `installation`, the list by `installations`, which answers the list as it was when asked). */
+ *  installation's read by `installation`, the list by `installations`, which answers the list as it was when asked).
+ *  `asked(prefix)` and `dropped(prefix)` settle at the next request to a path under `prefix`, or the next one its client
+ *  left unanswered. */
 export async function fakeGitHub(t) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
   const app = { id: 4242, slug: "agentrun-test-app", client_id: `Iv1.${randomBytes(8).toString("hex")}`, client_secret: randomBytes(20).toString("hex"), webhook_secret: randomBytes(20).toString("hex"), pem: privateKey, tokenMs: 3600_000 };
@@ -30,10 +32,18 @@ export async function fakeGitHub(t) {
   const failures = {};
   const requests = [];
   const tokens = [];
+  // What a test waits on, never a time: a request that arrives, or one whose client went away unanswered.
+  const waits = [];
+  const fire = (what, url) => {
+    for (const wait of waits.filter((w) => w.what === what && url.startsWith(w.prefix))) waits.splice(waits.indexOf(wait), 1), wait.resolve(url);
+  };
+  const next = (what) => (prefix) => new Promise((resolve) => waits.push({ what, prefix, resolve }));
   const server = createServer((req, res) => {
     let body = "";
+    res.on("close", () => !res.writableEnded && fire("dropped", req.url));
     req.on("data", (chunk) => (body += chunk)).on("end", async () => {
       requests.push({ method: req.method, url: req.url, headers: req.headers, body });
+      fire("asked", req.url);
       const answer = (status, doc) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(doc));
       const conversion = /^\/app-manifests\/([^/]+)\/conversions$/.exec(req.url);
       if (req.method === "POST" && conversion) {
@@ -97,7 +107,7 @@ export async function fakeGitHub(t) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())));
-  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, installations, holds, failures };
+  return { url: `http://127.0.0.1:${server.address().port}`, app, second, publicKey, requests, tokens, installations, holds, failures, asked: next("asked"), dropped: next("dropped") };
 }
 
 /** A promise and the function that settles it: a hold a test lets go. */
