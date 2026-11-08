@@ -5,6 +5,11 @@
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
 import { FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
+import { writeLaunch } from "./run-launch.js";
+
+/** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
+ *  runner, no box: its only writes are the learning folder's one script). */
+export const learningLaunchOf = (runId: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" } });
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
@@ -65,6 +70,11 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
           "INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) SELECT ?, agent_id, revision_id, 'queued', 0, ? FROM runs WHERE id = ? ON CONFLICT (id) DO NOTHING",
           each.row.id, now, claim.runId,
         );
+        // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
+        // the run that learned. Written once, as the run is.
+        if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
+          await writeLaunch(tx as SqliteExecutor, each.row.id, { body: learningLaunchOf(claim.runId) }, now);
+        }
         break;
     }
   }
