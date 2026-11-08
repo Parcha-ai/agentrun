@@ -73,8 +73,13 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   }, [v2, agentId, tries]);
   // After a save on the page (the Learning tab's switch, a new revision): the agent read again, since the save's answer
   // carries no `tools` (only GET /v2/agents/{id} serves them). Until that read lands the page shows the save's answer with
-  // the tools it showed (the switch changes no tool); a read that fails says so, with a retry.
-  const reread = () => void v2.getAgent(agentId).then((r) => { setAgent(r.agent); setStale(false); }, () => setStale(true));
+  // the tools it showed (the switch changes no tool); a read that fails says so, with a retry. Only the newest re-read
+  // lands: one asked after an earlier save and answered last never puts back its older revision.
+  const rereads = useRef(0);
+  const reread = () => {
+    const n = ++rereads.current;
+    void v2.getAgent(agentId).then((r) => { if (n === rereads.current) { setAgent(r.agent); setStale(false); } }, () => { if (n === rereads.current) setStale(true); });
+  };
   const onAgent = (saved: Agent) => { setAgent((a) => ({ ...saved, tools: a?.tools ?? [] })); reread(); };
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
