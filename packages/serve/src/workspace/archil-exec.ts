@@ -235,9 +235,10 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
       return {
         stdout: out.subarray(0, job.maxOutput),
         stderr: Buffer.from(err.subarray(0, job.maxOutput)).toString("utf8"),
-        // null whenever a signal ended it: its own (named), or the deadline's kill.
+        // null whenever a signal ended it: its own, or the deadline's kill. The signal is said in Node's naming
+        // ("SIGSEGV"), null when it exited on its own; at the deadline, whatever signal ended it.
         code: timedOut || parsed.signal !== undefined ? null : parsed.code,
-        ...(parsed.signal === undefined || timedOut ? {} : { signal: parsed.signal }),
+        signal: parsed.signal ?? null,
         timedOut,
         truncated,
       };

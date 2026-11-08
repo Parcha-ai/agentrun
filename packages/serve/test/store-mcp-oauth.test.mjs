@@ -6,7 +6,8 @@ import { test } from "node:test";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
 const VERIFIER = Uint8Array.from([3, 1, 4, 1, 5, 9]);
-const pending = (state, over = {}) => ({ state, server: "github", verifierSealed: VERIFIER, cookieBinding: "cookie-abc", expiresAt: T0 + 600_000, ...over });
+const WORKING = { client: { client_id: "c-1" }, discovery: { authorizationServerUrl: "https://as.example" }, kind: "dynamic", url: "https://mcp.example.com/github" };
+const pending = (state, over = {}) => ({ state, server: "github", verifierSealed: VERIFIER, cookieBinding: "cookie-abc", working: WORKING, expiresAt: T0 + 600_000, ...over });
 
 test("a pending sign-in reads back as it was put, its verifier as bytes; replaced by state; removed", async (t) => {
   const { store } = await storeOn(t);
@@ -15,6 +16,7 @@ test("a pending sign-in reads back as it was put, its verifier as bytes; replace
   const got = await store.mcpOauth.get("s1");
   assert.deepEqual([got.state, got.server, got.cookieBinding, got.expiresAt], ["s1", "github", "cookie-abc", T0 + 600_000]);
   assert.deepEqual([...got.verifierSealed], [...VERIFIER], "sealed bytes in, the same bytes out");
+  assert.deepEqual(got.working, WORKING, "the non-secret working state (client, discovery, ...) reads back as plain JSON");
   await store.mcpOauth.put(pending("s1", { cookieBinding: "cookie-xyz" }));
   assert.equal((await store.mcpOauth.get("s1")).cookieBinding, "cookie-xyz", "replaced in place");
   await store.mcpOauth.remove("s1");

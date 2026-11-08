@@ -90,8 +90,8 @@ type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
-type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; expires_at: number };
-const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, verifierSealed: Uint8Array.from(r.verifier_sealed), cookieBinding: r.cookie_binding, expiresAt: r.expires_at });
+type McpOauthRecord = { state: string; server: string; verifier_sealed: Uint8Array; cookie_binding: string; working: string | null; expires_at: number };
+const mcpOauthOf = (r: McpOauthRecord): McpOauthPendingRow => ({ state: r.state, server: r.server, verifierSealed: Uint8Array.from(r.verifier_sealed), cookieBinding: r.cookie_binding, working: r.working === null ? null : JSON.parse(r.working), expiresAt: r.expires_at });
 
 /** The store's schema version as the file holds it: null when the server has not set it up (no store_meta yet). */
 async function versionOf(db: Connection): Promise<number | null> {
@@ -549,15 +549,15 @@ class SqliteStore implements Store {
     };
 
     this.mcpOauth = {
-      put: async ({ state, server, verifierSealed, cookieBinding, expiresAt }) => {
+      put: async ({ state, server, verifierSealed, cookieBinding, working, expiresAt }) => {
         await db.write([{
-          sql: `INSERT INTO mcp_oauth_pending (state, server, verifier_sealed, cookie_binding, expires_at) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (state) DO UPDATE SET server = excluded.server, verifier_sealed = excluded.verifier_sealed, cookie_binding = excluded.cookie_binding, expires_at = excluded.expires_at`,
-          params: [state, server, verifierSealed, cookieBinding, expiresAt],
+          sql: `INSERT INTO mcp_oauth_pending (state, server, verifier_sealed, cookie_binding, working, expires_at) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (state) DO UPDATE SET server = excluded.server, verifier_sealed = excluded.verifier_sealed, cookie_binding = excluded.cookie_binding, working = excluded.working, expires_at = excluded.expires_at`,
+          params: [state, server, verifierSealed, cookieBinding, json(working), expiresAt],
         }]);
       },
       get: async (state, at) => {
-        const row = await db.get<McpOauthRecord>("SELECT state, server, verifier_sealed, cookie_binding, expires_at FROM mcp_oauth_pending WHERE state = ?", state);
+        const row = await db.get<McpOauthRecord>("SELECT state, server, verifier_sealed, cookie_binding, working, expires_at FROM mcp_oauth_pending WHERE state = ?", state);
         if (row === undefined || (at !== undefined && row.expires_at <= at)) return undefined;
         return mcpOauthOf(row);
       },

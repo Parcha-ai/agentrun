@@ -14,6 +14,27 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 export function localProcesses(root) {
   const procs = new Map();
   let next = 1;
+  /** A pty's line discipline, as far as the tests need it: input is held until a newline; Ctrl-D sends a held partial
+   *  line on, or, at a line's start, ends the input. */
+  const typed = (p, data) => {
+    for (const byte of data) {
+      if (byte === 0x04) {
+        if (p.line.length === 0) {
+          p.child.stdin.end();
+          p.closed = true;
+          return;
+        }
+        p.child.stdin.write(Buffer.from(p.line));
+        p.line = [];
+      } else {
+        p.line.push(byte);
+        if (byte === 0x0a) {
+          p.child.stdin.write(Buffer.from(p.line));
+          p.line = [];
+        }
+      }
+    }
+  };
   const get = (handle) => {
     const p = procs.get(handle);
     if (!p) throw failure("not_found", `no process ${handle}`);
@@ -21,7 +42,10 @@ export function localProcesses(root) {
   };
   const port = {
     starts: 0,
+    /** Awaited before each start: a test holds a start here. */
+    beforeStart: async () => {},
     async start({ argv, cwd, log, pty }) {
+      await port.beforeStart();
       port.starts++;
       const logPath = resolve(root, log);
       const dir = dirname(dirname(logPath));
@@ -33,7 +57,7 @@ export function localProcesses(root) {
       mkdirSync(dirname(logPath), { recursive: true });
       writeFileSync(logPath, "");
       const child = spawn(argv[0], argv.slice(1), { cwd: resolve(root, cwd), detached: true, stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, HOME: root } });
-      const p = { handle: String(next++), argv: [...argv], running: true, exitCode: null, signal: null, startedAt: Date.now(), pty: Boolean(pty), bytes: Buffer.alloc(0), capped: false, child, closed: false };
+      const p = { handle: String(next++), argv: [...argv], running: true, exitCode: null, signal: null, startedAt: Date.now(), pty: Boolean(pty), bytes: Buffer.alloc(0), capped: false, child, closed: false, line: [] };
       const keep = (data) => {
         const room = LOG_BYTES - p.bytes.length;
         if (room <= 0) return void (p.capped = true);
@@ -62,6 +86,11 @@ export function localProcesses(root) {
     async write(handle, { data, close }) {
       const p = get(handle);
       if (p.closed) throw failure("invalid", "stdin is closed");
+      if (p.pty) {
+        if (close) throw failure("invalid", "a terminal has no stdin to close");
+        if (data && data.length > 0) typed(p, data);
+        return;
+      }
       if (data && data.length > 0) p.child.stdin.write(Buffer.from(data));
       if (close) {
         p.child.stdin.end();

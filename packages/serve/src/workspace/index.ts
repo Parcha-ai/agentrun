@@ -7,7 +7,8 @@ export {
   type Processes,
 } from "./attach.js";
 export {
-  agentDirName, agentFolder, agentLearningFolder, DISK_DIR, learningKey, relativePath, relativeSegments, runFolder, runKey,
+  agentDirName, agentFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, learningKey, portPath, relativePath, relativeSegments,
+  runFolder, runKey,
 } from "./paths.js";
 export { type Available, type Place, type Registry, type Resolved, resolvePlace } from "./place.js";
 export { localWorkspace } from "./local.js";
@@ -18,3 +19,5 @@ export {
 } from "./archil-claim.js";
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
+export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
+export { type RunComputer, runTools, type RunTools } from "./run-tools.js";

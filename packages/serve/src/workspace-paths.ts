@@ -3,37 +3,13 @@
 // (host-tools.ts), and a timeline row's file (runs.ts, through the projector's `path` option). A refusal of a path
 // outside the workspace names the path the call gave, as it gave it, and no other (`asGivenRefusals`), wherever the
 // coding tools come from (coding-tools.ts: pi's own runs and the other harnesses' host tools, on the runner and in a box).
-import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { PathOutsideWorkError } from "@parcha/pi-durable-disk";
+import { realOf } from "./workspace/paths.js";
 
-/**
- * `text` with the workspace's absolute path taken out: `<work>/notes/a.md` reads `notes/a.md`, the workspace itself `.`,
- * a path beside it `../x` (pi's tools resolve a relative path before they refuse it), and pi's refusal ("<path>: outside
- * the workspace <work>") names no directory. `works` is the workspace as the environment names it and as the kernel
- * resolves it (they differ under a symlinked directory). For a refusal, an error, and a write's or edit's result; a
- * read's result is the file's own text and is never changed.
- */
-export function workspaceRelative(text: string, works: readonly string[]): string {
-  const escape = (path: string) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // A name counts only where a path starts (not inside a longer one), and, unless a "/" follows, where it ends (a quote, a
-  // space, a separator or the text's end).
-  const start = "(?<![\\w./~-])";
-  const end = "(?![^'\"\\s,;:)\\]])";
-  let out = text;
-  // Longest first, so a name inside another is taken out before the outer one could take its prefix.
-  for (const work of [...new Set(works)].filter((w) => w.length > 1).sort((a, b) => b.length - a.length)) {
-    const name = `${start}${escape(work)}`;
-    out = out
-      .replace(new RegExp(`outside the workspace ${name}${end}`, "g"), "outside the workspace")
-      .replace(new RegExp(`${name}/`, "g"), "")
-      .replace(new RegExp(`${name}${end}`, "g"), ".");
-    const parent = dirname(work);
-    if (parent.length > 1) out = out.replace(new RegExp(`${start}${escape(parent)}/`, "g"), "../").replace(new RegExp(`${start}${escape(parent)}${end}`, "g"), "..");
-  }
-  return out;
-}
+// How a text names the run's folder, and a path as the kernel resolves it, are the Workspace's (workspace/paths.ts).
+export { realOf, workspaceRelative } from "./workspace/paths.js";
 
 /** A refusal already named by the path the call gave: `asGivenRefusals` passes it on as it is. */
 class GivenPathRefusal extends PathOutsideWorkError {}
@@ -71,15 +47,6 @@ export function asGivenRefusals(tools: readonly ToolRegistration[]): ToolRegistr
     },
   }));
 }
-
-/** `path` as the kernel resolves it, or itself when it cannot be resolved. */
-export const realOf = (path: string): string => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-};
 
 /** How a run's rows name a file path, a whole path (never a text): one in the run's directory relative to its workspace
  *  (`<run>/work`: `hello.md`, `.`, `../work 2024/a.md`, `..`), and any other path, or one that is not absolute, exactly

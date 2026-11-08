@@ -46,8 +46,8 @@ import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCh
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
 import {
-  EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
-  type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Workspace, WorkspaceError,
+  abortError, EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
+  type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Stat, type Workspace, WorkspaceError,
 } from "./workspace.js";
 
 /** The most bytes one append call takes. */
@@ -322,6 +322,26 @@ class ArchilWorkspace implements Workspace {
     return 0;
   }
 
+  /** What is at `path`, from its folder's listing: a file (its size, and its time when the listing gives one, else 0),
+   *  a directory, or nothing (a file in the place of a folder on the way included). The file API cannot tell a link
+   *  from a file (the named limit): a link an exec made is a "file" here, never "link". */
+  async stat(path: string): Promise<Stat | undefined> {
+    const rel = relativeSegments(path).join("/");
+    if (rel === "") return { kind: "dir", size: 0, mtimeMs: 0 };
+    try {
+      if ((await this.#fileOnTheWay(rel)) !== undefined) return undefined;
+      const key = this.#key(rel);
+      for await (const page of this.#pages(key, false)) {
+        if (page.commonPrefixes.includes(`${key}/`) || page.objects.some((o) => o.key === `${key}/`)) return { kind: "dir", size: 0, mtimeMs: 0 };
+        const found = page.objects.find((o) => o.key === key);
+        if (found !== undefined) return { kind: "file", size: found.size, mtimeMs: found.mtimeMs ?? 0 };
+      }
+      return undefined;
+    } catch (error) {
+      throw failed(error, rel, "stat");
+    }
+  }
+
   async list(dir: string): Promise<Entry[]> {
     const rel = relativeSegments(dir).join("/");
     const prefix = `${this.#key(rel)}/`;
@@ -522,7 +542,12 @@ class ArchilWorkspace implements Workspace {
     const maxOutput = options.maxOutput ?? EXEC_OUTPUT_MAX;
     if (!Number.isSafeInteger(maxOutput) || maxOutput < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
     const cwd = relativeSegments(options.cwd ?? "");
+    const { signal } = options;
+    if (signal?.aborted) throw abortError(signal);
+    // onOutput gets all of the output (up to the port's own cap, EXEC_OUTPUT_MAX), the result its first maxOutput.
+    const readBack = options.onOutput ? Math.max(maxOutput, EXEC_OUTPUT_MAX) : maxOutput;
     const run = async (): Promise<ExecResult> => {
+      if (signal?.aborted) throw abortError(signal);
       if (!this.#rooted) await this.#makeRoot();
       // This exec's files in the spill folder, beside the workspace's folder: stdin, and the output read back.
       const name = spillName();
@@ -532,16 +557,18 @@ class ArchilWorkspace implements Workspace {
           const stdin = options.stdin;
           await this.#settle("", () => this.#disk.putObject(files.in, stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
         }
-        const result = await archilExec(this.#disk, {
-          root: this.#root, spill: this.#spill, name, cwd, argv, env, timeoutMs, maxOutput, queueMs: this.#queueMs,
+        const read = await archilExec(this.#disk, {
+          root: this.#root, spill: this.#spill, name, cwd, argv, env, timeoutMs, maxOutput: readBack, queueMs: this.#queueMs,
           stdin: options.stdin !== undefined, ...(this.#image === undefined ? {} : { image: this.#image }),
         });
-        // Archil answers once the command has ended: each stream once, whole (and capped). An error the caller's
-        // callback throws is not the call's.
-        for (const chunk of [{ stream: "stdout", data: result.stdout }, { stream: "stderr", data: Buffer.from(result.stderr, "utf8") }] as const) {
+        // Archil answers once the command has ended: each stream once, whole. An error the caller's callback throws is
+        // not the call's.
+        const stderr = Buffer.from(read.stderr, "utf8");
+        for (const chunk of [{ stream: "stdout", data: read.stdout }, { stream: "stderr", data: stderr }] as const) {
           try { options.onOutput?.(chunk); } catch { /* the caller's callback */ }
         }
-        return result;
+        const cut = read.stdout.length > maxOutput || stderr.length > maxOutput;
+        return { ...read, stdout: read.stdout.subarray(0, maxOutput), stderr: stderr.subarray(0, maxOutput).toString("utf8"), truncated: read.truncated || cut };
       } finally {
         // Every path (done, timed out, failed): this exec's files go. A delete that fails is tried once more; what
         // still stays is reported, and it (or what a killed exec leaves) the next sweep() takes, or names if it cannot.
@@ -550,7 +577,15 @@ class ArchilWorkspace implements Workspace {
     };
     const done = this.#execs.then(run, run);
     this.#execs = done.catch(() => undefined);
-    return done;
+    if (signal === undefined) return done;
+    // Archil's serverless exec cannot be stopped once it is sent (a known limit): an abort answers at once, and the
+    // command runs on to its own deadline, holding the folder, so this workspace's later execs and writes still wait
+    // for it. One not yet sent is never sent.
+    return new Promise<ExecResult>((resolve, reject) => {
+      const onAbort = (): void => reject(abortError(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+      done.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
   }
 
   /** The root and its spill folder made on the disk: an exec mounts both, so they have to be there. Called inside the
