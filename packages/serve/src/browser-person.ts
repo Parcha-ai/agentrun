@@ -299,7 +299,10 @@ export function personHands(options: {
           // The cap refused to hold more of the person's time here: whoever comes now (a take-over, a new ask) needs more of
           // it, so asks the cap itself, in its own words; with room again, it holds the next stretch and the holding goes on.
           if (known.refused) {
-            const hold = await options.personTime(what, holdMs / 1000, { pauses, tag, from: now() }).catch(() => ({ refused: "the person's time could not be held" }));
+            // Re-held from where the hold lapsed (known.until), not from now: the person's time elapsed since coverage ran
+            // out is held too, the same stretch again() would hold; a bare holdMs from now would leave that gap unheld.
+            const seconds = Math.max(0, now() + holdMs - known.until) / 1000;
+            const hold = await options.personTime(what, seconds, { pauses, tag, from: known.until }).catch(() => ({ refused: "the person's time could not be held" }));
             if ("refused" in hold) return { refused: hold.refused };
             if (ledgers.get(tag) !== known) {
               hold.drop();
