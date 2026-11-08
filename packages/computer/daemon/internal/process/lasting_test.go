@@ -32,8 +32,13 @@ func still(t *testing.T, tbl *process.Table, id string, d time.Duration) {
 func TestLogKeepsTheFirstBytes(t *testing.T) {
 	tbl := table(t, process.Options{LogBytes: 10})
 	path := filepath.Join(t.TempDir(), "background", "1", "output.log")
-	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "printf 0123456789abcdef; printf XY >&2"}, Log: path})
+	// One pipe, so the order is the program's: stdout and stderr are two pipes otherwise, read as their bytes come.
+	p := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "exec 2>&1; printf 0123456789abcdef; printf XY >&2"}, Log: path})
 	wait(t, tbl, p.ID)
+	// The log holds all of the output once its stream reads to the end (exited): the process's end can come first.
+	if got := readAll(t, tbl, p.ID, "log"); got != "0123456789" {
+		t.Fatalf("the log stream %q", got)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != "0123456789" {
 		t.Fatalf("the file: %q %v", data, err)
@@ -42,8 +47,10 @@ func TestLogKeepsTheFirstBytes(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("its mode: %v %v", info.Mode(), err)
 	}
-	if got := readAll(t, tbl, p.ID, "log"); got != "0123456789" {
-		t.Fatalf("the log stream %q", got)
+	stderr := start(t, tbl, process.StartParams{Argv: []string{"sh", "-c", "printf oops >&2"}, Log: filepath.Join(filepath.Dir(path), "stderr.log")})
+	wait(t, tbl, stderr.ID)
+	if got := readAll(t, tbl, stderr.ID, "log"); got != "oops" {
+		t.Fatalf("stderr in the log %q", got)
 	}
 	three := 3
 	res, err := tbl.Read(context.Background(), process.ReadParams{ID: p.ID, Stream: "log", Offset: off(4), MaxBytes: &three})
@@ -62,12 +69,10 @@ func TestLogKeepsTheFirstBytes(t *testing.T) {
 	}
 	short := start(t, tbl, process.StartParams{Argv: []string{"printf", "hi"}, Log: filepath.Join(filepath.Dir(path), "short.log")})
 	wait(t, tbl, short.ID)
+	readAll(t, tbl, short.ID, "log")
 	res, err = tbl.Read(context.Background(), process.ReadParams{ID: short.ID, Stream: "log", Offset: off(0)})
 	if err != nil || string(res.Data) != "hi" || res.Size != 2 || res.Capped || !res.Exited {
 		t.Fatalf("a log under its cap: %+v %v", res, err)
-	}
-	if _, err := tbl.Read(context.Background(), process.ReadParams{ID: short.ID, Stream: "log", Offset: off(0)}); err != nil {
-		t.Fatal(err)
 	}
 	plain := start(t, tbl, process.StartParams{Argv: []string{"true"}})
 	if _, err := tbl.Read(context.Background(), process.ReadParams{ID: plain.ID, Stream: "log", Offset: off(0)}); err == nil || kindOf(t, err) != rpc.KindInvalid {
