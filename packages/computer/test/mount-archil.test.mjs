@@ -268,6 +268,22 @@ test("archilRelease: a final sync through computerd, then checkin as root; nothi
 	assert.deepEqual(failing.verbs(), ["checkin"], "checkin ran anyway");
 });
 
+test("archilNetwork: none only when netlock's rules read back, for IPv4 and for IPv6 where the computer has it; anything else in words", async () => {
+	const { archilNetwork } = computer;
+	const locked = ["iptables jump -A OUTPUT -j AGENTRUN-NET", "iptables first -A AGENTRUN-NET -m owner --uid-owner 2510 -j DROP"];
+	const v6 = ["ip6tables jump -A OUTPUT -j AGENTRUN-NET", "ip6tables first -A AGENTRUN-NET -m owner --uid-owner 2510 -j DROP"];
+	const read = async (lines) => archilNetwork({ root: fakeRoot({ preflight: { exitCode: 0, output: lines.join("\n") } }), timeoutMs: 1000 });
+	assert.deepEqual(await read([...locked, ...v6]), ok("none"));
+	assert.deepEqual(await read([...locked, "ip6tables none"]), ok("none"), "no IPv6 to lock");
+	for (const lines of [[], [locked[0], ...v6], [locked[0], "iptables first -A AGENTRUN-NET -o lo -j ACCEPT", ...v6], [...locked, "ip6tables jump ", "ip6tables first "]]) {
+		const result = await read(lines);
+		assert.equal(result.ok, true);
+		assert.match(result.value.other, /netlock/, JSON.stringify(lines));
+	}
+	const failed = await archilNetwork({ root: fakeRoot({ preflight: fail("daytona", "the exec failed") }), timeoutMs: 1000 });
+	assert.equal(failed.ok, false);
+});
+
 test("helperSha256 is the shipped helper's", () => {
 	assert.equal(helperSha256(), HELPER_SHA);
 });
