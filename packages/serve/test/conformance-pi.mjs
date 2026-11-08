@@ -6,6 +6,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
 const { createPiLoop } = await import("../dist/runner/loop.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join(""));
 
@@ -47,6 +48,7 @@ export function piSpec({ script, tools, hooks }) {
       })),
       hooks,
       gate: (call) => (tools[call.tool]?.ask ? "ask" : "allow"),
+      restartLimit: MAX_RESTARTS,
     };
   };
 }

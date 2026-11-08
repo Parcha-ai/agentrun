@@ -63,7 +63,13 @@ export interface PiRunSpec {
   readonly tools: readonly PiTool[];
   readonly gate?: (call: ToolCall) => GateDecision;
   readonly hooks?: KernelHooks;
+  /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit). Default
+   *  DEFAULT_RESTART_LIMIT, pi's own; always finite. */
+  readonly restartLimit?: number;
 }
+
+/** pi's own default restart limit (pi-durable 1.5.0 agent settings). */
+export const DEFAULT_RESTART_LIMIT = 5;
 
 /** The first input's request id: pi answers a repeat of it from its submission, so a resumed run never asks twice. */
 const INPUT_REQUEST = "agentrun:input";
@@ -168,6 +174,23 @@ class Interrupted extends Error {
     super(`the loop stopped (${reason}): it writes nothing more`);
   }
 }
+/** The kernel's own fault between a call and its result: the Session restarts, the call before its result. */
+class KernelFault extends Error {
+  constructor(call: ToolCall, cause: unknown) {
+    super(`the kernel faulted on ${call.tool} (${call.callId}) before its result: ${(cause as Error)?.message ?? String(cause)}`, { cause });
+  }
+}
+
+/** A tool result pi wrote for a call it cut off at its restart limit, as its message, if any. */
+function restartLimited(entries: readonly EntryRecord[]): string | undefined {
+  for (const entry of entries) {
+    if (entry.kind !== "pi.tool-result") continue;
+    const diagnostics = (entry.data as { diagnostics?: { code?: string; message?: string }[] } | undefined)?.diagnostics ?? [];
+    const cut = diagnostics.find((diagnostic) => diagnostic.code === "restart_limit");
+    if (cut) return cut.message ?? "restart_limit";
+  }
+  return undefined;
+}
 
 function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: LoopDeps): Loop {
   const inbox: Command[] = [];
@@ -210,14 +233,15 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
   async function run(claim: Claim): Promise<LoopEnd> {
     const spec = await specOf(claim);
     const hooks = spec.hooks ?? quiet;
-    gate = new Gate(deps.journal(claim));
-    const theGate = gate;
+    const restartLimit = spec.restartLimit ?? DEFAULT_RESTART_LIMIT;
     context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
-    const signalAbort = () => theGate.seal(new Interrupted("its claim's signal aborted"));
+    const signalAbort = () => gate?.seal(new Interrupted("its claim's signal aborted"));
     deps.signal.addEventListener("abort", signalAbort, { once: true });
+    /** A fault of the kernel's own between a call and its result, which restarts the Session (see below). */
+    let fault: KernelFault | undefined;
     try {
-      const answerOf = async (callId: string): Promise<AnswerData | undefined> => findData<AnswerData>(await entriesOf(theGate.journal, root!.id, context), KINDS.answer, (data) => data.callId === callId);
-      const askedOf = async (callId: string): Promise<boolean> => findData<AskData>(await entriesOf(theGate.journal, root!.id, context), KINDS.ask, (data) => data.callId === callId) !== undefined;
+      const answerOf = async (callId: string): Promise<AnswerData | undefined> => findData<AnswerData>(await entriesOf(gate!.journal, root!.id, context), KINDS.answer, (data) => data.callId === callId);
+      const askedOf = async (callId: string): Promise<boolean> => findData<AskData>(await entriesOf(gate!.journal, root!.id, context), KINDS.ask, (data) => data.callId === callId) !== undefined;
 
       /** The gate's ask: an answer in the journal stands; else wait for one on a resume, or ask and park. */
       const answer = async (call: ToolCall, hookContext: Context): Promise<AnswerData> => {
@@ -226,7 +250,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
         if (known) return known;
         if (!(await askedOf(call.callId))) {
           const data: AskData = { callId: call.callId, tool: call.tool };
-          const asked = theGate.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
+          const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
           await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
           await asked;
           parked();
@@ -238,7 +262,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
           if (row) {
             inbox.splice(inbox.indexOf(row), 1);
             const data: AnswerData = { callId: call.callId, approved: row.kind === "approve" };
-            const answered = theGate.expect(writesEntry(KINDS.answer, (entry) => entry.callId === call.callId), { take: [row.id] });
+            const answered = gate!.expect(writesEntry(KINDS.answer, (entry) => entry.callId === call.callId), { take: [row.id] });
             await harness!.commit((tx) => tx.appendEntry(root!.id, { kind: KINDS.answer, data: data as unknown as JsonValue }), context);
             await answered;
             return data;
@@ -261,7 +285,18 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
               replaySafe: tool.replaySafe,
               flush: () => deps.flush(),
               route: () => tool.run(call.args, signal),
-              beforeResult: (output) => hooks.beforeResult(call, output),
+              // A throw here is the kernel's own fault between the call and its result, not the tool's error: the
+              // journal is sealed before it reaches pi, so pi's result commit is refused and its Session fails with the
+              // call still before its result; the loop then restarts the Session (see run below).
+              beforeResult: async (output) => {
+                try {
+                  await hooks.beforeResult(call, output);
+                } catch (error) {
+                  fault = new KernelFault(call, error);
+                  gate!.seal(fault);
+                  throw fault;
+                }
+              },
             });
             return { output: [{ type: "text" as const, text }] };
           },
@@ -285,49 +320,75 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
       });
       const registry = createRegistry();
       registry.install(kernel);
-      harness = await Harness.open(theGate.journal, { models: spec.models, registry, settings: { restartLimit: Number.POSITIVE_INFINITY }, onReport: () => {} }, context);
-      root = await harness.root(context, { agent: { model: spec.model, extensions: [kernel] } as never });
-      opened();
-      for (const command of early.splice(0)) void steer(command);
 
-      // The first input, once: on a resume pi answers the same request id from its submission.
-      const input = await root.submit({ type: "input", content: spec.input, requestId: INPUT_REQUEST }, context);
-      const answered = input.wait(context).then(() => "answered" as const);
-      const end = await Promise.race([answered, parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
-      if (end === "parked") {
-        theGate.seal(new Parked());
-        return { state: "parked" };
+      // One Session per pass. A kernel fault (above) fails the Session with its call still before its result; the loop
+      // closes it behind the seal and opens the next on the same claim's journal. pi counts that open as a restart of the
+      // call's task: a replay-safe call reruns, any other ends interrupted (never run twice), and a call cut off
+      // `restartLimit` times is ended by pi itself (restart_limit) and not run again. That bound is pi's own, finite:
+      // never an unbounded restart. A run whose call pi cut off that way ends failed, saying so.
+      for (let restarts = 0; ; restarts += 1) {
+        fault = undefined;
+        gate = new Gate(deps.journal(claim));
+        if (deps.signal.aborted) gate.seal(new Interrupted("its claim's signal aborted"));
+        harness = await Harness.open(gate.journal, { models: spec.models, registry, settings: { restartLimit }, onReport: () => {} }, context);
+        root = await harness.root(context, { agent: { model: spec.model, extensions: [kernel] } as never });
+        opened();
+        for (const command of early.splice(0)) void steer(command);
+        if (restarts > restartLimit + 1) {
+          // pi cut the call off long before this; a fault that keeps coming back from elsewhere is bounded here too.
+          return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, []);
+        }
+
+        // The first input, once: on a resume pi answers the same request id from its submission.
+        const input = await root.submit({ type: "input", content: spec.input, requestId: INPUT_REQUEST }, context);
+        const answered = input.wait(context).then(() => "answered" as const);
+        const end = await Promise.race([answered, parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
+        if (end === "parked") {
+          gate.seal(new Parked());
+          return { state: "parked" };
+        }
+        if (end === "closed" && fault && !stopReason && !deps.signal.aborted) {
+          await closeBehindSeal(gate, harness);
+          continue;
+        }
+        if (end === "closed" || (stopReason && stopReason.kind !== "command")) {
+          gate.seal(new Interrupted(stopReason?.kind ?? "the Session closed"));
+          return { state: "interrupted" };
+        }
+        if (end === "stop" && stopReason?.kind === "command") {
+          await root.abort(context).catch(() => {});
+          await harness.waitForIdle(context).catch(() => {});
+          return await writeEnd(harness, root, gate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId]);
+        }
+        await harness.waitForIdle(context);
+        const record = await input.status(context);
+        const cutOff = restartLimited(await entriesOf(gate.journal, root.id, context));
+        if (cutOff) return await writeEnd(harness, root, gate, { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` }, []);
+        const failed = record.status !== "done";
+        return await writeEnd(harness, root, gate, failed ? { state: "failed", summary: "the run gave no answer" } : { state: "ended" }, []);
       }
-      if (end === "closed" || (stopReason && stopReason.kind !== "command")) {
-        theGate.seal(new Interrupted(stopReason?.kind ?? "the Session closed"));
-        return { state: "interrupted" };
-      }
-      if (end === "stop" && stopReason?.kind === "command") {
-        await root.abort(context).catch(() => {});
-        await harness.waitForIdle(context).catch(() => {});
-        return await writeEnd(harness, root, theGate, { state: "stopped", summary: "stopped by a person" }, [stopReason.commandId]);
-      }
-      await harness.waitForIdle(context);
-      const record = await input.status(context);
-      const failed = record.status !== "done";
-      return await writeEnd(harness, root, theGate, failed ? { state: "failed", summary: "the run gave no answer" } : { state: "ended" }, []);
     } catch (error) {
       // A sealed journal (a lost claim, a shutdown) or an aborted claim: nothing more is written, the next claim resumes.
-      if (theGate.sealed || deps.signal.aborted) {
-        theGate.seal(new Interrupted("its claim's signal aborted"));
+      if (gate?.sealed || deps.signal.aborted) {
+        gate?.seal(new Interrupted("its claim's signal aborted"));
         return { state: "interrupted" };
       }
       return { state: "failed", error: { code: "pi-loop", message: (error as Error).message } };
     } finally {
       deps.signal.removeEventListener("abort", signalAbort);
-      // The Session is closed only behind the seal: its abort commits are refused, so the store keeps what it had (a
-      // parked call stays before its intent). A close that hangs on a held call is not waited on past CLOSE_MS.
-      theGate.seal(new Interrupted("the loop ended"));
-      const closing = harness?.close(BACKGROUND_CONTEXT).catch(() => {});
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
-      clearTimeout(timer);
+      if (gate && harness) await closeBehindSeal(gate, harness);
     }
+  }
+
+  /** Closes a Session behind its journal's seal: its abort commits are refused, so the store keeps what it had (a parked
+   *  call stays before its intent, a faulted one before its result). A close that hangs on a held call is not waited on
+   *  past CLOSE_MS. */
+  async function closeBehindSeal(sealed: Gate, session: Harness): Promise<void> {
+    sealed.seal(new Interrupted("the Session is closing"));
+    const closing = session.close(BACKGROUND_CONTEXT).catch(() => {});
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([closing, new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+    clearTimeout(timer);
   }
 
   /** The end commit: an `agentrun.end` entry carrying the run row's final patch and the rows it takes. */
