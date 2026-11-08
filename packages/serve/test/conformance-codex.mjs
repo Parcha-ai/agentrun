@@ -107,24 +107,14 @@ export function codexSpec({ script, tools, hooks }, options = {}) {
   });
 }
 
-/** The cases Codex's facts say it cannot model: a CLI never reruns a call it started (rerunsStarted not true), so a
- *  replay-safe call is not run again and a faulted task is not restarted; with no steer mid-turn (steer false), a message
- *  waits for the turn's end. */
-const unsupportedByFacts = {
-  ...(facts.rerunsStarted === true ? {} : {
-    "replay-safe-rerun": "a CLI never reruns a call it started (its facts: rerunsStarted not true)",
-    "fault-restarts-bounded": "a CLI never reruns a call it started (its facts: rerunsStarted not true)",
-  }),
-  ...(facts.steer ? {} : { "steer-mid-turn": "a message mid-turn waits for the turn's end (its facts: steer false)" }),
-};
-
-/** The subject the suite runs: Codex through the adapter loop. The runner process the process cases start is no test
- *  runner, and the Codex stand-in runs only under one (its guard), so those two cases cannot run on the stand-in. */
+/** The subject the suite runs: Codex through the adapter loop. What its adapter declares (steer false, rerunsStarted
+ *  false): the suite derives the cases those rule out. The runner process the process cases start is no test runner, and
+ *  the Codex stand-in runs only under one (its guard), so those two cases cannot run on the stand-in. */
 export const codexSubject = {
   name: "codex through the adapter loop",
   createLoop: (setup) => createAdapterLoop(codexSpec(setup), { restartLimit: MAX_RESTARTS }),
+  facts,
   unsupported: {
-    ...unsupportedByFacts,
     "crash-before-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
     "crash-after-intent-process": "the Codex stand-in runs only under a test runner, and the conformance runner process is none (the in-process crash case covers the point)",
   },

@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
+import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { factsRuleOut, registerHarnessConformance } from "../dist/runner/conformance/harness.js";
 
 test("steer false and rerunsStarted false rule out their cases, each with why", () => {
@@ -21,6 +22,10 @@ test("a harness that steers and reruns a started call has nothing ruled out", ()
 
 test("claude-agent's own facts rule out the three cases", () => {
   assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn"]);
+});
+
+test("codex's own facts rule out the three cases", () => {
+  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn"]);
 });
 
 test("registered, a ruled-out case is skipped saying it is by design; the rest run", () => {
