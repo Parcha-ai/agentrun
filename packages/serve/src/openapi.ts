@@ -618,7 +618,6 @@ const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings:
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** github/1: Connect GitHub, the server's one GitHub App (github-connection.ts). */
 const GITHUB_MARK = { "x-agentrun-serve": "github/1" };
-const GITHUB_FAILED = { "424": { description: "`upstream_failed`: GitHub could not be reached, did not answer within 15 s, or did not answer as it does (no App for the code, no such installation of the App).", content: { "application/json": { schema: ref("schemas/Error") } } } };
 const GITHUB_CONNECTION = closed({ app_id: { type: "string" }, slug: { type: "string", description: "The App's name on GitHub, as its URL has it." }, installations: { type: "array", items: closed({ id: { type: "integer" }, account: { type: "string", description: "The GitHub user or organization it is installed on." } }), description: "Where the App is installed, as its installation events and setup redirects say." } }, "The server's GitHub App: never a secret.");
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
@@ -1124,15 +1123,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "disconnectGitHub", tags: ["local"], summary: "Disconnect GitHub: the App's credentials gone from this server, and every github trigger off",
-      description: "Removes the App's sealed credentials and installations, and turns every github trigger off (`disabled: {reason: \"connection_lost\"}`), keeping them: connected again, each goes on when turned on. The App itself stays on GitHub, which `note` says: delete it there. 404 when none is connected.",
-      responses: { "200": json(closed({ disconnected: { const: true }, app_id: { type: "string" }, slug: { type: "string" }, triggers_off: { type: "integer", minimum: 0 }, note: { type: "string" } }), "Disconnected."), ...errors(401, 404, 429, 500) },
+      description: "Removes the App's sealed credentials and installations, and turns every github trigger off (`disabled: {reason: \"connection_lost\"}`), keeping them: connected again, each goes on when turned on. The App itself stays on GitHub: `note` says \"Delete the App itself on GitHub: <its settings URL>\". 404 when none is connected.",
+      responses: { "200": json(closed({ disconnected: { const: true }, triggers_off: { type: "integer", minimum: 0, description: "How many github triggers it turned off." }, note: { type: "string", description: "Where to delete the App itself on GitHub." } }), "Disconnected."), ...errors(401, 404, 429, 500) },
       ...GITHUB_MARK,
     },
   },
   "/integrations/github/connect": {
     post: {
       operationId: "connectGitHub", tags: ["local"], summary: "Start Connect GitHub: the app-manifest form the console posts to GitHub",
-      description: "GitHub's app-manifest flow, which makes the server's one GitHub App. Answers the form the console auto-submits: `action` (GitHub's new-App page, under `org` when given, with `state` on it) and `manifest` (a field of that form, as JSON): a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its callback and its setup URL, the App's permissions (pull requests write, contents, metadata and issues read) and events (pull_request, issue_comment). `state` is random, used once, good for an hour, and bound to the browser that started it by a cookie on the callback's path. 409 no_public_url with no public URL (AGENTRUN_PUBLIC_URL), which GitHub must reach; 409 already_connected when an App is connected (one per server: disconnect it first); 409 no_sealing_key with no seal key to keep the App's secrets under.",
+      description: "GitHub's app-manifest flow, which makes the server's one GitHub App. Answers the form the console auto-submits: `action` (GitHub's new-App page, under `org` when given, with `state` on it) and `manifest` (a field of that form, as JSON): a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its callback and its setup URL, the App's permissions (pull requests write, contents, metadata and issues read) and events (pull_request, issue_comment). `state` is random, used once, good for an hour, and bound to the browser that started it by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`. 409 github_no_public_url (\"GitHub can't reach this server: set its public URL first\") with no public URL (AGENTRUN_PUBLIC_URL); 409 github_already_connected (\"This server already has a GitHub App. Disconnect it first.\"); 409 github_no_seal_key with no seal key (AGENTRUN_SEAL_KEY) to keep the App's secrets under.",
       requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { org: { type: "string", pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$", description: "The GitHub organization to make the App under; absent, the signed-in GitHub user." } } } } } },
       responses: { "200": json(closed({ action: { type: "string", format: "uri" }, manifest: { type: "object", description: "GitHub's app manifest, posted as the form's `manifest` field." }, state: { type: "string" } }), "The form to post to GitHub."), ...errors(400, 401, 409, 415, 422, 429, 500) },
       ...GITHUB_MARK,
@@ -1141,18 +1140,18 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/integrations/github/callback": {
     get: {
       operationId: "gitHubCallback", tags: ["local"], summary: "Where GitHub sends the owner's browser back with the new App's code", security: [{}],
-      description: "Takes no token: its `state` and the cookie its start set in that browser are the check (400 for a state that is unknown, used, over an hour old, or from another browser; nothing is converted). Converts `code` with GitHub (POST /app-manifests/{code}/conversions), keeps the App's id, slug, client id, private key and webhook secret sealed (its client secret is never kept), and redirects to GitHub's page that installs the App. Nothing of the App's secrets is logged or answered.",
+      description: "Takes no token, and answers the browser only with where to go. Its `state` and the cookie its start set in that browser are the check. Converts `code` with GitHub (POST /app-manifests/{code}/conversions), keeps the App's id, slug, client id, private key and webhook secret sealed (its client secret is never kept), and redirects to GitHub's page that installs the App. A state that is unknown, used, over an hour old or from another browser redirects to the console's `/#/settings/github?github=error&reason=state_invalid`, and a code GitHub does not convert to `...&reason=conversion_failed`; nothing is kept. Nothing of the App's secrets is logged or answered.",
       parameters: ["code", "state"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
-      responses: { "302": { description: "To GitHub, to install the App." }, ...GITHUB_FAILED, ...errors(400, 409, 429, 500) },
+      responses: { "302": { description: "To GitHub, to install the App; or to the console's GitHub settings with `github=error&reason=state_invalid` or `conversion_failed`." }, ...errors(429, 500) },
       ...GITHUB_MARK,
     },
   },
   "/integrations/github/installed": {
     get: {
       operationId: "gitHubInstalled", tags: ["local"], summary: "Where GitHub sends the browser once the App is installed", security: [{}],
-      description: "Takes no token: the installation is kept only as GitHub, asked with the App's own JWT (GET /app/installations/{installation_id}), says it is the App's (424 otherwise). Then redirects to the console, `?github_installation=<id>`. 409 not_connected with no App connected.",
+      description: "Takes no token, and answers the browser only with where to go: the installation is kept only as GitHub, asked with the App's own JWT (GET /app/installations/{installation_id}), says it is the App's, then the browser goes to the console's `/#/settings/github?github=connected`; otherwise (no such installation of the App, no App connected, GitHub not reached) to `/#/settings/github?github=error&reason=installation_unverified`, and nothing is kept.",
       parameters: ["installation_id", "setup_action"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
-      responses: { "302": { description: "To the console." }, ...GITHUB_FAILED, ...errors(400, 409, 429, 500) },
+      responses: { "302": { description: "To the console's GitHub settings: `github=connected`, or `github=error&reason=installation_unverified`." }, ...errors(429, 500) },
       ...GITHUB_MARK,
     },
   },

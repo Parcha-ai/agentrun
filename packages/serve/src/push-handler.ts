@@ -25,7 +25,7 @@ export class HookCut extends ApiError {}
 /** The body of `req`, at most `max` bytes, within HOOK_BODY_MS. Past the cap (as declared up front, or as counted while
  *  it streams) it is 413 at once, and past the time 408: nothing more is read, and the socket is closed after the
  *  answer, never drained. */
-export function readCapped(req: IncomingMessage, max: number): Promise<Buffer> {
+export function readCapped(req: IncomingMessage, max: number, ms = HOOK_BODY_MS): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const cut = (error: HookCut) => {
       clearTimeout(timer);
@@ -44,7 +44,7 @@ export function readCapped(req: IncomingMessage, max: number): Promise<Buffer> {
     };
     const onEnd = () => (clearTimeout(timer), resolve(Buffer.concat(chunks)));
     const onError = (error: Error) => (clearTimeout(timer), reject(error));
-    const timer = setTimeout(() => cut(new HookCut("request_timeout", `the body did not arrive within ${HOOK_BODY_MS / 1000} s`, {}, { connection: "close" })), HOOK_BODY_MS);
+    const timer = setTimeout(() => cut(new HookCut("request_timeout", `the body did not arrive within ${ms / 1000} s`, {}, { connection: "close" })), ms);
     if (Number.isFinite(declared) && declared > max) return tooLarge();
     req.on("data", onData).on("end", onEnd).on("error", onError);
   });
@@ -55,8 +55,10 @@ const REFUSED = "this route needs a request signed by the webhook trigger's secr
 
 export type PushDeps = {
   adapters: readonly TriggerAdapter[];
-  /** The source of trigger `id`, when it is a trigger of the pushed source `kind` that is on. */
-  hooked(id: string, kind: string): Source | undefined;
+  /** The source of trigger `id`, when it is a trigger of a pushed source that is on. */
+  hooked(id: string): Source | undefined;
+  /** How long a hook's body has to arrive, whole (default HOOK_BODY_MS): a test's seam. */
+  bodyMs?: number;
   /** A request trigger `id` ignored, under the key its event would have (triggers.ts ignored): kept for its day. */
   ignored?(id: string, eventId: string): void;
   /** Its firing for the event, recorded (triggers.ts receive), with what the source says of it (`attrs`). */
@@ -87,16 +89,20 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   } catch {
     throw refuse("malformed_path");
   }
-  // A source's own path (its settings are the server's), else a trigger's (the source whose settings are a trigger's).
+  // A source's own path (its settings are the server's), else a trigger's, checked by that trigger's own source (its
+  // settings are a trigger's). A path that names no such trigger is checked as the first such source's, against the
+  // decoy: the same work and the same 401, so no id is learned by asking.
   const own = deps.adapters.find((a) => a.id === name && a.push && a.settings?.scope === "server");
-  const adapter = own ?? deps.adapters.find((a) => a.push && a.settings?.scope === "trigger");
+  const named = own || !ID.test(name) ? undefined : deps.hooked(name);
+  const trigger = named && deps.adapters.find((a) => a.id === named.kind && a.push && a.settings?.scope === "trigger");
+  const adapter = own ?? trigger ?? deps.adapters.find((a) => a.push && a.settings?.scope === "trigger");
   const push = adapter?.push;
   if (!adapter || !push) throw refuse("no_hook");
   const now = Date.now();
   const early = push.headers?.(req.headers as Headers, now);
   if (early) throw refuse(early);
-  const body = await readCapped(req, push.maxBodyBytes);
-  const source = own || !ID.test(name) ? undefined : deps.hooked(name, adapter.id);
+  const body = await readCapped(req, push.maxBodyBytes, deps.bodyMs);
+  const source = trigger ? named : undefined;
   const pathTrigger = source ? name : undefined;
   const key = own ? deps.setting(adapter.id, "server", push.key) : pathTrigger && deps.setting(adapter.id, pathTrigger, push.key);
   // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.

@@ -289,6 +289,8 @@ export type ServeOptions = {
   /** A test's seam: GitHub's API, which Connect GitHub converts its code with and asks of the App's installations
    *  (default https://api.github.com: github.ts GITHUB_API). */
   githubApi?: string;
+  /** A test's seam: how long a hook's body has to arrive, whole (default 30 s: push-handler.ts HOOK_BODY_MS). */
+  hookBodyMs?: number;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
@@ -1102,7 +1104,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const triggers: Triggers = new Triggers(data, {
     clock: options.triggerClock,
     adapters,
-    unavailable: (kind) => (kind === "github" && !githubConnection() ? "This server has no GitHub App: Connect GitHub in Settings first, then make the trigger (or turn it on)." : undefined),
+    unavailable: (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : undefined),
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
       if (target.kind === "message_run") {
@@ -1996,7 +1998,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id, kind) => triggers.hookSource(id, kind), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), setSetting: (adapterId, scope, field, value) => triggerSettings.get(adapterId)?.set(scope, field, value), turnOff: (kind, detail) => triggers.turnOff(kind, detail), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
+      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), setSetting: (adapterId, scope, field, value) => triggerSettings.get(adapterId)?.set(scope, field, value), turnOff: (kind, detail) => triggers.turnOff(kind, detail), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, /^\/hooks\/([^/]+)$/.exec(path)![1]!);
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
@@ -2013,9 +2015,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Connect GitHub's two steps back from GitHub: the owner's browser, which carries no token. The callback's state is
     // its check, with the cookie its start set in that browser; an installation is kept only as GitHub, asked with the
     // App's own JWT, says it is the App's.
+    // Both answer the browser with where to go, never an error body: on to install the App, or to the console's GitHub
+    // settings, connected or with why not.
     if (found.name === "gitHubCallback") {
       const state = url.searchParams.get("state") ?? "";
-      if (!state || !gitHubStartedHere(req.headers.cookie, req.socket.localPort, state)) throw new ApiError("bad_request", "This Connect GitHub was started in another browser, or is not one this server started: start it again from the console, in this browser.");
+      // Another browser's (no cookie for this state) leaves the state as it is, for the browser that started it.
+      if (!state || !gitHubStartedHere(req.headers.cookie, req.socket.localPort, state)) return void res.writeHead(302, { location: githubConnect.failed("state_invalid", "the browser brought no cookie for this state"), "cache-control": "no-store" }).end();
       const location = await githubConnect.callback(url.searchParams.get("code"), state, stopping.signal);
       return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": stateCookie(req.socket.localPort, state, overHttps(req), 0) }).end();
     }
@@ -2414,11 +2419,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "disconnectGitHub": {
         const view = githubConnection();
         if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
+        const settingsUrl = github.settingsUrl();
         github.remove();
         // Kept, and off: an agent keeps its triggers, which go on again once GitHub is connected again.
         const off = triggers.turnOff("github", "GitHub was disconnected from this server: connect it again in Settings, then turn the trigger on.");
         log?.(logLine("github", { condition: "github_disconnected", app_id: view.app_id, triggers_off: off }));
-        return send(res, 200, { disconnected: true, app_id: view.app_id, slug: view.slug, triggers_off: off, note: `The App itself is still on GitHub: delete the App on GitHub (its settings, under Developer settings → GitHub Apps → ${view.slug}) to remove it there.` });
+        return send(res, 200, { disconnected: true, triggers_off: off, note: `Delete the App itself on GitHub: ${settingsUrl}` });
       }
       case "deleteMcpServer":
         mcpServers.remove(id);

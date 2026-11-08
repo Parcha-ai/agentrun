@@ -31,8 +31,9 @@ function installationOf(doc: unknown): Installation | undefined {
   return Number.isSafeInteger(id) ? { id: id as number, account: cut(account) } : undefined;
 }
 
-/** An installation event (GitHub's `installation`): the connection's list kept current, and every github trigger turned
- *  off when the App's installation is deleted or suspended, saying which. */
+/** An installation event (GitHub's `installation`): the connection's list kept current (one deleted or suspended leaves
+ *  it, one unsuspended comes back), and every github trigger turned off, saying which, only once none is left. Coming
+ *  back turns none on: its owner does. */
 function installationEvent(doc: unknown, ctx: PushContext): { ok: string; action: string } {
   const action = isObject(doc) && typeof doc.action === "string" ? doc.action : "";
   const installation = installationOf(doc);
@@ -40,9 +41,10 @@ function installationEvent(doc: unknown, ctx: PushContext): { ok: string; action
   const list = installationsIn(ctx.setting(FIELDS.installations));
   if (["created", "new_permissions_accepted", "unsuspend"].includes(action)) ctx.set(FIELDS.installations, withInstallation(list, installation));
   if (action === "deleted" || action === "suspend") {
+    const left = list.filter((i) => i.id !== installation.id);
     ctx.set(FIELDS.installations, withoutInstallation(list, installation.id));
-    const off = ctx.turnOff(`The GitHub App's installation ${installation.id} (${installation.account}) was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
-    ctx.say({ condition: "github_installation_lost", installation: String(installation.id), account: installation.account, action, triggers_off: String(off) });
+    const off = left.length ? 0 : ctx.turnOff(`The GitHub App's last installation left, installation ${installation.id} (${installation.account}), was ${action === "deleted" ? "deleted" : "suspended"} on GitHub: install the App again, then turn the trigger on.`);
+    ctx.say({ condition: "github_installation_lost", installation: String(installation.id), account: installation.account, action, installations_left: String(left.length), triggers_off: String(off) });
   }
   return { ok: "noted", action: cut(action) };
 }
@@ -60,7 +62,7 @@ export const github: TriggerAdapter = {
   delivery: "push",
   owner: false,
   // The connection's App, the server's one: its secrets, and what is no secret beside them (github-connection.ts).
-  settings: { scope: "server", fields: { [FIELDS.appId]: { public: true }, [FIELDS.slug]: { public: true }, [FIELDS.clientId]: { public: true }, [FIELDS.installations]: { public: true }, [FIELDS.privateKey]: { format: "pem" }, [FIELDS.webhookSecret]: {} } },
+  settings: { scope: "server", fields: { [FIELDS.appId]: { public: true }, [FIELDS.slug]: { public: true }, [FIELDS.clientId]: { public: true }, [FIELDS.settingsUrl]: { public: true }, [FIELDS.installations]: { public: true }, [FIELDS.privateKey]: { format: "pem" }, [FIELDS.webhookSecret]: {} } },
   describe: '{kind: "github", accept: [{event, actions?, where?}]}',
   fires: "a GitHub event the server's GitHub App delivers to /hooks/github that its `accept` takes (`github`)",
   firedBy: "`github`: an event the server's GitHub App delivered that the trigger's accept took, its key from the trigger and the SHA-256 of the signed body.",

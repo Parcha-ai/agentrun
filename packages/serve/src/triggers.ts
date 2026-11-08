@@ -151,9 +151,9 @@ export type TriggerDeps = {
   settings(adapterId: string): { mint(scope: string, field: string): string; remove(scope: string): void } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
-  /** Why a trigger of source `kind` cannot be made or turned on here, when it cannot (the connection it needs is not
-   *  there: GitHub not connected): refused 409 not_connected with it. Undefined, or no such dep, when it can. */
-  unavailable?(kind: string): string | undefined;
+  /** The refusal of a trigger of source `kind` made or turned on here, when it cannot be (the connection it needs is not
+   *  there: GitHub not connected). Undefined, or no such dep, when it can. */
+  unavailable?(kind: string): ApiError | undefined;
   /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start.
    *  `setup_lost`: that server went down before it set the run up, so the run never started (files.ts SETUP_LOST). */
   runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
@@ -303,6 +303,9 @@ export class Triggers {
     // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
     const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
     if (shaped) throw new Error(`a trigger source's id never starts as a trigger's does: ${shaped.id}`);
+    // A source's id is its kind, its firings' by and, for one pushed on the server's settings, its hook: one source each.
+    const twice = this.adapters.find((a, i) => this.adapters.findIndex((b) => b.id === a.id) !== i);
+    if (twice) throw new Error(`two trigger sources claim the id ${twice.id}${twice.push ? `, and its hook /v2/hooks/${twice.id}` : ""}: one source each`);
     let text: string | undefined;
     try {
       text = readFileSync(this.file, "utf8");
@@ -385,9 +388,9 @@ export class Triggers {
   }
 
   /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). */
-  hookSource(id: string, kind: string): Source | undefined {
+  hookSource(id: string, kind?: string): Source | undefined {
     const trigger = this.unreadable ? undefined : this.triggers.find((t) => t.id === id);
-    return trigger !== undefined && trigger.source.kind === kind && this.adapter(trigger.source).delivery === "push" && trigger.enabled ? trigger.source : undefined;
+    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source).delivery === "push" && trigger.enabled ? trigger.source : undefined;
   }
 
   /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
@@ -419,10 +422,10 @@ export class Triggers {
     return on.length;
   }
 
-  /** Refused 409 not_connected when a trigger of `kind` cannot be on here (unavailable). */
+  /** Refused as its connection says when a trigger of `kind` cannot be on here (unavailable). */
   private needAvailable(kind: string): void {
-    const why = this.deps.unavailable?.(kind);
-    if (why) throw new ApiError("not_connected", why);
+    const refusal = this.deps.unavailable?.(kind);
+    if (refusal) throw refusal;
   }
 
   /** A verified request for trigger `id` that its filter ignored, under the key its event would have: kept for its day
