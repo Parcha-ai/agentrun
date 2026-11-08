@@ -26,6 +26,8 @@ const COMPUTER = ["read", "write", "edit", "bash", ...BACKGROUND];
 const NONE = ["read", "write", "edit"];
 const LOCAL = ["read", "write", "edit", "bash"];
 const answer = (text) => async () => ({ text });
+/** The ruled refusal of every background tool with no computer, in Mode 1 or Mode 2. */
+const NEEDS_A_COMPUTER = "Background programs need a computer: run this agent with place sandbox (Docker in Mode 1, or a remote computer in Mode 2).";
 /** A call's failure, in its words: an executor answers a failure, and only an abort throws. */
 const errorOf = async (call) => (await call).error;
 const injected = { read: answer("read"), write: answer("write"), edit: answer("edit"), bash: answer("bash") };
@@ -49,7 +51,7 @@ test("ruled change: a background tool called with no computer is refused in word
   const { hands } = localHands();
   const registry = createRegistry({ maxExecS: 600, shell: "local", executors: injected });
   const refused = await registry.invoke("bash_background", { command: "sleep 1" }, { hands });
-  assert.equal(refused.error, "bash_background needs a computer: with no computer, bash runs in the run's folder and background processes are not offered");
+  assert.equal(refused.error, NEEDS_A_COMPUTER);
 });
 
 test("a registry missing an executor for a tool the model sees is refused when it is built, naming the tool", () => {
@@ -195,7 +197,7 @@ test("with no computer's processes, each background tool refuses in words, and t
   const { hands } = localHands();
   const r = registry();
   for (const name of BACKGROUND) {
-    assert.equal(await errorOf(r.invoke(name, { id: "1", command: "true", signal: "TERM", text: "x" }, { hands })), `${name} needs a computer: with no computer, bash runs in the run's folder and background processes are not offered`, name);
+    assert.equal(await errorOf(r.invoke(name, { id: "1", command: "true", signal: "TERM", text: "x" }, { hands })), NEEDS_A_COMPUTER, name);
   }
   assert.equal(await endBackground(hands), 0);
 });
