@@ -33,6 +33,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152). */
@@ -1269,6 +1270,11 @@ export class E2BProvider implements ComputerProvider {
 			for (const sb of items.value) if (typeof sb?.sandboxId === "string") found.set(sb.sandboxId, sb);
 		}
 		return ok([...found.values()]);
+	}
+
+	/** Settings' test: a list by the provider's own metadata, one read of the account's sandboxes, which makes nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("E2B", await this.list({}, context));
 	}
 
 	/**

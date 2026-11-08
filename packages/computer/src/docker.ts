@@ -71,6 +71,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 
 /**
  * A Docker desktop: an image with an X server (test/fixtures/desktop/Dockerfile is the smallest, Debian and Xvfb).
@@ -765,6 +766,11 @@ export class DockerProvider implements ComputerProvider {
 		const [report] = found.value;
 		if (report === undefined || report.Id !== match.id || !ours(report)) return fail("not_found", `no Docker computer has the labels ${words}`);
 		return this.#attached(report, signal);
+	}
+
+	/** Settings' test: a list by the provider's own label on this Docker host, which makes nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("Docker", await this.list({}, context));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

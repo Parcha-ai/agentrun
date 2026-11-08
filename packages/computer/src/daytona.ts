@@ -28,6 +28,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** The longest each kind of call may take, and the pauses between polls and retries. */
@@ -1116,6 +1117,11 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!answer.ok) return answer;
 		const state = (parseJson(answer.value.bytes) as { state?: unknown } | null)?.state;
 		return ok({ status: answer.value.status, ...(typeof state === "string" ? { state } : {}) });
+	}
+
+	/** Settings' test: a list by the provider's own label, one read of the account's sandboxes, which makes nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("Daytona", await this.list({}, context));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
