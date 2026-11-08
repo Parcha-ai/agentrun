@@ -18,6 +18,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { agent, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SHIM = new URL("../../pi-durable-disk/test/fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
@@ -46,7 +47,7 @@ test("a non-pi harness's model request through a box loss: its start mark is in 
   const data = join(dir, "agents");
   // The run's process inherits these (runs.ts childEnv): the shim keeps the files under the data root as of their last sync.
   withEnv(t, { LD_PRELOAD: lib, FSYNC_SNAPSHOT_DIR: join(realpathSync(dir), "agents") });
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, data });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), data });
   const signal = join(dir, "in-flight");
   assert.equal((await api("POST", "/agents", agent("side", { harness: "claude-agent", instructions: `Hold a request unanswered (signal ${signal}).` }))).status, 201);
   const started = await api("POST", "/agents/side/runs", { input: { content: "go" } });

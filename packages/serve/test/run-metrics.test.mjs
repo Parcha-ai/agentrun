@@ -13,6 +13,7 @@ import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { startServe } from "../dist/index.js";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, runDir, runRecordOf, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -104,7 +105,7 @@ test("a run its server's successor ends keeps the effort its process ran at, not
 
 test("a run on the claude-agent or codex harness ends with metrics: its model the revision's, its effort the harness's", { timeout: 90_000 }, async (t) => {
   withEnv(t, {}, EFFORT_NAMES);
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const claude = await started(api, "claude", { harness: "claude-agent", model: "anthropic/claude-opus-5-5", instructions: "Make three requests." }, { input: { content: "hi" } });
   await follow(api, claude, ["completed"], { deadlineMs: 55_000 });
   const m = metricsOf(data, claude);

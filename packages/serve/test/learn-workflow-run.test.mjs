@@ -18,6 +18,7 @@ import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learn
 import { REPLAY } from "../dist/host-tools.js";
 import { git } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url).pathname;
@@ -137,7 +138,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
-    const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, ...(harness === "pi" ? {} : await routed(t, harness)) });
+    const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), ...(harness === "pi" ? {} : await routed(t, harness)) });
     const { runId, rows, view } = await ran(api, data, `flow-${harness}`, harness, flowFiles("answer", answerFlow()));
     assert.equal(view.status, "completed", JSON.stringify(view));
     assert.deepEqual(pinOf(data, runId).workflows, ["answer"], "the pin names the learned workflow");
@@ -169,7 +170,7 @@ for (const [why, extra] of [["waits for its owner's OK", "status: pending\n"], [
   test(`a learned workflow that ${why} is not the run's: its pin names none, and no harness is given learned_workflow`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
-    const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS) });
     const { runId, rows } = await ran(api, data, `held-${extra.includes("pending") ? "p" : "r"}`, "claude-agent", flowFiles("answer", answerFlow(), extra));
     assert.equal(pinOf(data, runId).workflows, undefined, JSON.stringify(pinOf(data, runId)));
     const given = readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.tools);
@@ -352,7 +353,7 @@ test("a claude-agent run's learned workflow searches natively through the sessio
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   const { rows } = await ran(api, data, "native-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
   const result = learnedResult(rows);
@@ -372,7 +373,7 @@ test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) w
   const guardLog = join(dir, "guard.jsonl");
   withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: base, AGENT_MODEL: "anthropic/claude-sonnet-4.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream, NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${pathToFileURL(GUARD).href}` }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM", "OPENROUTER_API_KEY", "NODE_OPTIONS", "NET_GUARD_LOG"]);
   assert.equal(process.env.ANTHROPIC_BASE_URL, base, "the server's env names it");
-  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: undefined });
+  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   const { rows } = await ran(api, data, "dotted-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
   const result = learnedResult(rows);
@@ -407,7 +408,7 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
 
 for (const harness of ["codex", "claude-agent"]) {
   test(`on ${harness}, learned_workflow set to ask parks the run; the owner's allow runs it once (its node's request goes out once the allow un-parks the run) and the run resumes with its output`, { timeout: 180_000 }, async (t) => {
-    const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true, ...(await routed(t, harness)) });
+    const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, ...(await routed(t, harness)) });
     const { api, data } = server;
     const origin = `http://127.0.0.1:${server.port}`;
     const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
@@ -453,7 +454,7 @@ for (const harness of ["codex", "claude-agent"]) {
     const key = ["not-a-secret", "gateway"].join("-");
     if (harness === "claude-agent") withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_PRICE"]);
     else withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: key, AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
-    const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true, faux: undefined });
+    const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, faux: undefined });
     const { api, data } = server;
     const origin = `http://127.0.0.1:${server.port}`;
     const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });

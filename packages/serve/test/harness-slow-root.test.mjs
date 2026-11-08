@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -28,7 +29,7 @@ const contentOf = (entry) => (entry.model?.[0]?.content ?? []).map((b) => (b.typ
 for (const on of ["claude-agent", "codex"]) {
   test(`${on}: on a store slow to write, each request's answer is its own entry, with its own text and cost, after its own start mark`, async (t) => {
     withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     assert.equal((await api("POST", "/agents", agent("slow-root", { harness: on, instructions: "Write on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
     const started = await api("POST", "/agents/slow-root/runs", { input: { content: "Write alpha to a.md." } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -62,7 +63,7 @@ for (const on of ["claude-agent", "codex"]) {
 for (const on of ["claude-agent", "codex"]) {
   test(`${on}: on a store slow to write, a request paid only after the next one answered keeps its own text and its own cost`, async (t) => {
     withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const paid = join(data, "..", `paid-${on}`);
     assert.equal((await api("POST", "/agents", agent("paid-late", { harness: on, instructions: `Write on a slow store, paid once ${paid} exists.`, tools: ["read", "write", "edit"] }))).status, 201);
     const started = await api("POST", "/agents/paid-late/runs", { input: { content: "Write alpha to a.md." } });
@@ -86,7 +87,7 @@ for (const on of ["claude-agent", "codex"]) {
 for (const on of ["claude-agent", "codex"]) {
   test(`${on}: on a store slow to write, a request whose cost is unknown stays unknown on its own answer and in the run's cost, never $0, and the next request keeps its own`, async (t) => {
     withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     assert.equal((await api("POST", "/agents", agent("unpriced", { harness: on, instructions: "Write unpriced on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
     const runId = (await api("POST", "/agents/unpriced/runs", { input: { content: "Write alpha to a.md." } })).body.run_id;
     const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 30_000 });
@@ -103,7 +104,7 @@ for (const on of ["claude-agent", "codex"]) {
 
 test("claude-agent: on a store slow to write, the cap counts a request of unknown cost at what it held it at, never $0: the next request is refused for want of room", { timeout: 60_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
-  const { api } = await serve(t, { faux: OUTPUT_PRICED, fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { faux: OUTPUT_PRICED, harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("unpriced-cap", { harness: "claude-agent", instructions: "Pay unpriced on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
   const runId = (await api("POST", "/agents/unpriced-cap/runs", { input: { content: "Write alpha to a.md." }, max_cost_usd: 1 })).body.run_id;
   const { last } = await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 30_000 });
@@ -117,7 +118,7 @@ test("claude-agent: on a store slow to write, the cap counts a request of unknow
 
 test("claude-agent: on a store slow to write, the cap counts what each request cost, never $0: a follow-up whose request the spend leaves no room for is refused, naming that spend", { timeout: 60_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
-  const { api } = await serve(t, { faux: OUTPUT_PRICED, fauxHarness: FAUX_HARNESS });
+  const { api } = await serve(t, { faux: OUTPUT_PRICED, harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("slow-cap", { harness: "claude-agent", instructions: "Pay on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
   // The output-priced model's least request costs $0.1024: the cap admits it at $0.001 spent, never at $0.003.
   const started = await api("POST", "/agents/slow-cap/runs", { input: { content: "Write alpha to a.md." }, max_cost_usd: 0.1044 });
@@ -133,7 +134,7 @@ test("claude-agent: on a store slow to write, the cap counts what each request c
 for (const [on, capped] of [["claude-agent", false], ["codex", false], ["claude-agent", true], ["codex", true]]) {
   test(`${on}${capped ? ", capped" : ""}: on a store slow to write, a side call admitted and answered while a request still streams leaves each its own text and cost`, async (t) => {
     withEnv(t, { AGENTRUN_SERVE_TEST_ROOT_WRITE_DELAY_MS: "300" });
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     assert.equal((await api("POST", "/agents", agent("overlap", { harness: on, instructions: "Write beside a side call on a slow store.", tools: ["read", "write", "edit"] }))).status, 201);
     // Capped, every request is admitted through the cap's check and held at its bound while in flight.
     const runId = (await api("POST", "/agents/overlap/runs", { input: { content: "Write alpha to a.md." }, ...(capped ? { max_cost_usd: 5 } : {}) })).body.run_id;
@@ -150,7 +151,7 @@ for (const [on, capped] of [["claude-agent", false], ["codex", false], ["claude-
 
 for (const on of ["claude-agent", "codex"]) {
   test(`${on}: text of the session's with no request of this process's own yet, a side call the only one open, is the session request's, its cost pending as that request's own, never the side call's`, async (t) => {
-    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const paid = join(data, "..", `side-first-${on}`);
     assert.equal((await api("POST", "/agents", agent("side-first", { harness: on, instructions: `Answer after text with only a side call open, paid once ${paid} exists.`, tools: ["read"] }))).status, 201);
     const runId = (await api("POST", "/agents/side-first/runs", { input: { content: "Answer." } })).body.run_id;

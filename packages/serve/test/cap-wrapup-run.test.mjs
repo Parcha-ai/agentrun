@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agent, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const WRAPUP = new URL("./fixtures/faux-wrapup.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -97,7 +98,7 @@ test("pi: the final-answer request that carries the note is the run's last: no f
 });
 
 test("claude-agent on the faux harness: near its cap a main-model request carries the words, once, and one row says so", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: WRAPUP });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: WRAPUP });
   assert.equal((await api("POST", "/agents", agent("wrap-h", { harness: "claude-agent", instructions: "Grow a cached context." }))).status, 201);
   const started = await api("POST", "/agents/wrap-h/runs", { input: { content: "go" }, max_cost_usd: 0.5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -114,7 +115,7 @@ test("claude-agent on the faux harness: near its cap a main-model request carrie
 
 test("claude-agent on the faux harness: a crash after the wrap-up came due and before the next request: the process that opens the run again sends the note in its first request, once, with what is left then", { timeout: 180_000 }, async (t) => {
   const go = join(await scratch(t), "go");
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("crash-h", { harness: "claude-agent", instructions: `Wrap up across a crash at ${go}.` }))).status, 201);
   const started = await api("POST", "/agents/crash-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -133,7 +134,7 @@ test("claude-agent on the faux harness: a crash after the wrap-up came due and b
 });
 
 test("claude-agent on the faux harness: a turn that ends on the request after which the wrap-up comes due: the next turn's first request carries the note, with what is left then, and its row follows that turn's message", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("next-h", { harness: "claude-agent", instructions: "Wrap up in the next turn." }))).status, 201);
   const started = await api("POST", "/agents/next-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -151,7 +152,7 @@ test("claude-agent on the faux harness: a turn that ends on the request after wh
 });
 
 test("claude-agent on the faux harness: a request that fits what is left of the cap only without the note's bytes is sent without it, never refused, and the note stays untold", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("room-h", { harness: "claude-agent", instructions: "Wrap up with no room for the note." }))).status, 201);
   // Strict: every input priced uncached, so the answer's 5,990 tokens hold $0.599 of the $0.60 left after the $0.40 request.
   const started = await api("POST", "/agents/room-h/runs", { input: { content: "go" }, max_cost_usd: 1, cap_mode: "strict" });
@@ -166,7 +167,7 @@ test("claude-agent on the faux harness: a request that fits what is left of the 
 });
 
 test("claude-agent on the faux harness: a note taken after the first request was priced ($0.40, due by the measured typical) is worded as the run's spend says, \"finish now\", and a side call admitted between its take and the admission of the request carrying it leaves it told once, with one row", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("side-h", { harness: "claude-agent", instructions: "Wrap up with a side call in between." }))).status, 201);
   const started = await api("POST", "/agents/side-h/runs", { input: { content: "go" }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -185,7 +186,7 @@ test("claude-agent on the faux harness: a note taken after the first request was
  *  ended; with the rows the wrap-up wrote and, after its process lets it go, the notes the faux harness took. */
 async function sonnetRun(t, { harness, instructions, cap, id }) {
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
-  const { api, data } = await serve(t, { faux: sonnet, ...(harness === "pi" ? {} : { fauxHarness: FAUX_HARNESS }) });
+  const { api, data } = await serve(t, { faux: sonnet, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
   assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness }), instructions }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Say hi." }, max_cost_usd: cap });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -241,7 +242,7 @@ test("claude-agent on Sonnet 4.5 under $1, five cent requests: no wrap-up (a pin
 test("claude-agent on Sonnet 4.5 under $0.11, the next request taking its note before the first request's cost came in: judged at step 0 on itself, and told in the budget's words", { timeout: 120_000 }, async (t) => {
   const booked = join(await scratch(t), "booked");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
-  const { api, data } = await serve(t, { faux: sonnet, fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { faux: sonnet, harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("s45-late", { harness: "claude-agent", instructions: `Claude Code on a small cap, its first cost booked when ${booked} exists.` }))).status, 201);
   const runId = (await api("POST", "/agents/s45-late/runs", { input: { content: "Say hi." }, max_cost_usd: 0.11 })).body.run_id;
   // Request 1 asks 1,024 tokens: its step-0 figure, $0.03, is under a third of $0.11, so it takes no note. It is answered,
@@ -267,7 +268,7 @@ test("claude-agent on Sonnet 4.5 under $0.10, a $0.04 first request: the measure
 test("claude-agent on Sonnet 4.5 under $0.25, its process killed after its first cent request and opened again: the costs read back hold the measured typical, and no wrap-up is told", { timeout: 180_000 }, async (t) => {
   const go = join(await scratch(t), "go");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
-  const { api, data } = await serve(t, { faux: sonnet, fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { faux: sonnet, harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("s45-cents-restart", { harness: "claude-agent", instructions: `Claude Code makes five cent calls across a restart at ${go}.` }))).status, 201);
   const runId = (await api("POST", "/agents/s45-cents-restart/runs", { input: { content: "Say hi." }, max_cost_usd: 0.25 })).body.run_id;
   for (const end = Date.now() + 60_000; !existsSync(`${go}.held`); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the turn reached its hold");
@@ -293,7 +294,7 @@ test("claude-agent on Sonnet 4.5 under $0.40, Codex-shaped requests that each ne
 
 test("claude-agent on the faux harness: the least of the request taking the note is priced as its admission will price it, reading the cache: a first request that wrote the cache never makes the second, whose least reads it, due", { timeout: 180_000 }, async (t) => {
   const sonnet = new URL("./fixtures/faux-sonnet-priced.mjs", import.meta.url).pathname;
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: sonnet });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: sonnet });
   assert.equal((await api("POST", "/agents", agent("cached-least", { harness: "claude-agent", instructions: "Grow a cached context briefly." }))).status, 201);
   // $0.66: over 3 x request 0's step-0 figure (its 20,000-token input uncached and 1,024 tokens, $0.21), so request 0 is
   // not due. After it ($0.053), $0.607 is left: over 3 x the typical $0.053 and over 2 x request 1's least read from the
@@ -310,7 +311,7 @@ test("claude-agent on the faux harness: the least of the request taking the note
 
 test("claude-agent on the faux harness: at step 0, with no previous request in hand, the next request's least is priced uncached, and it alone makes the wrap-up due, in the budget's words (a pin)", { timeout: 180_000 }, async (t) => {
   const booked = join(await scratch(t), "booked");
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("step0-least", { harness: "claude-agent", instructions: `Two requests needing 10,240 output tokens, the first booked when ${booked} exists.` }))).status, 201);
   // Output at $100 a million, input free: each request's least is $1.024, its step-0 typical (4,096 tokens) $0.41. Under
   // $2.50 the step-0 latch is not due (over 3 x $0.41); request 1, admitted with request 0 still in flight at $1.024 and
@@ -328,7 +329,7 @@ test("claude-agent on the faux harness: at step 0, with no previous request in h
 });
 
 test("claude-agent on the faux harness: paused at its cap, let go and raised, the first request after the raise, in the process the raise opens, is told when it alone is due by its least: the least of the request being taken, never of one admitted in an earlier process", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("raised-least", { harness: "claude-agent", instructions: "Make two requests needing 10,240 output tokens." }))).status, 201);
   // $0.50: under the first request's least ($1.024 at $100 a million output), so the run pauses at it, nothing spent.
   const runId = (await api("POST", "/agents/raised-least/runs", { input: { content: "go" }, max_cost_usd: 0.5 })).body.run_id;
@@ -347,7 +348,7 @@ test("claude-agent on the faux harness: paused at its cap, let go and raised, th
 test("claude-agent on Sonnet 4.5 under $0.10, its process killed after the wrap-up came due at step 0 and before a request took it: the process opened again decides the words from the run's priced requests", { timeout: 180_000 }, async (t) => {
   const go = join(await scratch(t), "go");
   const sonnet = new URL("./fixtures/faux-sonnet45.mjs", import.meta.url).pathname;
-  const { api, data } = await serve(t, { faux: sonnet, fauxHarness: FAUX_HARNESS });
+  const { api, data } = await serve(t, { faux: sonnet, harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("s45-restart", { harness: "claude-agent", instructions: `Claude Code restarts before the note at ${go}.` }))).status, 201);
   const runId = (await api("POST", "/agents/s45-restart/runs", { input: { content: "Say hi." }, max_cost_usd: 0.1 })).body.run_id;
   for (const end = Date.now() + 60_000; !existsSync(`${go}.held`); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the turn reached its hold");
@@ -361,7 +362,7 @@ test("claude-agent on Sonnet 4.5 under $0.10, its process killed after the wrap-
 });
 
 test("claude-agent on the faux harness: a side call that comes first (the harness's own title request) neither takes the note nor is judged as the request taking it: the session's first request carries it, judged at step 0 on its own bound (a pin)", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("side-first-h", { harness: "claude-agent", instructions: "Wrap up after a side call comes first." }))).status, 201);
   // Input at $100 a million, output free. Request 0's step-0 figure, its own 1,000-token input, is $0.10, over a third of
   // $0.29; the side call's 100 tokens ($0.01) are not, so a take judged on the side call would tell nothing. Request 1
@@ -377,7 +378,7 @@ test("claude-agent on the faux harness: a side call that comes first (the harnes
 });
 
 test("claude-agent on the faux harness: the request that carries the note is held at its bound with the note's bytes in it: its hold less its plain hold is the note's bytes at the input price (a pin)", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("noted-hold-h", { harness: "claude-agent", instructions: "Hold the request that carries the note." }))).status, 201);
   // Input at $100 a million, output free, so nothing limits the request's output and its hold is its input bound's price.
   // Its step-0 figure, 1,000 tokens or $0.10, is over a third of $0.29: it carries the note. Held at $0.10 plus the note's
@@ -397,7 +398,7 @@ test("claude-agent on the faux harness: the request that carries the note is hel
 /** A claude-agent run on input-priced faux (output free) under `cap`, its harness scripted by `instructions`, followed
  *  until it rests. */
 const inputPricedRun = async (t, id, instructions, cap) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent(id, { harness: "claude-agent", instructions }))).status, 201);
   const runId = (await api("POST", `/agents/${id}/runs`, { input: { content: "go" }, max_cost_usd: cap })).body.run_id;
   await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });

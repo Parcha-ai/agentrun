@@ -44,12 +44,12 @@ test("a faux name in the server's own environment, with no faux option, enables 
   const endpoint = await heldEndpoint(t);
   withEnv(t, {
     AGENTRUN_SERVE_FAUX: MARKER_MODULE,
-    AGENTRUN_SERVE_FAUX_HARNESS: MARKER_MODULE,
+    AGENTRUN_HARNESS_TABLE: MARKER_MODULE,
     AGENTRUN_TEST_FAUX_MARKER: marker,
     AGENT_MODEL_BASE_URL: endpoint.url,
     AGENT_MODEL: "gpt-4o",
     AGENT_MODEL_API_KEY: "none",
-  }, ["AGENTRUN_SERVE_FAUX", "AGENTRUN_SERVE_FAUX_HARNESS", "AGENTRUN_TEST_FAUX_MARKER", "AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE"]);
+  }, ["AGENTRUN_SERVE_FAUX", "AGENTRUN_HARNESS_TABLE", "AGENTRUN_TEST_FAUX_MARKER", "AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE"]);
   const { api, data } = await serve(t, { faux: undefined });
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.models.source, "gateway", `the server's models are its gateway's, not the faux module's: ${JSON.stringify(caps.models)}`);
@@ -65,7 +65,7 @@ test("a faux name in the server's own environment, with no faux option, enables 
   // The run's process, alive while its request waits: its environment as the kernel holds it.
   const { holder } = runRecordOf(data, started.body.run_id);
   const names = (await readFile(`/proc/${holder.pid}/environ`, "utf8")).split("\0").map((line) => line.slice(0, line.indexOf("=")));
-  assert.deepEqual(names.filter((name) => name.startsWith("AGENTRUN_SERVE_FAUX")), [], "the run's process carries no faux name");
+  assert.deepEqual(names.filter((name) => name.startsWith("AGENTRUN_SERVE_FAUX") || name === "AGENTRUN_HARNESS_TABLE"), [], "the run's process carries no faux name, and no harness table");
   endpoint.release();
   await follow(api, started.body.run_id, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
