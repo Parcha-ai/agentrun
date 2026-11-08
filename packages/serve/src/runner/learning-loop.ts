@@ -100,14 +100,14 @@ const itemOf = (file: string): string => {
   return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
 };
 
-/** `proposal` with only what `verdict` keeps (grade.ts keptProposal's rule): a note or file its item keeps or holds. */
+/** `proposal` with only what `verdict` keeps (a verdict per item): a note or file its item keeps or holds. */
 function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
   if (!verdict.items.length) return proposal;
   const kept = new Set(verdict.items.filter((item) => item.keep).map((item) => item.file));
   return { ...proposal, notes: proposal.notes.filter(({ file }) => kept.has(file)), files: (proposal.files ?? []).filter(({ file }) => kept.has(itemOf(file))) };
 }
 
-/** The merge of `merging` (what the verdict kept) as the server's grade made it (grade.ts mergeProposal): each note with
+/** The merge of `merging` (what the verdict kept), the one rule learningCommit's merge is made by: each note with
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
  *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */

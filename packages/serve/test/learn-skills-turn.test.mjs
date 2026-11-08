@@ -194,7 +194,7 @@ test("the verdict is read per item: a note's file, a skill's SKILL.md and a draf
   const answer = (decisions) => JSON.stringify({ merge: decisions.every((d) => d !== "drop"), reason: "r", items: items.map((file, i) => ({ file, decision: decisions[i], why: "w", ...(decisions[i] === "drop" ? { question: "Workflow case" } : decisions[i] === "pending" ? { question: "Risky" } : {}) })) });
   assert.equal(parseVerdict(answer(["keep", "keep", "keep"]), items).merge, true);
   const dropped = parseVerdict(answer(["keep", "keep", "drop"]), items);
-  // A verdict per item: the dropped draft is left out (keptProposal) and the note and the skill merge.
+  // A verdict per item: the dropped draft is left out (the learning run's keptOf) and the note and the skill merge.
   assert.deepEqual([dropped.merge, dropped.items.map((item) => item.keep), dropped.items[2].question], [true, [true, true, false], "Workflow case"]);
   assert.equal(parseVerdict(answer(["drop", "drop", "drop"]), items).merge, false, "nothing kept");
   assert.equal(parseVerdict(answer(["keep", "pending", "keep"]), items).items[1].pending, true);

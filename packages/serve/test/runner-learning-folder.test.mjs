@@ -1,6 +1,6 @@
 // The learning run's merge on the agent's own learning folder: runner/learning-factory.ts with the folder's API
 // (learn/folder.ts learningWorkspace, learn/commit.ts readMain and learningCommit), the grader alone faked. The merge is
-// the one the server's grade made (grade.ts mergeProposal): it carries the source run's seed, so a skill a person changed
+// the one the server's grade made before the cutover: it carries the source run's seed, so a skill a person changed
 // on main after the run started is a conflict in the script's words and nothing is written over it; a note the grader
 // says came from the user's own words lands on main with `origin: you`; and a draft the grader holds waits on main by
 // its README (its workflow.json is held by it).
