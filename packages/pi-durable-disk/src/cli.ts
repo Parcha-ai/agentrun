@@ -165,7 +165,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   let server: RunServer | undefined;
   if (servePort !== undefined) {
     const url = str(values["serve-url"]);
-    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, ...(doorNonce ? { proof: doorNonce } : {}), root: rootOptions, onIdle: () => parking?.check() });
+    server = await serveRun({ port: Number(servePort), host: serveHost, ...(url ? { url } : {}), token: serveToken, ...(doorNonce ? { proof: doorNonce } : {}), root: rootOptions, onIdle: () => parking?.check(), log: (event, detail) => log(event, detail as Record<string, unknown>) });
     holder.serve = server.url;
     // Where it serves goes to its host as the first line on stdout, before any harness or agent code runs; the host
     // proves it with the nonce (POST /door-proof) and reads no later line.
