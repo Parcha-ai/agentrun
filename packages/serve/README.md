@@ -66,6 +66,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
 | `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
+| `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
@@ -2634,8 +2635,8 @@ export default function reply(context, faux) {
 }
 ```
 
-`startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
-the `browser` tool's `{ provider, driver }` in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
+`startServe({ faux, fauxBrowser, fauxWeb })` also names modules whose default exports give
+the `browser` tool's `{ provider, driver }` (`fauxBrowser`, which the CLI takes as `--faux-browser MODULE`; the others are the tests' alone) in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
 vendor the run's plane names and the saved sign-in the run was handed: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
 through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
