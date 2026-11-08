@@ -14,10 +14,10 @@ import (
 )
 
 // Address is where init listens in the computer: its own loopback, port 3128, the proxy its programs are told of.
-const Address = "127.0.0.1:3128"
+const Address = "127.0.0.1:3128" // key-gate: loopback-rule the loopback of the computer itself, where the egress relay of init listens
 
 // NoProxy is what the programs are told to reach directly: the computer's own loopback.
-const NoProxy = "localhost,127.0.0.1,::1"
+const NoProxy = "localhost,127.0.0.1,::1" // key-gate: loopback-rule the loopback names of the computer itself, which its proxy leaves out
 
 // dialFor bounds each connection to the proxy's socket.
 const dialFor = 5 * time.Second

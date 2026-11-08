@@ -453,7 +453,7 @@ daemon, or run past its deadline.
 
 ```ts
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } });
-// In the computer, HTTP_PROXY and HTTPS_PROXY are http://127.0.0.1:3128 for every program computerd starts.
+// In the computer, HTTP_PROXY and HTTPS_PROXY name port 3128 on its own loopback for every program computerd starts.
 ```
 
 A computer whose network is an allowlist stays `--network none`: its own loopback, no route, no resolver. Its one way
@@ -469,9 +469,9 @@ key.
   port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids and a bounded log. Its argv holds the list, the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
-- **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on its loopback `127.0.0.1:3128`,
+- **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
   carries each connection to the socket, and gives every program it starts `HTTP_PROXY` and `HTTPS_PROXY` (and their
-  lowercase forms) naming that port, with `NO_PROXY=localhost,127.0.0.1,::1`. A program that ignores them reaches
+  lowercase forms) naming that port, with `NO_PROXY` naming the loopback itself. A program that ignores them reaches
   nothing; one that dials the socket itself meets the same proxy. Init refuses to start when it cannot listen.
 - **What a list holds** (`capabilities().allow`): names, exact or `*.suffix` (two labels or more), and CIDRs, IPv4 or
   IPv6, with host bits zero and over no range the address rule refuses; both in one list, at most 256 of each, each on
@@ -1249,7 +1249,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 9 optional cases skipped, not declared · full 8/14 · network:allow mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 optional cases skipped, not declared · full 10/14 · mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
