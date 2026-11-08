@@ -323,10 +323,12 @@ export function startRunner(options: RunnerOptions): Runner {
         }
       }
       if (end.state === "ended" || end.state === "stopped" || end.state === "failed") {
+        // The write that made the run final refused its untaken rows itself, in that transaction (the store's rule): said
+        // here as the runner always said them. A row still untaken (an end written outside that rule) is refused now.
         const reason = endedReason(end.state);
         for (const row of await store.commands(claim.runId, 0)) {
-          if (row.takenAt !== null) continue;
-          await store.take(claim, row.id, "refused", reason);
+          if (row.takenAt === null) await store.take(claim, row.id, "refused", reason);
+          else if (row.refused !== reason) continue;
           emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
         }
       }
@@ -363,6 +365,8 @@ export function startRunner(options: RunnerOptions): Runner {
       // untaken row refused as a stopped run's.
       // One write: the run ends stopped with its stop row taken, or neither (a final run never keeps its stop untaken).
       await endRun(claim, { state: "stopped", summary: "stopped by a person" }, [stop.id]);
+      // Every other untaken row was refused in that same write (the store's rule for a write that makes a run final): said
+      // here; the take is a no-op on a row already settled.
       const reason = endedReason("stopped");
       for (const row of untaken) {
         if (row.id === stop.id) continue;

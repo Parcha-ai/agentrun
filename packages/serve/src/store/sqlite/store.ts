@@ -14,7 +14,7 @@ import {
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement } from "./connection.js";
-import { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, type RunRecord } from "./run-patch.js";
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -362,6 +362,8 @@ class SqliteStore implements Store {
               throw new CommandTaken(claim.runId, commandId);
             }
           }
+          // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
+          await refuseLeftovers(tx, claim.runId, patch.state, at);
           return row;
         });
       },

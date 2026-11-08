@@ -38,7 +38,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { PI_TABLE as T } from "../schema.js";
 import type { Connection } from "../sqlite/connection.js";
-import { applyRunPatch } from "../sqlite/run-patch.js";
+import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
 import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
 /** A run's claim, as the journal is opened under it: the run and the epoch its claim holds. */
@@ -370,6 +370,8 @@ export class RunStorage implements Journal {
             throw new CommandTaken(this.#runId, commandId);
           }
         }
+        // A run patch that made the run final: its other untaken rows are refused in this commit, after its own takes.
+        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now);
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);

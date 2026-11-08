@@ -18,6 +18,13 @@ import type { JournalPage } from "./journal/storage.js";
 export type RunState = "queued" | "running" | "parked" | "ended" | "stopped" | "failed";
 export const FINAL_STATES: readonly RunState[] = ["ended", "stopped", "failed"];
 
+/** Why a command row still untaken when its run went final is refused: the write that makes a run final refuses each
+ *  such row with these words, in that same transaction (a final run takes no new row, so none is left for good). */
+export function endedReason(state: "ended" | "stopped" | "failed"): string {
+  const how = state === "ended" ? "ended" : state === "stopped" ? "was stopped" : "failed";
+  return `the run ${how} before this command was taken`;
+}
+
 /** A runner's hold on a run: the epoch every write it makes for the run carries, until `until` (ms) unless renewed. `from`:
  *  the run's state before this claim (queued; parked: woken by a command or its wake_at; running: released, or its last
  *  claim lapsed). */
