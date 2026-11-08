@@ -189,6 +189,17 @@ describe("bash and the background tools on a Docker computer", { skip: LIVE ? fa
 		assert.match(answer(await bashOutput(client, { id: stubborn })).text, /ended by signal KILL \(exit code 137\)/);
 	});
 
+	it("the cap holds when nine start at once: eight start, the ninth is refused in words", async () => {
+		client = await fresh();
+		const results = await Promise.all(Array.from({ length: 9 }, (_, i) => bashBackground(client, { command: `echo q${i + 1}; sleep 60` }, AT)));
+		assert.equal(results.filter((result) => result.ok).length, 8, JSON.stringify(results));
+		const refusals = results.filter((result) => !result.ok);
+		assert.equal(refusals.length, 1, JSON.stringify(results));
+		refused(refusals[0], "limit", /^8 background processes already run in this run's box, the most at once \(8\): end one with bash_signal/);
+		assert.match(answer(await bashList(client)).text, /^8 of at most 8 running\./);
+		assert.equal(answer(await endBackground(client)), 8);
+	});
+
 	it("bash: output and exit code, 120 s by default, a timeout kills the command and what it started", async () => {
 		const ran = answer(await bash(client, { command: "echo a; echo b >&2; pwd", ...AT }));
 		assert.deepEqual([ran.output, ran.exitCode, ran.error, ran.timeoutMs], ["a\nb\n/tmp\n", 0, undefined, 120_000]);

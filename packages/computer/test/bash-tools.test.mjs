@@ -201,6 +201,19 @@ test("the per-run cap (8 at once) refuses in plain words and starts nothing; end
 	assert.equal(await endBackground(client).then(answer), 0, "none left to end");
 });
 
+test("the cap holds when nine start at once: eight start and the ninth is refused in the same words, the check and the start taking turns", async (t) => {
+	const commands = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`echo q${i + 1}; sleep 60`, runs(`q${i + 1}\n`)]));
+	const { client, daemon } = await machine(t, commands);
+	const results = await Promise.all(Object.keys(commands).map((command) => bashBackground(client, { command })));
+	const started = results.filter((result) => result.ok);
+	const refusals = results.filter((result) => !result.ok);
+	assert.equal(started.length, 8, JSON.stringify(results));
+	assert.equal(refusals.length, 1, JSON.stringify(results));
+	refused(refusals[0], "limit", /^8 background processes already run in this run's box, the most at once \(8\): end one with bash_signal \(bash_list shows them\), or wait for one to exit, then start this again\.$/);
+	assert.equal(starts(daemon).length, 8, "the refused one started nothing");
+	assert.match(answer(await bashList(client)).text, /^8 of at most 8 running\./);
+});
+
 test("a log keeps its last 8 MiB: a read from before what is kept starts where it begins, and says how much was dropped", async (t) => {
 	const { client } = await machine(t, { "yes | head -c 40": exits("0123456789abcdefghijklmnopqrstuvwxyz!?#$") }, { ringBytes: 16 });
 	answer(await bashBackground(client, { command: "yes | head -c 40" }));
