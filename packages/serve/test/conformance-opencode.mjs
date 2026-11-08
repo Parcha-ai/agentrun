@@ -24,11 +24,14 @@ const textOf = (item) => (typeof item?.content === "string" ? item.content : (it
 /** The steps the model has taken in `input` (Responses items): each call it made, each text it said. */
 const stepsIn = (input) => input.filter((item) => item.type === "function_call" || item.role === "assistant").length;
 
-/** A fetch that answers OpenAI's Responses API as `script` says, one step per request. Records every request body. */
-export function scriptedResponses(script, requests = []) {
+/** A fetch that answers OpenAI's Responses API as `script` says, one step per request. Records every request body.
+ *  `callId`: the id a call gets, by its step and the request's number (default `call_<step>`, the same each time the
+ *  step is asked; a model that calls again under a new id gives one per request). */
+export function scriptedResponses(script, requests = [], { callId = (step) => `call_${step}` } = {}) {
   return async (_url, init = {}) => {
     const body = JSON.parse(String(init.body ?? "{}"));
     requests.push(body);
+    const n = requests.length - 1;
     const input = body.input ?? [];
     const step = stepsIn(input);
     const next = script[step];
@@ -36,7 +39,7 @@ export function scriptedResponses(script, requests = []) {
     const done = { type: "response.completed", response: { id: `resp_${step}`, object: "response", status: "completed", usage } };
     if (next && "call" in next) {
       // OpenCode names the host's tools hands_<name> (its one MCP server's).
-      const item = { type: "function_call", id: `fc_${step}`, call_id: `call_${step}`, name: `hands_${next.call}`, arguments: JSON.stringify(next.args ?? {}), status: "completed" };
+      const item = { type: "function_call", id: `fc_${step}`, call_id: callId(step, n), name: `hands_${next.call}`, arguments: JSON.stringify(next.args ?? {}), status: "completed" };
       return sse([{ type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } }, { type: "response.output_item.done", output_index: 0, item }, done]);
     }
     // The newest person message (a steer, once one was placed).
