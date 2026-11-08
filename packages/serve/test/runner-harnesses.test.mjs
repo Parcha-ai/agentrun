@@ -23,9 +23,10 @@ const launch = (extra = {}) => ({
 test("runner harnesses: pi keeps its own record; claude-agent's is the loop's; an unknown harness has none", () => {
   assert.equal(resolveHarness("pi").record, undefined);
   assert.equal(resolveHarness("claude-agent").record, "loop");
+  assert.equal(resolveHarness("opencode").record, "loop");
   assert.equal(resolveHarness("no-such-harness"), undefined);
   assert.equal(resolveHarness("__proto__"), undefined, "a name is looked up as data, never through the prototype");
-  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "pi"]);
+  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "opencode", "pi"]);
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {
@@ -38,4 +39,18 @@ test("runner harnesses: each builds its adapter from the launch", async () => {
   } finally {
     delete process.env.AGENTRUN_CLAUDE_AGENT_STANDIN;
   }
+  process.env.AGENTRUN_OPENCODE_STANDIN = "1";
+  try {
+    // OpenCode's stand-in for `opencode serve` is a test's own option, passed on as given.
+    const opencode = await resolveHarness("opencode").adapter({ ...launch(), model: "gpt-test" }, { standIn: { command: process.execPath } });
+    assert.equal(opencode.id, "opencode");
+  } finally {
+    delete process.env.AGENTRUN_OPENCODE_STANDIN;
+  }
+});
+
+test("runner harnesses: OpenCode's facts say it never reruns a call it started and takes no steer mid-turn", async () => {
+  const { facts } = await import("../dist/harness-opencode/facts.js");
+  assert.equal(facts.rerunsStarted, false);
+  assert.equal(facts.steer, false);
 });
