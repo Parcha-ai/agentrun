@@ -263,14 +263,18 @@ function answer(box, { method, params }, patch) {
  * and io.input receives what the client types from then on. A socket whose URL carries a session= name is recorded.
  * terminal.sockets holds every socket, with its url, the frames it sent, and closed. `frames` is how output comes:
  * "json" ({ type: "output", data } text frames, as the docs say), "text" (the bytes as plain text frames), "binary" (the
- * bytes as ArrayBuffer frames), or "deaf" (the prompt, then nothing: typed input is never run).
+ * bytes as ArrayBuffer frames), or "deaf" (the prompt, then nothing: typed input is never run). As Orgo's `bash -l`
+ * does while it starts (seen live), input typed before the prompt has reached the client is dropped, never echoed or
+ * run; `drops` more typed lines after it are dropped too.
  */
-export function fakeTerminal({ onExec = () => {}, frames = "json" } = {}) {
+export function fakeTerminal({ onExec = () => {}, frames = "json", drops = 0 } = {}) {
 	const sockets = [];
 	const factory = (url) => {
 		const listeners = { open: [], message: [], close: [], error: [] };
 		let raw = false;
 		let execd;
+		let ready = false;
+		let dropping = drops;
 		const socket = {
 			url,
 			sent: [],
@@ -284,6 +288,12 @@ export function fakeTerminal({ onExec = () => {}, frames = "json" } = {}) {
 				const frame = JSON.parse(text);
 				if (frame.type !== "input" || frames === "deaf") return;
 				if (execd) return execd(frame.data);
+				// The shell is still starting: what was typed is lost.
+				if (!ready) return;
+				if (dropping > 0) {
+					dropping--;
+					return;
+				}
 				if (!raw) emit({ type: "output", data: frame.data.replace(/\r/g, "\r\n") });
 				const line = frame.data.replace(/\r$/, "");
 				if (/stty raw -echo/.test(line)) raw = true;
@@ -324,7 +334,13 @@ export function fakeTerminal({ onExec = () => {}, frames = "json" } = {}) {
 		queueMicrotask(() => {
 			socket.readyState = 1;
 			for (const fn of listeners.open) fn({});
-			emit({ type: "output", data: "\u001b[?2004hroot@orgo:~/Desktop# " });
+			// The prompt says the shell reads its input: from then on, what is typed is run. The shell starts after the socket
+			// opens, not with it: the prompt comes a turn of the event loop later.
+			setImmediate(() => {
+				if (socket.closed) return;
+				for (const fn of listeners.message) fn({ data: encode({ type: "output", data: "\u001b[?2004hroot@orgo:~/Desktop# " }) });
+				ready = true;
+			});
 		});
 		return socket;
 	};
