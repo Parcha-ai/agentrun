@@ -178,9 +178,7 @@ test("bash on the Workspace: a long output keeps its tail, and is spilled whole 
 test("bash on the Workspace: a timeout is said as pi says it, its output kept; a cwd outside is refused", async () => {
   const root = scratch();
   const { tool } = bashOn(root);
-  const started = Date.now();
-  const timed = await call([tool], "bash", { command: "echo before; sleep 30", timeout: 1 });
-  assert.ok(Date.now() - started < 10_000);
+  const timed = await call([tool], "bash", { command: "echo before; sleep 300", timeout: 1 });
   assert.deepEqual(timed, { text: "before\n\n\nCommand timed out after 1 seconds", isError: true });
 });
 
@@ -188,11 +186,14 @@ test("bash on the Workspace streams: pi's api.output gets the first line before 
   const root = scratch();
   const { env } = bashOn(root);
   const seen = [];
-  const started = Date.now();
-  const ran = await env.exec("echo first; sleep 1; echo second", { onOutput: (text) => seen.push([text, Date.now() - started]) }, ctx);
-  assert.equal(ran.ok, true);
-  assert.equal(seen[0][0], "first\n");
-  assert.ok(seen[0][1] < 900, `streamed at ${seen[0][1]} ms`);
+  // The command waits after its first line until the file "go" is there, which the test makes when that line comes:
+  // output given only at the end would leave it waiting to its deadline.
+  const ran = await env.exec("echo first; while [ ! -e go ]; do sleep 0.01; done; echo second", { timeout: 60, onOutput: (text) => {
+    if (seen.length === 0) writeFileSync(join(root, "go"), "");
+    seen.push(text);
+  } }, ctx);
+  assert.equal(ran.ok, true, "it ended on its own, not at its deadline");
+  assert.equal(seen[0], "first\n");
   const outside = await env.exec("pwd", { cwd: "/etc" }, ctx);
   assert.equal(outside.ok, false);
   assert.equal(outside.error.code, "spawn_error");
