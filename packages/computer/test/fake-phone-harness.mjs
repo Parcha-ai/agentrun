@@ -9,8 +9,11 @@
 
 export const KEY = "fake-test-key";
 export const SETTINGS = "com.android.settings";
+/** Settings' search: another package, whose activity a live Android 15 puts on top of Settings' task (run 5). */
+export const SEARCH_PKG = "com.android.settings.intelligence";
 export const LAUNCHER = "com.google.android.apps.nexuslauncher";
-export const SEARCH_FIELD = "com.android.settings.intelligence:id/search_src_text";
+/** Settings' search field's id, as phone probe 2 read it live: the platform's own SearchView text field. */
+export const SEARCH_FIELD = "android:id/search_src_text";
 export const ITEMS = [
 	"Network & internet",
 	"Connected devices",
@@ -53,9 +56,14 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * admitted and then its answer is lost (fetch rejects); `others`, sessions on the account this provider never made;
  * `loseRecovery`, the GET that recovers a create by its key is lost too;
  * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
- * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher.
+ * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
+ * `am start` starts nothing at all.
+ *
+ * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
+ * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
+ * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, others = [], code, abi = "x86_64", launchHidden = false, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -168,8 +176,12 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 				node("android.widget.TextView", { text: phone.page, "resource-id": "com.android.settings:id/collapsing_toolbar", bounds: box([72, 24, 260, 40]), ...pkg }),
 			]);
 		}
-		return node("android.widget.FrameLayout", { bounds: box(full), package: "com.android.settings.intelligence" }, [
-			node("android.widget.EditText", { text: phone.search, "resource-id": SEARCH_FIELD, focused: "true", clickable: "true", bounds: box([56, 16, 288, 56]), package: "com.android.settings.intelligence" }),
+		// As phone probe 2 read it live: a SearchView holding an AutoCompleteTextView, focused, in Settings' search package.
+		const search = { package: SEARCH_PKG };
+		return node("android.widget.FrameLayout", { bounds: box(full), ...search }, [
+			node("android.widget.SearchView", { "resource-id": "com.android.settings.intelligence:id/search_view", bounds: box([48, 16, 304, 56]), ...search }, [
+				node("android.widget.AutoCompleteTextView", { text: phone.search, "resource-id": SEARCH_FIELD, focused: "true", clickable: "true", bounds: box([56, 16, 288, 56]), ...search }),
+			]),
 		]);
 	}
 
@@ -200,22 +212,26 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		const n = hit(x, y);
 		if (!n) return;
 		if (phone.foreground === LAUNCHER) return launch(SETTINGS);
-		if (phone.screen === "top" && n.attrs["resource-id"] === "com.android.settings:id/search_action_bar") return Object.assign(phone, { screen: "search", search: "" });
+		// Search is another package's activity, put on top of Settings' own task.
+		if (phone.screen === "top" && n.attrs["resource-id"] === "com.android.settings:id/search_action_bar") return Object.assign(phone, { screen: "search", search: "", foreground: SEARCH_PKG });
 		if (phone.screen === "top" && n.cls === "android.widget.LinearLayout") return Object.assign(phone, { screen: "page", page: n.children[0].attrs.text });
 		if (phone.screen === "page" && n.attrs["content-desc"] === "Navigate up") phone.screen = "top";
 	}
 
 	function back() {
-		if (phone.foreground === SETTINGS && phone.screen !== "top") phone.screen = "top";
+		if (phone.foreground === SEARCH_PKG && phone.screen === "search") Object.assign(phone, { screen: "top", foreground: SETTINGS });
+		else if (phone.foreground === SETTINGS && phone.screen !== "top") phone.screen = "top";
 		else phone.foreground = LAUNCHER;
 	}
 
-	function launch(pkg) {
-		if (!phone.running.has(pkg)) {
-			phone.running.add(pkg);
-			if (pkg === SETTINGS) settingsReset();
-		}
-		phone.foreground = pkg;
+	/**
+	 * `am start` of pkg: it resumes the app's task, so Settings' task with search on top comes back with search in front;
+	 * clear (--activity-clear-task) starts the app's task afresh.
+	 */
+	function launch(pkg, clear = false) {
+		if (pkg === SETTINGS && (clear || (!phone.running.has(SETTINGS) && phone.screen !== "search"))) settingsReset();
+		phone.running.add(pkg);
+		phone.foreground = pkg === SETTINGS && phone.screen === "search" ? SEARCH_PKG : pkg;
 	}
 
 	/** The words of a shell command, as the device's sh splits it: single quotes kept together. */
@@ -251,13 +267,13 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		}
 		if (w[0] === "input" && w[1] === "motionevent") return ok();
 		if (w[0] === "input" && w[1] === "text") {
-			if (phone.foreground === SETTINGS && phone.screen === "search") phone.search += w[2].replaceAll("%s", " ");
+			if (phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += w[2].replaceAll("%s", " ");
 			return ok();
 		}
 		if (w[0] === "input" && w[1] === "keyevent") {
 			const k = w[2];
 			if (KEYS[k]) KEYS[k]();
-			else if (/^KEYCODE_[A-Z0-9]$/.test(k) && phone.screen === "search") phone.search += k.slice(8).toLowerCase();
+			else if (/^KEYCODE_[A-Z0-9]$/.test(k) && phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += k.slice(8).toLowerCase();
 			return ok();
 		}
 		if (w[0] === "pm" && w[1] === "list" && w[2] === "packages") return ok([SETTINGS, LAUNCHER, "com.android.chrome"].map((p) => `package:${p}`).join("\n") + "\n");
@@ -268,12 +284,14 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		}
 		if (w[0] === "am" && w[1] === "start") {
 			const comp = w.at(-1);
-			launch(comp.split("/")[0]);
+			if (!launchNothing) launch(comp.split("/")[0], w.includes("--activity-clear-task"));
 			return ok("Starting: Intent { cmp=" + comp + " }\nStatus: ok\n");
 		}
 		if (w[0] === "am" && w[1] === "force-stop") {
 			phone.running.delete(w[2]);
-			if (phone.foreground === w[2]) phone.foreground = LAUNCHER;
+			// Settings' own activities go; search, another package's activity on top of its task, stays there.
+			if (w[2] === SETTINGS && phone.screen !== "search") settingsReset();
+			if (phone.foreground === w[2] || (w[2] === SETTINGS && phone.foreground === SEARCH_PKG)) phone.foreground = LAUNCHER;
 			return ok();
 		}
 		if (w[0] === "dumpsys" && w[1] === "activity" && w[2] === "activities") {
@@ -289,7 +307,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		header.writeUInt32LE(1, 8);
 		header.writeUInt32LE(0, 12);
 		const pixels = Buffer.alloc(SCREEN.width * SCREEN.height * 4);
-		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground === SETTINGS && !launchHidden ? 30 : 200, 60, 90, 255], i);
+		for (let i = 0; i < pixels.length; i += 4) pixels.set([phone.foreground !== LAUNCHER && !launchHidden ? 30 : 200, 60, 90, 255], i);
 		return Buffer.concat([header, pixels]);
 	}
 

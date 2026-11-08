@@ -457,6 +457,21 @@ test("typing into Settings' search reads back from the tree", async () => {
 	assert.equal(find(tree.root)?.text, "Hello, agentrun! 123");
 });
 
+test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {
+	// Android 15 (phone probe 2): Settings' search is another package's activity on top of Settings' task. After a
+	// force-stop of Settings, a plain `am start` resumes that task with search in front; a cleared task starts Settings.
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	await client.call("apps.launch", { id: SETTINGS });
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
+	assert.equal((await client.call("apps.list", {})).value.foreground, "com.android.settings.intelligence", "search is in front");
+	await client.call("apps.terminate", { id: SETTINGS });
+	assert.deepEqual(await client.call("apps.launch", { id: SETTINGS }), { ok: true, value: {} });
+	assert.equal((await client.call("apps.list", {})).value.foreground, SETTINGS, "the app named is in front");
+	assert.match(fake.shells().filter((command) => command.startsWith("am start")).at(-1), /^am start -W --activity-clear-task -n com\.android\.settings\/\.Settings$/);
+});
+
 test("a drifted twin's phone is refused at connect, in the drift check's words", async () => {
 	const fake = fakePhoneHarness();
 	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep };
