@@ -153,10 +153,10 @@ test("commits stored together in one group commit while the stream is held each 
   await stream.stop();
 });
 
-/** A Harness whose model calls `slow` once, then answers; `slow` writes output, waits `ms`, and returns. */
-async function withTool(ms: number) {
+/** A Harness whose model calls `slow` once (with `args`), then answers; `slow` writes output, waits `ms`, and returns. */
+async function withTool(ms: number, args: Record<string, string> = {}) {
   const slow = defineTool({
-    name: "slow", description: "Takes a while.", parameters: { type: "object", properties: {} },
+    name: "slow", description: "Takes a while.", parameters: { type: "object", properties: { path: { type: "string" } } },
     execute: async (_args, api) => {
       api.output("working\n");
       await new Promise((resolve) => setTimeout(resolve, ms));
@@ -164,7 +164,7 @@ async function withTool(ms: number) {
     },
   });
   const faux = fauxProvider();
-  faux.setResponses([() => fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }), () => fauxAssistantMessage([fauxText("finished")], { stopReason: "stop" })]);
+  faux.setResponses([() => fauxAssistantMessage([fauxToolCall("slow", args)], { stopReason: "toolUse" }), () => fauxAssistantMessage([fauxText("finished")], { stopReason: "stop" })]);
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
@@ -190,6 +190,72 @@ test("a tool call's start, update and end reach the stream, though pi 1.5 only e
   const tool = events.filter((event) => event.toolName === "slow").map((event) => event.type);
   assert.deepEqual([...new Set(tool)], ["tool_execution_start", "tool_execution_update", "tool_execution_end"], `the slow tool's events: ${JSON.stringify(events.map((event) => event.type))}`);
   await stream.stop();
+});
+
+test("a tool's start carries its call's arguments, though pi 1.5 shows its running status in a held change", async (t) => {
+  // The held `running` step comes with no stored commit, so no task change of its own: the arguments come from the
+  // assistant's stored tool call. A viewer needs them to show an active call (a read's path).
+  const { harness, root } = await withTool(150, { path: "notes.txt" });
+  t.after(() => harness.close(ctx));
+  const stream = await watchEvents(harness, root.id, ctx);
+  const events: { type: string; toolName?: string; args?: unknown }[] = [];
+  stream.start(async (batch) => void events.push(...(batch as typeof events)));
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await harness.waitForIdle(ctx);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await stream.stop();
+  const starts = events.filter((event) => event.type === "tool_execution_start" && event.toolName === "slow").map((event) => event.args);
+  assert.deepEqual(starts, [{ path: "notes.txt" }], `the slow tool's start: ${JSON.stringify(events.map((event) => event.type))}`);
+});
+
+/** A stream on an idle conversation whose pi.live observer and commit observer the test calls itself, as pi would. */
+async function driven(t: { after(fn: () => unknown): void }) {
+  const { harness, root } = await opened();
+  t.after(() => harness.close(ctx));
+  const caught: { live?: { advance(call: unknown): void }; commits?: { advance(publication: unknown): void } } = {};
+  const seamed = new Proxy(harness, {
+    get: (target, key) => {
+      if (key === "observeDoc") return async (token: unknown, id: never, observer: { advance(call: unknown): void }, context: never) => {
+        if (token === LiveDoc) caught.live = observer;
+        return target.observeDoc(token as never, id, observer as never, context);
+      };
+      if (key === "observeCommits") return (observer: { advance(publication: unknown): void }) => {
+        caught.commits = observer;
+        return target.observeCommits(observer as never);
+      };
+      return Reflect.get(target, key, target)?.bind?.(target) ?? Reflect.get(target, key, target);
+    },
+  }) as unknown as Harness;
+  const stream = await watchEvents(seamed, root.id, ctx);
+  const events: { type: string; toolCallId?: string; args?: unknown }[] = [];
+  stream.start(async (batch) => void events.push(...(batch as typeof events)));
+  const running = (callId: string, output?: string) => caught.live!.advance({ kind: "value", value: { tools: [{ callId, name: "read", status: "running", ...(output === undefined ? {} : { output }) }] }, ops: [] });
+  const assistant = (id: number, callId: string, args: Record<string, string>) => ({ type: "entry", value: { id, conversationId: root.id, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: callId, name: "read", arguments: args }] }] } });
+  return { root, stream, events, caught, running, assistant };
+}
+
+test("a tool's running status on a stored commit's earlier step carries its call's arguments, as its last step would", async (t) => {
+  // A stored commit takes every step queued before its dispatch; only its last step is translated with its own changes.
+  // A `running` status on an earlier step has none, so its arguments come from the assistant's stored tool call.
+  const { stream, events, caught, running, assistant } = await driven(t);
+  caught.commits!.advance({ seq: 1_000, changes: [assistant(1_000, "call-1", { path: "a.txt" })] });
+  running("call-1");
+  running("call-1", "reading\n");
+  caught.commits!.advance({ seq: 1_001, changes: [] });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await stream.stop();
+  const starts = events.filter((event) => event.type === "tool_execution_start").map((event) => [event.toolCallId, event.args]);
+  assert.deepEqual(starts, [["call-1", { path: "a.txt" }]], `the start, once, with its arguments: ${JSON.stringify(events.map((event) => event.type))}`);
+});
+
+test("a tool's start with no stored call and no checkpoint is kept, with no arguments, never an invented {}", async (t) => {
+  const { stream, events, running } = await driven(t);
+  running("call-2");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await stream.stop();
+  const starts = events.filter((event) => event.type === "tool_execution_start");
+  assert.deepEqual(starts.map((event) => event.toolCallId), ["call-2"], "the start is kept");
+  assert.equal("args" in starts[0]!, false, `no arguments: ${JSON.stringify(starts[0])}`);
 });
 
 test("a streaming answer's partial reaches the stream as pi shows it, before pi stores it: a delivery before the answer's own", async (t) => {
