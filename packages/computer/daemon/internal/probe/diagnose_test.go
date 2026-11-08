@@ -71,6 +71,22 @@ func closedTCP(t *testing.T) string {
 	return address
 }
 
+// A refused address must stay refused for the whole test: another test's server (any package's, go test runs them at
+// once) taking the port turns "refused" into "accepted", as on an arm runner: outcomes ["accepted" "accepted" ...].
+func TestClosedTCPStaysRefusedWhileTheTestRuns(t *testing.T) {
+	address := closedTCP(t)
+	if taker, err := net.Listen("tcp", address); err == nil {
+		_ = taker.Close()
+		t.Fatalf("another socket could take %s after closedTCP returned it, so a check of it could be accepted, not refused", address)
+	}
+	if conn, err := net.DialTimeout("tcp", address, time.Second); err == nil {
+		_ = conn.Close()
+		t.Fatalf("a connection to %s was accepted", address)
+	} else if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("a connection to %s failed with %v, not refused", address, err)
+	}
+}
+
 // clientHello reads one TLS record from conn and reports its handshake type and the SNI it names, if any.
 func clientHello(conn net.Conn) (record []byte, sni string, ok bool) {
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
