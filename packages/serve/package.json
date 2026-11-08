@@ -30,6 +30,7 @@
   },
   "files": [
     "dist",
+    "!dist/workspace",
     "launcher",
     "harnesses",
     "skills",
@@ -84,6 +85,7 @@
     "@earendil-works/pi-ai": "1.5.0",
     "@earendil-works/pi-durable": "1.5.0",
     "@modelcontextprotocol/server": "2.4.0",
+    "@parcha/agentrun-computer": "0.1.0-beta.30",
     "opencode-ai": "1.19.5"
   },
   "repository": {
