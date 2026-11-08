@@ -3,9 +3,10 @@
 // before any run's process starts, so the gateway key is never handed to one. As codex and opencode already are (their
 // table entries' refusal), and as ANTHROPIC_BASE_URL is for an Anthropic model (pi-anthropic-gateway.test.mjs).
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { agentFolderOf } from "../dist/files.js";
 import { agent, serve, withEnv } from "./support.mjs";
 
 /** A dummy key: no real one. */
@@ -27,6 +28,9 @@ for (const [why, base] of [["plain http to another host", "http://gateway.exampl
     const started = await api("POST", "/agents/pi-gateway-refused/runs", { input: { content: "Say hi." } });
     assert.notEqual(started.status, 202, `the run is refused: ${JSON.stringify(started.body)}`);
     assert.ok(JSON.stringify(started.body).includes(REFUSAL), `in gatewayBase's words: ${JSON.stringify(started.body)}`);
-    assert.equal(existsSync(join(data, "runs")) && (await import("node:fs")).readdirSync(join(data, "runs")).length > 0, false, "no run's process started: no run directory was made");
+    // A run's folder is <data>/disk/agents/<agent>/runs/<run> (agentFolderOf): none was made, and no run was stored.
+    const runs = join(agentFolderOf(data, "pi-gateway-refused"), "runs");
+    assert.deepEqual(existsSync(runs) ? readdirSync(runs) : [], [], `no run's process started: no run folder under ${runs}`);
+    assert.deepEqual((await api("GET", "/agents/pi-gateway-refused/runs")).body.runs, [], "no run was stored");
   });
 }
