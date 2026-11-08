@@ -53,7 +53,8 @@ type Tab = "graph" | "report" | "timeline" | "files" | "browser";
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
 
 /** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
- *  paused at its cap says what it spent of it; one waiting on an approval points at the card; one that asked a question
+ *  paused at its cap says what it spent of it; one waiting on an approval points at the card; one waiting on the person
+ *  in the browser says what to do there (its served instruction); one that asked a question
  *  waits for the answer, in the box below where the server takes one from here; a stopped one (input required, idle)
  *  stopped before it wrote one, and a message continues it; a paused workflow run starts no step until it is resumed. */
 function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunView): { title: string; note: string; spin: boolean } {
@@ -66,6 +67,8 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
   }
   // A tool call waiting on the owner's approval: the card above answers it, and a message below declines it.
   if (run.status === "input_required" && kind === "approval") return { title: "Waiting for your approval", note: `The run continues once you answer the approval above${view.canMessage ? ", or send a message below to decline it" : ""}.`, spin: false };
+  // A hand-over in the browser: the person acts there (its served instruction), and a message below doesn't answer it.
+  if (run.status === "input_required" && run.pending?.kind === "browser") return { title: "Waiting for you in the browser", note: run.pending.instruction, spin: false };
   if (run.status === "input_required" && run.state === "waiting") return { title: "Waiting for your answer", note: view.messageMode === "answer" ? "The run continues when you reply below." : "The run continues once the question is answered.", spin: false };
   if (run.status === "input_required") return { title: "Stopped", note: `Stopped before it wrote an answer.${view.canMessage ? " Send a message below to continue it." : ""}`, spin: false };
   if (run.status === "paused") return { title: "Paused", note: "No new step starts until it's resumed. The answer appears here when it finishes.", spin: false };
