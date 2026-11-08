@@ -4,6 +4,7 @@
 // brought back by an approve whose resume hits the failure stays parked with a backoff, its approve kept for one more try.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { piSpec } from "./conformance-pi.mjs";
 import { commandRow, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
 
@@ -50,6 +51,22 @@ async function running(t, createLoop) {
 
 const claimsOf = (record) => record.claims.filter((claim) => claim.runId === "run-1").length;
 
+/** The run's agentrun.end entries, as the journal holds them (read on the server, at the run's epoch). */
+async function endsOf(server) {
+  const row = await server.runs.get("run-1");
+  const journal = server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state });
+  const ends = [];
+  for (let after = 0; ;) {
+    const page = await journal.commitsAfter(after, 100, BACKGROUND_CONTEXT);
+    for (const commit of page.commits) {
+      for (const entry of commit.entries) if (entry.kind === "agentrun.end") ends.push(entry.data);
+      after = commit.seq;
+    }
+    if (page.next === undefined || page.commits.length === 0) break;
+  }
+  return ends;
+}
+
 test("a stop waiting when the loop fails with no end written ends the run stopped, the stop row taken, after one claim", async (t) => {
   const { createLoop } = loops([{ say: "done" }], () => true);
   const { server, record, start } = await running(t, createLoop);
@@ -63,8 +80,27 @@ test("a stop waiting when the loop fails with no end written ends the run stoppe
   const taken = await commandRow(server, "run-1", stop.id);
   assert.ok(taken.takenAt !== null, "the stop row is taken");
   assert.equal(taken.refused, null, `the stop is taken, never refused: ${JSON.stringify(taken.refused)}`);
+  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person" }], "the run's end is in its journal");
   await sleep(TIMING.pollMs * 10);
   assert.equal(claimsOf(record), 1, "claimed once, never again");
+});
+
+test("a parked run whose resume keeps failing, then is stopped, ends stopped with its end in its journal (P2-13)", async (t) => {
+  const { createLoop } = loops([{ call: "asked" }, { say: "done" }], (n) => n >= 2);
+  const { server, record, start } = await running(t, createLoop);
+  start();
+  await until(async () => (await server.runs.get("run-1")).state === "parked", "the run parked on its ask", 5_000);
+  await sendCommand(server, "run-1", { kind: "approve", body: { approval: "the asked call" } });
+  await until(async () => (await server.runs.get("run-1")).backoffUntil !== null, "the failed resume's backoff", 5_000);
+  const stop = await sendCommand(server, "run-1", { kind: "stop", body: {} });
+  const row = await until(async () => {
+    const now = await server.runs.get("run-1");
+    return now.state === "stopped" && now.runner === null && now;
+  }, "the stop ends the run", 5_000);
+  assert.equal(row.summary, "stopped by a person");
+  assert.ok((await commandRow(server, "run-1", stop.id)).takenAt !== null, "the stop row is taken");
+  assert.deepEqual(await endsOf(server), [{ state: "stopped", summary: "stopped by a person" }], "the run's end is in its journal");
+  assert.ok(claimsOf(record) >= 2);
 });
 
 test("a parked run brought back by an approve whose resume fails stays parked with a backoff, its approve kept", async (t) => {
