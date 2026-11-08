@@ -14,9 +14,12 @@
 // only to its own observers: a tool slot's `running` status, its output, a streaming partial, session.js #hold :920-955)
 // is queued as a step, its value and operations, in the order pi made them. pi stores held changes later as one change
 // per document at its latest value (#storeHolds :959), so the stored commits alone skip states the stream must show.
-// Each stored commit, when observeCommits dispatches it, takes the steps queued so far (`upTo`); translated, it gives the
-// events of each step in turn, its own entries, tasks and submissions with its last. Steps no commit takes (a held change
-// with no stored commit yet) are translated a microtask later on their own, so the stream shows them as pi does.
+// Each stored commit, when observeCommits dispatches it, takes the steps queued so far (`upTo`). They are translated in
+// groups, a group ending where a document would change a second time, so every state of a document is shown; the commit's
+// own entries, tasks and submissions go with the last group. A commit's own steps (one per document it changed) are one
+// group, so its events keep 1.1's order: its answer's message_end before the run_end its pi.live step gives. Steps no
+// commit takes (a held change with no stored commit yet) are translated a microtask later on their own, so the stream
+// shows them as pi does.
 // Steps queued before the snapshot was set are in it. A commit held before `start()` keeps its own steps, never the
 // documents as they are later. In a group commit (two stored in one storage call, published back to back) the first
 // commit's dispatch already finds the second's steps: their document events come out a little ahead of the second
@@ -238,15 +241,20 @@ type Followed = { now: Record<string, JsonObject | undefined>; observed: Set<str
 type Step = { kind: string; value: JsonObject | undefined; ops: readonly Op[] };
 const NO_CHANGES = { seq: 0, changes: [] } as unknown as CommitPublication;
 
-/** A commit and the document steps it took: the events of each step in turn, the commit's own changes with its last. */
+/** A commit and the document steps it took, in groups: a group ends where a document would change a second time, so each
+ *  state of a document is translated. The events of each group in turn, the commit's own changes with its last. */
 function translate(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed, steps: readonly Step[]): LiveEvent[] {
-  if (steps.length <= 1) return translateOne(conversationId, publication, state, completing, snapshotNewest, fresh, followed, steps[0]);
+  const groups: Step[][] = [[]];
+  for (const step of steps) {
+    if (groups.at(-1)!.some((each) => each.kind === step.kind)) groups.push([]);
+    groups.at(-1)!.push(step);
+  }
   const events: LiveEvent[] = [];
-  for (const [at, step] of steps.entries()) events.push(...translateOne(conversationId, at === steps.length - 1 ? publication : NO_CHANGES, state, completing, snapshotNewest, fresh, followed, step));
+  for (const [at, group] of groups.entries()) events.push(...translateOne(conversationId, at === groups.length - 1 ? publication : NO_CHANGES, state, completing, snapshotNewest, fresh, followed, group));
   return events;
 }
 
-function translateOne(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed, step: Step | undefined): LiveEvent[] {
+function translateOne(conversationId: ConversationId, publication: CommitPublication, state: State, completing: Set<number>, snapshotNewest: number, fresh: boolean, followed: Followed, group: readonly Step[]): LiveEvent[] {
   const entries: EntryRecord[] = [];
   const tasks = new Map<number, TaskRecord<JsonValue, JsonValue, JsonValue>>();
   const submissions: SubmissionRecord[] = [];
@@ -266,7 +274,7 @@ function translateOne(conversationId: ConversationId, publication: CommitPublica
       } else state.docs[kind] = undefined;
     }
   }
-  if (step) {
+  for (const step of group) {
     state.docs[step.kind] = step.value;
     if (step.kind === "pi.live") for (const op of step.ops) docOps.push([op[0], ["docs", step.kind, ...((op[1] as unknown[]) ?? [])], ...op.slice(2)] as unknown as Op);
   }

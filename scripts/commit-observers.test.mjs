@@ -15,8 +15,8 @@ const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 export const ACCEPTED = [
   { at: "packages/pi-durable-disk/src/park.ts:209", keeps: "resolves", why: "parking's recheck: queues a check, never throws" },
   { at: "packages/pi-durable-disk/src/park.ts:242", keeps: "resolves", why: "drain's wake: resolves the promise its loop waits on" },
-  { at: "packages/pi-durable-disk/src/live-events.ts:126", keeps: "catches", why: "the watchEvents adapter: a commit it cannot translate ends the stream, failed" },
-  { at: "packages/pi-durable-disk/src/live-events.ts:147", keeps: "catches", why: "the adapter's followed documents: a change it cannot follow ends the stream, failed" },
+  { at: "packages/pi-durable-disk/src/live-events.ts:129", keeps: "catches", why: "the watchEvents adapter: a commit it cannot translate ends the stream, failed" },
+  { at: "packages/pi-durable-disk/src/live-events.ts:150", keeps: "catches", why: "the adapter's followed documents: a change it cannot follow ends the stream, failed" },
   { at: "packages/pi/src/durable/recording.ts:279", keeps: "catches", why: "the recording maps and queues; a failure is the stop's to report" },
   { at: "packages/serve/src/browser-cost.ts:170", keeps: "catches", why: "a charge it fails to count, or an end before the run's close, makes the run's spend unknown (spent null)" },
 ];
