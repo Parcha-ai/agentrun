@@ -325,9 +325,6 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   return hostModel(env, MODEL_TIERS[model.tier], harness);
 }
 
-/** The package an agent was applied from, as its revisions keep it. A built-in package has no git source yet. */
-export const packageRecord = (p: Package, parameters: Json) => ({ name: p.name, version: p.version, source: "builtin", ref: null, sha: null, parameters });
-
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
  *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted and
  *  set to allow (a triggered run never waits on an ask); beside the package's tools, or, when it names none,

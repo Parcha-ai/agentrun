@@ -1564,9 +1564,8 @@ with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
 folder the server ships. `GET /v2/templates` lists them; `POST /v2/templates/{name}/apply` with `{parameters,
-overrides?: {model}}` makes one, or nothing when a check fails, and records the package (`name`, `version`, its
-parameters) on the agent as `package`. A package's `version` is SemVer and never `definition.version`, the agent's
-revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
+overrides?: {model}}` makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
+package's `version` is SemVer and never `definition.version`, the agent's revision number. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 

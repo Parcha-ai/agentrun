@@ -23,11 +23,10 @@ export type RevisionKind = "agentic" | "workflow";
  *  MCP server's wildcard, to its settings, such as its provider or its permission: names and values its host checks;
  *  absent: the host's own). `maxCostUsd`: a revision's default spend cap for each run, agentic or workflow, in US dollars,
  *  that a run started with none of its own takes (absent: none). `capMode`: how such a cap prices a request, a name its host
- *  knows (absent: the host's default). `package`: the template package the revision was applied from, a JSON object its
- *  host writes and reads (absent: none). */
+ *  knows (absent: the host's default). */
 export type RevisionPlace = { mode: string; box?: string };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; package?: JsonObject };
-export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; package?: JsonObject };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 /** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
@@ -98,8 +97,8 @@ export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
 const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; package?: JsonObject; note?: string }
-  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; package?: JsonObject; note?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; note?: string }
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; capMode?: string; note?: string };
 /** What starts a run: `key`, the caller's name for it (1 to 256 characters), which starts one run only, and `fingerprint`
  *  (at most 256 characters), what was asked, kept to tell a retry from another request under the same key. */
 export type RunOrigin = { key: string; fingerprint?: string };
@@ -334,10 +333,9 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   const set = input.toolSettings;
   const named = (value: unknown, check: (inner: unknown) => boolean, key = PICK_NAME) => isObject(value) && Object.entries(value).every(([name, inner]) => key.test(name) && check(inner));
   if (set !== undefined && !named(set, (setting) => named(setting, (value) => typeof value === "string" && PICK_NAME.test(value)), TOOL_KEY)) throw invalid("the tool settings are not tool names to settings of names");
-  if (input.package !== undefined && !isObject(input.package)) throw invalid("the package is not a JSON object");
   // Sorted, and none when empty: two revisions with the same settings are one.
   const sorted = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
-  const host = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.package !== undefined ? { package: structuredClone(input.package) } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}), ...(set && Object.keys(set).length ? { toolSettings: Object.fromEntries(Object.entries(sorted(set)).map(([name, setting]) => [name, sorted(setting as Record<string, unknown>)])) as Record<string, Record<string, string>> } : {}) };
+  const host = { ...(input.harness !== undefined ? { harness: input.harness } : {}), ...(input.place !== undefined ? { place: placeOf(input.place) } : {}), ...(set && Object.keys(set).length ? { toolSettings: Object.fromEntries(Object.entries(sorted(set)).map(([name, setting]) => [name, sorted(setting as Record<string, unknown>)])) as Record<string, Record<string, string>> } : {}) };
   // A default spend cap, and how it prices a request, for a revision of either kind.
   if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) throw invalid("the maxCostUsd is not a number above 0");
   if (input.capMode !== undefined && (typeof input.capMode !== "string" || input.capMode === "")) throw invalid("the capMode is not a non-empty string");
@@ -574,19 +572,6 @@ export class AgentStore extends AgentStoreReader {
 
   createAgent(input: { name: string; description?: string; id?: string }): Agent { return this.insertAgent(input); }
 
-  /** A new agent and its first revision, current, in one transaction: a revision that is refused or does not write leaves
-   *  no agent (createAgent, then commitRevision, would leave one with none). */
-  async createAgentWith(input: { name: string; description?: string; id?: string }, revision: NewRevision): Promise<{ agent: Agent; revision: Revision }> {
-    const { body, texts } = bodyOf(revision);
-    if (revision.note !== undefined && (typeof revision.note !== "string" || revision.note.length > 2_000)) throw invalid("the note is not text of at most 2000 characters");
-    if (revision.kind === "workflow") await this.check(body); // before a write: a refusal writes nothing
-    return this.tx(() => {
-      const agent = this.insertAgent(input);
-      const written = this.writeRevision(agent.id, revision, body, texts, { setCurrent: true });
-      return { agent: { ...agent, current: written.id }, revision: written };
-    });
-  }
-
   private insertAgent(input: { name: string; description?: string; id?: string }): Agent {
     if (typeof input?.name !== "string" || input.name.trim() === "") throw invalid("the agent needs a name");
     if (input.description !== undefined && typeof input.description !== "string") throw invalid("the description is not text");
@@ -650,21 +635,6 @@ export class AgentStore extends AgentStoreReader {
       const at = new Date().toISOString();
       this.db.prepare("INSERT INTO archive_changes (kind, id, archived, at) VALUES (?, ?, ?, ?)").run(kind, id, archived ? 1 : 0, at);
       return archived ? at : null;
-    });
-  }
-
-  /** Delete an agent with no history: no run, never archived. Its revisions go with it; its skill texts stay, as another
-   *  revision may share them. An agent with a history is refused (`invalid`); one that is not here is `missing`. A create
-   *  undone (a template's apply that a later step refused). */
-  deleteAgent(id: string): void {
-    checkId(id, "agent");
-    this.tx(() => {
-      if (!this.db.prepare("SELECT 1 FROM agents WHERE id = ?").get(id)) throw new AgentHomeError("missing", "there is no such agent");
-      const history = this.db.prepare("SELECT 1 FROM runs WHERE agent_id = ? UNION ALL SELECT 1 FROM archive_changes WHERE kind = 'agent' AND id = ? LIMIT 1").get(id, id);
-      if (history) throw invalid("only an agent with no runs that was never archived is deleted");
-      this.db.prepare("UPDATE agents SET current_revision = NULL WHERE id = ?").run(id);
-      this.db.prepare("DELETE FROM revisions WHERE agent_id = ?").run(id);
-      this.db.prepare("DELETE FROM agents WHERE id = ?").run(id);
     });
   }
 

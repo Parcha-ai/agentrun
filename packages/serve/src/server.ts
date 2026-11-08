@@ -70,7 +70,7 @@ import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, type Package, packageModel, packageRecord, packageView, readPackages } from "./templates.js";
+import { applyBodyOf, compiled, type Package, packageModel, packageView, readPackages } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, definitionBodyIssues, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, recheckPlane, settingsIssues, ToolSettings, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -1377,13 +1377,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
    *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
-   *  tool the box refuses (browser) keeps the runner. `pkg`: the template package an apply makes it from. */
-  async function createAgentOf(body: Json, pkg?: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+   *  tool the box refuses (browser) keeps the runner. */
+  async function createAgentOf(body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body);
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
     const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
-    const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined, pkg);
+    const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
     return { entry, warnings };
   }
 
@@ -1391,7 +1391,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  nothing made; an MCP server it can do without is skipped, with a warning), then its
    *  agent made as POST /agents makes one, on the first harness of its list this server runs and the model packageModel
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
-   *  before it and the agent are deleted, and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
+   *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
   async function applyTemplate(pkg: Package, body: Json) {
     const { parameters, model: override } = applyBodyOf(pkg, body);
@@ -1410,7 +1410,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const model = override ?? (await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS));
     const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
     const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools });
-    const { entry, warnings } = await createAgentOf(made.agent, packageRecord(pkg, parameters));
+    const { entry, warnings } = await createAgentOf(made.agent);
     const ids: string[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
@@ -1429,7 +1429,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           log?.(logLine("template_undo_failed", { template: pkg.name, trigger: id, message: (undo as Error).message }));
         }
       }
-      await agents.remove(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      await agents.setArchived("agent", entry.agent.id, true).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
     return { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, warnings: [...skipped, ...warnings] };

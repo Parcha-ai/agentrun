@@ -602,12 +602,6 @@ const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$"
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
 const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." } });
-const PACKAGE_RECORD = {
-  type: ["object", "null"], additionalProperties: false, required: ["name", "version", "source", "ref", "sha", "parameters"],
-  properties: { name: { type: "string" }, version: { type: "string", description: "The package's SemVer version: never definition.version, which is the revision's number." }, source: { enum: ["builtin"], description: "Where the package came from: `builtin`, one this server ships." }, ref: NULLABLE_STRING, sha: NULLABLE_STRING, parameters: { type: "object", description: "The parameters it was applied with." } },
-  description: "The template package the agent was applied from (POST /templates/{template}/apply), kept on each revision an edit makes; null for an agent made otherwise.",
-  ...TEMPLATE_MARK,
-};
 const TEMPLATE = closed({
   name: { type: "string", description: "Its folder's name, the one apply takes." },
   display_name: { type: ["string", "null"], description: "The agent's name, its `${parameters.<name>}` filled at apply; null: the package's name." },
@@ -638,7 +632,7 @@ const TEMPLATE_APPLY = {
 const TEMPLATE_APPLIED = closed({
   template: { type: "string" },
   version: { type: "string" },
-  agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id}), its `package` the record of this apply." },
+  agent_id: { type: "string", description: "The agent made (GET /agents/{agent_id})." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
   warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it." },
 });
@@ -1298,7 +1292,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/templates/{template}/apply": {
     post: {
       operationId: "applyTemplate", tags: ["local"], summary: "Apply a template package: make its agent, with its skills, then its triggers",
-      description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it granted and set to allow. Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins), its `package` the record of this apply; then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
+      description: "The package's parameters are checked (422 naming each, nothing made), then the secrets and required MCP servers it names: one this server does not have is `409 agent_not_runnable`, each a field with reason `not_set_up_here`, and nothing is made. An MCP server it can do without that is not saved here is skipped, a warning under `mcp.<server>`; one saved has the package's tools of it granted and set to allow. Then its agent is made as POST /agents makes one, on the first harness of its list this server runs and the model its tier and preference pick here (`overrides.model` wins); then each trigger on it as POST /triggers makes one. A trigger refused deletes the triggers made before it and archives the agent, and its refusal is the answer, a 422's fields under `triggers.<i>`. A webhook trigger's secret is not in the answer: POST /triggers/{trigger_id}/secret makes one. The same Idempotency-Key and body answers the first apply again and makes nothing.",
       parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's name (GET /templates)." }, ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_APPLY } } },
       responses: { "201": json(TEMPLATE_APPLIED, "Applied: the agent and its triggers made."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
@@ -1549,7 +1543,6 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Agent: {
     console_url: CONSOLE_URL("agent"),
-    package: PACKAGE_RECORD,
     tools: AGENT_TOOLS,
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },

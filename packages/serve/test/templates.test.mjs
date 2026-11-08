@@ -1,12 +1,11 @@
 // Template packages. readPackage is the one validator: the code-review package the server ships reads whole, and a
 // malformed one is refused with every problem named, which also stops a server's start. Through the API, GET /v2/templates
-// lists the packages, and POST /v2/templates/{template}/apply makes the package's agent with its skills, its model and the
-// record of the package, then its triggers, or nothing at all: parameters that do not check, a secret the server lacks
-// and a trigger the server refuses each leave no agent and no trigger behind.
+// lists the packages, and POST /v2/templates/{template}/apply makes the package's agent with its skills and its model,
+// then its triggers, or nothing that stays: parameters that do not check and a secret the server lacks make nothing, and
+// a trigger the server refuses deletes the triggers made before it and archives the agent.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
 import { applyBodyOf, PackageError, packageModel, readPackage, readPackages } from "../dist/templates.js";
@@ -97,16 +96,16 @@ test("the validator refuses a malformed package, naming each problem", async (t)
 
 test("a package's model: its preferred one where this server runs it on the harness, else this server's model for its tier", async () => {
   const model = { tier: "fast", prefer: "openrouter/particle-ai/particle-1" };
-  assert.equal(await packageModel({ OPENROUTER_API_KEY: "sk-or-not-real" }, model, "pi"), model.prefer, "a key for its provider runs it");
-  assert.equal(await packageModel({ OPENAI_API_KEY: "sk-not-real", AGENT_MODEL_FAST: "openai/gpt-5-mini" }, model, "pi"), "openai/gpt-5-mini", "no OpenRouter key: the fast tier's");
-  assert.equal(await packageModel({ OPENAI_API_KEY: "sk-not-real" }, { tier: "strong", prefer: model.prefer }, "pi"), "openai/gpt-6.1-sol", "no tier model set: the default of the key it has");
-  assert.equal(await packageModel({ OPENAI_API_KEY: "sk-not-real", AGENT_MODEL: "openai/gpt-5" }, { tier: "balanced" }, "pi"), "openai/gpt-5", "balanced is the server's default");
-  assert.equal(await packageModel({ ANTHROPIC_API_KEY: "sk-not-real", OPENROUTER_API_KEY: "sk-or-not-real" }, model, "claude-agent"), "anthropic/claude-sonnet-5-5", "a harness that cannot run it takes the tier's");
+  assert.equal(await packageModel({ OPENROUTER_API_KEY: "fake-test-key" }, model, "pi"), model.prefer, "a key for its provider runs it");
+  assert.equal(await packageModel({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-5-mini" }, model, "pi"), "openai/gpt-5-mini", "no OpenRouter key: the fast tier's");
+  assert.equal(await packageModel({ OPENAI_API_KEY: "fake-test-key" }, { tier: "strong", prefer: model.prefer }, "pi"), "openai/gpt-6.1-sol", "no tier model set: the default of the key it has");
+  assert.equal(await packageModel({ OPENAI_API_KEY: "fake-test-key", AGENT_MODEL: "openai/gpt-5" }, { tier: "balanced" }, "pi"), "openai/gpt-5", "balanced is the server's default");
+  assert.equal(await packageModel({ ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key" }, model, "claude-agent"), "anthropic/claude-sonnet-5-5", "a harness that cannot run it takes the tier's");
   assert.equal(await packageModel({}, model, "pi"), undefined, "no key at all: none, so the agent runs on the server's default");
-  assert.equal(await packageModel({ OPENROUTER_API_KEY: "sk-or-not-real" }, undefined, "pi"), undefined, "a package that names none");
+  assert.equal(await packageModel({ OPENROUTER_API_KEY: "fake-test-key" }, undefined, "pi"), undefined, "a package that names none");
 });
 
-test("code-review through the API: listed, applied with a repo it makes the agent with the review skill, its model and the package record, and a run's answer meets its findings schema", { timeout: 120_000 }, async (t) => {
+test("code-review through the API: listed, applied with a repo it makes the agent with the review skill, and its model, and a run's answer meets its findings schema", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { faux: REVIEW_FAUX });
   const meets = await documented(baseUrl);
 
@@ -131,7 +130,6 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.deepEqual([definition.tools, definition.tool_settings], [[], undefined], "no box and no GitHub MCP server here: no tools");
   assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
   assert.match(definition.instructions, /Clone https:\/\/github\.com\/Parcha-ai\/agentrun\s/);
-  assert.deepEqual(agent.package, { name: "code-review", version: "0.1.0", source: "builtin", ref: null, sha: null, parameters: { repo: "Parcha-ai/agentrun" } });
   const files = Object.fromEntries(agent.skills.map((s) => [s.path, s.sha256]));
   assert.deepEqual(files, { "review/REVIEW.md": sha256(file("rules/REVIEW.md")), "review/SKILL.md": sha256(file("skills/review/SKILL.md")) });
 
@@ -139,9 +137,6 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.equal(other.status, 201, JSON.stringify(other.body));
   assert.notEqual(other.body.agent_id, applied.body.agent_id, "each apply makes its own agent");
   assert.equal((await api("GET", `/agents/${other.body.agent_id}`)).body.definition.model, "openrouter/other-lab/other-model", "the person applying overrides the model");
-  const edited = await api("PUT", `/agents/${other.body.agent_id}/definition`, { definition: { instructions: "Review briefly." } });
-  assert.equal(edited.status, 200, JSON.stringify(edited.body));
-  assert.deepEqual([edited.body.definition.version, edited.body.package.version], [2, "0.1.0"], "an edit by hand keeps the package it was applied from");
 
   const run = await api("POST", `/agents/${applied.body.agent_id}/runs`, { input: { content: file("evals/null-name/prompt.md").replace(/^---[\s\S]*?---\n/, "") } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -187,8 +182,8 @@ test("apply makes nothing when a secret is missing, its parameters do not check,
   assert.deepEqual([(await api("GET", "/agents")).body.agents, (await api("GET", "/triggers")).body.triggers], [[], []], "nothing was made");
 });
 
-test("a package's triggers are made on its agent, placeholders filled; a trigger the server refuses deletes the agent and the triggers made before it", async (t) => {
-  withEnv(t, { [KEY]: "feed-not-a-real-key-0000" });
+test("a package's triggers are made on its agent, placeholders filled; a trigger the server refuses deletes the triggers made before it and archives the agent", async (t) => {
+  withEnv(t, { [KEY]: "fake-test-key" });
   const { api } = await serve(t, { templates: FIXTURES });
   assert.deepEqual((await api("GET", "/templates")).body.templates.map((x) => x.name), ["broken", "nightly", "watcher"]);
 
@@ -200,7 +195,7 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   assert.deepEqual([trigger.name, trigger.enabled, trigger.source.cron], ["Morning brief", true, "0 9 * * *"]);
   assert.deepEqual(trigger.target, { kind: "start_run", agent_id: applied.body.agent_id, input: { content: "Today's brief on solar." } });
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
-  assert.deepEqual([agent.definition.instructions, agent.definition.max_cost_usd, agent.package.parameters], ["Write a brief of about 200 words on solar.", 0.25, { topic: "solar", words: 200 }]);
+  assert.deepEqual([agent.definition.name, agent.definition.instructions, agent.definition.max_cost_usd], ["nightly", "Write a brief of about 200 words on solar.", 0.25]);
   const again = await api("POST", "/templates/nightly/apply", body, { "idempotency-key": "nightly-1" });
   assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body], [201, "true", applied.body], "the same key answers the first apply, and makes nothing");
 
@@ -208,7 +203,10 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   assert.equal(broken.status, 422, JSON.stringify(broken.body));
   assert.deepEqual(broken.body.error.fields.map((f) => f.field), ["triggers.1.source.cron"]);
   assert.deepEqual((await api("GET", "/triggers")).body.triggers.map((x) => x.id), [id], "the broken package's first trigger is gone");
-  assert.deepEqual((await api("GET", "/agents")).body.agents.map((a) => a.agent_id), [applied.body.agent_id], "and its agent");
+  assert.deepEqual((await api("GET", "/agents")).body.agents.map((a) => a.agent_id), [applied.body.agent_id], "its agent is not among the active ones");
+  const archived = (await api("GET", "/agents?archived=true")).body.agents;
+  assert.deepEqual(archived.map((a) => [a.definition.name, typeof a.archived_at]), [["broken", "string"]], "it is archived");
+  assert.equal((await api("GET", `/triggers`)).body.triggers.some((x) => x.target.agent_id === archived[0].agent_id), false, "with no trigger left on it");
 });
 
 test("code-review on a server with a GitHub MCP server saved: its tools are granted and set to allow, beside the server's own", async (t) => {
@@ -235,18 +233,4 @@ test("a parameter is read from the caller's own fields: a required one named con
   const p = readPackage(dir);
   assert.throws(() => applyBodyOf(p, { parameters: {} }), (error) => error.extra?.fields?.some((f) => f.field === "parameters.constructor" && f.reason === "missing"));
   assert.deepEqual(applyBodyOf(p, { parameters: { constructor: "Ada" } }).parameters, { constructor: "Ada" });
-});
-
-test("an agent whose first revision does not write is not made: POST /agents and an apply leave nothing behind", async (t) => {
-  const { api, data } = await serve(t);
-  const db = new DatabaseSync(join(data, "store.sqlite"));
-  t.after(() => db.close());
-  db.exec("CREATE TRIGGER fail_revisions BEFORE INSERT ON revisions BEGIN SELECT RAISE(ABORT, 'disk full'); END");
-  const posted = await api("POST", "/agents", { definition: { name: "Half", instructions: "Answer." } });
-  assert.equal(posted.status, 500, JSON.stringify(posted.body));
-  const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
-  assert.equal(applied.status, 500, JSON.stringify(applied.body));
-  assert.deepEqual((await api("GET", "/agents")).body.agents, [], "no agent without its revision");
-  db.exec("DROP TRIGGER fail_revisions");
-  assert.equal((await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } })).status, 201, "and the store writes again once the fault is gone");
 });

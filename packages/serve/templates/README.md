@@ -26,7 +26,7 @@ Links and other special files are refused anywhere in the folder, and its only f
 |---|---|
 | `name` | Required. The folder's name: lowercase letters, digits and dashes, at most 64. |
 | `display_name` | The agent's name; it may hold `${parameters.<name>}`. Absent: the package's name. |
-| `version` | Required. SemVer 2 (`0.1.0`), kept on the agent as `package.version`. Never `definition.version`, which is the agent's revision number; a bare number is refused. |
+| `version` | Required. SemVer 2 (`0.1.0`), the package's own version. Never `definition.version`, which is the agent's revision number; a bare number is refused. |
 | `description` | Required. Also the agent's description. |
 | `license`, `author` (`{name, email?, url?}`), `repository` | Optional, shown in the list. |
 | `harness` | A preference list (`[pi, claude-agent]`): apply takes the first this server runs, else the first. Absent: the server's default. |
@@ -52,11 +52,9 @@ Links and other special files are refused anywhere in the folder, and its only f
 2. The agent is made through `POST /v2/agents`' own function: named by `display_name` (else the package's name),
    described as the package, its MCP tools granted and allowed where their server is saved, its instructions
    the body with the parameters filled in, its skills and rules as its skill files, its harness and model chosen as
-   above, `thinking` from `effort`, `max_cost_usd` from `budget`. Its revision keeps the record
-   `package: {name, version, source: "builtin", ref: null, sha: null, parameters}`, which `GET /v2/agents/{id}` shows
-   and an edit by hand keeps.
+   above, `thinking` from `effort`, `max_cost_usd` from `budget`.
 3. Each trigger is made on the agent through `POST /v2/triggers`' own function. One the server refuses undoes the
-   apply: the triggers made before it and the agent are deleted, and the refusal is the answer, its fields under
+   apply: the triggers made before it are deleted and the agent is archived, and the refusal is the answer, its fields under
    `triggers.<i>`. A webhook trigger's secret is not in the answer: `POST /v2/triggers/{id}/secret` makes one.
 
 Each apply makes a new agent. The same `Idempotency-Key` and body answers the first apply again and makes nothing.
