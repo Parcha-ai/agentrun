@@ -2458,8 +2458,9 @@ every read after it, until the follow-up's turn runs: nothing waits on a person,
 server stopped before it went, or between starting its process and sending it, sends it when it starts again. One that
 cannot be sent is tried again (after 1 s, then 3 s); after 3 tries the run ends `failed`, saying the cap was raised but
 the run could not be sent on. The follow-up shows in the run's timeline as the server's, "AgentRun: The cap was raised…", never as the
-person's message (its submit names the server as its origin, `cap_raised`). A working run's
-live process keeps the cap it was opened with until its next one, and the answer's `note` says so. The raise is keyed to
+person's message (its submit names the server as its origin, `cap_raised`). A working agentic run's
+live process keeps the cap it was opened with until its next one, and the answer's `note` says so; a working workflow's
+takes the raise at its next paid step (a model node's request, a call, a decision). The raise is keyed to
 the refusal's own start mark, so a row shown after the refusal never reads the run paused again.
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills

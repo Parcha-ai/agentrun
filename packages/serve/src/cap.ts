@@ -711,6 +711,9 @@ export type RunSpend = {
   cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void; now?(): number | null;
   /** Raises the cap this process keeps to `to` (a raise of the run's cap, read by budget.ts): from the next check on. */
   raise?(to: number): void;
+  /** Takes a raise made since the last paid check (budget.ts refresh: a workflow run's cap.json), called before each one,
+   *  so a raise made while the run works holds from its next paid request. */
+  refresh?(): void;
   /** A workflow run's wait for a raise (budget.ts), set once its run opens: a request refused for room waits on it before
    *  it is sent, and is judged again once it resolves true (the cap was raised); false (a cancel, its signal) refuses it
    *  as before. Absent on an agentic run, whose turn ends on the refusal instead. A model request passes its provider
@@ -783,6 +786,8 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
   const spend = runSpend;
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
+    // A raise made since the last paid check holds from this one (a workflow's cap.json, RunSpend.refresh).
+    spend.refresh?.();
     const read = await spend.spent();
     if (read === null) {
       const text = `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.`;
@@ -835,6 +840,8 @@ export async function holdPaid(name: string, hold: { usd: number; basis: string 
     const spend = runSpend;
     if (!spend) return { ticket: { settle: () => undefined, drop: () => undefined } };
     const turn = paying.then(async (): Promise<{ refused: CapRefusal } | { ticket: PaidTicket }> => {
+      // A raise made since the last paid check holds from this one (a workflow's cap.json, RunSpend.refresh).
+      spend.refresh?.();
       const read = await spend.spent();
       if (read === null) return { refused: { words: `${name} was not sent. What the run has spent is unknown, so its cap of ${money(spend.cap)} cannot be kept: the run is out of budget.`, room: false, capUsd: spend.cap } };
       const holding = (spend.held?.() ?? 0) + paidHolds();
@@ -1172,6 +1179,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
    *  words after everything its context holds (`context`), its bytes admitted with it. Only in this one request: pi's
    *  transcript never holds the note, and no input is queued, so the run spends nothing after the model answers. */
   const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
+    // A raise made since the last request holds from this one (a workflow's cap.json, RunSpend.refresh).
+    own.refresh?.();
     const judged = judgeOne(model, context, options, simpleCall, turn);
     if (!("hold" in judged) || !wrapUp || wrapUp.sent || wrapUp.pending || !turn || model.id !== wrapUp.model) return judged;
     const spentUsd = spentNow();

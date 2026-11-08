@@ -333,6 +333,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // A model request's provider session names its node (the node runner's onNodeOpen, below); else the step its async
     // context gives.
     spend.wait = (refusal, signal, sessionId) => waits.wait(refusal, signal, stepNow(), sessionId);
+    // Each paid check takes a raise made while the run works (cap.json), not only the next wait.
+    spend.refresh = () => waits.refresh();
     spend.stopped = (refusal, sessionId) => waits.record(refusal, stepNow(), sessionId);
   }
   /** `fn`, a step of the run (a node, a call, a decision) named by its params, counted in flight for the pause's let-go. */

@@ -15,7 +15,7 @@
 // keeps its words and node, the step throws CapStop, which no collecting map takes for an item's failure, and the server
 // ends the run failed with `spend_cap_reached` in those words.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CAP_TOLERANCE, type CapRefusal, type RunSpend, SPEND_CAP_REACHED } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
@@ -119,7 +119,25 @@ export function budgetWaits(root: string, spend: RunSpend, { holdMs = BUDGET_HOL
     if (raised !== undefined && raised > spend.cap + CAP_TOLERANCE) spend.raise?.(raised);
     return spend.cap > capUsd + CAP_TOLERANCE;
   };
+  /** cap.json's time and size when it was last read by refresh. */
+  let capStamp: string | undefined;
   return {
+    /** A raise the run's process has not taken yet, taken: cap.json read when it changed (one stat a call), and the
+     *  spend's cap moved to it. Called before each paid check (RunSpend.refresh), so a raise made while the run works holds
+     *  from its next paid request, never only from the next wait. */
+    refresh(): void {
+      let stamp: string | undefined;
+      try {
+        const stat = statSync(join(root, CAP_RAISED));
+        stamp = `${stat.mtimeMs}:${stat.size}`;
+      } catch {
+        stamp = undefined;
+      }
+      if (stamp === undefined || stamp === capStamp) return;
+      capStamp = stamp;
+      const raised = raisedIn(root);
+      if (raised !== undefined && raised > spend.cap + CAP_TOLERANCE) spend.raise?.(raised);
+    },
     /** `fn`, counted as a step in flight while it runs, unless it is another step's work (counted there): a step at the
      *  execution path of one in flight (`pathOf`, from its params) is that one's; with no path, one run inside another's
      *  async context is. */
