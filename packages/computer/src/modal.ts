@@ -21,17 +21,21 @@ import {
 } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
-import { checkMount, type MountKind, type MountReadBack, readBackOf, WORKSPACE } from "./mount.js";
+import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
 import {
 	ARCHIL_HELPER,
 	ARCHIL_TOOL_UID,
 	type ArchilMount,
 	type ArchilRoot,
 	archilMount,
-	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	claimEpoch,
+	mountDrift,
 	type ProviderNote,
+	type RecordedArchil,
+	readArchilMount,
+	recordedArchil as recordedArchilOf,
 	syncingClient,
 } from "./mount-archil.js";
 import {
@@ -639,56 +643,23 @@ function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
 	return { other: `the tag ${SPEC_TAG} names no network this provider makes` };
 }
 
-/** An Archil mount a spec tag records: its source, and what it must read back as, under the computer's epoch label. */
-interface RecordedArchil {
-	/** The source as recorded; none when the tag records a mount this provider never makes. */
-	mount?: Omit<ArchilMount, "token">;
-	/** The computer's agentrun.epoch label, when it reads as one. */
-	epoch?: number;
-	/** What the mount must read back as: readBackOf under the label's epoch, or a mount in words. */
-	expected: MountReadBack;
-}
-
-/** The Archil mount a computer's spec tag records, or undefined when it records none. */
+/**
+ * The Archil mount a computer's spec tag records (recordedArchilOf, shared), or undefined when it records none: the
+ * tag's mount, under the epoch the tag recorded it at, which must be the label's.
+ */
 function recordedArchil(tags: Record<string, string>): RecordedArchil | undefined {
 	const recorded = recordedOf(tags);
 	if (typeof recorded === "string" || recorded.mount === undefined) return undefined;
 	const read = epochOf(tags);
-	const epoch = read.ok ? { epoch: read.value } : {};
 	const { kind, disk, region, folder, epoch: was } = (recorded.mount ?? {}) as Record<string, unknown>;
 	if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof folder !== "string") {
-		return { ...epoch, expected: { other: `the tag ${SPEC_TAG} records a mount this provider never makes` } };
+		return recordedArchilOf(tags, { other: `the tag ${SPEC_TAG} records a mount this provider never makes` });
 	}
 	const mount = { kind, disk, region, folder } as const;
 	if (read.ok && was !== read.value) {
-		return { mount, ...epoch, expected: { other: `the tag ${SPEC_TAG} records the mount under epoch ${show(was)}, yet the label ${EPOCH_LABEL} reads ${read.value}` } };
+		return recordedArchilOf(tags, { mount, other: `the tag ${SPEC_TAG} records the mount under epoch ${show(was)}, yet the label ${EPOCH_LABEL} reads ${read.value}` });
 	}
-	return { mount, ...epoch, expected: readBackOf({ ...mount, token: "" }, epoch.epoch) };
-}
-
-/** A mount read-back in words. */
-function mountWords(mount: MountReadBack): string {
-	if ("other" in mount) return mount.other;
-	if (mount.kind === "bind") return `a bind of ${mount.path}`;
-	return `archil ${mount.disk}:/${mount.folder} in ${mount.region}, ${mount.exclusive ? "exclusive" : "not exclusive"}, epoch ${mount.epoch}`;
-}
-
-/** How the mount read back from inside (undefined: nothing at /workspace) differs from the one expected. */
-function mountDrift(expected: MountReadBack, read: MountReadBack | undefined): string[] {
-	if ("other" in expected) return [`mount: ${expected.other}`];
-	if (read === undefined) return [`mount: declared ${mountWords(expected)}, yet nothing is mounted at ${WORKSPACE}`];
-	const same =
-		!("other" in read) &&
-		read.kind === expected.kind &&
-		(read.kind === "bind"
-			? expected.kind === "bind" && read.path === expected.path
-			: expected.kind === "archil" &&
-				read.disk === expected.disk &&
-				read.region === expected.region &&
-				read.folder === expected.folder &&
-				read.exclusive === expected.exclusive &&
-				read.epoch === expected.epoch);
-	return same ? [] : [`mount: declared ${mountWords(expected)}, read back ${mountWords(read)}`];
+	return recordedArchilOf(tags, { mount });
 }
 
 /** Every way the probe's report differs from what the computer should be. */
@@ -1040,21 +1011,8 @@ export class ModalProvider implements ComputerProvider {
 	 * What is mounted at /workspace, read from inside through computerd (its /proc/self/mounts), exclusive when the
 	 * resident serve answers a sync; undefined when nothing is mounted there.
 	 */
-	async #readMount(connection: ComputerConnection, name: string, { mount, epoch }: Pick<RecordedArchil, "mount" | "epoch">, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
-		const bound = within(this.#timeouts.helloMs, signal);
-		try {
-			const table = await connection.client.call("files.read", { path: "/proc/self/mounts" }, { signal: bound.signal });
-			if (!table.ok) {
-				if (signal?.aborted) return fail("aborted", `reading the mount table in ${name} was aborted`);
-				return fail(table.error.code === "aborted" ? "timeout" : table.error.code, `reading the mount table in ${name}: ${table.error.message}`);
-			}
-			const synced = await connection.client.call("mount.sync", {}, { signal: bound.signal });
-			if (signal?.aborted) return fail("aborted", `the sync in ${name} was aborted`);
-			const mounts = Buffer.from(table.value.data, "base64").toString("utf8");
-			return ok(archilReadBack({ mounts, epoch, served: synced.ok && synced.value.exitCode === 0, ...(mount === undefined ? {} : { recorded: mount }) }));
-		} finally {
-			bound.clear();
-		}
+	#readMount(connection: ComputerConnection, name: string, archil: Pick<RecordedArchil, "mount" | "epoch">, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
+		return readArchilMount(connection.client, archil, { name, timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
 	}
 
 	/**
@@ -1471,13 +1429,6 @@ export class ModalProvider implements ComputerProvider {
 		if (finished.ok) return ok(undefined);
 		return fail(finished.error.code, `release delete of ${ref.name} is not done: ${finished.error.message}`);
 	}
-}
-
-/** The claim epoch of labels check() has held to it. */
-function claimEpoch(labels: Record<string, string> | undefined): number {
-	const read = epochOf(labels);
-	if (!read.ok) throw new TypeError(read.error.message);
-	return read.value;
 }
 
 /** A refusal for a computer whose spec tag records a root user, before any exec in it (see ROOT); else undefined. */

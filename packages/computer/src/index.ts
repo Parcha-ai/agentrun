@@ -37,7 +37,13 @@ export {
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	claimEpoch,
 	helperSha256,
+	mountDrift,
+	mountWords,
+	type RecordedArchil,
+	readArchilMount,
+	recordedArchil,
 	recordedMount,
 	syncingClient,
 } from "./mount-archil.js";

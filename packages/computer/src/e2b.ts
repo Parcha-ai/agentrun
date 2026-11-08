@@ -14,8 +14,8 @@ import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
-import { epochOf, RUN_LABEL } from "./labels.js";
-import { checkMount, type MountKind, type MountReadBack, readBackOf, WORKSPACE } from "./mount.js";
+import { RUN_LABEL } from "./labels.js";
+import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
 import {
 	ARCHIL_HELPER,
 	ARCHIL_MOUNT_LABEL,
@@ -24,10 +24,14 @@ import {
 	type ArchilRoot,
 	archilLabels,
 	archilMount,
-	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	claimEpoch,
+	mountDrift,
 	type ProviderNote,
+	type RecordedArchil,
+	readArchilMount,
+	recordedArchil as recordedArchilOf,
 	recordedMount,
 	syncingClient,
 } from "./mount-archil.js";
@@ -531,49 +535,11 @@ function networkOf(info: E2BSandboxInfo, publicStream: boolean): NetworkPolicy {
 
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 
-/** An Archil mount a computer's metadata records: its source, and what it must read back as, under its epoch label. */
-interface RecordedArchil {
-	/** The source as the label records it; none when the label is not one this provider writes. */
-	mount?: Omit<ArchilMount, "token">;
-	/** The computer's agentrun.epoch label, when it reads as one. */
-	epoch?: number;
-	/** What the mount must read back as: readBackOf under the label's epoch, or a mount in words. */
-	expected: MountReadBack;
-}
-
-/** The Archil mount a computer's agentrun.mount label records, or undefined when it carries none. */
+/** The Archil mount a computer's agentrun.mount label records (recordedArchilOf, shared), or undefined when it has none. */
 function recordedArchil(metadata: Record<string, string> | undefined): RecordedArchil | undefined {
 	if (metadata?.[ARCHIL_MOUNT_LABEL] === undefined) return undefined;
-	const read = epochOf(metadata);
-	const epoch = read.ok ? { epoch: read.value } : {};
 	const mount = recordedMount(metadata);
-	if (mount === undefined) return { ...epoch, expected: { other: `the label ${ARCHIL_MOUNT_LABEL} records a mount this provider never makes` } };
-	return { mount, ...epoch, expected: readBackOf({ ...mount, token: "" }, epoch.epoch) };
-}
-
-/** A mount read-back in words. */
-function mountWords(mount: MountReadBack): string {
-	if ("other" in mount) return mount.other;
-	if (mount.kind === "bind") return `a bind of ${mount.path}`;
-	return `archil ${mount.disk}:/${mount.folder} in ${mount.region}, ${mount.exclusive ? "exclusive" : "not exclusive"}, epoch ${mount.epoch}`;
-}
-
-/** How the mount read back from inside (undefined: nothing at /workspace) differs from the one expected. */
-function mountDrift(expected: MountReadBack, read: MountReadBack | undefined): string[] {
-	if ("other" in expected) return [`mount: ${expected.other}`];
-	if (read === undefined) return [`mount: declared ${mountWords(expected)}, yet nothing is mounted at ${WORKSPACE}`];
-	const same =
-		!("other" in read) &&
-		read.kind === expected.kind &&
-		(read.kind === "bind"
-			? expected.kind === "bind" && read.path === expected.path
-			: expected.kind === "archil" &&
-				read.disk === expected.disk &&
-				read.region === expected.region &&
-				read.folder === expected.folder &&
-				read.exclusive === expected.exclusive &&
-				read.epoch === expected.epoch);
-	return same ? [] : [`mount: declared ${mountWords(expected)}, read back ${mountWords(read)}`];
+	return recordedArchilOf(metadata, mount === undefined ? { other: `the label ${ARCHIL_MOUNT_LABEL} records a mount this provider never makes` } : { mount });
 }
 
 /** One word for a shell: single-quoted. */
@@ -620,13 +586,6 @@ let diagnoseWith: (provider: E2BProvider, image: string, signal?: AbortSignal) =
  */
 export function diagnoseNetworkNone(provider: E2BProvider, { image, signal }: { image: string; signal?: AbortSignal }): Promise<E2BNetworkDiagnosis> {
 	return diagnoseWith(provider, image, signal);
-}
-
-/** The claim epoch of labels check() has held to it. */
-function claimEpoch(labels: Record<string, string> | undefined): number {
-	const read = epochOf(labels);
-	if (!read.ok) throw new TypeError(read.error.message);
-	return read.value;
 }
 
 /** Why ref is not an E2B computer's ref, or undefined. */
@@ -1028,17 +987,8 @@ export class E2BProvider implements ComputerProvider {
 	 * What is mounted at /workspace, read from inside through computerd (its /proc/self/mounts), exclusive when the
 	 * resident serve answers a sync; undefined when nothing is mounted there.
 	 */
-	async #readMount(connection: ComputerConnection, name: string, { mount, epoch }: Pick<RecordedArchil, "mount" | "epoch">, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
-		const { helloMs } = this.#timeouts;
-		const table = await connection.client.call("files.read", { path: "/proc/self/mounts" }, { signal: this.#bounded(helloMs, signal) });
-		if (!table.ok) {
-			if (signal?.aborted) return fail("aborted", `reading the mount table in ${name} was aborted`);
-			return fail(table.error.code === "aborted" ? "timeout" : table.error.code, `reading the mount table in ${name}: ${table.error.message}`);
-		}
-		const synced = await connection.client.call("mount.sync", {}, { signal: this.#bounded(helloMs, signal) });
-		if (signal?.aborted) return fail("aborted", `the sync in ${name} was aborted`);
-		const mounts = Buffer.from(table.value.data, "base64").toString("utf8");
-		return ok(archilReadBack({ mounts, epoch, served: synced.ok && synced.value.exitCode === 0, ...(mount === undefined ? {} : { recorded: mount }) }));
+	#readMount(connection: ComputerConnection, name: string, archil: Pick<RecordedArchil, "mount" | "epoch">, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
+		return readArchilMount(connection.client, archil, { name, timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
 	}
 
 	/**

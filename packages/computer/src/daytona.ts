@@ -19,10 +19,10 @@ import {
 	type ArchilRoot,
 	archilLabels,
 	archilMount,
-	archilReadBack,
 	archilRefusals,
 	archilRelease,
 	type ProviderNote,
+	readArchilMount,
 	recordedMount,
 	syncingClient,
 } from "./mount-archil.js";
@@ -901,13 +901,8 @@ export class DaytonaProvider implements ComputerProvider {
 	 * What an Archil computer mounts at /workspace, read back through its computerd: the mount table, and whether the
 	 * resident serve answers (exclusive), under `epoch`, the computer's label.
 	 */
-	async #mountReadBack(client: ComputerClient, epoch: number | undefined, recorded: Omit<ArchilMount, "token"> | undefined, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
-		const bounded = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(this.#timeouts.helloMs)]) : AbortSignal.timeout(this.#timeouts.helloMs));
-		const table = await client.call("files.read", { path: "/proc/self/mounts" }, { signal: bounded() });
-		if (!table.ok) return fail(table.error.code, `reading the computer's mount table: ${table.error.message}`);
-		const served = await client.call("mount.sync", {}, { signal: bounded() });
-		const mounts = Buffer.from(table.value.data, "base64").toString("utf8");
-		return ok(archilReadBack({ mounts, epoch, served: served.ok && served.value.exitCode === 0, ...(recorded ? { recorded } : {}) }));
+	#mountReadBack(client: ComputerClient, epoch: number | undefined, recorded: Omit<ArchilMount, "token"> | undefined, signal?: AbortSignal): Promise<Result<MountReadBack | undefined>> {
+		return readArchilMount(client, { ...(recorded ? { mount: recorded } : {}), ...(epoch === undefined ? {} : { epoch }) }, { name: "the computer", timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
 	}
 
 	/**

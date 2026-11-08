@@ -307,3 +307,80 @@ export async function archilRelease({ root, client, timeoutMs, signal }: { root:
 	const words = [syncWords === undefined ? undefined : `the final sync failed (${syncWords}), so writes since the last sync may be lost`, checkinWords].filter(Boolean);
 	return fail(checkin.ok ? "refused" : checkin.error.code, `the run's folder was not let go cleanly: ${words.join("; ")}`);
 }
+
+/** An Archil mount a computer records (a label, a tag), and what it must read back as under its epoch label. */
+export interface RecordedArchil {
+	/** The source as recorded; none when what is recorded is not a mount this provider makes. */
+	mount?: Omit<ArchilMount, "token">;
+	/** The computer's agentrun.epoch label, when it reads as one. */
+	epoch?: number;
+	/** What the mount must read back as: readBackOf under the label's epoch, or a mount in words. */
+	expected: MountReadBack;
+}
+
+/**
+ * The Archil mount a computer records, from what its provider read of it (`recorded`: the mount, and words when what is
+ * recorded is not one this provider makes, or not under the label's epoch; undefined for none at all), under the epoch
+ * of its `labels`.
+ */
+export function recordedArchil(labels: Record<string, string> | undefined, recorded: { mount?: Omit<ArchilMount, "token">; other?: string } | undefined): RecordedArchil | undefined {
+	if (recorded === undefined) return undefined;
+	const read = epochOf(labels);
+	const epoch = read.ok ? { epoch: read.value } : {};
+	const mount = recorded.mount === undefined ? {} : { mount: recorded.mount };
+	if (recorded.other !== undefined || recorded.mount === undefined) return { ...mount, ...epoch, expected: { other: recorded.other ?? "a mount this provider never makes" } };
+	return { mount: recorded.mount, ...epoch, expected: readBackOf({ ...recorded.mount, token: "" }, epoch.epoch) };
+}
+
+/** A mount read-back in words. */
+export function mountWords(mount: MountReadBack): string {
+	if ("other" in mount) return mount.other;
+	if (mount.kind === "bind") return `a bind of ${mount.path}`;
+	return `archil ${mount.disk}:/${mount.folder} in ${mount.region}, ${mount.exclusive ? "exclusive" : "not exclusive"}, epoch ${mount.epoch}`;
+}
+
+/** How the mount read back from inside (undefined: nothing at /workspace) differs from the one expected, in words. */
+export function mountDrift(expected: MountReadBack, read: MountReadBack | undefined): string[] {
+	if ("other" in expected) return [`mount: ${expected.other}`];
+	if (read === undefined) return [`mount: declared ${mountWords(expected)}, yet nothing is mounted at ${WORKSPACE}`];
+	const same =
+		!("other" in read) &&
+		read.kind === expected.kind &&
+		(read.kind === "bind"
+			? expected.kind === "bind" && read.path === expected.path
+			: expected.kind === "archil" &&
+				read.disk === expected.disk &&
+				read.region === expected.region &&
+				read.folder === expected.folder &&
+				read.exclusive === expected.exclusive &&
+				read.epoch === expected.epoch);
+	return same ? [] : [`mount: declared ${mountWords(expected)}, read back ${mountWords(read)}`];
+}
+
+/**
+ * What a computer mounts at /workspace, read back through its computerd: its mount table, then whether the resident
+ * serve answers a sync (exclusive), under `epoch`, the computer's label; each call bounded by timeoutMs and the signal.
+ */
+export async function readArchilMount(
+	client: ComputerClient,
+	{ mount, epoch }: Pick<RecordedArchil, "mount" | "epoch">,
+	{ name, timeoutMs, signal }: { name: string; timeoutMs: number; signal?: AbortSignal },
+): Promise<Result<MountReadBack | undefined>> {
+	const bounded = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs));
+	const table = await client.call("files.read", { path: "/proc/self/mounts" }, { signal: bounded() });
+	if (!table.ok) {
+		if (signal?.aborted) return fail("aborted", `reading the mount table in ${name} was aborted`);
+		return fail(table.error.code === "aborted" ? "timeout" : table.error.code, `reading the mount table in ${name}: ${table.error.message}`);
+	}
+	const synced = await client.call("mount.sync", {}, { signal: bounded() });
+	if (signal?.aborted) return fail("aborted", `the sync in ${name} was aborted`);
+	const mounts = Buffer.from(table.value.data, "base64").toString("utf8");
+	return ok(archilReadBack({ mounts, epoch, served: synced.ok && synced.value.exitCode === 0, ...(mount === undefined ? {} : { recorded: mount }) }));
+}
+
+/** The claim epoch of labels check() has held to it (archilRefusals): a caller's mistake otherwise, so it throws. */
+export function claimEpoch(labels: Record<string, string> | undefined): number {
+	const read = epochOf(labels);
+	if (!read.ok) throw new TypeError(read.error.message);
+	return read.value;
+}
