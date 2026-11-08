@@ -39,7 +39,7 @@ test("the provider names the uid:gid a computer runs as by default: the user a b
 test("check() takes a bind of an existing run folder, and refuses an Archil mount in words that never hold the token, with no docker call", async () => {
 	const { provider, calls } = fakeDocker();
 	assert.deepEqual(provider.check({ ...SPEC, mount: bind(runFolder()) }), []);
-	const archil = { ...SPEC, mount: { kind: "archil", disk: "d", folder: "runs/r", token: TOKEN } };
+	const archil = { ...SPEC, mount: { kind: "archil", disk: "d", region: "aws-us-east-1", folder: "runs/r", token: TOKEN } };
 	const refused = provider.check(archil);
 	assert.deepEqual(refused.map((r) => r.field), ["mount"]);
 	assert.match(refused[0].message, /does not take a mount of kind archil; it takes bind/);

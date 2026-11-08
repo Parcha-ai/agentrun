@@ -163,7 +163,8 @@ function fakeDaemon(hello, computer) {
  * - `brokenMount`: "unbound" (the mount is read back, but nothing is bound at /workspace), "no-read-back" (attach and
  *   list report no mount), "token-in-read-back" (attach reports the token), "token-in-label" (the computer carries the
  *   token as a label), "check-ignores" (check() takes any mount kind, declared or not), "host-refuses" (check()
- *   refuses even a kind the provider declares, as a Docker host that remaps user ids refuses a bind).
+ *   refuses even a kind the provider declares, as a Docker host that remaps user ids refuses a bind), "no-region"
+ *   (an Archil mount reads back without its region).
  */
 export function fakeComputers({
 	id = "fake",
@@ -206,7 +207,8 @@ export function fakeComputers({
 	const readBack = (asked) => {
 		if (asked === undefined || brokenMount === "no-read-back") return {};
 		if (asked.kind === "bind") return { mount: { kind: "bind", path: asked.path } };
-		return { mount: { kind: "archil", disk: asked.disk, folder: asked.folder, ...(brokenMount === "token-in-read-back" ? { token: asked.token } : {}) } };
+		const region = brokenMount === "no-region" ? {} : { region: asked.region };
+		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, ...(brokenMount === "token-in-read-back" ? { token: asked.token } : {}) } };
 	};
 	const folderOf = (asked) => {
 		if (asked === undefined || brokenMount === "unbound") return undefined;
@@ -364,7 +366,7 @@ export function fakeRunFolders() {
 		if (kind !== "archil") return undefined;
 		const folder = `runs/${randomBytes(4).toString("hex")}`;
 		mkdirSync(join(diskDir(), folder), { recursive: true });
-		return at(join(diskDir(), folder), { kind: "archil", disk: "fake-disk", folder, token: `archil-token-${randomBytes(8).toString("hex")}` });
+		return at(join(diskDir(), folder), { kind: "archil", disk: "fake-disk", region: "fake-region-1", folder, token: `archil-token-${randomBytes(8).toString("hex")}` });
 	};
 	const disks = {
 		get "fake-disk"() {

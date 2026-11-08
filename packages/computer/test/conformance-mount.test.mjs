@@ -87,6 +87,7 @@ const BROKEN = [
 	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "unbound" }, /^files\.read: not_found: /],
 	["mount.run-folder-bind", { mount: ["bind"], brokenMount: "no-read-back" }, /^attach by id: the mount it reads back: expected \{"kind":"bind","path":".*"\}, got undefined$/],
 	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "token-in-read-back" }, /^attach by id: the mount it reads back holds the Archil token$/],
+	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "no-region" }, /^attach by id: the mount it reads back: expected \{"kind":"archil","disk":"fake-disk","region":"fake-region-1","folder":"runs\/[0-9a-f]+"\}, got \{"kind":"archil","disk":"fake-disk","folder":/],
 	["mount.run-folder-archil", { mount: ["archil"], brokenMount: "token-in-label" }, /^list: what it reads back of the computer holds the Archil token$/],
 	// A provider that declares a kind its host cannot give (a Docker host that remaps ids, for a bind) fails, in its words.
 	["mount.run-folder-bind", { mount: ["bind"], brokenMount: "host-refuses" }, /^check refuses a spec that mounts the run's folder of kind bind, which the provider declares: mount: this host cannot bind the run folder$/],
