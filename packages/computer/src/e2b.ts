@@ -960,11 +960,13 @@ export class E2BProvider implements ComputerProvider {
 	 */
 	async #open(sandbox: E2BSandbox, name: string, signal?: AbortSignal, helloMs = this.#timeouts.helloMs): Promise<Result<ComputerConnection> & { notListening?: true }> {
 		const { requestMs } = this.#timeouts;
+		const what = `starting the daemon's stdio bridge in ${name}`;
+		if (signal?.aborted) return fail("aborted", `${what} was aborted before it was called`);
 		const readable = new PassThrough();
 		let stderr = "";
-		const started = await call(
-			`starting the daemon's stdio bridge in ${name}`,
-			() =>
+		let starting: Promise<E2BCommandHandle>;
+		try {
+			starting = Promise.resolve(
 				sandbox.commands.run(childCommands().stdio, {
 					background: true,
 					stdin: true,
@@ -979,10 +981,22 @@ export class E2BProvider implements ComputerProvider {
 						stderr = (stderr + data).slice(-4096);
 					},
 				}),
-			requestMs + CALL_SLACK_MS,
-			signal,
-		);
-		if (!started.ok) return started;
+			);
+		} catch (error) {
+			return fail(codeOf(error), `${what} failed: ${words(error)}`);
+		}
+		const started = await race(starting, what, requestMs + CALL_SLACK_MS, signal);
+		if (!started.ok) {
+			// The bridge has no command timeout: one envd starts after this was given up on is killed as it lands.
+			if (started.error.code === "timeout" || started.error.code === "aborted") {
+				starting.then(
+					(late) => void this.#endBridge(late),
+					() => {},
+				);
+				return fail(started.error.code, `${started.error.message}; a bridge that starts after this is killed`);
+			}
+			return started;
+		}
 		const handle = started.value;
 		// The bridge's end, for any reason, ends what the client reads.
 		handle.wait().then(
@@ -1002,8 +1016,7 @@ export class E2BProvider implements ComputerProvider {
 		const close = () =>
 			(closed ??= (async () => {
 				client.close();
-				await call("the stdio bridge's kill", () => handle.kill(), requestMs).catch(() => {});
-				await handle.disconnect().catch(() => {});
+				await this.#endBridge(handle);
 			})());
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: this.#bounded(helloMs, signal) });
 		if (!hello.ok) {
@@ -1014,6 +1027,12 @@ export class E2BProvider implements ComputerProvider {
 			return { ...fail("e2b", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value as HelloResult, close });
+	}
+
+	/** Kills a stdio bridge and lets go of its stream, each bounded and never thrown: a connection's close, or a late start. */
+	async #endBridge(handle: E2BCommandHandle): Promise<void> {
+		await call("the stdio bridge's kill", () => handle.kill(), this.#timeouts.requestMs).catch(() => {});
+		await call("the stdio bridge's disconnect", () => handle.disconnect(), this.#timeouts.requestMs).catch(() => {});
 	}
 
 	/** `computerd probe` through the daemon, so it runs as the computer's own user. */

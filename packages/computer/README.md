@@ -1283,7 +1283,9 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
 5. `connect()` starts `computerd stdio` the same way, as root, with `stdin: true` and `retainOutput: false` (so a long
    connection keeps no copy of its output, `index.mjs:2708-2711`, `5150-5153`): its stdout comes through `onStdout`
    (decoded as a stream, `index.mjs:2860`), and requests go in with `sendStdin`, one call after another.
-   `close()` kills the bridge (SIGKILL, `index.mjs:5092-5095`), which ends nothing else.
+   `close()` kills the bridge (SIGKILL, `index.mjs:5092-5095`), which ends nothing else, and disconnects from it. The
+   bridge has no command timeout, so one whose start answers after the call gave up on it (its bound passed, or the
+   caller aborted) is killed and disconnected as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
    shared with Docker). Hello re-checks the display on every call, so `connect()` refuses a desktop whose X server has
