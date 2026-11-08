@@ -33,8 +33,8 @@ const workflow = {
 };
 
 // What the step keeps: the conversation it runs in, by the session the driver admitted; and the record its tool took.
-const Nodes = defineDocFamily({ kind: 'crash.nodes', version: 1, scope: 'session', family: true, initial: () => ({ conversation: null }) });
-const Record = defineDoc({ kind: 'crash.record', version: 1, scope: 'conversation', history: 'latest', fork: 'initial', initial: () => ({ record: null }) });
+const Nodes = defineDocFamily({ kind: 'crash.nodes', version: 1, scope: 'session', family: true, checkpointWhen: () => false, initial: () => ({ conversation: null }) });
+const Record = defineDoc({ kind: 'crash.record', version: 1, scope: 'conversation', history: 'latest', fork: 'initial', checkpointWhen: () => false, initial: () => ({ record: null }) });
 const submit = defineTool({
   name: 'submit', description: "Submit the step's record.", parameters: Type.Object({ verdict: Type.String() }), replay: 'safe',
   execute: async (args, api, context) => {

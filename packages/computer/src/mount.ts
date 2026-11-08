@@ -8,9 +8,10 @@ export const WORKSPACE = "/workspace";
 
 /**
  * The run's folder, mounted at WORKSPACE. bind: a folder on the provider's host, bound in (the local Docker computer).
- * archil: the run's folder inside an Archil disk, mounted in the computer with the disk's token (a remote computer).
+ * archil: the run's folder inside an Archil disk in its region, mounted in the computer with the disk's token (a remote
+ * computer).
  */
-export type MountSpec = { kind: "bind"; path: string } | { kind: "archil"; disk: string; folder: string; token: string };
+export type MountSpec = { kind: "bind"; path: string } | { kind: "archil"; disk: string; region: string; folder: string; token: string };
 export type MountKind = MountSpec["kind"];
 export const MOUNT_KINDS: readonly MountKind[] = ["bind", "archil"];
 
@@ -18,17 +19,17 @@ export const MOUNT_KINDS: readonly MountKind[] = ["bind", "archil"];
  * A computer's mount as read back from the computer itself: its kind and where it comes from, never the token. `other`
  * is a mount at WORKSPACE the provider never makes (read-only, a volume), in words.
  */
-export type MountReadBack = { kind: "bind"; path: string } | { kind: "archil"; disk: string; folder: string } | { other: string };
+export type MountReadBack = { kind: "bind"; path: string } | { kind: "archil"; disk: string; region: string; folder: string } | { other: string };
 
-const SHAPE = 'mount is { kind: "bind", path } or { kind: "archil", disk, folder, token }';
-const FIELDS: Record<MountKind, readonly string[]> = { bind: ["kind", "path"], archil: ["kind", "disk", "folder", "token"] };
+const SHAPE = 'mount is { kind: "bind", path } or { kind: "archil", disk, region, folder, token }';
+const FIELDS: Record<MountKind, readonly string[]> = { bind: ["kind", "path"], archil: ["kind", "disk", "region", "folder", "token"] };
 const NUL = "a NUL byte cannot be passed to a mount";
 const filled = (value: unknown): value is string => typeof value === "string" && value !== "";
 
 /**
  * The one mount rule, with no vendor call: no mount is no refusal; a kind the provider does not declare is refused in
  * words; a bind's path is absolute, canonical (its own realpath: what a provider reads back is what is bound), an
- * existing directory on the host, with no NUL; an Archil mount's disk, folder and token are non-empty strings with no
+ * existing directory on the host, with no NUL; an Archil mount's disk, region, folder and token are non-empty strings with no
  * NUL, the folder relative to the disk's root and never above it. Each refusal names a field, never an Archil value.
  */
 export function checkMount(mount: unknown, declared: readonly MountKind[] | undefined): Refusal[] {
@@ -68,10 +69,12 @@ function bindRefusals(path: unknown): string[] {
 }
 
 /** An Archil mount's refusals, by field: no value is ever in them, since the token may be in any field by mistake. */
-function archilRefusals({ disk, folder, token }: Record<string, unknown>): string[] {
+function archilRefusals({ disk, region, folder, token }: Record<string, unknown>): string[] {
 	const found: string[] = [];
 	if (!filled(disk)) found.push("mount.disk is required: the Archil disk's name");
 	else if (disk.includes("\0")) found.push(`mount.disk: ${NUL}`);
+	if (!filled(region)) found.push("mount.region is required: the Archil disk's region");
+	else if (region.includes("\0")) found.push(`mount.region: ${NUL}`);
 	if (!filled(folder)) found.push("mount.folder is required: the run's folder inside the disk, relative to its root");
 	else if (folder.includes("\0")) found.push(`mount.folder: ${NUL}`);
 	else if (folder.startsWith("/")) found.push("mount.folder must be relative to the disk's root");
@@ -83,5 +86,5 @@ function archilRefusals({ disk, folder, token }: Record<string, unknown>): strin
 
 /** What a provider reads back of a mount it made as asked: its kind and source, never the token. */
 export function readBackOf(mount: MountSpec): MountReadBack {
-	return mount.kind === "bind" ? { kind: "bind", path: mount.path } : { kind: "archil", disk: mount.disk, folder: mount.folder };
+	return mount.kind === "bind" ? { kind: "bind", path: mount.path } : { kind: "archil", disk: mount.disk, region: mount.region, folder: mount.folder };
 }

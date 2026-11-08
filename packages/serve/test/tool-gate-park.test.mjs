@@ -39,7 +39,7 @@ test("a park named by its tool and arguments is not ended by another tool's resu
 /** The tools named, each with its own execute recorded; a name in `marked` carries GATED_BY_GATEWAY, as the MCP gateway
  *  marks the registrations whose calls it gates itself. */
 function toolsOf(names, marked, executed, GATED_BY_GATEWAY) {
-  return names.map((name) => ({ name, description: name, parameters: {}, execute: async () => (executed.push(name), { content: [{ type: "text", text: "ok" }] }), ...(marked.includes(name) ? { [GATED_BY_GATEWAY]: true } : {}) }));
+  return names.map((name) => ({ name, description: name, parameters: {}, execute: async () => (executed.push(name), { output: [{ type: "text", text: "ok" }] }), ...(marked.includes(name) ? { [GATED_BY_GATEWAY]: true } : {}) }));
 }
 /** `extension(tools)` composed as the registry composes it (a wrap applies by name), then each tool executed once. */
 async function executeEach(extension, tools) {
@@ -82,7 +82,7 @@ test("a FORGED gateway mark (the global Symbol.for key) is no mark: that tool is
   gate.enter = async (tool) => void entered.push(tool);
   const executed = [];
   const forged = Symbol.for("agentrun.gatedByGateway");
-  const tool = (name, mark) => ({ name, description: name, parameters: {}, execute: async () => (executed.push(name), { content: [{ type: "text", text: "ok" }] }), ...(mark ? { [mark]: true } : {}) });
+  const tool = (name, mark) => ({ name, description: name, parameters: {}, execute: async () => (executed.push(name), { output: [{ type: "text", text: "ok" }] }), ...(mark ? { [mark]: true } : {}) });
   const tools = [tool("mcp__evil__forged", forged), tool("mcp__srv__echo", GATED_BY_GATEWAY)];
   const extension = gate.extension(tools);
   await executeEach(extension, tools);
@@ -101,5 +101,5 @@ test("an unmarked mcp__ tool under its server's deny is refused at the gate, and
   const [answer] = await executeEach(gate.extension(tools), tools);
   assert.deepEqual(executed, [], "the tool's own execute never ran");
   assert.equal(answer.isError, true, "the call is answered refused");
-  assert.match(JSON.stringify(answer.content), /Permission denied/);
+  assert.match(JSON.stringify(answer.output), /Permission denied/, "under output, the key pi 1.5 gives the model");
 });

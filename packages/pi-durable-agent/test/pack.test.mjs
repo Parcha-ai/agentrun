@@ -734,7 +734,7 @@ test("a SQLite file in work/ with a -wal beside it is refused, not packed half w
 test("a pack its own reader refuses is not written", skip, async () => {
   const f = await fixture();
   // A definition with a field the format does not keep, as an older or buggy writer could have stored it.
-  const Definition = defineDoc({ kind: "agent.definition", version: 1, scope: "session", initial: () => ({}) });
+  const Definition = defineDoc({ kind: "agent.definition", version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({}) });
   const session = await openSession(f.agentStore);
   await session.commit(async (tx) => { Object.assign(await tx.doc(Definition), { model: "gpt-x" }); }, ctx);
   await session.close(ctx);

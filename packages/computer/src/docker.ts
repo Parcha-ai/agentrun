@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, type Stats, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DaemonClient } from "./client.js";
 import {
@@ -25,7 +26,7 @@ import {
 	tmpfsOf,
 	WORK,
 } from "./drift.js";
-import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
+import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mount.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -70,6 +71,56 @@ export interface DockerProviderOptions {
 	 *  its spec asks. */
 	user?: string;
 }
+
+/** The environment fromEnv reads, by name. */
+export const ENV = {
+	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
+	daemon: "COMPUTER_DOCKER_DAEMON",
+	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
+	user: "COMPUTER_DOCKER_USER",
+} as const;
+
+/** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
+export const MOUNT: readonly MountKind[] = ["bind"];
+
+export interface DockerFromEnvOptions extends Partial<DockerProviderOptions> {
+	/** The longest `docker version` may take, when fromEnv asks Docker its architecture; default 30 s. */
+	timeoutMs?: number;
+}
+
+/**
+ * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
+ * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
+ */
+export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerFromEnvOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+			if (!error) return resolve(stdout.trim());
+			const killed = error.killed === true && error.signal === "SIGKILL";
+			const why = killed ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (stderr.trim() || error.message).split("\n")[0];
+			reject(new Error(`cannot ask Docker its architecture (${docker} version): ${why}`));
+		});
+	});
+}
+
+/**
+ * A DockerProvider from COMPUTER_DOCKER_* alone. Without COMPUTER_DOCKER_DAEMON it asks Docker its architecture and takes
+ * this package's daemon for it, and says when that daemon is not built. Options win over the environment.
+ */
+export async function fromEnv(env: Record<string, string | undefined> = process.env, options: DockerFromEnvOptions = {}): Promise<DockerProvider> {
+	const { timeoutMs, ...given } = options;
+	const user = env[ENV.user] || undefined;
+	let daemonPath = given.daemonPath ?? (env[ENV.daemon] || undefined);
+	if (daemonPath === undefined) {
+		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
+		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+	}
+	return new DockerProvider({ ...(user === undefined ? {} : { user }), ...given, daemonPath });
+}
+
+/** The conformance CLI's module for Docker: the drifted twin. */
+export const conformance = () => import("./conformance/docker.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = /^computer-[0-9a-f]{12}$/;
@@ -166,13 +217,16 @@ export class DockerProvider implements ComputerProvider {
 			user: ["root", "uid"],
 			release: ["stop", "delete"],
 			stopDeletes: false,
-			mount: ["bind"],
+			mount: [...MOUNT],
 		};
 	}
 
-	/** The spec's refusals, and the host's once create, attach or host() has read it. */
+	/** The spec's refusals, and the host's once create, attach or host() has read it: its problems, and a bind on a host
+	 *  that remaps user ids. */
 	check(spec: ComputerSpec): Refusal[] {
-		return [...this.#checkSpec(spec), ...(this.#host?.problems ?? []).map((message) => ({ field: "host", message }))];
+		const host = this.#host;
+		const remapped = host?.remap !== undefined && spec?.mount?.kind === "bind" ? [{ field: "mount", message: remapWords(host.remap, String(spec.mount.path)) }] : [];
+		return [...this.#checkSpec(spec), ...remapped, ...(host?.problems ?? []).map((message) => ({ field: "host", message }))];
 	}
 
 	#checkSpec(spec: ComputerSpec): Refusal[] {
@@ -218,12 +272,7 @@ export class DockerProvider implements ComputerProvider {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		const user = userOf(spec.user) ?? this.#user;
-		// The run folder is bound as it is: the computer's user, with no capabilities, must be able to write it.
 		const bound = spec.mount?.kind === "bind" ? spec.mount.path : undefined;
-		if (bound !== undefined) {
-			const unwritable = folderProblem(bound, user);
-			if (unwritable !== undefined) return fail("refused", `mount: ${unwritable}`);
-		}
 		const mode = fileMode(this.#daemonPath);
 		if (mode === undefined) {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
@@ -237,6 +286,13 @@ export class DockerProvider implements ComputerProvider {
 		const host = await this.host({ signal });
 		if (!host.ok) return host;
 		if (host.value.problems.length > 0) return fail("refused", `host: ${host.value.problems.join("; ")}`);
+		if (bound !== undefined) {
+			// Under remapped ids the folder's owner on the host is not the computer's user: refuse, never guess the mapping.
+			if (host.value.remap !== undefined) return fail("refused", `mount: ${remapWords(host.value.remap, bound)}`);
+			// The run folder is bound as it is: the computer's user, with no capabilities, must be able to write it.
+			const unwritable = folderProblem(bound, user);
+			if (unwritable !== undefined) return fail("refused", `mount: ${unwritable}`);
+		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before docker run");
 		const name = `computer-${randomBytes(6).toString("hex")}`;
 		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
@@ -629,6 +685,19 @@ function infoOf(report: DockerInspect): ComputerInfo {
 	const state = report.State?.Running === true ? "running" : "stopped";
 	const mount: MountReadBack | undefined = mountOf(report);
 	return { ref: { id: report.Id ?? "", name: nameOf(report) }, labels, deadline, state, network: networkOf(report), ...(mount === undefined ? {} : { mount }) };
+}
+
+/**
+ * Why a bind is refused on a host that remaps user ids. The computer's uid is then another uid on the host (one Docker
+ * picks from /etc/subuid), so the folder's owner and mode say nothing about whether the computer can write it; the
+ * provider does not guess the mapping, and never changes the folder.
+ */
+function remapWords(remap: "userns" | "rootless", path: string): string {
+	return (
+		`this Docker host remaps user ids (${remap === "userns" ? "userns-remap" : "rootless Docker"}), so the run folder's owner on the host is not the ` +
+		`computer's user, and the provider cannot tell whether the computer can write ${path}; it never changes the folder: ` +
+		"bind the run folder on a Docker host that does not remap ids"
+	);
 }
 
 /**

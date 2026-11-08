@@ -8,7 +8,8 @@ full VM, a machine. The protocol has two layers:
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
-  inside. It never runs commands itself: the daemon does. This package has three: Docker, Modal's VM runtime, and Daytona.
+  inside. It never runs commands itself: the daemon does. This package has three: Docker, Modal's VM runtime, and Daytona,
+  each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
 ## What it does today
 
@@ -125,8 +126,8 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null |
-| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited}`: `stream` is `stdout` or `stderr`, or `pty`; at most 512 KiB a call (more is `limit`) |
+| `process.start` | `argv, cwd?, env?, user?, pty?: {cols, rows}, stdin?, log?, waitGroup?, orphans?: "keep"` | `{id, pid}`: `pid` is the program's. `cwd`, `env` and `user` are as for `exec.run`. Without `stdin` (and without a pty) stdin is /dev/null. `log`, `waitGroup` and `orphans` are below |
+| `process.read` | `id, stream, offset, maxBytes?, waitMs?` | `{data, nextOffset, dropped, exited, size, capped?, logError?}`: `stream` is `stdout` or `stderr`, or `pty`, or `log`; at most 512 KiB a call (more is `limit`); `size` is the stream's bytes so far, kept or dropped |
 | `process.write` | `id, data?, close?` | `{}`: to stdin, or the terminal; `close` closes stdin after the data |
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
@@ -168,6 +169,23 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
   no data, `dropped` counts every byte from `offset` on, and `exited` is true. When no ended ring is left and running
   processes still hold more, each running process's ring stops growing and keeps at most an equal share of the budget
   (never under 64 KiB), dropping its oldest bytes; a read from an offset it dropped reports them in `dropped`.
+- `log` is an absolute path for a new file the daemon makes and writes the first 16 MiB of the output to, stdout and
+  stderr (or the terminal's) as they come; later output is dropped there while the process runs on. The daemon makes
+  the missing directories and the file itself, never through a link: each directory is entered from the one above it
+  with `O_NOFOLLOW|O_DIRECTORY`, and the file is made with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0644, the daemon's. A
+  link at the path or at any directory on its way is refused as `denied`, a file already there as `exists`, and the
+  program never starts; a start that fails after the file was made removes it. The `log` stream reads it through the
+  daemon's own open file, never by the path, so a rename or removal under it changes nothing read: `size` is the bytes
+  the log holds, `capped` says output past them was dropped, and `dropped` is 0. A write to the log that fails or
+  writes short (a full disk) stops the log for good: nothing after it is written, so the file stays a true prefix of
+  the output, and `logError` says why. The log holds all of the output once its stream reads `exited`; the process's
+  end can come before that.
+- `waitGroup`: the process runs until its program and every live process left in its process group (with a pty, its
+  session) have ended, and reports the program's own exit. A signal goes once to each process group of the run: the
+  program's, and every other group its live processes are in (a terminal session's jobs), by the group's id. On a pty,
+  the program's exit hangs up the terminal's foreground group, as a terminal does.
+- `orphans: "keep"`: when the process ends, what it started that still runs (a daemon in its own session) is not ended:
+  it runs on under the guard, unsignalled, until it ends or the computer does. Without it, it is ended with the process.
 
 `src/processes.ts` has `readAll(client, id, stream, {offset?, waitMs?, signal?})`, which pages a stream by offset
 until the process ends and returns its bytes, where it ended and what the ring dropped, and `listProcesses(client)`,
@@ -461,28 +479,40 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
 ```
 
 - `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
-  computer), or `{ kind: "archil", disk, folder, token }`, the run's folder inside an Archil disk, mounted in a remote
-  computer. `capabilities().mount` lists the kinds a provider takes; absent, it takes none.
+  computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
+  `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
+  `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
+  `MOUNT` beside its `ENV`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
+  provider binds a local folder from the registry (`providerModule(id)`) without building one.
 - `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
   kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
   bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker
   reports a bind's source as given, a symlink included), an existing directory on the host, with no NUL; an Archil
-  mount's `disk`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
+  mount's `disk`, `region`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
   with no `..` part. A field the kind does not have is refused.
 - **The token is a secret.** No refusal names an Archil field's value (a token put in the wrong field is not echoed),
   and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount)`), is its kind and source alone:
-  `{ kind: "bind", path }` or `{ kind: "archil", disk, folder }`, or `{ other: "<words>" }` for a mount at
+  `{ kind: "bind", path }` or `{ kind: "archil", disk, region, folder }`, or `{ other: "<words>" }` for a mount at
   `/workspace` the provider never makes. The token is never in a label, a read-back or an error.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
   refused by `check`.
 - **The run folder must be writable by the computer's user.** The provider binds the folder as it is and never chowns
   or chmods it: whoever makes the run folder gives it that user, the spec's `user` or the provider's (`docker.user`,
-  this process's uid:gid by default). `create` checks it before any Docker call, as the kernel will: the owner's,
-  the group's or others' bits of the folder's mode, by the user's uid and gid, must allow write and search; else it
-  refuses in words (`the run folder /data/runs/r1/work is not writable by the computer's user 1000:1000: it is owned by
-  0:0 with mode 0755; ...`). A computer's user has no capabilities, root included, so no other way in. On an SELinux
-  host the folder needs a label containers may use; the provider does not relabel it.
+  this process's uid:gid by default). `create` checks it after reading the host (`docker info`) and before
+  `docker run`, as the kernel will: the owner's, the group's or others' bits of the folder's mode, by the user's uid
+  and gid, must allow write and search; else it refuses in words (`the run folder /data/runs/r1/work is not writable
+  by the computer's user 1000:1000: it is owned by 0:0 with mode 0755; ...`). A computer's user has no capabilities,
+  root included, so no other way in. On an SELinux host the folder needs a label containers may use; the provider
+  does not relabel it.
+- **No bind on a host that remaps user ids.** Under userns-remap or rootless Docker (`docker info`'s
+  `SecurityOptions` holds `name=userns` or `name=rootless`; `host().remap`), a computer's uid is another uid on the
+  host, so the folder's owner says nothing about whether the computer can write it. The provider does not guess the
+  mapping from `/etc/subuid`: `create` with a bind on such a host is refused in words before any `docker run`
+  (`this Docker host remaps user ids (rootless Docker), so the run folder's owner on the host is not the computer's
+  user, ...`), and `check` refuses it too once the host is read. A computer with no mount is made there as before.
+  The conformance case `mount.run-folder-bind` fails on such a host, in those words: the provider declares a bind this
+  host cannot give.
 - `attach` and `list` read the mount back from `docker inspect` (`mountOf(inspected)`): a read-write bind at
   `/workspace` is `{ kind: "bind", path }`; a read-only one, a volume or two mounts there is `{ other }`, and `attach`
   refuses such a computer. The drift check (below) holds a computer to the mount it was asked for: the bind there, from
@@ -836,15 +866,17 @@ Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_C
 Core `provider.stop` expects Modal's refusal (it declares no stop), and the Full `provider.janitor` case is skipped
 (`lifetime:janitor`, `release:stop`).
 
-`createProvider()` in `dist/conformance/modal.js` builds a real client, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1`,
-`COMPUTER_MODAL_TOKEN_ID` and `COMPUTER_MODAL_TOKEN_SECRET` set. It passes that pair to `ModalClient` explicitly, and
-never uses `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under those names, and with
-only them set it refuses, naming the `COMPUTER_MODAL_` pair. The key goes only to `COMPUTER_MODAL_SERVER_URL`, else
-the SDK's default `https://api.modal.com:443`: since the client cannot take a server, the module refuses while
-`MODAL_SERVER_URL` is set, and sets it to its choice only while it constructs the client, so neither `MODAL_PROFILE`
-nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. It also reads `COMPUTER_MODAL_APP`,
-and, if set, `COMPUTER_MODAL_DAEMON_IMAGE`; without it the daemon is uploaded from `dist/computerd-linux-amd64`, so a run
-publishes nothing. `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift` into a
+`fromEnv(env, options?)` in `dist/modal.js` builds a real client from `COMPUTER_MODAL_TOKEN_ID` and
+`COMPUTER_MODAL_TOKEN_SECRET`. It passes that pair to `ModalClient` explicitly, and never uses `MODAL_TOKEN_ID` or
+`MODAL_TOKEN_SECRET`: a host may hold a production token under those names, and with only them set it refuses, naming
+the `COMPUTER_MODAL_` pair. The key goes only to `COMPUTER_MODAL_SERVER_URL`, else the SDK's default
+`https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL` is set, and
+sets it to its choice only while it constructs the client, so neither `MODAL_PROFILE` nor a profile in
+`MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. It also reads `COMPUTER_MODAL_APP`, and, if set,
+`COMPUTER_MODAL_DAEMON_IMAGE`; without it the daemon is uploaded from `dist/computerd-linux-amd64`, so a run publishes
+nothing. The conformance module, `dist/conformance/modal.js` (`--provider modal`), builds its provider through
+`fromEnv`, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before anything else. Its
+`createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift` into a
 temporary directory, so Go must be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes: Modal's timeout
 is its lifetime, and a longer one is refused in words. The modal package is the host's; it is imported only when a
 provider is made.
@@ -1058,11 +1090,12 @@ capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no g
 
 ### Conformance on Daytona
 
-`dist/conformance/daytona.js` exports `createProvider()` and `createDriftedProvider()` (which builds a daemon of
-another version with Go). It reads these variables, by name, when it runs: `COMPUTER_DAYTONA_API_KEY` (required),
-`COMPUTER_DAYTONA_API_URL`, `COMPUTER_DAYTONA_DAEMON`, `COMPUTER_DAYTONA_ARCH` (`amd64` or `arm64`),
-`COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`), `COMPUTER_DAYTONA_USER` and
-`COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`, Daytona's default snapshot). It never reads
+`fromEnv(env, options?)` in `dist/daytona.js` builds the provider from these variables, by name, read when it runs:
+`COMPUTER_DAYTONA_API_KEY` (required), `COMPUTER_DAYTONA_API_URL`, `COMPUTER_DAYTONA_DAEMON`, `COMPUTER_DAYTONA_ARCH`
+(`amd64` or `arm64`), `COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`) and
+`COMPUTER_DAYTONA_USER`. The conformance module, `dist/conformance/daytona.js` (`--provider daytona`), exports
+`createProvider()` and `createDriftedProvider()` (which builds a daemon of another version with Go) over the same
+names, and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`, Daytona's default snapshot). Neither reads
 `DAYTONA_API_KEY` or `DAYTONA_API_URL`, not even as a fallback: on a host that runs other Daytona work they may hold
 another organization's key.
 
@@ -1074,7 +1107,7 @@ listed nor attachable. Full `provider.janitor`, which needs a stopped computer k
 image from it when `--image` names none, and prints the note above the verdict (`notes` in `--json`).
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider packages/computer/dist/conformance/daytona.js [--image <snapshot>]
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona [--image <snapshot>]
 ```
 
 ### The sweep around a live run
@@ -1180,7 +1213,7 @@ A provider for another vendor passes the same suite as Docker's, with one comman
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
-npm run conformance -w @parcha/agentrun-computer -- --provider docker
+npm run conformance -w @parcha/agentrun-computer -- --provider docker            # or modal, daytona: any registry id
 npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--json]
 ```
 
@@ -1198,7 +1231,8 @@ optional screen screenshot-size                              - 1
 core PASS 54/54 · 9 optional cases skipped, not declared · full 8/14 · network:allow mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
-A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
+An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
+resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
 daemonMode, image, daemon: { version, os, arch }, only?, coreNotRun?, results: [{ id, level, group, status, reason?,
 undeclared? }], core, undeclared, cleanup }`). A failure is listed under its line with what the case found.
@@ -1209,7 +1243,8 @@ not run, the text report lists them on a `core not run` line, and the verdict re
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 
-What a provider module implements:
+What a module given by path implements: either a provider file's `fromEnv()` (see
+[Adding a computer](#adding-a-computer)), run with no drifted provider, or a conformance module's:
 
 - `export function createProvider()` returning a `ComputerProvider` (sync or async): `id`, `version`,
   `capabilities()`, `check`, `create`, `attach`, `list`, `network`, `connect` and `release`, as in `src/provider.ts`.
@@ -1308,14 +1343,52 @@ create a case started, a refused one included, so a late computer is deleted bef
 pending when that bound (a minute) runs out is named in `cleanup.errors`, since what it makes may be left, and Core
 fails, as it does for a computer left behind. A case calls
 `t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
-expects, or the drifted provider's computer). With `--provider docker`, a `docker
-version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
+expects, or the drifted provider's computer). With `--provider docker` and no
+`COMPUTER_DOCKER_DAEMON`, a `docker version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
 is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under
 `$HOME/agentrun-conformance-<run id>`.
 
 From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
 fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
+
+## Adding a computer
+
+A new computer is one provider file and one registry line. The conformance CLI (and serve, once wired) resolves
+providers through the registry, `src/providers.ts`, and nothing else, so neither needs an edit:
+
+```ts
+export const providers = {
+	docker: () => import("./docker.js"),
+	modal: () => import("./modal.js"),
+	daytona: () => import("./daytona.js"),
+	e2b: () => import("./e2b.js"), // the new line
+} satisfies Record<string, () => Promise<ProviderModule>>;
+```
+
+Each import is lazy: loading the registry loads no provider and no vendor SDK. `providerFromEnv(id, env?)` builds a
+provider by id and refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`,
+exports what a `ProviderModule` is:
+
+- the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
+- `ENV`, every variable it reads by role, each named `COMPUTER_<ID>_*`: never a vendor's bare variable such as
+  `DAYTONA_API_KEY`, which on a shared host may hold another account's key, not even as a fallback;
+- `fromEnv(env = process.env, options?)`, the provider built from those variables alone, the key read only then, and
+  refused in words when one is missing or wrong;
+- optionally `conformance`, `() => import("./conformance/<vendor>.js")`: a module that bounds a conformance run's
+  computers and makes the drifted provider (`createProvider()`, `createDriftedProvider()`, `conformanceImage()`,
+  `conformanceNotes`), building them through `fromEnv`. Without it the CLI runs `fromEnv`'s provider, and the drift
+  case skips, so Core does not pass.
+
+Docker reads `COMPUTER_DOCKER_DAEMON` (default this package's daemon for Docker's architecture, from `docker version`)
+and `COMPUTER_DOCKER_USER`; Modal and Daytona read the names in their sections. `test/providers.test.mjs` holds every
+provider file to its registry line and its line to this shape, and checks that the CLI's usage names every id. Run the
+suite on the new computer, by path before its line exists and by id after:
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/e2b.js
+npm run conformance -w @parcha/agentrun-computer -- --provider e2b
+```
 
 ## Build
 

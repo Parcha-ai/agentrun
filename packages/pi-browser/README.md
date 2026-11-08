@@ -10,8 +10,8 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.1 to 1.3 (the range of its
-pi-durable and chord peers; the coding-agent entry also runs on pi 1.0.4). ESM only: the
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.5.0 exactly (its
+pi-durable and chord peers). ESM only: the
 package has `import` entries and no `require` entry.
 
 ## Install
@@ -19,10 +19,10 @@ package has `import` entries and no `require` entry.
 ```sh
 pi install npm:@parcha/pi-browser@latest    # the pi coding agent's extension
 npm install @parcha/pi-browser@latest       # the library: providers, driver, durable adapter
-npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
+npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.5.0 @earendil-works/chord@1.5.0 @earendil-works/pi-ai@1.5.0   # a pi-durable host: its peers, pinned to 1.5.0
 ```
 
-`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before. pi 1.4 is not supported yet; a later release widens the range.
+`pi install` loads the extension. A Chrome starts on the model's first browser call, and not before.
 
 ## Quick start
 
@@ -263,9 +263,7 @@ Stagehand, undici, zod and the two HTML packages are dependencies. Four optional
 | `@earendil-works/pi-durable` and `@earendil-works/chord` | `/durable`, the adapter for a pi-durable Harness. |
 | `@browserbasehq/sdk` | the Browserbase provider. Kernel needs no SDK. |
 
-The pi peers are `@earendil-works/pi-durable` and `chord` `>=1.1.0 <1.4.0`, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. The suite passes on pi 1.1, 1.2 and 1.3, and the coding-agent entry's tests also pass on a pi 1.0.4 family.
-
-pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version as `@earendil-works/pi-coding-agent` (`@1.0.4`, or `@1.1.0`), because pi-codemode 1.2.0 removed an export those versions import, or use pi 1.2.
+The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. CI tests pi 1.5.0.
 
 ## Entries
 
