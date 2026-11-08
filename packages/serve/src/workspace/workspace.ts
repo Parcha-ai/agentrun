@@ -47,8 +47,16 @@ export class WorkspaceError extends Error {
 export const isWorkspaceError = (error: unknown, code?: WorkspaceErrorCode): error is WorkspaceError =>
   error instanceof WorkspaceError && (code === undefined || error.code === code);
 
-/** One entry of a directory. Only files and directories are listed: a symbolic link, a pipe or a socket is left out. */
-export type Entry = { readonly name: string; readonly kind: "file" | "dir"; readonly size: number };
+/** One entry of a directory. Only files and directories are listed: a symbolic link, a pipe or a socket is left out.
+ *  `modifiedMs`: when it last changed, in milliseconds since the epoch. `unreadable`: a file this backend sees but
+ *  cannot read (another user on this machine made it private), so a read of it is REFUSED. */
+export type Entry = {
+  readonly name: string;
+  readonly kind: "file" | "dir";
+  readonly size: number;
+  readonly modifiedMs: number;
+  readonly unreadable?: true;
+};
 
 /** One line grep found. `line` counts from 1; `text` is the line, cut at GREP_LINE_MAX characters. */
 export type GrepMatch = { readonly path: string; readonly line: number; readonly text: string };

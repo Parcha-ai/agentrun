@@ -91,6 +91,19 @@ test("local: list leaves out links and pipes; a read of a directory or a pipe is
   await refused(workspace.append("pipe", "x"), "REFUSED");
 });
 
+test("local: a file this server cannot read (made private by another user) lists as unreadable, and its read is REFUSED", { skip: process.getuid?.() === 0 && "root reads every file" }, async () => {
+  const { root } = scratch();
+  const workspace = localWorkspace(root);
+  await workspace.write("open.txt", "x");
+  await workspace.write("private.txt", "secret");
+  chmodSync(join(root, "private.txt"), 0o000);
+  const listed = await workspace.list("");
+  assert.deepEqual(listed.map(({ name, unreadable }) => [name, unreadable]), [["open.txt", undefined], ["private.txt", true]]);
+  assert.equal(listed[1].size, 6, "its size is still listed");
+  await refused(workspace.read("private.txt"), "REFUSED");
+  chmodSync(join(root, "private.txt"), 0o600);
+});
+
 test("local: a root that is not there is UNAVAILABLE, for its mount too", async () => {
   const { dir } = scratch();
   const gone = localWorkspace(join(dir, "never-made"));
