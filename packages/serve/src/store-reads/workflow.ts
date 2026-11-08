@@ -15,5 +15,5 @@ export async function readWorkflowRunOver(store: Pick<Store, "runs" | "agents" |
   if (!run) return undefined;
   const revision = await store.agents.revision(run.revisionId);
   if (!revision || revision.kind !== "workflow") return undefined;
-  return readWorkflowRun({ runId, storage: store.readJournal(runId), revision: { body: revision.body as WorkflowBody } }, { context });
+  return readWorkflowRun({ runId, storage: store.readJournal(runId), revision: { id: revision.id, kind: "workflow", body: revision.body as WorkflowBody } }, { context });
 }

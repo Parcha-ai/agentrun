@@ -150,7 +150,7 @@ export async function startWorkflowRevision(options: RunOptions): Promise<Workfl
  * `readWorkflowRun` (with `options`, its `unlocked`), so with none no other connection may hold the store file
  * exclusively: call it once the run is released.
  */
-export async function workflowCarry(run: { runId: string; storePath?: string; storage?: WorkflowStorage; revision: { body: WorkflowBody } }, outcome: Pick<WorkflowOutcome, "status"> & { code?: string; message?: string }, options: { unlocked?: boolean; context?: Context } = {}): Promise<{ state: RunState; summary: string }> {
+export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "storePath" | "storage" | "revision">, outcome: Pick<WorkflowOutcome, "status"> & { code?: string; message?: string }, options: { unlocked?: boolean; context?: Context } = {}): Promise<{ state: RunState; summary: string }> {
   if (outcome.status === "refused" && outcome.code !== undefined && BEFORE_ANY_TASK.has(outcome.code)) return { state: "failed", summary: `refused: ${outcome.message ?? outcome.code}` };
   const view = await readWorkflowRun(run, options);
   // The nodes that completed (chains, pure sequence, aside), then each deepest node that failed (a container failed only
@@ -202,7 +202,7 @@ export async function revisionGraph(revision: { body: WorkflowBody }, parent?: {
  * exclusive lock (a server's run), read as agentrun-pi's unlocked reads read it: no lock, nothing made beside the store,
  * and its write-ahead log opened only once it holds a commit.
  */
-export async function readWorkflowRun(run: { runId: string; storePath?: string; storage?: WorkflowStorage; revision: { body: WorkflowBody }; state?: RunState | "running" }, options: { unlocked?: boolean; context?: Context } = {}): Promise<WorkflowRunView> {
+export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "storePath" | "storage" | "revision"> & { state?: RunState | "running" }, options: { unlocked?: boolean; context?: Context } = {}): Promise<WorkflowRunView> {
   const { graphNodeOf, nodeStatus, workflowGraph } = await import("@parcha/agentrun-dsl/graph");
   const graph = workflowGraph(run.revision.body.workflow);
   // The run's task holds how it ended, and the driver's journal holds each node's frame. Both come from the per-run store
