@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
-import { OWN_NETWORK_ONLY, TOOL_USER } from "./isolation.js";
+import { netDevInterfaces, OWN_NETWORK_ONLY, ownNetworkDrift, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
@@ -1501,12 +1501,17 @@ export class E2BProvider implements ComputerProvider {
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
 		let read = this.#toolsNetwork(found.value);
-		// An Archil computer's E2B network is root's: its tools' none is read from inside, by the probe, as the tool user.
+		// An Archil computer's E2B network is root's: its tools' none is read from inside, as the tool user: the daemon's own
+		// network namespace holds lo alone (its /proc/self/net/dev), and no probe target answers.
 		if (read === "none" && recordedArchil(found.value.metadata) !== undefined && found.value.state === "running") {
 			const sandbox = await this.#connected(found.value, signal);
 			const opened = sandbox.ok ? await this.#open(sandbox.value, ref.name, signal) : sandbox;
 			if (!opened.ok) return opened;
 			try {
+				const net = await opened.value.client.call("files.read", { path: "/proc/self/net/dev" }, { signal: this.#bounded(this.#timeouts.helloMs, signal) });
+				if (!net.ok) return fail(net.error.code, `reading the daemon's /proc/self/net/dev in ${ref.name}: ${net.error.message}`);
+				const drift = ownNetworkDrift(netDevInterfaces(Buffer.from(net.value.data, "base64").toString("utf8")));
+				if (drift.length > 0) read = { other: drift.join("; ") };
 				const probe = await this.#probe(opened.value, ref.name, signal);
 				if (!probe.ok) return probe;
 				if (probe.value.reached.length > 0) read = { other: `its tools' network was created none, yet from inside an answer came back from ${probe.value.reached.join(", ")}` };
