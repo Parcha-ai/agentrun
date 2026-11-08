@@ -9,7 +9,7 @@ import { RunStorage } from "../journal/storage.js";
 import { DDL, SCHEMA_VERSION } from "../schema.js";
 import {
   CommandTaken, RefreshLeaseLost, SchemaVersionUnknown, StoreConstraint, StoreFromEarlierVersion,
-  type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
+  type AgentRow, type Agents, type AlsoRow, type Claim, type Command, type Journal, type JournalReads, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Live, type LiveRow, type Mcp, type McpPinRow, type McpServerRow,
 } from "../store.js";
@@ -508,6 +508,14 @@ class SqliteStore implements Store {
     });
     this.#journals.set(key, journal);
     return journal;
+  }
+
+  /** A run's journal opened for reading only (no claim): a fresh RunStorage on the store's connection, its reads alone. A
+   *  read never checks the epoch (only a commit's fence does), so the view carries epoch 0 and never writes; its type
+   *  (JournalReads) hands out no commit, stage or mintId. The store keeps no reference to it — it holds no claim and two
+   *  readers of one run never share ids, since neither mints any. A run with no journal yet reads as empty. */
+  readJournal(runId: string): JournalReads {
+    return new RunStorage(this.#db, { runId, epoch: 0 }, this.#now);
   }
 
   /** How many journals the store keeps (open, of a claim not released). */

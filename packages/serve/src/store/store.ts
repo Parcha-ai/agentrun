@@ -137,6 +137,16 @@ export interface Journal extends Storage {
   commitsAfter(afterSeq: number, limit: number, context: Context): Promise<JournalPage>;
 }
 
+/** A run's journal opened for reading only: the read half of its Storage — its scans and lookups and commitsAfter, with no
+ *  commit, stage or mintId, and no claim. The server reads a run this way (its timeline, the records analytics sums), where
+ *  it holds no claim; a writer uses journal(claim) instead. A read never fences (only a commit does), so the view needs no
+ *  epoch; a run with no journal yet reads as empty. close() lets its admitted reads drain, and leaves the store's
+ *  connection open: the store owns it. */
+export type JournalReads = Pick<
+  Journal,
+  "runId" | "conversation" | "scanConversations" | "entry" | "findLatestHeadMarker" | "scanEntries" | "task" | "scanTasks" | "submission" | "scanSubmissions" | "submissionByRequest" | "findDocument" | "document" | "scanDocuments" | "commitsAfter" | "close"
+>;
+
 export interface ChannelPost {
   readonly id: string;
   readonly channel: string;
@@ -333,6 +343,9 @@ export interface Store {
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
+  /** A run's journal opened for reading only (JournalReads): the server's reads of a run, which hold no claim. Its reads
+   *  alone, never a commit; a read never fences, so it needs no claim. A run with no journal yet reads as empty. */
+  readJournal(runId: string): JournalReads;
   /** One durable commit: every commit before it, of every run, is on the disk when it resolves. Before a call that must
    *  not run twice, at a run's end and when a claim is released. */
   flush(): Promise<void>;
