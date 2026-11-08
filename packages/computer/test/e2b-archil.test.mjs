@@ -54,7 +54,7 @@ const indexOf = (fake, id, what) => fake.events.findIndex((event) => event.sandb
 const verbsOf = (fake, id) => fake.rootRuns.filter((run) => run.sandbox === id).map(({ verb }) => verb);
 const newest = (fake) => [...fake.sandboxes.values()].at(-1);
 
-/** An Archil computer as create leaves one, seeded straight into the fake, with init running as the tool user. */
+/** An Archil computer as create leaves one, seeded straight into the fake, with init running as the tool user; label null: none. */
 function seededArchil(fake, { name = "computer-0123456789ab", epoch = EPOCH, run = RUN, label = mountLabel(), box = {}, state = "running", allowInternetAccess = true } = {}) {
 	const deadline = new Date(Date.now() + 600_000).toISOString();
 	const sb = fake.add({
@@ -62,7 +62,7 @@ function seededArchil(fake, { name = "computer-0123456789ab", epoch = EPOCH, run
 		metadata: {
 			"agentrun.run": run,
 			"agentrun.epoch": String(epoch),
-			...(label === undefined ? {} : { [MOUNT_LABEL]: label }),
+			...(label === null ? {} : { [MOUNT_LABEL]: label }),
 			[COMPUTER]: "1",
 			[NAME]: name,
 			[DEADLINE]: deadline,
@@ -225,7 +225,7 @@ test("E2B connect: an Archil computer's client syncs after each call that may ch
 	await connected.value.close();
 
 	const plain = setup();
-	const other = seededArchil(plain.fake, { label: undefined });
+	const other = seededArchil(plain.fake, { label: null });
 	const opened = await plain.provider.connect(other.ref);
 	assert.equal(opened.ok, true, JSON.stringify(opened));
 	assert.equal((await opened.value.client.call("files.write", { path: "/work/a.txt", data: "aGk=" })).ok, true);
@@ -273,7 +273,7 @@ test("E2B list: an Archil computer's mount as its label records it, under its ep
 	assert.equal(fake.rootRuns.length, 0, "list runs nothing in a computer");
 
 	const plain = setup();
-	seededArchil(plain.fake, { label: undefined, allowInternetAccess: false });
+	seededArchil(plain.fake, { label: null, allowInternetAccess: false });
 	const none = await plain.provider.list({});
 	assert.equal(none.value[0].mount, undefined);
 	assert.equal(none.value[0].network, "none");
