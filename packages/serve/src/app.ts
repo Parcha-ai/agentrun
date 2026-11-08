@@ -11,6 +11,7 @@
 import { mcpCredentials, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { basename, join, resolve } from "node:path";
 import { createRegistry, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
@@ -222,7 +223,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The run's own model requests beside the harness's go through the session's proxy, booked on its records (port-models.ts).
     sessionPort = port;
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
-    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness), durable.store), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
+    // The store's own Harness makes no model request here (the adapter's harness does), so it gets an empty catalog, never
+    // the run's models: a non-pi run must not get a pi model catalog by accident. A real Models all the same, since pi
+    // 1.5's Harness.open wraps it at the open (it binds models.getAuth).
+    return { models: createModels(), registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness), durable.store), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before

@@ -9,7 +9,7 @@ import test from "node:test";
 import * as computer from "../dist/index.js";
 
 const TOKEN = "archil-token-0123456789abcdef";
-const ARCHIL = { kind: "archil", disk: "dsk-runs", folder: "runs/r1", token: TOKEN };
+const ARCHIL = { kind: "archil", disk: "dsk-runs", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: TOKEN };
 const root = realpathSync(mkdtempSync(join(tmpdir(), "computer-mount-")));
 after(() => rmSync(root, { recursive: true, force: true }));
 const dir = join(root, "run");
@@ -52,7 +52,7 @@ test("checkMount refuses what is not a mount, or a kind it does not know, in wor
 	for (const mount of [null, "bind", 1, [], { path: dir }, { kind: "nfs", path: dir }]) {
 		const found = refusals(mount, ["bind", "archil"]);
 		assert.deepEqual(found.map((r) => r.field), ["mount"], JSON.stringify(mount));
-		assert.match(found[0].message, /mount is \{ kind: "bind", path \} or \{ kind: "archil", disk, folder, token \}/);
+		assert.match(found[0].message, /mount is \{ kind: "bind", path \} or \{ kind: "archil", disk, region, folder, token \}/);
 	}
 });
 
@@ -82,11 +82,15 @@ test("checkMount's bind rule: an absolute path to an existing directory, canonic
 	assert.deepEqual(extra, [{ field: "mount", message: "mount.readonly is not a field of a bind mount" }]);
 });
 
-test("checkMount's Archil rule: disk, folder and token are non-empty strings, the folder relative inside the disk with no '..'; no word holds the token", () => {
+test("checkMount's Archil rule: disk, region, folder and token are non-empty strings, the folder relative inside the disk with no '..'; no word holds the token", () => {
 	for (const [change, words] of [
 		[{ disk: undefined }, /mount\.disk is required: the Archil disk's name/],
 		[{ disk: "" }, /mount\.disk is required/],
 		[{ disk: "a\0b" }, /mount\.disk: a NUL byte/],
+		[{ region: undefined }, /^mount\.region is required: the Archil disk's region$/],
+		[{ region: "" }, /^mount\.region is required/],
+		[{ region: 7 }, /^mount\.region is required/],
+		[{ region: "aws-us-east-1\0" }, /^mount\.region: a NUL byte/],
 		[{ folder: undefined }, /mount\.folder is required: the run's folder inside the disk/],
 		[{ folder: "" }, /mount\.folder is required/],
 		[{ folder: "/runs/r1" }, /mount\.folder must be relative to the disk's root/],
@@ -107,14 +111,16 @@ test("checkMount's Archil rule: disk, folder and token are non-empty strings, th
 		assert.ok(!JSON.stringify(found).includes(TOKEN), `the token is in the refusal of ${Object.keys(change)[0]}`);
 	}
 	// A token in the wrong field is still never echoed: a field's words name the field, not its value.
-	const misplaced = refusals({ ...ARCHIL, folder: `/${TOKEN}` }, ["archil"]);
-	assert.equal(misplaced.length, 1);
-	assert.ok(!misplaced[0].message.includes(TOKEN), misplaced[0].message);
+	for (const misplacedIn of [{ folder: `/${TOKEN}` }, { region: `${TOKEN}\0` }]) {
+		const misplaced = refusals({ ...ARCHIL, ...misplacedIn }, ["archil"]);
+		assert.equal(misplaced.length, 1, JSON.stringify(Object.keys(misplacedIn)));
+		assert.ok(!misplaced[0].message.includes(TOKEN), misplaced[0].message);
+	}
 });
 
 test("readBackOf: what a provider reads back of a mount is its kind and source, never the token", () => {
 	assert.deepEqual(computer.readBackOf({ kind: "bind", path: dir }), { kind: "bind", path: dir });
 	const read = computer.readBackOf(ARCHIL);
-	assert.deepEqual(read, { kind: "archil", disk: "dsk-runs", folder: "runs/r1" });
+	assert.deepEqual(read, { kind: "archil", disk: "dsk-runs", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work" });
 	assert.ok(!JSON.stringify(read).includes(TOKEN));
 });

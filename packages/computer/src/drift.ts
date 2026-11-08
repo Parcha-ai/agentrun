@@ -88,6 +88,11 @@ export interface DockerHost {
 	selinux: boolean;
 	/** Each enforcement the host lacks, in words; a computer is refused on a host with any. */
 	problems: string[];
+	/**
+	 * Present when the host remaps user ids (docker info's name=userns: userns-remap; name=rootless: rootless Docker): a
+	 * computer's uid is then another uid on the host. No problem for a computer, but a bind of the run folder is refused.
+	 */
+	remap?: "userns" | "rootless";
 }
 
 /** docker info names the kernel's architecture; hello names Go's. */
@@ -117,7 +122,8 @@ export function hostOf(info: DockerInfo | null | undefined): DockerHost {
 		problems.push("this Docker host's default seccomp profile is unconfined, so a computer could make any system call");
 	}
 	const machine = typeof info?.Architecture === "string" ? info.Architecture : "";
-	return { arch: GO_ARCH[machine] ?? machine, apparmor: named("apparmor") !== undefined, selinux: named("selinux") !== undefined, problems };
+	const remap = named("userns") !== undefined ? "userns" : named("rootless") !== undefined ? "rootless" : undefined;
+	return { arch: GO_ARCH[machine] ?? machine, apparmor: named("apparmor") !== undefined, selinux: named("selinux") !== undefined, problems, ...(remap ? { remap } : {}) };
 }
 
 /** What the daemon must report: the provider's version, kind and groups, and the host's architecture. */

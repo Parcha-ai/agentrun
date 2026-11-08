@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createModels } from '@earendil-works/pi-ai/models';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { runWorkflow } from '@parcha/agentrun-dsl';
@@ -51,7 +52,7 @@ function hostOf(tail, counts = { effects: 0, endings: [] }) {
 async function open(file, flow) {
   const registry = createRegistry();
   registry.install(flow.extension);
-  return Harness.open(await openNodeSqliteStorage(file), { registry, models: {} }, ctx);
+  return Harness.open(await openNodeSqliteStorage(file), { registry, models: createModels() }, ctx);
 }
 const owned = (harness, taskId) => harness.commit(async (tx) => (await tx.scanConversations({ ownerTaskId: taskId }, 10)).items.map((c) => Number(c.id)), ctx);
 async function journalOf(harness) {

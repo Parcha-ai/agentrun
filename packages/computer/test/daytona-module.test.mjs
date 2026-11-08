@@ -130,16 +130,40 @@ test("the module's note for the run's report says a stop deletes, that the provi
 	assert.deepEqual([provider.capabilities().release, provider.capabilities().stopDeletes], [["stop", "delete"], true], "the run's provider declares that its stop deletes");
 });
 
-test("the CLI loads the Daytona module and fails in words, exit 1, without a key", async () => {
+test("the CLI loads the Daytona module, by path or by its registry id, and fails in words, exit 1, without a key", async () => {
 	// A child with PATH alone: whatever this process's environment holds, the CLI finds no key.
 	const cli = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
-	const ran = await new Promise((resolve) => {
-		execFile(process.execPath, [cli, "--provider", "../dist/conformance/daytona.js", "--image", "snapshot"], { cwd: here, env: { PATH: process.env.PATH, INIT_CWD: here } }, (error, stdout, stderr) =>
-			resolve({ code: error?.code ?? 0, stdout, stderr }),
-		);
+	for (const provider of ["../dist/conformance/daytona.js", "daytona"]) {
+		const ran = await new Promise((resolve) => {
+			execFile(process.execPath, [cli, "--provider", provider, "--image", "snapshot"], { cwd: here, env: { PATH: process.env.PATH, INIT_CWD: here } }, (error, stdout, stderr) =>
+				resolve({ code: error?.code ?? 0, stdout, stderr }),
+			);
+		});
+		assert.equal(ran.code, 1, `${provider}: ${ran.stderr}`);
+		assert.match(ran.stderr, /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/, provider);
+	}
+});
+
+test("the provider's fromEnv() reads the same COMPUTER_DAYTONA_ names, never DAYTONA_API_KEY, and keeps the provider's own defaults: no idle stop, no auto-delete", async () => {
+	const daytona = await import("../dist/daytona.js");
+	const { snapshot: _snapshot, ...providerNames } = DAYTONA_ENV;
+	assert.deepEqual(daytona.ENV, providerNames, "the module's names are the provider's and the run's snapshot");
+	assert.equal(DAYTONA_ENV.snapshot, "COMPUTER_DAYTONA_SNAPSHOT");
+	const fake = fakeDaytona();
+	assert.throws(() => daytona.fromEnv({ DAYTONA_API_KEY: PROD_KEY, DAYTONA_API_URL: PROD_API }, { fetch: fake.fetch, webSocket: fake.webSocket }), (error) => {
+		assert.match(error.message, /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/);
+		assert.doesNotMatch(error.message, new RegExp(PROD_KEY));
+		return true;
 	});
-	assert.equal(ran.code, 1);
-	assert.match(ran.stderr, /set COMPUTER_DAYTONA_API_KEY to a Daytona API key/);
+	assert.deepEqual(fake.requests, []);
+	const provider = daytona.fromEnv({ [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON, DAYTONA_API_KEY: PROD_KEY }, { fetch: fake.fetch, webSocket: fake.webSocket });
+	const made = await provider.create({ image: "default", lifetimeMs: 600_000, network: "none" });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
+	assert.equal(post.body.autoStopInterval, 0, "the run's 30-minute bound is the conformance module's, not the provider's");
+	assert.equal(post.body.autoDeleteInterval, -1);
+	assert.equal(provider.capabilities().stopDeletes, false);
+	for (const request of fake.requests) assert.equal(request.headers.authorization, `Bearer ${KEY}`);
 });
 
 /** Runs the live file with an environment of PATH and the given variables alone, and returns its TAP. */

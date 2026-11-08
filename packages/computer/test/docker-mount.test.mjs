@@ -39,7 +39,7 @@ test("the provider names the uid:gid a computer runs as by default: the user a b
 test("check() takes a bind of an existing run folder, and refuses an Archil mount in words that never hold the token, with no docker call", async () => {
 	const { provider, calls } = fakeDocker();
 	assert.deepEqual(provider.check({ ...SPEC, mount: bind(runFolder()) }), []);
-	const archil = { ...SPEC, mount: { kind: "archil", disk: "d", folder: "runs/r", token: TOKEN } };
+	const archil = { ...SPEC, mount: { kind: "archil", disk: "d", region: "aws-us-east-1", folder: "runs/r", token: TOKEN } };
 	const refused = provider.check(archil);
 	assert.deepEqual(refused.map((r) => r.field), ["mount"]);
 	assert.match(refused[0].message, /does not take a mount of kind archil; it takes bind/);
@@ -92,7 +92,7 @@ test("create() binds the run folder read-write at /workspace after the daemon's 
 	assert.deepEqual(valuesOf(runOf(plain.calls()), "--mount").length, 1, "a spec with no mount binds nothing at /workspace");
 });
 
-test("create() refuses a run folder the computer's user cannot write, in words, with no docker call, and never changes the folder", async () => {
+test("create() refuses a run folder the computer's user cannot write, in words, having read only the host (docker info), and never changes the folder", async () => {
 	const [uid, gid] = DEFAULT_USER.split(":");
 	for (const [mode, spec, why] of [
 		[0o500, {}, "the owner has no write permission"],
@@ -111,7 +111,8 @@ test("create() refuses a run folder the computer's user cannot write, in words, 
 			new RegExp(`^mount: the run folder ${dir} is not writable by the computer's user ${user}: it is owned by ${uid}:\\d+ with mode 0?${mode.toString(8)}; the provider never changes it`),
 			why,
 		);
-		assert.deepEqual(calls(), [], why);
+		// The host is read first, since a host that remaps ids makes the folder's owner meaningless; nothing is made.
+		assert.deepEqual(calls().map((args) => args[0]), ["info"], why);
 	}
 	// Others' write and search permission is enough for any user; so is the group's for a user in it.
 	for (const [mode, spec] of [[0o777, { user: "54321:54321" }], [0o1777, { user: "54321:54321" }]]) {
@@ -128,6 +129,52 @@ test("create() refuses a run folder the computer's user cannot write, in words, 
 		assert.equal(refused.ok, false);
 		assert.match(refused.error.message, /not writable by the computer's user 0:0/);
 	}
+});
+
+/** docker info's SecurityOptions on a host that remaps user ids: userns-remap, or rootless Docker. */
+const REMAPS = [
+	["userns", ["name=seccomp,profile=builtin", "name=userns", "name=cgroupns"]],
+	["rootless", ["name=seccomp,profile=builtin", "name=rootless", "name=cgroupns"]],
+];
+
+test("hostOf() reads whether the host remaps user ids (name=userns, name=rootless), which is no problem for a computer with no mount", () => {
+	for (const [remap, SecurityOptions] of REMAPS) {
+		const host = computer.hostOf({ Architecture: "x86_64", SecurityOptions, MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true });
+		assert.equal(host.remap, remap);
+		assert.deepEqual(host.problems, []);
+	}
+	const plain = computer.hostOf({ Architecture: "x86_64", SecurityOptions: ["name=seccomp,profile=builtin"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true });
+	assert.equal("remap" in plain, false);
+});
+
+test("create() with a bind on a host that remaps user ids is refused in words before any docker run; a computer with no mount is made as before", async () => {
+	const dir = runFolder();
+	for (const [remap, SecurityOptions] of REMAPS) {
+		const { provider, calls, names } = fakeDocker({ info: { SecurityOptions } });
+		const result = await provider.create({ ...SPEC, mount: bind(dir) });
+		assert.equal(result.ok, false, `${remap}: ${JSON.stringify(result)}`);
+		assert.equal(result.error.code, "refused");
+		assert.match(
+			result.error.message,
+			new RegExp(
+				`^mount: this Docker host remaps user ids \\(${remap === "userns" ? "userns-remap" : "rootless Docker"}\\), so the run folder's owner on the host is not ` +
+					`the computer's user, and the provider cannot tell whether the computer can write ${dir}; it never changes the folder: ` +
+					"bind the run folder on a Docker host that does not remap ids",
+			),
+			remap,
+		);
+		assert.deepEqual(calls().map((args) => args[0]), ["info"], `${remap}: no container is made`);
+		assert.deepEqual(names(), []);
+		// Once the host is read, check() says so too, for a bind alone.
+		assert.deepEqual(provider.check({ ...SPEC, mount: bind(dir) }).map((r) => r.field), ["mount"], remap);
+		assert.match(provider.check({ ...SPEC, mount: bind(dir) })[0].message, /^this Docker host remaps user ids/);
+		assert.deepEqual(provider.check(SPEC), [], `${remap}: a spec with no mount`);
+		const plain = await provider.create(SPEC);
+		assert.equal(plain.ok, true, `${remap}: a computer with no mount: ${JSON.stringify(plain)}`);
+	}
+	// A host that does not remap ids binds as before.
+	const { provider } = fakeDocker();
+	assert.equal((await provider.create({ ...SPEC, mount: bind(dir) })).ok, true);
 });
 
 test("create() deletes a computer whose bind is not what was asked: another folder, read-only, or none", async () => {
