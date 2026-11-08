@@ -8,7 +8,9 @@
 // The claim is the one fence for a run: claim() moves the run's epoch up by one, and every write a runner makes for the
 // run (its row, its journal commits, a command taken) carries the epoch it holds. A write under a lower epoch than the
 // run's is refused (Fenced) and writes nothing.
+import type { Context } from "@earendil-works/chord";
 import type { Storage } from "@earendil-works/pi-durable";
+import type { JournalPage } from "./journal/storage.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
@@ -129,6 +131,8 @@ export interface Staged {
 export interface Journal extends Storage {
   readonly runId: string;
   stage(staged: Staged): void;
+  /** The run's commits after `afterSeq`, at most `limit`, each with only what it wrote (store/journal JournalPage). */
+  commitsAfter(afterSeq: number, limit: number, context: Context): Promise<JournalPage>;
 }
 
 export interface ChannelPost {

@@ -70,6 +70,13 @@ function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
 const FIRST_ID = 2;
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
+
+/** A document a commit changed, as the live view reads it: its value at that seq, or `retired` with none. */
+export type JournalDocument = { readonly id: DocumentId; readonly kind: string; readonly conversationId?: ConversationId } & ({ readonly value: JsonValue; readonly retired?: undefined } | { readonly retired: true; readonly value?: undefined });
+/** One stored commit of the run, with only the records it wrote. */
+export type JournalCommit = { readonly seq: Seq; readonly entries: EntryRecord[]; readonly documents: JournalDocument[]; readonly tasks: StoredTask[]; readonly submissions: SubmissionRecord[] };
+/** A page of commits (journal.commitsAfter): `next` to read on from, when more may follow. */
+export type JournalPage = { readonly commits: JournalCommit[]; readonly next?: number };
 type Row = Record<string, SqliteValue>;
 type DocumentContent = { readonly kind: "base"; readonly version: number; readonly value: JsonValue } | { readonly kind: "delta"; readonly version: number; readonly ops: unknown };
 type DocumentAction = { create?: DocumentRecord; content?: DocumentContent; copy?: { readonly id: DocumentId; readonly at: DocumentPoint }; retire: boolean };
@@ -612,6 +619,57 @@ export class RunStorage implements Journal {
     return page(rows.map((row) => parseJson<DocumentRecord>(row.record!)), limit);
   }
 
+  /**
+   * The run's commits after `afterSeq`, in seq order, at most `limit`, for the live view: each with its own entries, the
+   * documents it changed (each's value at that seq; a retired one marked `retired`, with no value), and the tasks and
+   * submissions it last wrote (a row written again later appears only in that later commit, as it is then). One
+   * transaction, so the page is one committed state. `next`: the last seq returned, when commits may follow it. A
+   * run's seqs are consecutive from 1 (each stored batch takes the next), so a commit that wrote only a conversation is
+   * one too, with nothing listed.
+   */
+  async commitsAfter(afterSeq: number, limit: number, _context: Context): Promise<JournalPage> {
+    this.#assertOpen();
+    return this.#admitRead(() =>
+      this.#transaction(async (tx) => {
+        const metadata = await this.#readMetadata(tx);
+        const last = Number(metadata.next_seq) - 1;
+        const from = Math.max(0, Math.floor(Number(afterSeq) || 0));
+        const upto = Math.min(last, from + Math.max(0, Math.floor(limit)));
+        const commits: JournalCommit[] = [];
+        for (let seq = from + 1; seq <= upto; seq++) commits.push(await this.#commitAt(tx, seq));
+        return upto < last && commits.length > 0 ? { commits, next: upto } : { commits };
+      }),
+    );
+  }
+
+  async #commitAt(tx: SqliteExecutor, seq: number): Promise<JournalCommit> {
+    const run = this.#runId;
+    const entries = (await tx.all<Row>(`SELECT record FROM ${T.entries} WHERE run_id = ? AND commit_seq = ? ORDER BY id`, run, seq)).map((row) => parseJson<EntryRecord>(row.record!));
+    const tasks = (await tx.all<Row>(`SELECT record FROM ${T.tasks} WHERE run_id = ? AND seq = ? ORDER BY id`, run, seq)).map((row) => parseJson<StoredTask>(row.record!));
+    const submissions = (await tx.all<Row>(`SELECT record FROM ${T.submissions} WHERE run_id = ? AND seq = ? ORDER BY id`, run, seq)).map((row) => parseJson<SubmissionRecord>(row.record!));
+    const changed = await tx.all<{ id: number }>(
+      `SELECT document_id AS id FROM ${T.documentRevisions} WHERE run_id = ? AND seq = ?
+        UNION SELECT id FROM ${T.documents} WHERE run_id = ? AND (created_at = ? OR retired_at = ?) ORDER BY id`,
+      run, seq, run, seq, seq,
+    );
+    const documents: JournalDocument[] = [];
+    for (const { id } of changed) {
+      const row = await tx.get<Row>(`SELECT record FROM ${T.documents} WHERE run_id = ? AND id = ?`, run, id);
+      if (row === undefined) continue;
+      const record = parseJson<DocumentRecord & { retiredAt?: number }>(row.record!);
+      const scope = record.scope as { kind: string; conversationId?: ConversationId };
+      const head = { id: record.id, kind: record.kind, ...(scope.kind === "conversation" ? { conversationId: scope.conversationId } : {}) };
+      if (record.retiredAt === seq) {
+        documents.push({ ...head, retired: true });
+        continue;
+      }
+      // Its value at this seq; a document that keeps no history (`latest`) has only its value now.
+      const stored = await this.#materializeDocument(tx, id, isCurrentOnly(record) ? "current" : (seq as unknown as DocumentPoint));
+      if (stored) documents.push({ ...head, value: (stored as unknown as { value: JsonValue }).value });
+    }
+    return { seq: seqOf(seq), entries, documents, tasks, submissions };
+  }
+
   /** Every later operation rejects; reads admitted and commits asked before it end first (a commit's outcome is its
    *  caller's, never the close's). The store's connection stays open: the store owns it. */
   close(_context: Context): Promise<void> {
@@ -792,11 +850,11 @@ export class RunStorage implements Journal {
         const value = write.value as StoredTask;
         await this.#claimId(executor, value.id as unknown as number, "task");
         await executor.run(
-          `INSERT INTO ${T.tasks} (run_id, id, conversation_id, kind, status, abort_requested, background, record)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO ${T.tasks} (run_id, id, conversation_id, kind, status, abort_requested, background, seq, record)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, id) DO UPDATE SET conversation_id = excluded.conversation_id, kind = excluded.kind,
             status = excluded.status, abort_requested = excluded.abort_requested,
-            background = excluded.background, record = excluded.record`,
+            background = excluded.background, seq = excluded.seq, record = excluded.record`,
           run,
           value.id as unknown as number,
           value.conversationId as unknown as number,
@@ -804,6 +862,7 @@ export class RunStorage implements Journal {
           (value.state as { status: string }).status,
           value.abortRequested ? 1 : 0,
           value.background ? 1 : 0,
+          seq as unknown as number,
           encodeJson(value),
         );
         break;
@@ -812,14 +871,15 @@ export class RunStorage implements Journal {
         const value = write.value as SubmissionRecord & { requestId?: string };
         await this.#claimId(executor, value.id as unknown as number, "submission");
         await executor.run(
-          `INSERT INTO ${T.submissions} (run_id, id, conversation_id, request_id, status, record) VALUES (?, ?, ?, ?, ?, ?)
+          `INSERT INTO ${T.submissions} (run_id, id, conversation_id, request_id, status, seq, record) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, id) DO UPDATE SET conversation_id = excluded.conversation_id,
-            request_id = excluded.request_id, status = excluded.status, record = excluded.record`,
+            request_id = excluded.request_id, status = excluded.status, seq = excluded.seq, record = excluded.record`,
           run,
           value.id as unknown as number,
           value.conversationId as unknown as number,
           value.requestId === undefined ? null : encodeIndexedString(value.requestId),
           value.status,
+          seq as unknown as number,
           encodeJson(value),
         );
         break;

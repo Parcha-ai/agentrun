@@ -303,9 +303,12 @@ export const PI_DDL: readonly string[] = [
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'waiting', 'sleeping', 'completing', 'terminal')),
     abort_requested INTEGER NOT NULL CHECK (abort_requested IN (0, 1)),
     background INTEGER NOT NULL CHECK (background IN (0, 1)),
+    seq INTEGER NOT NULL,
     record TEXT NOT NULL CHECK (json_valid(record)),
     PRIMARY KEY (run_id, id)
   ) STRICT`,
+  // seq: the commit that last wrote the row (the live view reads a run commit by commit, journal.commitsAfter).
+  `CREATE INDEX IF NOT EXISTS pi_tasks_by_seq ON ${P.tasks} (run_id, seq)`,
   `CREATE INDEX IF NOT EXISTS pi_tasks_by_status ON ${P.tasks} (run_id, status, id)`,
   `CREATE INDEX IF NOT EXISTS pi_tasks_by_conversation ON ${P.tasks} (run_id, conversation_id, id)`,
   `CREATE INDEX IF NOT EXISTS pi_tasks_by_kind ON ${P.tasks} (run_id, kind, id)`,
@@ -317,9 +320,11 @@ export const PI_DDL: readonly string[] = [
     conversation_id INTEGER NOT NULL,
     request_id TEXT,
     status TEXT NOT NULL CHECK (status IN ('queued', 'placed', 'done', 'unanswered')),
+    seq INTEGER NOT NULL,
     record TEXT NOT NULL CHECK (json_valid(record)),
     PRIMARY KEY (run_id, id)
   ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS pi_submissions_by_seq ON ${P.submissions} (run_id, seq)`,
   `CREATE INDEX IF NOT EXISTS pi_submissions_by_request ON ${P.submissions} (run_id, conversation_id, request_id)`,
   `CREATE INDEX IF NOT EXISTS pi_submissions_by_conversation ON ${P.submissions} (run_id, conversation_id, id)`,
   `CREATE INDEX IF NOT EXISTS pi_submissions_by_status ON ${P.submissions} (run_id, status, id)`,
