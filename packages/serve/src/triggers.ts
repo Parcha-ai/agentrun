@@ -394,10 +394,6 @@ export class Triggers {
     return this.triggers.filter((t) => t.enabled && t.source.kind === kind && adapter.scopeOf!(t.source) === scope).map((t) => t.id);
   }
 
-  /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
-   *  sender's own id for it (a webhook's `webhook-id`), recorded due in one write and driven after the answer. `created`
-   *  false: that id's firing, as it stands, or `{ok: "duplicate"}` for one seen within its day whose firing is no longer
-   *  kept. */
   /** A verified request for trigger `id` that its filter ignored, under the key its event would have: kept for its day
    *  (`seen`), so the same request sent again under another label answers duplicate. A write that fails is said, and the
    *  request is still answered. */
@@ -413,6 +409,10 @@ export class Triggers {
     }
   }
 
+  /** A delivered request for trigger `id` (its pushed source's checks passed, server.ts): its firing, keyed by the
+   *  sender's own id for it (a webhook's `webhook-id`), recorded due in one write and driven after the answer. `created`
+   *  false: that id's firing, as it stands, or `{ok: "duplicate"}` for one seen within its day whose firing is no longer
+   *  kept. */
   receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: ReturnType<typeof firingView> | { ok: "duplicate" } } {
     const trigger = this.need(id);
     const by = trigger.source.kind;
