@@ -2,7 +2,7 @@
 // starts it, and headless Chrome driven through playwright-core, so the page loads with the server's real headers, its CSP,
 // its cookies and its redirects. jsdom sees none of those.
 //
-// The target is a built checkout (this one by default): a flow gets a server of its own from it on 127.0.0.1 with a fresh
+// The target is a built checkout (this one by default): a flow gets a server of its own from it on loopback with a fresh
 // data dir and home, which it removes when it ends. Or the target is a server already running (attachServer): the flows
 // that can share one run against it. Nothing waits on a clock: every wait is on the server's output, a selector, or a
 // response.
@@ -13,6 +13,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+
+/** The one address the servers here listen on, and the pages open: nothing leaves loopback. */
+export const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the e2e servers listen on loopback only
+/** The same loopback by name: another origin for the same server (a page opened at another address than its own). */
+export const LOOPBACK_NAME = "localhost"; // key-gate: loopback-rule the same e2e server by its loopback name
 
 /** The checkout these tests are in: the default target. */
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -27,7 +32,7 @@ export const PASSWORD = process.env.E2E_PASSWORD || ["e2e", "not", "a", "real", 
 /** What a server's output may hold that must never be shown: its API key, any ar_ key, and its setup code. */
 const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>").replace(/\bar_[A-Za-z0-9_-]+/g, "ar_<redacted>").replace(/([#?&]code=)[^&\s]+/g, "$1<redacted>");
 
-/** Starts the built server from `checkout` on 127.0.0.1, port chosen by the system, with a data dir and home of its own.
+/** Starts the built server from `checkout` on loopback (LOOPBACK), port chosen by the system, with a data dir and home of its own.
  *  Its environment holds only PATH, HOME, TMPDIR and `env` (e.g. AGENTRUN_PUBLIC_URL), so nothing of this machine reaches
  *  it. `faux`: the model fixture (the faux model by default). Resolves once its banner names its URL. Its output stays in
  *  memory: `log()` gives it with keys redacted, `line(re)` waits for a line. With a public URL, `setupCode()` reads the
@@ -36,7 +41,7 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", args = []
   const dir = mkdtempSync(join(tmpdir(), "agentrun-e2e-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
-  const child = spawn(process.execPath, [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", "127.0.0.1", ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...args], {
+  const child = spawn(process.execPath, [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", LOOPBACK, ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...args], {
     env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -131,12 +136,12 @@ export function apiOf(server) {
   };
 }
 
-/** A port free on 127.0.0.1 now: for a flow whose server must know its own address before it starts (its public URL). */
+/** A port free on loopback now: for a flow whose server must know its own address before it starts (its public URL). */
 export function freePort() {
   return new Promise((resolve, reject) => {
     const probe = createServer();
     probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+    probe.listen(0, LOOPBACK, () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
   });
 }
 

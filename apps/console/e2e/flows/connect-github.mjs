@@ -3,7 +3,7 @@
 // let that post leave: the browser's request reaching github.com is the check. GitHub is stubbed, so nothing goes out.
 // The same page opened at another origin than the public URL is refused (409 github_wrong_origin) and posts nothing.
 import { randomBytes } from "node:crypto";
-import { check, freePort, newContext, newPage, owner, signIn } from "../harness.mjs";
+import { check, freePort, LOOPBACK, LOOPBACK_NAME, newContext, newPage, owner, signIn } from "../harness.mjs";
 
 let publicOrigin = "";
 const notFound = (error) => /status of 404\b/.test(error);
@@ -24,7 +24,7 @@ export default {
   allow: ["github.com"],
   async server() {
     const port = await freePort();
-    publicOrigin = `http://127.0.0.1:${port}`;
+    publicOrigin = `http://${LOOPBACK}:${port}`;
     return { port, env: { AGENTRUN_PUBLIC_URL: publicOrigin, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") } };
   },
   origin: () => publicOrigin,
@@ -47,8 +47,9 @@ export default {
     check(errors.every(notFound), `the page reported errors: ${errors.join(" | ")}`);
     errors.length = 0;
 
-    // At another origin (localhost, not the public 127.0.0.1): refused in the server's words, nothing posted.
-    const wrong = origin.replace("127.0.0.1", "localhost");
+    // At another origin (the same server by its loopback name, not the public address): refused in the server's words,
+    // nothing posted.
+    const wrong = origin.replace(LOOPBACK, LOOPBACK_NAME);
     const { context: elsewhere, blocked } = await newContext(browser, wrong);
     try {
       const fromElsewhere = await stubGitHub(elsewhere);

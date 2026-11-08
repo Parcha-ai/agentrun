@@ -324,7 +324,7 @@ jobs:
 
   console-e2e:
     # The console's flows in a real browser against the built server (apps/console/e2e): the page loads with the server's own
-    # headers, CSP, cookies and redirects, which jsdom never sees. Each flow starts its own server on 127.0.0.1 with a fresh
+    # headers, CSP, cookies and redirects, which jsdom never sees. Each flow starts its own server on loopback with a fresh
     # data dir; nothing leaves loopback. The same pinned Chrome for Testing as real-chrome, from the same cache.
     needs: [build]
     runs-on: ubuntu-latest
