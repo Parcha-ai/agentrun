@@ -36,8 +36,9 @@ import {
   type TaskRecord,
 } from "@earendil-works/pi-durable";
 import { PI_TABLE as T } from "../schema.js";
-import type { Connection, Tx } from "../sqlite/connection.js";
-import { type AlsoRow, type Claim, CommandTaken, Fenced, FINAL_STATES, type Journal, type RunPatch, type Staged } from "../store.js";
+import type { Connection } from "../sqlite/connection.js";
+import { applyRunPatch } from "../sqlite/run-patch.js";
+import { type Claim, CommandTaken, Fenced, type Journal, type Staged } from "../store.js";
 
 /** A run's claim, as the journal is opened under it: the run and the epoch its claim holds. */
 export type JournalClaim = Pick<Claim, "runId" | "epoch">;
@@ -56,26 +57,13 @@ interface SqliteExecutor {
   all<R extends object>(sql: string, ...params: SqliteValue[]): Promise<R[]>;
 }
 
-/** The steps of `tx` as the journal's executor. */
-function stepsOf(tx: Tx): SqliteExecutor {
-  const step = (sql: string, params: SqliteValue[]) => tx.step({ sql, params });
-  return {
-    run: async (sql, ...params) => void (await step(sql, params)),
-    runCounted: async (sql, ...params) => (await step(sql, params)).changes,
-    get: async <R extends object>(sql: string, ...params: SqliteValue[]) => (await step(sql, params)).rows[0] as R | undefined,
-    all: async <R extends object>(sql: string, ...params: SqliteValue[]) => (await step(sql, params)).rows as R[],
-  };
-}
-
 /** Reads on `db` outside a transaction, as the journal's executor (a read writes nothing, so it has no run or runCounted). */
 function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
   return {
-    get: <R extends object>(sql: string, ...params: SqliteValue[]) => db.get<R>(sql, params),
-    all: <R extends object>(sql: string, ...params: SqliteValue[]) => db.all<R>(sql, params),
+    get: <R extends object>(sql: string, ...params: SqliteValue[]) => db.get<R>(sql, ...params),
+    all: <R extends object>(sql: string, ...params: SqliteValue[]) => db.all<R>(sql, ...params),
   };
 }
-
-const TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
 
 /** A run's first id to mint: pi's root conversation is 1. */
 const FIRST_ID = 2;
@@ -193,6 +181,8 @@ export class RunStorage implements Journal {
   readonly #read: Pick<SqliteExecutor, "get" | "all">;
   readonly #runId: string;
   readonly #epoch: number;
+  /** The store's clock (epoch ms): a take's taken_at and a final state's ended_at stamp. */
+  readonly #now: () => number;
   #nextId = Number.NaN;
   #opening: Promise<void> | undefined;
   #staged: Staged | undefined;
@@ -202,17 +192,18 @@ export class RunStorage implements Journal {
   #readsDrained: (() => void) | undefined;
 
   /** The journal of `claim`'s run on `db` (the store's connection, its schema in place). Its id namespace is read, and made
-   *  on first use, by its first commit or mintId. */
-  constructor(db: JournalConnection, claim: JournalClaim) {
+   *  on first use, by its first commit or mintId. `now`: the store's clock (epoch ms). */
+  constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now) {
     this.#db = db;
     this.#read = readsOf(db);
     this.#runId = claim.runId;
     this.#epoch = claim.epoch;
+    this.#now = now;
   }
 
   /** The journal of `claim`'s run on `db`, its id namespace read (and made on first use). */
-  static async open(db: JournalConnection, claim: JournalClaim): Promise<RunStorage> {
-    const storage = new RunStorage(db, claim);
+  static async open(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now): Promise<RunStorage> {
+    const storage = new RunStorage(db, claim, now);
     await storage.#opened();
     return storage;
   }
@@ -228,7 +219,7 @@ export class RunStorage implements Journal {
 
   /** One transaction of the store's connection, its work stepping only its own statements (it holds every other call). */
   #transaction<R>(work: (tx: SqliteExecutor) => Promise<R>): Promise<R> {
-    return this.#db.transaction((tx) => work(stepsOf(tx)));
+    return this.#db.transaction((tx) => work(tx));
   }
 
   /** The run whose journal this is. */
@@ -246,9 +237,6 @@ export class RunStorage implements Journal {
   stage(staged: Staged): void {
     for (const commandId of staged.take ?? []) {
       if (!Number.isSafeInteger(commandId)) throw new Error(`run ${this.#runId}: a staged take names a command id that is no integer: ${String(commandId)}`);
-    }
-    for (const also of staged.also ?? []) {
-      if (!TABLE_NAME.test(also.table) || Object.keys(also.row).some((column) => !TABLE_NAME.test(column))) throw new Error(`run ${this.#runId}: a staged row names a table or column that is no identifier: ${also.table}`);
     }
     this.#staged = staged;
   }
@@ -297,10 +285,13 @@ export class RunStorage implements Journal {
           `INSERT INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, ?, ?) ON CONFLICT (run_id) DO UPDATE SET next_id = excluded.next_id, next_seq = excluded.next_seq`,
           this.#runId, String(Math.max(Number(metadata.next_id), candidateNextId)), next,
         );
-        if (staged?.run !== undefined) await this.#writeRun(tx, staged.run);
-        for (const also of staged?.also ?? []) await this.#insert(tx, also);
+        // The run patch's fenced UPDATE (0 rows: Fenced), then its rows (store/sqlite/run-patch.ts, as runs.update writes
+        // them), then the takes.
+        const now = this.#now();
+        if (staged?.run !== undefined || (staged?.also ?? []).length > 0) {
+          await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now);
+        }
         if ((staged?.take ?? []).length > 0) {
-          const now = new Date().toISOString();
           for (const commandId of staged?.take ?? []) {
             if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, commandId, this.#runId)) === 0) {
               throw new CommandTaken(this.#runId, commandId);
@@ -322,33 +313,6 @@ export class RunStorage implements Journal {
    */
   publishing(publish: () => void, _context: Context): void {
     publish();
-  }
-
-  async #writeRun(tx: SqliteExecutor, patch: RunPatch): Promise<void> {
-    // As the store's runs.update writes a run's row: a final state with no endedAt is stamped now.
-    const sets: string[] = [];
-    const params: SqliteValue[] = [];
-    if (patch.state !== undefined) (sets.push("state = ?"), params.push(patch.state));
-    if (patch.costUsd !== undefined) (sets.push("cost_usd = ?"), params.push(patch.costUsd));
-    if (patch.metrics !== undefined) (sets.push("metrics = ?"), params.push(patch.metrics === null ? null : encodeJson(patch.metrics as JsonValue)));
-    if (patch.summary !== undefined) (sets.push("summary = ?"), params.push(patch.summary));
-    if (patch.endedAt !== undefined) (sets.push("ended_at = ?"), params.push(patch.endedAt));
-    else if (patch.state !== undefined && FINAL_STATES.includes(patch.state)) (sets.push("ended_at = ?"), params.push(new Date().toISOString()));
-    if (sets.length === 0) return;
-    if ((await tx.runCounted(`UPDATE runs SET ${sets.join(", ")} WHERE id = ? AND epoch = ?`, ...params, this.#runId, this.#epoch)) === 0) {
-      throw new Fenced(this.#runId, this.#epoch);
-    }
-  }
-
-  /** One staged row, its values bound (an object or array as JSON text). */
-  async #insert(tx: SqliteExecutor, also: AlsoRow): Promise<void> {
-    const columns = Object.keys(also.row);
-    const values = columns.map((column): SqliteValue => {
-      const value = also.row[column];
-      if (value === null || value === undefined) return null;
-      return typeof value === "number" || typeof value === "bigint" || typeof value === "string" || value instanceof Uint8Array ? value : typeof value === "boolean" ? (value ? 1 : 0) : encodeJson(value as JsonValue);
-    });
-    await tx.run(`INSERT INTO ${also.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`, ...values);
   }
 
   async #readMetadata(executor: SqliteExecutor): Promise<{ next_id: string; next_seq: number }> {

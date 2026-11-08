@@ -6,17 +6,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
-import { commandRow, OUTBOX_DDL, runRow, scratchConnection } from "./store-support.mjs";
+import { commandRow, postOf, runRow, scratchConnection, T0 } from "./store-support.mjs";
 
 const { CommandTaken, RunStorage } = await import("../dist/store/index.js");
 const context = BACKGROUND_CONTEXT;
 const ROOT = 1;
+/** The journals' clock in these tests (epoch ms). */
+const NOW = T0 + 7_200_000;
+const TAKEN_BEFORE = T0 + 3_660_000;
 
 async function setUp(t, runId) {
   const db = await scratchConnection(t);
-  await db.exec(OUTBOX_DDL);
   const claim = await runRow(db, runId, 1);
-  const storage = await RunStorage.open(db.connection, claim);
+  const storage = await RunStorage.open(db.connection, claim, () => NOW);
   await commitWrites(storage, [{ type: "conversation", value: { id: ROOT } }], context);
   return { db, claim, storage };
 }
@@ -30,7 +32,7 @@ test("a staged take marks the command taken in the commit that carries its effec
   storage.stage({ take: [7] });
   await commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context);
   assert.ok((await storage.entry(effect, context)) !== undefined, "the effect's journal row");
-  assert.match(String(await takenAt(db, 7)), /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/, "and the command taken, in that commit");
+  assert.equal(await takenAt(db, 7), NOW, "and the command taken, in that commit, on the store's clock (epoch ms)");
   // Committed, the take is cleared: the next commit does not take the command again (it would be refused).
   await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context);
 });
@@ -38,9 +40,9 @@ test("a staged take marks the command taken in the commit that carries its effec
 test("a take of a command already taken refuses the whole commit with CommandTaken and writes nothing", async (t) => {
   const { db, storage } = await setUp(t, "run-twice");
   await commandRow(db, 8, "run-twice");
-  await commandRow(db, 9, "run-twice", "2026-11-08T07:01:00.000Z");
+  await commandRow(db, 9, "run-twice", TAKEN_BEFORE);
   const effect = await storage.mintId();
-  storage.stage({ run: { state: "ended" }, also: [{ table: "outbox", row: { run_id: "run-twice", moment: "done" } }], take: [8, 9] });
+  storage.stage({ run: { state: "ended" }, also: [postOf("run-twice")], take: [8, 9] });
   await assert.rejects(
     commitWrites(storage, [{ type: "entry", value: { id: effect, conversationId: ROOT, kind: "message" } }], context),
     (error) => error instanceof CommandTaken && error.runId === "run-twice" && error.commandId === 9,
@@ -48,9 +50,9 @@ test("a take of a command already taken refuses the whole commit with CommandTak
   );
   assert.equal(await db.get("SELECT 1 AS found FROM pi_entries WHERE run_id = ? AND id = ?", "run-twice", effect), undefined, "no journal row");
   assert.equal(await takenAt(db, 8), null, "no other take");
-  assert.equal(await takenAt(db, 9), "2026-11-08T07:01:00.000Z", "the first take stands");
+  assert.equal(await takenAt(db, 9), TAKEN_BEFORE, "the first take stands");
   assert.equal((await db.get("SELECT state FROM runs WHERE id = ?", "run-twice")).state, "running", "no run patch");
-  assert.equal(Number((await db.get("SELECT COUNT(*) AS n FROM outbox")).n), 0, "no staged row");
+  assert.equal(Number((await db.get("SELECT COUNT(*) AS n FROM channel_posts")).n), 0, "no staged row");
 });
 
 test("a take of another run's command refuses the commit with CommandTaken and leaves that command untaken", async (t) => {

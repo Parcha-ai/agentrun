@@ -19,9 +19,9 @@ test("a transaction still open at its deadline is rolled back with StoreDeadline
   const order = [];
   // A slow transaction: one statement, then a wait that is no statement of its own (as a model or tool call would be).
   const slow = db.connection.transaction(async (tx) => {
-    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('slow', '1', 'now')" });
+    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('slow', '1', 1)" });
     await sleep(1_500);
-    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('slow-late', '1', 'now')" });
+    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('slow-late', '1', 1)" });
   }, { deadlineMs: 300 });
   const slowDone = slow.then(() => order.push("slow committed"), (error) => (order.push("slow refused"), error));
   // Another run's journal commit, asked for while the slow one is open.
@@ -42,7 +42,7 @@ test("a transaction that ends before its deadline commits, and the calls queued 
   const db = await scratchConnection(t);
   const order = [];
   const first = db.connection.transaction(async (tx) => {
-    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('first', '1', 'now')" });
+    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('first', '1', 1)" });
     await sleep(200);
     order.push("first work done");
   }, { deadlineMs: 5_000 });
