@@ -779,6 +779,31 @@ test("an extend that moves E2B's end by less than its rounding still shows in li
 	assert.equal(attached.value.spec.deadline.toISOString(), extended.value.deadline.toISOString(), "attach() shows it too");
 });
 
+test("near the cap, an extend whose whole seconds cannot reach the current deadline is refused as limit and moves nothing", async () => {
+	const { provider, fake } = setup();
+	const { ref, sb } = seeded(fake, { lifetimeMs: 45_000 });
+	// Already extended: 599.5 s left on E2B's end and init's deadline, the cap 599.8 s away, and 599.6 s asked for.
+	// E2B takes whole seconds: 600 s passes the cap, and 599 s ends before the current deadline.
+	const now = Date.now();
+	const end = new Date(now + 599_500);
+	const most = new Date(now + 599_800).toISOString();
+	sb.endAt = end;
+	sb.init.deadline = end.toISOString();
+	sb.metadata[MAX_LABEL] = most;
+	sb.init.max = most;
+	const extended = await provider.extend(ref, 599_600);
+	assert.deepEqual(
+		fake.calls.filter(([name]) => name === "Sandbox.setTimeout").map(([, , ms]) => ms),
+		[],
+		"E2B's timer is never given an end before the current deadline",
+	);
+	assert.equal(sb.endAt.getTime(), end.getTime(), "E2B's end did not move");
+	assert.equal(sb.init.deadline, end.toISOString(), "init's deadline did not move");
+	assert.equal(extended.ok, false);
+	assert.equal(extended.error.code, "limit");
+	assert.match(extended.error.message, /no whole number of seconds/);
+});
+
 test("an extend whose init will not move says what moved", async () => {
 	const { provider, fake } = setup();
 	const { ref, sb } = seeded(fake);
