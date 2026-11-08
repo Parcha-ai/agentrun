@@ -214,14 +214,16 @@ test("an onWait that aborts its own caller's signal settles that caller as abort
 	assert.deepEqual(await stays, { ok: true, value: TAG });
 	assert.equal(fake.builds().length, 1);
 
-	// Starts the build itself and is its only caller: onWait, told when the build begins, aborts it, and the build stops.
+	// Starts the flight itself and is its only caller: onWait, told before the build begins, aborts it, and no build starts.
 	const other = "FROM alpine:3.20\nRUN echo seven > /seven\n";
 	fake.mark("build-hold");
 	const alone = new AbortController();
 	const stopped = ensureImage({ recipe: other }, { docker: fake.docker, signal: alone.signal, onWait: () => alone.abort() });
 	assert.deepEqual(await within(stopped), { ok: false, error: { code: "aborted", message: `the wait for ${recipeTag(other)} was aborted, and the build, which no other caller waited on, was stopped` } });
-	await until(() => fake.builds().length === 2 && !alive(fake.builds()[1].pid), "the stopped build's docker to end", 5_000);
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	assert.equal(fake.calls().filter(([command]) => command === "build").length, 1, "no docker build was started for it");
 	fake.clear("build-hold");
+	assert.deepEqual(await ensureImage({ recipe: other }, { docker: fake.docker }), { ok: true, value: recipeTag(other) }, "the next call builds it");
 });
 
 test("onWait is told once, before a caller waits on a build or pull, its own or one it joined; never when Docker has the image; a throw from it changes nothing", async () => {

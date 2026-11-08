@@ -163,26 +163,40 @@ export async function ensureImage(source: ImageSource, { docker = "docker", sign
 			// The caller's listener is its own: a throw changes nothing here.
 		}
 	};
+	// The abort listener goes in before onWait is told, and the signal is read again after: an onWait that aborts its own
+	// caller's signal, told at once when the caller joins a build under way, is never missed.
+	let leave: (() => void) | undefined;
+	const settled =
+		signal === undefined
+			? joined.result
+			: new Promise<Result<string>>((resolve) => {
+					let left = false;
+					const making = checked.kind === "recipe" ? "build" : "pull";
+					leave = () => {
+						if (left) return;
+						left = true;
+						signal.removeEventListener("abort", onAbort);
+						joined.toTell.delete(tell);
+						joined.waiting -= 1;
+						if (joined.waiting > 0) return resolve(fail("aborted", `the wait for ${checked.tag} was aborted; the ${making} goes on for the other callers waiting on it`));
+						joined.controller.abort();
+						resolve(fail("aborted", `the wait for ${checked.tag} was aborted, and the ${making}, which no other caller waited on, was stopped`));
+					};
+					const onAbort = () => leave?.();
+					signal.addEventListener("abort", onAbort, { once: true });
+					void joined.result.then((result) => {
+						if (left) return;
+						left = true;
+						signal.removeEventListener("abort", onAbort);
+						resolve(result);
+					});
+				});
 	if (onWait !== undefined) {
 		if (joined.making !== undefined) tell();
 		else joined.toTell.add(tell);
 	}
-	if (signal === undefined) return joined.result;
-	return new Promise<Result<string>>((resolve) => {
-		const leave = () => {
-			joined.toTell.delete(tell);
-			joined.waiting -= 1;
-			const making = checked.kind === "recipe" ? "build" : "pull";
-			if (joined.waiting > 0) return resolve(fail("aborted", `the wait for ${checked.tag} was aborted; the ${making} goes on for the other callers waiting on it`));
-			joined.controller.abort();
-			resolve(fail("aborted", `the wait for ${checked.tag} was aborted, and the ${making}, which no other caller waited on, was stopped`));
-		};
-		signal.addEventListener("abort", leave, { once: true });
-		void joined.result.then((result) => {
-			signal.removeEventListener("abort", leave);
-			if (!signal.aborted) resolve(result);
-		});
-	});
+	if (signal?.aborted) leave?.();
+	return settled;
 }
 
 /**
@@ -207,6 +221,8 @@ async function fly(docker: string, source: Source, timeoutMs: number, flight: Om
 		flight.making = source.kind === "image" ? "pull" : "build";
 		for (const tell of flight.toTell) tell();
 		flight.toTell.clear();
+		// Every caller may have left while it was told (an onWait that aborts its own signal): then nothing is started.
+		if (controller.signal.aborted && !late) return fail("aborted", "it was stopped before it began: no caller waits on it any more");
 		const made =
 			source.kind === "image"
 				? await call(["pull", "--quiet", source.tag])
