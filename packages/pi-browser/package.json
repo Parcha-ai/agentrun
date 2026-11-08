@@ -101,9 +101,9 @@
   },
   "peerDependencies": {
     "@browserbasehq/sdk": ">=2.20.0 <3",
-    "@earendil-works/chord": ">=1.1.0 <1.4.0",
+    "@earendil-works/chord": "1.5.0",
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-durable": ">=1.1.0 <1.4.0"
+    "@earendil-works/pi-durable": "1.5.0"
   },
   "peerDependenciesMeta": {
     "@browserbasehq/sdk": {
@@ -120,10 +120,10 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.1.0",
-    "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-coding-agent": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0"
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0"
   },
   "repository": {
     "type": "git",

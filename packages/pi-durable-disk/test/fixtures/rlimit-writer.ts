@@ -33,7 +33,7 @@ for (let n = 0; n < 5000 && outcome.firstError === undefined; n++) {
 outcome.fenced = store.database.fenced;
 outcome.callbacks = fencedCallbacks;
 try {
-  await store.storage.commit([], ctx);
+  await store.storage.commit([], () => undefined, ctx);
   outcome.laterCall = "resolved";
 } catch (error) {
   outcome.laterCall = { typed: error instanceof StoreFencedError, same: error === store.database.fencedBy };

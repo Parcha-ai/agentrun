@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { adapterRun } from "../dist/harness-app.js";
 
@@ -69,7 +70,7 @@ const errorsOf = (entries) => entries.flatMap((e) => (e.model ?? []).filter((m) 
 
 /** A run's door and open over `storage` (a later process opens the same one), on `held` (a fresh held adapter). */
 async function opened(storage = new MemoryStorage(), held = heldAdapter()) {
-  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
   const app = adapterRun(async () => held.adapter, "held", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
   const events = [];
   // As the door does when it opens: a turn the run starts itself (a recovery) reports through it too.
@@ -126,7 +127,7 @@ test("the harness's process starts under the prefix pi's commands get in the run
     [["/usr/bin/setpriv", "--no-new-privs", "--"], { command: "/usr/bin/setpriv", args: ["--no-new-privs", "--", "codex", "app-server"] }],
     [[], undefined],
   ]) {
-    const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+    const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
     let given = "never called";
     const app = adapterRun(async (confine) => ((given = confine), heldAdapter().adapter), "held", { key: "run:1", label: "a", system: [], context: "fresh" }, ctx);
     await app.onOpen(runOf(harness, prefix));
@@ -241,7 +242,7 @@ test("a run reopened with a turn to recover and a message that waited for it is 
 });
 
 test("an adapter written before settleOpenTurn: a stopped turn it holds open is recovered at the open, as before, and the open does not throw", async () => {
-  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: createModels() }, ctx);
   const held = heldAdapter();
   const open = held.adapter.open;
   let recovered = 0;

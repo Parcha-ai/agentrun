@@ -35,10 +35,8 @@ It is not for a one-shot script with no state to keep (pi-durable's in-memory st
 On Linux with Node 22.19 or later (or on macOS [for development](docs/reference.md#on-macos)). In an empty directory:
 
 ```sh
-npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
-
-pi 1.4 is not supported yet; a later release widens the range.
 
 Save this as `pick-up.mts` (Node 22.19 or later runs the types away; `.mts` makes it an ES module whatever your
 `package.json` says). It is [examples/pick-up-a-run/main.ts](examples/pick-up-a-run/main.ts). It starts three processes, one after another, on
@@ -167,11 +165,10 @@ threshold is released and holds no process; an instance with no work at all park
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
-`@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `>=1.0.4 <1.4.0`: pi 1.4 is not supported yet; a
-later release widens the range. Node 22.19 or later; Linux, or macOS for development.
+`@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `1.5.0` exactly; CI tests 1.5.0. Node 22.19 or later; Linux, or macOS for development.
 
 `@earendil-works/pi-coding-agent` pins undici 8.10.2 exactly. To install undici 8.12.2 under them, add this
 override to your own `package.json` (npm applies overrides only in the project that runs the install):

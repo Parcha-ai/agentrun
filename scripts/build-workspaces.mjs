@@ -5,7 +5,7 @@
 // loudly.
 //   node scripts/build-workspaces.mjs            build every workspace that has a build script, in order
 //   node scripts/build-workspaces.mjs --order    print the order, one package name a line, and build nothing
-//   node scripts/build-workspaces.mjs --only a,b  build only those, in the same order (pi-leg.mjs: a leg's set); a package
+//   node scripts/build-workspaces.mjs --only a,b  build only those, in the same order; a package
 //                                                 in it that depends on a workspace outside it with no dist stops it
 //   --root <dir>                                  the repository to build (default: this script's)
 import { spawnSync } from 'node:child_process';

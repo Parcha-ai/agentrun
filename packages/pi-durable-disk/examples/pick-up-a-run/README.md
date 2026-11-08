@@ -18,12 +18,10 @@ record, in 0.1.0-beta.15), on Linux with Node 22.19 or later.
 of the version you installed):
 
 ```sh
-npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-durable-disk@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 # save main.ts from this directory as pick-up.mts (.mts: an ES module, whatever your package.json says), then
 node pick-up.mts
 ```
-
-pi 1.4 is not supported yet; a later release widens the range.
 
 **From a checkout:**
 

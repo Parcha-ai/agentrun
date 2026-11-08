@@ -67,9 +67,9 @@
     "undici": "^8.12.2"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.1.0 <1.4.0",
+    "@earendil-works/chord": "1.5.0",
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-durable": ">=1.1.0 <1.4.0",
+    "@earendil-works/pi-durable": "1.5.0",
     "opencode-ai": "1.19.5"
   },
   "peerDependenciesMeta": {
@@ -78,9 +78,9 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.1.0",
-    "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0",
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
     "@modelcontextprotocol/server": "2.4.0",
     "opencode-ai": "1.19.5"
   },

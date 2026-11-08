@@ -22,7 +22,7 @@ const pi = createModels();
 pi.setProvider(anthropicProvider());
 const marked = await markRequests(pi);
 const capped = await capModels(marked.models, 1, spentIn(join(dir, "store", "run.sqlite")));
-const run = await openDurableRun({ disk: "dsk-local", region: "local", id: "run-1" }, { ...localRun(dir), synchronous: "NORMAL", keepWal: true, harness: { registry: createRegistry(), models: {} } });
+const run = await openDurableRun({ disk: "dsk-local", region: "local", id: "run-1" }, { ...localRun(dir), synchronous: "NORMAL", keepWal: true, harness: { registry: createRegistry(), models: createModels() } });
 await run.harness.root(context);
 marked.open(run);
 let attempt = 0;
