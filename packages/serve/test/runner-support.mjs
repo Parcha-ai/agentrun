@@ -157,6 +157,7 @@ export function observed(store, record) {
           }
           if (property === "commit") {
             return async (...args) => {
+              alive();
               const startedAt = Date.now();
               const startedOrder = nextOrder();
               const result = await value.apply(target, args);
@@ -164,6 +165,8 @@ export function observed(store, record) {
                 record.commits.push({ runId: claim.runId, epoch: claim.epoch, runner: claim.runner, startedAt, startedOrder, at: Date.now() });
                 const state = staged?.run?.state;
                 if (state && state !== "running") record.ops.push(`${state} ${claim.runId}`);
+                // The runner's own end commit of a stopped run (endRun) counts as its stopped write, as runs.update does.
+                if (record.dieAfterStopped && state === "stopped") record.dead = true;
                 staged = undefined;
               }
               return result;
