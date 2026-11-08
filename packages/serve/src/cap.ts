@@ -1194,7 +1194,14 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
       if ("hold" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
-        const answered = admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        let answered: Promise<AssistantMessage>;
+        try {
+          answered = admit(true, judged.hold, judged.stopped, () => (events = send(model, judged.context ?? context, carrying(judged.options ?? options, judged, attempts))).result(), attempts);
+        } catch (error) {
+          // Never sent (its send threw as it was made): a note it carried waits for the next request.
+          if (judged.told) wrapUp!.pending = false;
+          throw error;
+        }
         if (judged.told) settleNote(answered, judged.told);
         return events!;
       }

@@ -563,7 +563,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     };
     // Refused at create time, before anything is spent: a fork the adapter cannot make, or anything the adapter refuses.
     const problems = [
-      ...(spec.context === "fork" && !adapter.capabilities().fork ? [`Node "${request.label}" asks for context: "fork", but ${adapter.id} has no caller transcript to fork. Declare context: "fresh".`] : []),
+      ...(spec.context === "fork" ? [`Node "${request.label}" asks for context: "fork", but ${adapter.id} has no caller transcript to fork. Declare context: "fresh".`] : []),
       ...adapter.check(spec),
     ];
     if (problems.length) throw refuse(problems.join("; "));
