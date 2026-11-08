@@ -29,6 +29,15 @@ test("a take of a command already taken refuses the whole update: the run is not
   assert.equal((await store.runs.get("run-1")).state, "running", "nothing written");
 });
 
+test("an array third argument is refused (TypeError), never read as `also`: the rows come as { also }", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const told = { table: "channel_told", row: { channel: "slack:C1", marker: "ended" } };
+  await assert.rejects(store.runs.update(claim, { state: "ended" }, [told]), TypeError);
+  assert.equal((await store.runs.get("run-1")).state, "running", "nothing written");
+});
+
 test("the update's `also` rows still come as before, beside a take, and a stale claim writes neither", async (t) => {
   const { store, clock } = await storeOn(t);
   await queued(store);

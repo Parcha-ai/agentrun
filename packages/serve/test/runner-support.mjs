@@ -86,9 +86,9 @@ export function observed(store, record) {
   };
   return {
     runs: {
-      async update(claim, patch, also) {
+      async update(claim, patch, rows) {
         alive();
-        const row = await store.runs.update(claim, patch, also);
+        const row = await store.runs.update(claim, patch, rows);
         if (record.dieAfterStopped && patch.state === "stopped") record.dead = true;
         return row;
       },

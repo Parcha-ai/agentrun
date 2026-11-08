@@ -47,8 +47,8 @@ test("a run update carries rows in the same commit (an outbox post, a told marke
   clock.now += 2_000;
   const claim = await store.claim("run-1", "runner-b", { leaseMs: 30_000 });
   const post = { id: "post-1", channel: "slack:C1", moment: "ended", body: { text: "done" } };
-  await assert.rejects(store.runs.update(stale, { state: "ended" }, [{ table: "channel_posts", row: post }]), Fenced);
-  await store.runs.update(claim, { state: "ended", costUsd: 0.5 }, [{ table: "channel_posts", row: post }, { table: "channel_told", row: { channel: "slack:C1", marker: "ended" } }]);
+  await assert.rejects(store.runs.update(stale, { state: "ended" }, { also: [{ table: "channel_posts", row: post }] }), Fenced);
+  await store.runs.update(claim, { state: "ended", costUsd: 0.5 }, { also: [{ table: "channel_posts", row: post }, { table: "channel_told", row: { channel: "slack:C1", marker: "ended" } }] });
   await store.flush();
   const raw = new DatabaseSync(file, { readOnly: true });
   try {
