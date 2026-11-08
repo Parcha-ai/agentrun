@@ -1195,7 +1195,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 9 optional cases skipped, not declared · full 7/13 · network:allow mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 9 optional cases skipped, not declared · full 8/14 · network:allow mount:archil screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
 ```
 
 A module path is resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
