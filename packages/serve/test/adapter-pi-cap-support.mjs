@@ -1,0 +1,59 @@
+// What the adapter-pi-cap tests share: one pi run through the adapter loop (runner/adapter-loop.ts, pi's model through the
+// session's proxy to a scripted origin) under the host's check before each paid request (the spend cap's
+// beforeRequestOf), run until the run is no longer running, with every ask and every request that reached the provider.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MODEL, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+
+const { openSqliteStore } = await import("../dist/store/index.js");
+const { startRunner } = await import("../dist/runner/runner.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+/** The kernel cap, not exported from its package until the cutover: read from its build. */
+export const cap = await import("../../run-adapters/dist/kernel/cap/index.js");
+export const { beforeRequestOf } = cap;
+
+export const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+export const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
+/** The suite's model as the cap prices it: Sonnet's list price. */
+export const SONNET = Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A store with one queued run, a runner on the adapter loop running `script` with `beforeRequest`, until the run is
+ *  not running or `ms` passes. `asked`: each request the host was asked about; `sent`: each body the provider got. */
+export async function capRun(t, { script, beforeRequest, ms = 20_000 }) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let runner;
+  t.after(async () => {
+    await runner?.close();
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Cap" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const asked = [];
+  const sent = [];
+  const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
+  const loop = createAdapterLoop(async (claim, run) => ({
+    ...(await spec(claim, run)),
+    beforeRequest: async (request) => {
+      const answer = await beforeRequest(request);
+      asked.push({ request, answer });
+      return answer;
+    },
+  }), { restartLimit: MAX_RESTARTS });
+  runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  const from = Date.now();
+  let row;
+  for (;;) {
+    row = await server.runs.get("run-1");
+    if (row.state !== "running" && row.state !== "queued" && row.runner === null) break;
+    if (Date.now() - from > ms) break;
+    await sleep(20);
+  }
+  return { row, asked, sent, ms: Date.now() - from, server, store };
+}
