@@ -6,13 +6,14 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { NOTE_SUFFIX, type TimelineEvent, chargedTool, isMessageRow } from "@parcha/pi-durable-agent/timeline";
+import { NOTE_SUFFIX, type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import type { RevisionKind } from "@parcha/pi-durable-agent";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import { servedOnly } from "./served-only.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { type PendingApproval, previewOf } from "./tool-gate.js";
+import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
@@ -117,6 +118,31 @@ export function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
   // live process feeds the timeline (keepCommitted).
   const paused: TimelineEvent = servedOnly({ ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
   return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
+}
+
+/** A text clipped to `max` characters, with an ellipsis where it is cut (runs.ts' clip). */
+const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+const ASKED = "Asked you: ";
+// ask_person's label and that it ends its turn: a person's reply is their next message, never a steer (runs.ts). Registered
+// here so both the file path and the store-backed view render the call the same, whichever module loads first.
+registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`, undefined, { name: "Ask you a question" });
+registerTurnEnding(ASK_TOOL);
+
+/** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes from
+ *  the call's row, whose label this module registers. The server fed its rows through this; the store-backed view feeds the
+ *  same rows through it, so a run waiting on a question reads the same pending. */
+export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
+  const out: TimelineEvent[] = [];
+  const questions = new Map<string, string>();
+  for (const row of rows) {
+    out.push(row);
+    if (row.kind === "tool_use" && row.tool_name === ASK_TOOL && row.tool_use_id && row.summary?.startsWith(ASKED)) questions.set(row.tool_use_id, row.summary.slice(ASKED.length));
+    if (row.kind === "tool_result" && row.tool_name === ASK_TOOL && row.tool_status === "success") {
+      const question = questions.get(row.tool_use_id ?? "") || "the agent asked you a question";
+      out.push({ ...row, id: `${row.id}:waiting`, kind: "waiting", summary: `Waiting for you: ${clip(question, 480)}`, text: clip(question, 2000), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    }
+  }
+  return out;
 }
 
 // --- A run's status and what it waits on, as pure functions over the run's rows, its turns and its store entries (its
