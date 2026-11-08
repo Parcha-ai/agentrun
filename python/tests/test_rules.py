@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import secrets
 import shutil
 import socket
@@ -16,6 +17,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from typing import Any, Optional
 from unittest import mock
@@ -132,6 +134,7 @@ class Rules(unittest.TestCase):
             os.environ["AGENTRUN_API_KEY"] = KEY
             from_env = AgentRun()
             self.assertEqual(from_env.base_url, server.base, "the environment's server and key")
+            self.assertEqual((from_env.timeout, from_env.max_retries), (60.0, 4), "the TypeScript client's defaults")
         split = urlsplit(server.base)
         with_user = f"{split.scheme}://user:{KEY}@{split.netloc}{split.path}"
         for base_url in (f"{server.base}?x=1", f"{server.base}#x", with_user, "ftp://example.com/v2", "not a url", "http://", f"{server.base}/a b", f"{split.scheme}://{split.netloc}/x/../v2"):
@@ -587,6 +590,110 @@ class Rules(unittest.TestCase):
         self.assertEqual(urlsplit(first.url).query, "limit=10&agent=a+b&status=completed&archived=true")
         self.assertEqual((upload.method, upload.headers["content-type"], upload.body), ("PUT", "image/png", b"\x89PNG"))
         self.assertEqual((note.headers["content-type"], note.headers["if-none-match"], note.body), ("text/markdown", "*", b"# Policies\n"))
+
+    def test_the_key_is_in_no_traceback_even_one_that_prints_its_locals(self) -> None:
+        elsewhere = Listener(self)
+        home = Listener(self, lambda request, reply: (302, {"location": f"{elsewhere.base}/agents"}, ""))
+        away = self.thrown(AgentRun(base_url=home.base, api_key=KEY).agents.list)
+        self.assertIsInstance(away, AgentRunRefused)
+        with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": home.base, "AGENTRUN_API_KEY": f"{KEY}\n"}):
+            bad = self.thrown(AgentRun)
+        with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": home.base, "AGENTRUN_API_KEY": KEY}):
+            zero = self.thrown(AgentRun, timeout=0)
+        given = self.thrown(AgentRun, base_url=home.base, api_key=f"{KEY}\n")
+        for error in (away, bad, zero, given):
+            self.assertIsInstance(error, AgentRunError)
+            rendered = traceback.TracebackException.from_exception(error, capture_locals=True)
+            # The client's own frames: the test's frames hold the key it passed, as any caller's would.
+            frames = [frame for frame in rendered.stack if f"{os.sep}agentrun{os.sep}" in frame.filename]
+            self.assertTrue(frames, "the error came from inside the client")
+            self.assertNotIn(KEY, "".join(traceback.StackSummary.from_list(frames).format()) + "".join(rendered.format_exception_only()))
+
+    def test_a_retry_after_that_is_not_digits_or_a_date_is_no_retry_after_and_never_breaks_an_answer(self) -> None:
+        tries: dict[str, int] = {}
+
+        def answer(request: Request, reply: Reply) -> Any:
+            n = tries[request.url] = tries.get(request.url, 0) + 1
+            if request.url == "/v2/agents":
+                return json_answer(200, {"agents": [], "next_cursor": None}, {"retry-after": "\u00b2"})
+            return json_answer(503, {"error": {"code": "unavailable"}}, {"retry-after": "\u00b9"}) if n == 1 else json_answer(200, {"runs": [], "next_cursor": None})
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY)
+        self.assertEqual(client.agents.list(), {"agents": [], "next_cursor": None})
+        self.assertEqual(client.runs.list(), {"runs": [], "next_cursor": None})
+        self.assertEqual(tries["/v2/runs"], 2)
+
+    def test_a_try_that_hits_its_own_timeout_in_the_handshake_is_a_timeout_and_is_not_tried_again(self) -> None:
+        listening = socket.socket()
+        listening.bind(("127.0.0.1", 0))
+        listening.listen(8)
+        self.addCleanup(listening.close)
+        held: list[socket.socket] = []
+
+        def accept() -> None:
+            while True:
+                try:
+                    held.append(listening.accept()[0])
+                except OSError:
+                    return
+
+        threading.Thread(target=accept, daemon=True).start()
+        self.addCleanup(lambda: [connection.close() for connection in held])
+        client = AgentRun(base_url=f"https://127.0.0.1:{listening.getsockname()[1]}/v2", api_key=KEY)
+        client._reached = True  # a client that has reached its server before
+        stalled = self.thrown(client.agents.list, timeout=0.3)
+        assert isinstance(stalled, AgentRunUnreachable), repr(stalled)
+        self.assertEqual((stalled.cause, len(held)), ("timeout", 1))
+
+    def test_nothing_but_an_agentrun_error_escapes_a_host_idna_refuses_is_a_usage_error_and_a_lone_surrogate_in_a_query_is_sent_as_u_fffd(self) -> None:
+        self.assertIsInstance(self.thrown(AgentRun, base_url=f"http://{'a' * 64}.example/v2", api_key=KEY), AgentRunUsage)
+        server = Listener(self, lambda request, reply: json_answer(200, {"agents": [], "next_cursor": None}))
+        AgentRun(base_url=server.base, api_key=KEY).agents.list(cursor="a\ud800b")
+        self.assertEqual(parse_qs(urlsplit(server.requests[0].url).query)["cursor"], ["a\ufffdb"])
+
+    def test_runs_follow_waits_at_most_a_minute_whatever_retry_the_server_names(self) -> None:
+        done = page(status="completed", final=True)
+
+        def answer(request: Request, reply: Reply) -> Any:
+            reply.head(200, {"content-type": "text/event-stream"})
+            if not request.headers.get("last-event-id"):
+                reply.end('retry: 99999999999999999\n\nid: 1\nevent: end\ndata: {"reason":"reconnect"}\n\n')
+            else:
+                reply.end(f'id: 2\nevent: rows\ndata: {json.dumps(done)}\n\nevent: end\ndata: {{"reason":"terminal"}}\n\n')
+            return None
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY)
+        waits: list[float] = []
+        with mock.patch("agentrun._live.pause", waits.append):
+            self.assertEqual(list(client.runs.follow("r1")), [done])
+        self.assertEqual(waits, [60.0])
+
+    def test_runs_follow_reads_a_stream_that_begins_with_a_byte_order_mark(self) -> None:
+        done = page(status="completed", final=True)
+
+        def answer(request: Request, reply: Reply) -> Any:
+            reply.head(200, {"content-type": "text/event-stream"})
+            reply.end(f'\ufeffevent: rows\ndata: {json.dumps(done)}\n\nevent: end\ndata: {{"reason":"terminal"}}\n\n'.encode())
+            return None
+
+        server = Listener(self, answer)
+        self.assertEqual(list(AgentRun(base_url=server.base, api_key=KEY).runs.follow("r1")), [done])
+
+    def test_every_error_class_survives_a_pickle_round_trip(self) -> None:
+        errors: list[AgentRunError] = [
+            AgentRunRefused("GET /agents", 503, "unavailable", {"code": "unavailable"}, None, 2.0),
+            AgentRunAuthError("refused", "The server refused the API key for GET /agents: 401.", 401, "unauthorized", {"code": "unauthorized"}),
+            AgentRunUnsupported("GET /stats", 501, "unsupported_here", {"capability": "quotes"}),
+            AgentRunUnreachable("http://127.0.0.1:1/v2", "ECONNREFUSED"),
+            AgentRunUsage("runId must be a string that is not empty."),
+            AgentRunTimeout("r1", 1.5, None),
+        ]
+        for error in errors:
+            back = pickle.loads(pickle.dumps(error))
+            self.assertIs(type(back), type(error))
+            self.assertEqual((str(back), vars(back)), (str(error), vars(error)))
 
 
 if __name__ == "__main__":
