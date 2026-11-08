@@ -62,6 +62,10 @@ export type TriggerAdapter = {
   /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
    *  `scope` to find the triggers it fires. */
   scopeOf?(source: Source): string;
+  /** For a pushed source whose settings are the server's and whose triggers each choose their own events (no scope): why
+   *  a trigger of `source` does not take `event`, or undefined when it does. Every trigger that takes an event fires, each
+   *  its own firing; triggers may take the same events. */
+  takes?(source: Source, event: PushEvent): string | undefined;
   /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
    *  only the events it names). Default false: a firing while the last run is active is skipped. */
   concurrent?(source: Source): boolean;
@@ -80,8 +84,9 @@ export type Push = {
   headers?(headers: Headers, nowMs: number): string | undefined;
   /** Why the request is not the sender's under `key`, or undefined when it is (and fits `source`, when given). */
   verify(key: string, headers: Headers, body: Buffer, nowMs: number, source?: Source): string | undefined;
-  /** An answer of its own, after the check and before the parse (a sender's URL check), or undefined. */
-  handshake?(headers: Headers, body: Buffer): { status: number; body: Json } | undefined;
+  /** An answer of its own, after the check and before the parse (a sender's URL check, a notice about the source's own
+   *  connection), or undefined. `ctx` acts on the source's own settings and triggers. */
+  handshake?(headers: Headers, body: Buffer, ctx: PushContext): { status: number; body: Json } | undefined;
   /** The events the request holds, none or more: none is a request this source takes nothing from (answered 200, and
    *  said). `ignored`: a request `source` does not take (its trigger's own filter), with why: answered 200
    *  `{ok: "ignored"}`, and said. */
@@ -91,10 +96,20 @@ export type Push = {
  *  key (`key`, as its event would be keyed), which its trigger keeps for its day: the same request sent again under
  *  another label (an unsigned event header) is then a duplicate, never a firing. */
 export type PushIgnored = { ignored: string; event?: string; key?: string };
+/** What a source's handshake may do beyond its answer: read and write its own settings (its request's scope: the
+ *  server's, or its trigger's), turn every trigger of the source off with why (its connection is gone), and say. */
+export type PushContext = {
+  setting(field: string): string | undefined;
+  set(field: string, value: string): void;
+  /** Every trigger of this source that is on, turned off, `detail` saying why; how many. */
+  turnOff(detail: string): number;
+  say(fields: Record<string, string>): void;
+};
 /** One event a pushed source delivers: `key`, its id (the sender's, which a retry repeats: one event delivered twice is
  *  one firing); `text`, what its run is given; `scope`, for a source whose settings are the server's, where it happened
- *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it. */
-export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string> };
+ *  (a channel, a repository), matched to each trigger's scopeOf; `attrs`, what else the source says of it; `event` and
+ *  `body`, its event's name and its parsed body, which a source's takes reads (never kept). */
+export type PushEvent = { key: string; text: string; scope?: string; attrs?: Record<string, string>; event?: string; body?: unknown };
 /** A closed object's JSON Schema: its fields, each by its own schema, and the ones it always holds. */
 export type ObjectSchema = { type: "object"; additionalProperties: false; required: string[]; properties: Record<string, Json> };
 

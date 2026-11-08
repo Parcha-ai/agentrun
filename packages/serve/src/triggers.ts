@@ -129,7 +129,7 @@ type Trigger = {
    *  that ended is dropped. At most ACTIVE_KEPT. */
   active_runs?: string[];
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
-  disabled: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
+  disabled: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | { at: string; reason: "connection_lost"; detail: string } | null;
 };
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
@@ -151,6 +151,9 @@ export type TriggerDeps = {
   settings(adapterId: string): { mint(scope: string, field: string): string; remove(scope: string): void } | undefined;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
+  /** Why a trigger of source `kind` cannot be made or turned on here, when it cannot (the connection it needs is not
+   *  there: GitHub not connected): refused 409 not_connected with it. Undefined, or no such dep, when it can. */
+  unavailable?(kind: string): string | undefined;
   /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start.
    *  `setup_lost`: that server went down before it set the run up, so the run never started (files.ts SETUP_LOST). */
   runOf(key: string): Promise<{ run_id: string; setup_lost: boolean } | null>;
@@ -356,6 +359,7 @@ export class Triggers {
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
+    if (body.enabled !== false) this.needAvailable(source.kind);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
     if (enabled) this.scopeFree(source, id);
@@ -392,6 +396,33 @@ export class Triggers {
     const adapter = adapterIn(this.adapters, kind);
     if (this.unreadable || !adapter?.scopeOf) return [];
     return this.triggers.filter((t) => t.enabled && t.source.kind === kind && adapter.scopeOf!(t.source) === scope).map((t) => t.id);
+  }
+
+  /** The triggers of the pushed source `kind` that are on, with their sources: the ones an event of it may fire, each as
+   *  its adapter's takes says. */
+  listening(kind: string): { id: string; source: Source }[] {
+    if (this.unreadable) return [];
+    return this.triggers.filter((t) => t.enabled && t.source.kind === kind).map((t) => ({ id: t.id, source: t.source }));
+  }
+
+  /** Every trigger of source `kind` that is on, turned off in one write because the connection it needs is gone
+   *  (`disabled: {reason: "connection_lost", detail}`), and said; how many. They are kept: on again once it is back. */
+  turnOff(kind: string, detail: string): number {
+    const on = this.readable().filter((t) => t.enabled && t.source.kind === kind);
+    if (!on.length) return 0;
+    const at = iso(this.clock.now());
+    this.commit(() => {
+      for (const t of on) Object.assign(t, { enabled: false, next_at: null, disabled: { at, reason: "connection_lost", detail } });
+    });
+    for (const t of on) this.deps.say({ condition: "trigger_connection_lost", trigger: t.id, detail });
+    this.arm();
+    return on.length;
+  }
+
+  /** Refused 409 not_connected when a trigger of `kind` cannot be on here (unavailable). */
+  private needAvailable(kind: string): void {
+    const why = this.deps.unavailable?.(kind);
+    if (why) throw new ApiError("not_connected", why);
   }
 
   /** A verified request for trigger `id` that its filter ignored, under the key its event would have: kept for its day
@@ -455,6 +486,7 @@ export class Triggers {
     if (problem) throw invalid([{ field: "source", reason: "invalid", message: `This ${adapter.label} no longer reads (${problem}): give it a new source.` }]);
     const next = !enabled ? null : source || !trigger.enabled ? this.nextIso(source ?? trigger.source, now) : trigger.next_at;
     if (enabled && next === null && adapter.delivery === "clock") throw invalid([{ field: "enabled", reason: "invalid", message: `This ${adapter.label} has no time left to fire at: give it a new source.` }]);
+    if (enabled && (!trigger.enabled || source)) this.needAvailable(trigger.source.kind);
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again = enabled && !trigger.enabled ? { failures_in_a_row: 0, disabled: null } : {};
     if (enabled) this.scopeFree(source ?? trigger.source, trigger.id);

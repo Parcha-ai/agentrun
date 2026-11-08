@@ -10,7 +10,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { ApiError } from "./errors.js";
-import type { Headers, Source, TriggerAdapter } from "./trigger-adapter.js";
+import type { Headers, PushContext, Source, TriggerAdapter } from "./trigger-adapter.js";
 import { ID } from "./validate.js";
 
 /** The kernel's one decoy key: what a request is checked against when it names no trigger, or one with no key. */
@@ -63,6 +63,12 @@ export type PushDeps = {
   receive(id: string, eventId: string, payload: string, attrs?: Record<string, string>): { created: boolean; firing: unknown };
   /** The triggers of the pushed source `kind`, on, that listen on `scope` (its adapter's scopeOf). */
   scoped(kind: string, scope: string): string[];
+  /** The triggers of the pushed source `kind` that are on, with their sources: the ones its adapter's takes reads. */
+  listening?(kind: string): { id: string; source: Source }[];
+  /** A source's sealed setting written (sealed-settings.ts), for a scope: a handshake's (PushContext.set). */
+  setSetting?(adapterId: string, scope: string, field: string, value: string): void;
+  /** Every trigger of the pushed source `kind` that is on, turned off with why (triggers.ts turnOff); how many. */
+  turnOff?(kind: string, detail: string): number;
   /** A source's sealed setting (sealed-settings.ts): its key, for a scope. */
   setting(adapterId: string, scope: string, field: string): string | undefined;
   /** A refusal, said: its route and why. */
@@ -96,7 +102,14 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
   // Checked against the clock now the body has arrived: a timestamp at the tolerance's edge never passes by a slow body.
   const refusal = push.verify(key ?? DECOY, req.headers as Headers, body, Date.now(), key ? source : undefined);
   if (!key || refusal) throw refuse(key ? refusal! : own ? "no_key" : "no_webhook_trigger");
-  const handshake = push.handshake?.(req.headers as Headers, body);
+  const scope = own ? "server" : pathTrigger!;
+  const ctx: PushContext = {
+    setting: (field) => deps.setting(adapter.id, scope, field),
+    set: (field, value) => deps.setSetting?.(adapter.id, scope, field, value),
+    turnOff: (detail) => deps.turnOff?.(adapter.id, detail) ?? 0,
+    say: deps.say,
+  };
+  const handshake = push.handshake?.(req.headers as Headers, body, ctx);
   if (handshake) return handshake;
   const events = push.parse(req.headers as Headers, body, source);
   // Verified, and not an event its trigger takes: answered, so the sender does not send it again, and said once.
@@ -116,6 +129,36 @@ export async function receivePush(deps: PushDeps, req: IncomingMessage, segment:
     if (fired.length > 1) return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
     const { created, firing } = fired[0]!;
     return { status: created ? 202 : 200, body: firing, ...(created ? {} : { headers: { "idempotent-replayed": "true" } }) };
+  }
+  // A server-wide source whose triggers choose their own events: each event fires every trigger that takes it, each its
+  // own firing under its own key; every other trigger keeps the event's key for its day (as an ignored request's), so
+  // the same request relabeled is a duplicate there too. One no trigger takes is answered ignored, and said. A trigger
+  // holding too many firings due is passed over, and said, and the rest still fire.
+  if (adapter.takes) {
+    const fired: { created: boolean; firing: unknown }[] = [];
+    let refused: unknown;
+    let taken = false;
+    for (const event of events) {
+      for (const { id, source } of deps.listening?.(adapter.id) ?? []) {
+        if (adapter.takes(source, event) !== undefined) {
+          deps.ignored?.(id, event.key);
+          continue;
+        }
+        taken = true;
+        try {
+          fired.push(deps.receive(id, event.key, event.text, event.attrs));
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.code !== "rate_limited") throw error;
+          refused = error;
+        }
+      }
+    }
+    if (!taken) {
+      deps.say({ condition: "hook_ignored", source: adapter.id, route, reason: "no_trigger_takes_it", ...(events[0]?.event ? { event: events[0].event } : {}) });
+      return { status: 200, body: { ok: "ignored" } };
+    }
+    if (!fired.length && refused) throw refused;
+    return { status: fired.some((f) => f.created) ? 202 : 200, body: { firings: fired.map((f) => f.firing) } };
   }
   // A server-wide source's: each event fires the one trigger that listens on its scope (a scope belongs to one trigger:
   // triggers.ts scope_taken). One no trigger takes is said; one more than one does (a file edited by hand) fires none,
