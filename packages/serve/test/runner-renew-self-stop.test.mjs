@@ -10,11 +10,11 @@ import { fauxLoops, observed, queue, recorder, sleep, stores, until } from "./ru
 
 const TIMING = { leaseMs: 600, renewEveryMs: 100, stopMarginMs: 200, pollMs: 20, commandPollMs: 20 };
 
-async function held(t, faux) {
+async function held(t, faux, timing = {}) {
   const opened = await stores({ runners: 1 });
   const record = recorder();
   await queue(opened.server, "run-1");
-  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: faux.createLoop, name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: faux.createLoop, name: "runner-a", ...TIMING, ...timing });
   t.after(async () => {
     for (const loop of faux.loops) loop.halted = true;
     await runner.close();
@@ -52,7 +52,8 @@ test("renews that fail: the loop is stopped before claimed_until, and nothing it
 
 test("a renew refused as Fenced (the store's clock jumped and another runner took the claim): the loop is stopped at once", async (t) => {
   const faux = fauxLoops({ stubborn: true, turnMs: 15 });
-  const { server, clock, record } = await held(t, faux);
+  // The runner claims at its start and polls no more: the jumped clock must not let it claim the run again itself.
+  const { server, clock, record } = await held(t, faux, { pollMs: 60_000 });
   const loop = faux.loops[0];
 
   // The store's now jumps past the claim's until, and another runner claims the run: the epoch moves.
