@@ -9,7 +9,9 @@ import { startRunner } from "../dist/runner/runner.js";
 import { sendCommand } from "../dist/runner/commands.js";
 import { commandRow, fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
 
-const TIMING = { leaseMs: 2_000, renewEveryMs: 500, stopMarginMs: 500, pollMs: 20, commandPollMs: 30 };
+// A lease no stall of a loaded machine outlasts: a run moves between runners here by its park's release, never by a lease
+// that ran out, and a claim lost and retaken would move the epochs these tests read.
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const RAISE = { kind: "raise", body: { capUsd: 5 } };
 
 const parkedAndReleased = (server, id) =>
