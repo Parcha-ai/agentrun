@@ -352,4 +352,45 @@ describe("the barriers table, held to the source", () => {
     assert.deepEqual(violations(t(null), "FULL", files, exists), []);
     assert.deepEqual(violations(t(null), "NORMAL", files, exists), ["here: has no box-loss proof, and the run journal is NORMAL"]);
   });
+
+  it("a store's interface: a file that imports it and runs a tool is its user, so a store listed with no effects and such a user fails", () => {
+    const t: Table = { barriers: {}, stores: { quiet: { opens: ["x/src/store/db.ts"], synchronous: "NORMAL", effects: "none", interface: "x/src/store/", what: "" } } };
+    const files = new Map([
+      ["x/src/store/db.ts", "openNodeSqliteStorage(p);"],
+      // Runs a tool, and reaches the store through its interface (a type import is enough): the store's user.
+      ["x/src/runner/loop.ts", 'import type { Staged } from "../store/store.js";\nregistry.install(tools);'],
+      // Runs a tool, but imports another module: not this store's user.
+      ["x/src/other/free.ts", 'import { thing } from "../elsewhere/x.js";\nregistry.install(tools);'],
+      // Imports the store, and runs nothing: a reader.
+      ["x/src/runner/reads.ts", 'import { read } from "../store/index.js";\nconst rows = read();'],
+    ]);
+    assert.deepEqual(violations(t, "FULL", files), ["quiet: listed with no effects, but x/src/runner/loop.ts runs a tool, a model or a barrier on it through its interface"]);
+    const commented = new Map([...files, ["x/src/runner/loop.ts", '// import type { Staged } from "../store/store.js";\nregistry.install(tools);']]);
+    assert.deepEqual(violations(t, "FULL", commented), [], "an import that is only in a comment makes no user");
+  });
+
+  it("a barrier's call: an active row whose call is a code line of its site is met by that line, never by it in a comment, nor without it", () => {
+    const t: Table = {
+      barriers: { flushed: { store: "s", site: "x/src/a.ts", call: "if (!c.safe) await c.flush();", status: "active", proof: null, why: "" } },
+      stores: { s: { opens: ["x/src/db.ts"], synchronous: "NORMAL", effects: "barriers", what: "" } },
+    };
+    const with_ = (a: string) => new Map([["x/src/db.ts", "openNodeSqliteStorage(p);"], ["x/src/a.ts", a]]);
+    assert.deepEqual(violations(t, "FULL", with_("export async function run(c) { if (!c.safe) await c.flush(); return c.go(); }")), []);
+    const missing = ['flushed: active, but x/src/a.ts has no "if (!c.safe) await c.flush();"'];
+    assert.deepEqual(violations(t, "FULL", with_("export async function run(c) { return c.go(); }")), missing);
+    assert.deepEqual(violations(t, "FULL", with_("// if (!c.safe) await c.flush();\nexport async function run(c) { return c.go(); }")), missing, "a call only in a comment is missing");
+  });
+
+  it("a proof may be a list (together the proof, the box-loss test among them): each file must exist, and a single file still works", () => {
+    const t: Table = {
+      barriers: {
+        listed: { store: "s", site: "x/src/a.ts", call: "await c.flush();", status: "active", proof: ["packages/x/test/box-loss.test.ts", "packages/x/test/gone.test.ts"], why: "" },
+        single: { store: "s", site: "x/src/a.ts", call: "await c.sync();", status: "active", proof: "packages/x/test/box-loss.test.ts", why: "" },
+      },
+      stores: { s: { opens: ["x/src/db.ts"], synchronous: "FULL", effects: "barriers", what: "" } },
+    };
+    const files = new Map([["x/src/db.ts", "openNodeSqliteStorage(p);"], ["x/src/a.ts", "await c.flush(); await c.sync();"]]);
+    const exists = (file: string) => file === "packages/x/test/box-loss.test.ts";
+    assert.deepEqual(violations(t, "FULL", files, exists), ["listed: its proof packages/x/test/gone.test.ts does not exist"]);
+  });
 });
