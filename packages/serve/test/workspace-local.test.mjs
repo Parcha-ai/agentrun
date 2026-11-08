@@ -113,8 +113,9 @@ test("local: grep works in a process started as the launcher starts serve (node 
   const { root } = scratch();
   await localWorkspace(root).write("notes.md", "one needle\n");
   const index = new URL("../dist/workspace/index.js", import.meta.url).href;
-  const code = `import { localWorkspace } from ${JSON.stringify(index)}; const found = await localWorkspace(process.argv[1]).grep("needle"); process.stdout.write(JSON.stringify(found));`;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", code, root], { encoding: "utf8", timeout: 30_000 });
+  // The folder is written into the child's code, as the module's URL is: the child reads no argument.
+  const code = `import { localWorkspace } from ${JSON.stringify(index)}; const found = await localWorkspace(${JSON.stringify(root)}).grep("needle"); process.stdout.write(JSON.stringify(found));`;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 30_000 });
   assert.equal(child.status, 0, child.stderr);
   assert.deepEqual(JSON.parse(child.stdout), { matches: [{ path: "notes.md", line: 1, text: "one needle" }], truncated: false });
 });
