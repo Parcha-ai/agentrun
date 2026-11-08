@@ -73,8 +73,8 @@ const KEPT_FIRINGS = 1_000;
  *  the oldest go first, and the log says so. */
 export const SEEN_KEPT = 5_000;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
-/** The most ended runs the cap's count remembers. */
-const ENDED_KEPT = 10_000;
+/** The most runs a capped trigger keeps in active_runs: past its cap only by runs that ended since the last check. */
+const ACTIVE_KEPT = 200;
 const dueOf = (trigger: { firings: readonly { status: string }[] }) => trigger.firings.filter((f) => f.status === "due").length;
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
@@ -124,6 +124,10 @@ type Trigger = {
   /** For a trigger whose firings each start a run (its adapter's concurrent): the most of its runs active at once; a
    *  firing past it waits due and is tried again. Absent: as many as the server takes. */
   max_active_runs?: number;
+  /** With max_active_runs: the runs its firings started that were working when last read, kept apart from the bounded
+   *  history so a long run counts however many firings come after it. Each is read again at the next cap check, and one
+   *  that ended is dropped. At most ACTIVE_KEPT. */
+  active_runs?: string[];
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
   disabled: { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string } | null;
 };
@@ -257,6 +261,7 @@ function wellFormed(adapters: readonly TriggerAdapter[], t: unknown): t is Trigg
   if (!(t.next_at === null || instantOf(t.next_at) !== undefined) || !(t.last_run_id === undefined || typeof t.last_run_id === "string")) return false;
   if (!Number.isSafeInteger(t.catchup_window_s) || !Number.isSafeInteger(t.failures_in_a_row) || !(t.disabled === null || isObject(t.disabled))) return false;
   if (!(t.max_active_runs === undefined || Number.isSafeInteger(t.max_active_runs))) return false;
+  if (!(t.active_runs === undefined || (Array.isArray(t.active_runs) && t.active_runs.every((run) => typeof run === "string")))) return false;
   const { source, target } = t;
   const adapter = isObject(source) && typeof source.kind === "string" ? adapterIn(adapters, source.kind) : undefined;
   const timed = adapter !== undefined && adapter.wellFormed(source as Source);
@@ -284,8 +289,6 @@ export class Triggers {
   /** Each trigger's firings, driven one after another in the order asked: a firing's overlap check reads what the one
    *  before it settled to (a firing a crash left due settles to its run before the next start's own is checked). */
   private readonly turns = new Map<string, Promise<void>>();
-  /** Runs a cap's count found ended (an end is final), so it reads each one once. At most ENDED_KEPT. */
-  private readonly ended = new Set<string>();
   /** The triggers whose seen keys are at their cap, said once until they are under it again. */
   private readonly seenFull = new Set<string>();
   private closed = false;
@@ -455,9 +458,17 @@ export class Triggers {
     // On again, a trigger starts a new streak: a failure streak that turned it off is behind it.
     const again = enabled && !trigger.enabled ? { failures_in_a_row: 0, disabled: null } : {};
     if (enabled) this.scopeFree(source ?? trigger.source, trigger.id);
+    const capped = trigger.max_active_runs !== undefined;
     this.commit(() => {
       Object.assign(trigger, { ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}), ...settings, ...again, enabled, updated_at: iso(now), next_at: next });
-      if (trigger.max_active_runs === null) delete trigger.max_active_runs;
+      if (trigger.max_active_runs === null) {
+        delete trigger.max_active_runs;
+        delete trigger.active_runs;
+      } else if (trigger.max_active_runs !== undefined && !capped) {
+        // A cap set now counts the runs its history shows it started; the next check drops those that ended.
+        const runs = [...new Set(trigger.firings.flatMap((f) => (f.status === "started" && f.run_id ? [f.run_id] : [])))].slice(-ACTIVE_KEPT);
+        if (runs.length) trigger.active_runs = runs;
+      }
     });
     this.arm();
     return this.view(trigger);
@@ -681,22 +692,27 @@ export class Triggers {
     return status === "input_required" ? `The last run, ${last}, is waiting for a person.` : `The last run, ${last}, is still ${status}.`;
   }
 
-  /** Why a firing of a trigger with max_active_runs waits, when that many of its runs are active (read from its history's
-   *  started firings, newest first; an ended run is remembered and not read again). */
+  /** Why a firing of a trigger with max_active_runs waits, when that many of the runs it started still work: each of its
+   *  active_runs read again now, and those that ended dropped (written). A run a person reopens after it ended is theirs,
+   *  not counted. */
   private async atCap(trigger: Trigger): Promise<string | undefined> {
     const max = trigger.max_active_runs;
     if (max === undefined) return undefined;
-    const runs = [...new Set(trigger.firings.flatMap((f) => (f.status === "started" && f.run_id ? [f.run_id] : [])))].reverse();
-    let active = 0;
+    const runs = [...(trigger.active_runs ?? [])];
+    const ended = new Set<string>();
     for (const run of runs) {
-      if (this.ended.has(run)) continue;
       const status = await this.deps.statusOf(run);
-      if (status === null || ENDED.has(status)) {
-        if (this.ended.size >= ENDED_KEPT) this.ended.clear();
-        this.ended.add(run);
-      } else if (++active >= max) return `The trigger has ${max} runs active (max_active_runs): this firing starts when one ends.`;
+      if (status === null || ENDED.has(status)) ended.add(run);
     }
-    return undefined;
+    if (ended.size) {
+      this.commit(() => {
+        const now = this.triggers.find((t) => t.id === trigger.id);
+        if (!now?.active_runs) return;
+        now.active_runs = now.active_runs.filter((run) => !ended.has(run));
+        if (!now.active_runs.length) delete now.active_runs;
+      });
+    }
+    return runs.length - ended.size >= max ? `The trigger has ${max} runs active (max_active_runs): this firing starts when one ends.` : undefined;
   }
 
   private retry(triggerId: string, key: string, error: Error): void {
@@ -711,7 +727,11 @@ export class Triggers {
   }
 
   private started(triggerId: string, key: string, runId: string): void {
-    this.settle(triggerId, key, { status: "started", run_id: runId }, (t) => void (t.failures_in_a_row = 0));
+    this.settle(triggerId, key, { status: "started", run_id: runId }, (t) => {
+      t.failures_in_a_row = 0;
+      // A capped trigger keeps the runs it starts apart from its history (active_runs).
+      if (t.max_active_runs !== undefined && !t.active_runs?.includes(runId)) t.active_runs = [...(t.active_runs ?? []), runId].slice(-ACTIVE_KEPT);
+    });
     this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: runId });
   }
 
