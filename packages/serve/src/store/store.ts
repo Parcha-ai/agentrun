@@ -109,8 +109,12 @@ export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
   | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } };
 
-/** A command a journal commit takes, with the id of the record that is its effect: written only by the commit that stores
- *  that record, in its transaction, so the command is taken with its effect or not at all. */
+/** A command a journal commit takes, with the id of the record that is its effect, an id the effect's batch newly
+ *  allocates (an entry, a created document, a new task): written only by the commit that newly writes that record, in its
+ *  transaction, so the command is taken with its own effect or not at all. An effect that updates an existing record (a
+ *  document change or retire, a task update) carries a marker entry minted for it in the same batch: an entry of kind
+ *  `agentrun.command` on the run's root conversation, data `{ command }`, which the runner's reader and live view skip.
+ *  The effect must be an id the journal minted and has not yet written: stage() refuses any other. */
 export interface StagedTake {
   readonly command: number;
   readonly effect: number;

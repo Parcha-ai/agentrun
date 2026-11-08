@@ -78,12 +78,12 @@ test("check() refuses a bind path Docker cannot take or that is not the run fold
 });
 
 test("create() binds the run folder read-write at /workspace after the daemon's mount; HOME and the workdir stay /work", async () => {
-	const { provider, calls, daemonPath } = fakeDocker();
+	const { provider, calls, bound } = fakeDocker();
 	const dir = runFolder();
 	const result = await provider.create({ ...SPEC, mount: bind(dir) });
 	assert.equal(result.ok, true, JSON.stringify(result));
 	const run = runOf(calls());
-	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${daemonPath},dst=/opt/agentrun/computerd,readonly`, `type=bind,src=${dir},dst=/workspace`]);
+	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${bound},dst=/opt/agentrun/computerd,readonly`, `type=bind,src=${dir},dst=/workspace`]);
 	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
 	assert.ok(!valuesOf(run, "--tmpfs").some((tmpfs) => tmpfs.startsWith("/workspace")), "no tmpfs over the run folder");

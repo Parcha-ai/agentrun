@@ -167,3 +167,21 @@ test("sweep() of a provider that declares no maxLifetimeMs keeps a far deadline:
 	const { provider } = fakeProvider([{ name: "far", deadline: at(365 * 86_400_000) }], { maxLifetimeMs: null });
 	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: [], kept: 1 } });
 });
+
+test("sweep() of a provider with sweepLeftovers removes what its computers left behind after the computers, with the same labels and time, and reports it", async () => {
+	const { provider, calls } = fakeProvider([{ name: "past", deadline: at(-1) }, { name: "future", deadline: at(1) }]);
+	provider.sweepLeftovers = async ({ labels, now, signal }) => {
+		calls.push(["sweepLeftovers", labels, now.toISOString(), signal instanceof AbortSignal]);
+		return { ok: true, value: ["gone-egress", "gone-egress (volume)"] };
+	};
+	const swept = await sweep(provider, { now: NOW, labels: { team: "a" }, signal: new AbortController().signal });
+	assert.deepEqual(swept, { ok: true, value: { deleted: ["past"], kept: 1, leftovers: ["gone-egress", "gone-egress (volume)"] } });
+	assert.deepEqual(calls.map((call) => call[0]), ["list", "release", "sweepLeftovers"], "the computers first: a released computer takes its own parts");
+	assert.deepEqual(calls.at(-1), ["sweepLeftovers", { team: "a" }, NOW.toISOString(), true]);
+	// Its failure is the sweep's, after the computers it deleted, in words.
+	provider.sweepLeftovers = async () => ({ ok: false, error: { code: "docker", message: "docker volume rm x failed" } });
+	const failed = await sweep(provider, { now: NOW });
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "docker");
+	assert.match(failed.error.message, /deleted past.*could not remove what its computers left behind: docker volume rm x failed/);
+});

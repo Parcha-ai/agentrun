@@ -2,12 +2,11 @@
 // volume, made, read back, held to the computer and removed with it. No Docker and no network are needed.
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { networkInterfaces, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DockerProvider, EGRESS_IMAGE, sweep } from "../dist/index.js";
-import { checkAddress } from "../dist/docker/egress-table.js";
-import { allowed, CODE_DIR, container, fakeDocker, idOf, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
+import { allowed, CODE_DIR, container, egressVolume, fakeDocker, idOf, LOCAL, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ALLOW } };
@@ -15,8 +14,8 @@ const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${proce
 const FIXED = /a Docker computer's network is fixed at create; create a new computer/;
 const A = "computer-0000000000aa";
 const PRIVATE_RANGE = "10.0.0.0/8"; // key-gate: denylist an allowlist entry check refuses
-/** This host's own public addresses, as the provider hands them to the proxy to refuse (this-host). */
-const LOCAL = [...new Set(Object.values(networkInterfaces()).flat().map((entry) => entry.address).filter((address) => checkAddress(address, []).ok))];
+/** A Docker host's own address given as egress.hostAddresses, which the proxy must refuse beside this machine's (LOCAL). */
+const HOST = "93.184.215.20";
 
 const runs = (calls) => calls.filter((args) => args[0] === "run");
 const proxyRunOf = (calls) => runs(calls).find((args) => valuesOf(args, "--entrypoint")[0] === "node");
@@ -67,22 +66,30 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const { name } = made.value;
 	const volume = `${name}-egress`;
-	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "context inspect", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
+	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "context inspect", "image inspect", "image inspect", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
 	assert.deepEqual(calls()[1], ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], "where the docker CLI's daemon is, as the CLI itself resolves it");
+	// Both images are on the host before anything is made: the computer's, then the proxy's.
+	assert.deepEqual(calls().slice(2, 4), [["image", "inspect", "--format", "{{.Id}}", "debian:bookworm-slim"], ["image", "inspect", "--format", "{{.Id}}", EGRESS_IMAGE]]);
 	const [uid, gid] = DEFAULT_USER.split(":");
-	assert.deepEqual(calls()[2], ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`, "--label", `agentrun.computer.egress=${name}`, volume]);
 	const computer = computerRunOf(calls());
 	const deadline = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.deadline="))?.split("=")[1];
+	assert.deepEqual(valuesOf(computer, "--pull"), ["never"], "the computer's run never pulls");
+	// The volume carries the computer's name, its deadline and the spec's labels, so the janitor finds it with no computer.
+	assert.deepEqual(calls()[4], [
+		"volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`,
+		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", volume,
+	]);
 	assert.deepEqual(proxyRunOf(calls()), [
 		"run", "--detach", "--name", volume,
 		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a",
 		"--user", DEFAULT_USER, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private",
-		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",
+		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--cpu-period", "100000", "--cpu-quota", "50000", "--ulimit", "nofile=1024:1024",
+		"--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",
 		"--network", "bridge",
 		"--mount", `type=volume,src=${volume},dst=/egress`,
 		"--mount", `type=bind,src=${CODE_DIR},dst=/code/docker,readonly`,
 		"--mount", `type=bind,src=${PACKAGE_JSON},dst=/code/package.json,readonly`,
-		"--entrypoint", "node", EGRESS_IMAGE,
+		"--pull", "never", "--entrypoint", "node", EGRESS_IMAGE,
 		"/code/docker/egress-main.js", "--socket", "/egress/egress.sock", "--deadline", deadline, "--allow", ALLOW.join(","), ...(LOCAL.length ? ["--local", LOCAL.join(",")] : []),
 	]);
 	assert.match(EGRESS_IMAGE, /^node:22\.\d+\.\d+-bookworm-slim@sha256:[0-9a-f]{64}$/, "the proxy's image is pinned by digest");
@@ -102,15 +109,60 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 
 test("create() with none or open makes no volume, no proxy, no proxy variables and no relay: the computer is as it was", async () => {
 	for (const network of ["none", "open"]) {
-		const { provider, calls, volumeNames } = fakeDocker();
+		// The image is not on the host: docker run pulls it, as before, with no image inspect or pull of its own.
+		const { provider, calls, volumeNames } = fakeDocker({ images: [] });
 		const made = await provider.create({ ...SPEC, network });
 		assert.equal(made.ok, true, JSON.stringify(made));
 		assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec"], network);
 		const run = computerRunOf(calls());
 		assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
+		assert.equal(run.includes("--pull"), false, network);
 		assert.equal(run.includes("--egress"), false);
 		assert.equal(valuesOf(run, "--mount").some((mount) => mount.includes("egress")), false);
 		assert.deepEqual(volumeNames(), []);
+	}
+});
+
+test("create() with an allowlist pulls an image the host lacks before it makes anything, and both runs take --pull never: no pull happens between the egress volume and the computer", async () => {
+	for (const [images, pulled] of [[[EGRESS_IMAGE], ["debian:bookworm-slim"]], [["debian:bookworm-slim"], [EGRESS_IMAGE]], [[], ["debian:bookworm-slim", EGRESS_IMAGE]]]) {
+		const { provider, calls, names, volumeNames } = fakeDocker({ images });
+		const made = await provider.create(SPEC);
+		assert.equal(made.ok, true, JSON.stringify(made));
+		const all = calls();
+		const volume = all.findIndex((args) => args[0] === "volume" && args[1] === "create");
+		assert.deepEqual(all.filter((args) => args[0] === "pull"), pulled.map((image) => ["pull", image]), `on a host with ${JSON.stringify(images)}`);
+		for (const image of pulled) assert.ok(all.findIndex((args) => args[0] === "pull" && args[1] === image) < volume, `${image} is pulled before the egress volume is made`);
+		assert.deepEqual(valuesOf(proxyRunOf(all), "--pull"), ["never"], "the proxy's run never pulls");
+		assert.deepEqual(valuesOf(computerRunOf(all), "--pull"), ["never"], "the computer's run never pulls");
+		assert.deepEqual([names().length, volumeNames().length], [2, 1]);
+	}
+});
+
+test("create() with an allowlist fails in words naming the image when its pull fails, before any volume or container is made", async () => {
+	const { provider, calls, names, volumeNames } = fakeDocker({ images: [EGRESS_IMAGE], pull: "fails" });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false, JSON.stringify(made));
+	assert.equal(made.error.code, "docker");
+	assert.match(made.error.message, /^docker pull debian:bookworm-slim failed, so nothing was made: .*pull access denied for debian:bookworm-slim/);
+	assert.deepEqual(calls().filter((args) => args[0] === "volume" || args[0] === "run"), [], "no volume, no proxy, no computer");
+	assert.deepEqual([names(), volumeNames()], [[], []]);
+});
+
+test("create() aborted while it pulls an image stays aborted, and nothing is made", async () => {
+	const { provider, calls, names, volumeNames, proceed } = fakeDocker({ images: [EGRESS_IMAGE], hold: ["pull"] });
+	const controller = new AbortController();
+	try {
+		const pending = provider.create(SPEC, { signal: controller.signal });
+		for (let i = 0; i < 500 && !calls().some((args) => args[0] === "pull"); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+		controller.abort();
+		const made = await pending;
+		assert.equal(made.ok, false, JSON.stringify(made));
+		assert.equal(made.error.code, "aborted", made.error.message);
+		assert.match(made.error.message, /debian:bookworm-slim/);
+		assert.deepEqual(calls().filter((args) => args[0] === "volume" || args[0] === "run"), [], "no volume, no proxy, no computer");
+		assert.deepEqual([names(), volumeNames()], [[], []]);
+	} finally {
+		proceed("pull");
 	}
 });
 
@@ -193,6 +245,26 @@ test("an allowlist whose Docker host is not where this provider runs (a daemon t
 	const proxy = proxyRunOf(given.calls());
 	const local = proxy[proxy.indexOf("--local") + 1]?.split(",");
 	for (const address of HOST) assert.ok(local?.includes(address), `${address} reaches the proxy's --local: ${proxy.join(" ")}`);
+});
+
+test("an allowlist from a provider whose host root shows it runs in a container (egress.hostRoot with /.dockerenv) is refused in words before anything is made, unless egress.hostAddresses names the host's addresses", async () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-in-container-"));
+	try {
+		writeFileSync(join(root, ".dockerenv"), "");
+		const { provider, calls, names, volumeNames } = fakeDocker({ egressOptions: { hostRoot: root } });
+		const refused = await provider.create(SPEC);
+		assert.equal(refused.ok, false, JSON.stringify(refused));
+		assert.equal(refused.error.code, "refused");
+		assert.match(refused.error.message, /^network: this provider runs in a container \(\/\.dockerenv exists\), so this provider's own interfaces are not the Docker host's/);
+		assert.deepEqual(calls().map((args) => args[0]), ["info"], "nothing is made, and the docker CLI is not asked where its daemon is");
+		assert.deepEqual([names(), volumeNames()], [[], []]);
+		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"]);
+		const given = fakeDocker({ egressOptions: { hostRoot: root, hostAddresses: ["93.184.215.20"] } });
+		assert.equal((await given.provider.create(SPEC)).ok, true, "with the host's addresses given");
+		for (const hostRoot of ["", "relative/root", 7]) assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", egress: { hostRoot } }), /egress/, JSON.stringify(hostRoot));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("containerSigns() names what shows this provider runs in a container: /.dockerenv, /run/.containerenv, or a container's cgroup; a plain host shows none", async () => {
@@ -338,8 +410,37 @@ test("the janitor's sweep removes an expired computer's proxy and volume too, si
 	const past = "2026-01-01T00:00:00.000Z";
 	const { provider, names, volumeNames } = fakeDocker(allowed({ name: A, allow: ALLOW, deadline: past, running: false }));
 	const swept = await sweep(provider, { now: new Date() });
-	assert.deepEqual(swept, { ok: true, value: { deleted: [A], kept: 0 } });
+	assert.deepEqual(swept, { ok: true, value: { deleted: [A], kept: 0, leftovers: [] } });
 	assert.deepEqual([names(), volumeNames()], [[], []]);
+});
+
+test("the janitor's sweep also removes a proxy or volume whose computer is gone, or whose deadline has passed, by its label; a live computer's, and a proxy just made, stay", async () => {
+	const live = allowed({ name: A, allow: ALLOW, labels: { run: "1" } });
+	const B = "computer-0000000000bb"; // gone by hand: its proxy and volume stay behind
+	const C = "computer-0000000000cc"; // the provider died after the volume, before the proxy
+	const D = "computer-0000000000dd"; // its create is under way: the proxy is seconds old, with no computer yet
+	const E = "computer-0000000000ee"; // its computer is gone and its deadline has passed, made moments ago
+	const past = "2026-01-01T00:00:00.000Z";
+	const now = new Date().toISOString();
+	const proxyOf = (name, extra = {}) => proxyReport({ id: idOf(`${name}-egress`), name: `${name}-egress`, labels: { run: "1", "agentrun.computer.egress": name, "agentrun.computer.deadline": extra.deadline ?? new Date(Date.now() + 600_000).toISOString() }, cmd: [], ...extra });
+	const impostor = proxyReport({ id: idOf("computer-0000000000ff-egress"), name: "computer-0000000000ff-egress", labels: { run: "1" }, cmd: [] });
+	const { provider, calls, names, volumeNames } = fakeDocker({
+		containers: [...live.containers, proxyOf(B), proxyOf(D, { created: now }), proxyOf(E, { created: now, deadline: past }), impostor],
+		volumes: [...live.volumes, egressVolume({ computer: B, labels: { run: "1" } }), egressVolume({ computer: C, labels: { run: "1" } }), egressVolume({ computer: D, labels: { run: "1" }, created: now }), { Name: "computer-0000000000ff-egress", Labels: { run: "1" } }],
+	});
+	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date() });
+	assert.equal(swept.ok, true, JSON.stringify(swept));
+	assert.deepEqual(swept.value.deleted, []);
+	assert.equal(swept.value.kept, 1);
+	assert.deepEqual(swept.value.leftovers.sort(), [`${B}-egress`, `${B}-egress (volume)`, `${C}-egress (volume)`, `${E}-egress`].sort());
+	assert.deepEqual(names().sort(), [A, `${A}-egress`, `${D}-egress`, "computer-0000000000ff-egress"].sort(), "a live computer's proxy, one just made, and a container without the label stay");
+	assert.deepEqual(volumeNames().sort(), [`${A}-egress`, `${D}-egress`, "computer-0000000000ff-egress"].sort());
+	assert.ok(calls().every((args) => !(args[0] === "rm" && args.at(-1) === "computer-0000000000ff-egress")), "a container is never removed by its name alone");
+	// A sweep scoped to other labels touches none of them.
+	const other = fakeDocker({ containers: [proxyOf(B)], volumes: [egressVolume({ computer: C, labels: { run: "1" } })] });
+	const scoped = await sweep(other.provider, { labels: { run: "2" }, now: new Date() });
+	assert.deepEqual(scoped, { ok: true, value: { deleted: [], kept: 0, leftovers: [] } });
+	assert.deepEqual([other.names(), other.volumeNames()], [[`${B}-egress`], [`${C}-egress`]]);
 });
 
 test("a crashed proxy fails closed: the computer reaches nothing, network() and list() read back other in words, and attach refuses it and leaves it", async () => {
@@ -384,6 +485,13 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		[{ HostConfig: { LogConfig: { Type: "json-file", Config: {} } } }, /log .*not json-file with max-size 1m and max-file 2/],
 		[{ HostConfig: { LogConfig: { Type: "json-file", Config: { "max-size": "1g", "max-file": "2" } } } }, /log .*not json-file with max-size 1m and max-file 2/],
 		[{ HostConfig: { LogConfig: { Type: "syslog", Config: { "max-size": "1m", "max-file": "2" } } } }, /log .*not json-file/],
+		// Half a CPU, and at most 1024 open files.
+		[{ HostConfig: { CpuQuota: 0 } }, /CPU quota 0 of 100000, not 50000/],
+		[{ HostConfig: { CpuQuota: 200_000 } }, /CPU quota 200000 of 100000, not 50000/],
+		[{ HostConfig: { CpuPeriod: 0 } }, /CPU quota 50000 of 0, not 50000 of 100000/],
+		[{ HostConfig: { Ulimits: [] } }, /open-file limit .*not nofile 1024:1024/],
+		[{ HostConfig: { Ulimits: [{ Name: "nofile", Hard: 1048576, Soft: 1024 }] } }, /open-file limit .*not nofile 1024:1024/],
+		[{ HostConfig: { Ulimits: [{ Name: "nofile", Hard: 1024, Soft: 1024 }, { Name: "nproc", Hard: 1, Soft: 1 }] } }, /open-file limit .*not nofile 1024:1024/],
 	];
 	for (const [proxy, words] of cases) {
 		const seeded = allowed({ name: A, allow: ALLOW, proxy: proxy === null ? null : {} });
@@ -396,6 +504,63 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		assert.equal(read.ok, true, JSON.stringify(read));
 		assert.equal(typeof read.value.other, "string", `${JSON.stringify(proxy)}: ${JSON.stringify(read.value)}`);
 		assert.match(read.value.other, words, JSON.stringify(proxy));
+	}
+});
+
+/** A regular expression's source that matches `text` as it is. */
+const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("egressOf() holds the proxy's --local to every address required, in any order, more being fine; with none required a proxy with no --local is fine", async () => {
+	const { egressOf } = await import("../dist/docker/egress.js");
+	const deadline = new Date(Date.now() + 600_000).toISOString();
+	const proxyWith = (local) => allowed({ name: A, allow: ALLOW, deadline, local }).containers[1];
+	const owner = { name: A, user: "1000:1000", deadline, running: true };
+	const required = ["93.184.215.20", "2606:4700::20"];
+	assert.deepEqual(egressOf(proxyWith(required), owner, undefined, required), { allow: ALLOW });
+	assert.deepEqual(egressOf(proxyWith([...required].reverse()), owner, undefined, required), { allow: ALLOW });
+	assert.deepEqual(egressOf(proxyWith([...required, "93.184.215.21"]), owner, undefined, required), { allow: ALLOW });
+	assert.deepEqual(egressOf(proxyWith([required[0]]), owner, undefined, required), {
+		other: `network allow, but its egress proxy ${A}-egress does not refuse the Docker host's address 2606:4700::20 (its --local reads "93.184.215.20")`,
+	});
+	assert.deepEqual(egressOf(proxyWith([]), owner, undefined, required), {
+		other: `network allow, but its egress proxy ${A}-egress does not refuse the Docker host's addresses 93.184.215.20, 2606:4700::20 (its --local reads nothing)`,
+	});
+	assert.deepEqual(egressOf(proxyWith([]), owner, undefined, []), { allow: ALLOW });
+});
+
+test("a proxy whose --local was removed, or lacks one of the Docker host's addresses the provider requires (this machine's and egress.hostAddresses), reads back other in network(), list() and attach()", async () => {
+	const required = [...LOCAL, HOST];
+	const read = async (local) => {
+		const { provider } = fakeDocker({ ...allowed({ name: A, allow: ALLOW, local }), egressOptions: { hostAddresses: [HOST] } });
+		return { network: await provider.network(ref(A)), listed: await provider.list({}), attached: await provider.attach({ id: A }) };
+	};
+	for (const local of [required, [...required].reverse(), [...required, "93.184.215.21"]]) {
+		const { network, listed, attached } = await read(local);
+		assert.deepEqual(network, { ok: true, value: { allow: ALLOW } }, `--local ${local.join(",")}`);
+		assert.deepEqual(listed.ok && listed.value.map((info) => info.network), [{ allow: ALLOW }]);
+		assert.equal(attached.ok, true, JSON.stringify(attached));
+	}
+	// Removed, short of egress.hostAddresses, and short of this machine's own (when it has public ones).
+	for (const [local, missing] of [[[], required], [LOCAL, [HOST]], ...(LOCAL.length > 0 ? [[[HOST], LOCAL]] : [])]) {
+		const words = new RegExp(`egress proxy ${A}-egress does not refuse the Docker host's address(es)? ${literal(missing.join(", "))} \\(its --local reads `);
+		const { network, listed, attached } = await read(local);
+		assert.equal(network.ok, true, JSON.stringify(network));
+		assert.match(network.value.other ?? JSON.stringify(network.value), words, `--local ${local.join(",")}`);
+		assert.match(listed.value[0].network.other ?? JSON.stringify(listed.value[0].network), words);
+		assert.equal(attached.ok, false, JSON.stringify(attached));
+		assert.equal(attached.error.code, "refused");
+		assert.match(attached.error.message, words);
+	}
+});
+
+test("create() refuses a proxy that does not run with the Docker host's addresses it was given, removed or shortened: the drift check reads other and removes it all", async () => {
+	for (const proxyLocal of [[], LOCAL]) {
+		const { provider, names, volumeNames } = fakeDocker({ proxyLocal, egressOptions: { hostAddresses: [HOST] } });
+		const made = await provider.create(SPEC);
+		assert.equal(made.ok, false, JSON.stringify(made));
+		assert.equal(made.error.code, "refused", made.error.message);
+		assert.match(made.error.message, new RegExp(`network: declared \\{"allow":.*\\}, read back .*does not refuse the Docker host's address(es)? .*${literal(HOST)}`));
+		assert.deepEqual([names(), volumeNames()], [[], []]);
 	}
 });
 

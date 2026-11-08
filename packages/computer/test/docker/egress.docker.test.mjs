@@ -196,6 +196,22 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		assert.ok(!ours().includes(other.name));
 	});
 
+	it("a computer removed by hand leaves its proxy and volume, and the janitor's sweep removes them by their label once a create could no longer be under way", async () => {
+		const orphaned = await create();
+		docker("rm", "--force", "--volumes", orphaned.name);
+		assert.deepEqual(egressOf(orphaned.name), { containers: [`${orphaned.name}-egress`], volumes: [`${orphaned.name}-egress`] }, "the parts outlive the computer");
+		const soon = await sweep(provider, { labels: { [RUN_LABEL]: run } });
+		assert.equal(soon.ok, true, JSON.stringify(soon));
+		assert.deepEqual(soon.value.leftovers, [], "seconds old, the parts may be a create under way: kept");
+		// Past the grace (the ready wait and two minutes), they are leftovers; the run's live computer stays.
+		const later = await sweep(provider, { labels: { [RUN_LABEL]: run }, now: new Date(Date.now() + 3 * 60_000) });
+		assert.equal(later.ok, true, JSON.stringify(later));
+		assert.deepEqual(later.value.leftovers.sort(), [`${orphaned.name}-egress`, `${orphaned.name}-egress (volume)`]);
+		assert.deepEqual(egressOf(orphaned.name), { containers: [], volumes: [] });
+		assert.ok(ours().includes(ref.name), "the live computer is kept");
+		assert.deepEqual(egressOf(ref.name).containers, [`${ref.name}-egress`], "and so is its proxy");
+	});
+
 	it("the proxy ends itself at the computer's deadline, and the janitor's sweep then removes the computer, its proxy and its volume", async () => {
 		const short = await create({ lifetimeMs: 15_000 });
 		const bound = Date.now() + 120_000;

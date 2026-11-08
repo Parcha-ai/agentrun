@@ -144,10 +144,14 @@ export function containerSigns(root = "/"): string | undefined {
 	return line === undefined ? undefined : `/proc/self/cgroup names a container's cgroup (${line.slice(0, 120)})`;
 }
 
-/** `docker volume create` of a computer's volume: tmpfs, so nothing of it outlives the daemon, and its user's alone. */
-export function egressVolumeArgs(name: string, user: string): string[] {
+/** `docker volume create` of a computer's volume: tmpfs, so nothing of it outlives the daemon, and its user's alone. It
+ *  carries the computer's name, its deadline and the spec's labels, so the janitor finds it when the computer is gone. */
+export function egressVolumeArgs(name: string, user: string, deadline: string, labels: Record<string, string> = {}): string[] {
 	const [uid, gid] = user.split(":");
-	return ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`, "--label", `${EGRESS_LABEL}=${name}`, egressNameOf(name)];
+	const args = ["volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`];
+	args.push("--label", `${EGRESS_LABEL}=${name}`, "--label", `${DEADLINE_LABEL}=${deadline}`);
+	for (const [key, value] of Object.entries(labels)) args.push("--label", `${key}=${value}`);
+	return [...args, egressNameOf(name)];
 }
 
 export interface EgressRun {
@@ -164,9 +168,13 @@ export interface EgressRun {
 }
 
 /** The proxy container's bounds, as create sets them and the read-back holds it to: memory (swap the same), processes,
- *  and a bounded json-file log. */
+ *  half a CPU (a quota of each 100 ms, as a computer's cpus are; fixed, not the computer's own, since one proxy's work
+ *  is its connections, not the computer's size), at most 1024 open files, and a bounded json-file log. */
 const PROXY_MEMORY_MB = 256;
 const PROXY_PIDS = 64;
+const PROXY_CPU_PERIOD_US = 100_000;
+const PROXY_CPU_QUOTA_US = 50_000;
+const PROXY_NOFILE = 1024;
 const PROXY_LOG = { driver: "json-file", options: { "max-size": "1m", "max-file": "2" } } as const;
 
 /** `docker run` of a computer's proxy container (see the head of this file). Pinned by a golden test. */
@@ -176,11 +184,15 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	for (const [key, value] of Object.entries(labels)) args.push("--label", `${key}=${value}`);
 	args.push("--user", user, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private");
 	const memory = `${PROXY_MEMORY_MB}m`;
-	args.push("--pids-limit", String(PROXY_PIDS), "--memory", memory, "--memory-swap", memory, "--log-driver", PROXY_LOG.driver);
+	args.push("--pids-limit", String(PROXY_PIDS), "--memory", memory, "--memory-swap", memory);
+	args.push("--cpu-period", String(PROXY_CPU_PERIOD_US), "--cpu-quota", String(PROXY_CPU_QUOTA_US), "--ulimit", `nofile=${PROXY_NOFILE}:${PROXY_NOFILE}`);
+	args.push("--log-driver", PROXY_LOG.driver);
 	for (const [key, value] of Object.entries(PROXY_LOG.options)) args.push("--log-opt", `${key}=${value}`);
 	args.push("--network", "bridge");
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
 	args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
+	// Create pulled the image before it made the volume, so this run never pulls: the sweep's grace holds.
+	args.push("--pull", "never");
 	args.push("--entrypoint", "node", image, PROXY_MAIN, "--socket", PROXY_SOCKET, "--deadline", deadline, "--allow", allow.join(","));
 	if (local.length > 0) args.push("--local", local.join(","));
 	if (hint !== undefined) args.push("--hint", hint);
@@ -205,9 +217,11 @@ export interface EgressOwner {
  * A computer's allowlist, read back from its proxy container's inspect: the list its argv holds, when the container is
  * the computer's own (its label and deadline), running while the computer runs, and as create makes one (Docker's
  * default bridge alone, no port, the computer's user, a read-only root, no capability or privilege, exactly its volume
- * and its code, `code`'s when given). Anything less is `{ other }` in words, never an allowlist.
+ * and its code, `code`'s when given), refusing every one of `local`, the Docker host's own addresses the provider
+ * requires now (more is fine). Anything less is `{ other }` in words, never an allowlist. A host whose addresses
+ * changed since the proxy was made reads as other: fail closed.
  */
-export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressOwner, code?: EgressCode): { allow: string[] } | { other: string } {
+export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressOwner, code?: EgressCode, local: readonly string[] = []): { allow: string[] } | { other: string } {
 	const named = egressNameOf(owner.name);
 	const other = (what: string) => ({ other: `network allow, but its egress proxy ${named} ${what}` });
 	if (proxy === undefined || proxy === null) return other("is gone: the computer reaches nothing");
@@ -232,6 +246,14 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (host.PidsLimit !== PROXY_PIDS) return other(`has pids limit ${show(host.PidsLimit)}, not ${PROXY_PIDS}`);
 	if (host.IpcMode !== "private") return other(`has IPC mode ${show(host.IpcMode)}, not "private"`);
 	if (host.CgroupnsMode !== "private") return other(`has cgroup namespace ${show(host.CgroupnsMode)}, not "private"`);
+	if (host.CpuPeriod !== PROXY_CPU_PERIOD_US || host.CpuQuota !== PROXY_CPU_QUOTA_US) {
+		return other(`has CPU quota ${show(host.CpuQuota)} of ${show(host.CpuPeriod)}, not ${PROXY_CPU_QUOTA_US} of ${PROXY_CPU_PERIOD_US}`);
+	}
+	const ulimits = host.Ulimits;
+	const [nofile] = Array.isArray(ulimits) ? (ulimits as Array<Record<string, unknown>>) : [];
+	if (!Array.isArray(ulimits) || ulimits.length !== 1 || nofile?.Name !== "nofile" || nofile.Soft !== PROXY_NOFILE || nofile.Hard !== PROXY_NOFILE) {
+		return other(`has the open-file limit ${show(ulimits)}, not nofile ${PROXY_NOFILE}:${PROXY_NOFILE}`);
+	}
 	const log = (host.LogConfig ?? {}) as { Type?: unknown; Config?: Record<string, unknown> | null };
 	const logOptions = log.Config ?? {};
 	const wanted = Object.entries(PROXY_LOG.options);
@@ -262,6 +284,12 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (unknown.length > 0) return other(`runs with flags ${unknown.join(", ")}, which create never gives`);
 	const read = allowOf((flags.get("--allow") ?? "").split(","));
 	if ("problem" in read) return other(`holds a list this provider never makes: ${read.problem}`);
+	// The host block: a --local removed or shortened lets the computer reach the Docker host's own addresses.
+	const refused = new Set((flags.get("--local") ?? "").split(",").filter(Boolean));
+	const missing = local.filter((address) => !refused.has(address));
+	if (missing.length > 0) {
+		return other(`does not refuse the Docker host's ${missing.length === 1 ? "address" : "addresses"} ${missing.join(", ")} (its --local reads ${show(flags.get("--local"))})`);
+	}
 	return { allow: read.list };
 }
 

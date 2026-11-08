@@ -109,18 +109,57 @@ test("a take lands only in the commit that stores its effect: a commit without t
   assert.equal(await takenAt(db, 12), NOW, "and the take with it");
 });
 
-test("a take whose effect is a document change, or a document retire, is taken by the commit that stores it", async (t) => {
+test("a take keyed to its marker is not taken by another path's change of the same document or update of the same task (the command's own write never landed)", async (t) => {
   const { db, storage } = await setUp(t, "run-docs");
   await commandRow(db, 14, "run-docs");
-  await commandRow(db, 15, "run-docs");
+  const doc = await storage.mintId();
+  const tk = await storage.mintId();
+  const task = (status) => ({ type: "task", value: { id: tk, conversationId: ROOT, kind: "test.task", version: 1, input: {}, state: { status }, background: false, abortRequested: false } });
+  await commitWrites(storage, [{ type: "document.create", record: { id: doc, kind: "test.notes", scope: { kind: "conversation", conversationId: ROOT }, history: "rewindable", fork: "asOf" }, content: { kind: "base", version: 1, value: { n: 1 } } }, task("pending")], context);
+  const marker = await storage.mintId();
+  storage.stage({ take: [{ command: 14, effect: marker }] });
+  // Another path (another loop, a progress write) changes the same document and task; the command's own batch never lands.
+  await commitWrites(storage, [{ type: "document.change", id: doc, content: { kind: "base", version: 1, value: { n: 2, by: "another path" } } }], context);
+  assert.equal(await takenAt(db, 14), null, "not taken by a change of the document its command would change");
+  await commitWrites(storage, [task("running")], context);
+  assert.equal(await takenAt(db, 14), null, "nor by an update of the task its command would update");
+  await commitWrites(storage, [{ type: "document.retire", id: doc }], context);
+  assert.equal(await takenAt(db, 14), null, "nor by a retire of that document");
+});
+
+test("a take keyed to an id the journal did not mint, or already wrote, is refused at stage, not left waiting for good", async (t) => {
+  const { db, storage } = await setUp(t, "run-task");
+  await commandRow(db, 16, "run-task");
+  const doc = await storage.mintId();
+  const tk = await storage.mintId();
+  await commitWrites(storage, [
+    { type: "document.create", record: { id: doc, kind: "test.notes", scope: { kind: "conversation", conversationId: ROOT }, history: "rewindable", fork: "asOf" }, content: { kind: "base", version: 1, value: { n: 1 } } },
+    { type: "task", value: { id: tk, conversationId: ROOT, kind: "test.task", version: 1, input: {}, state: { status: "pending" }, background: false, abortRequested: false } },
+  ], context);
+  const refused = (effect, what) => assert.throws(() => storage.stage({ take: [{ command: 16, effect }] }), /no id this journal minted and has not yet written/, `${what}: refused at stage`);
+  refused(doc, "an existing document");
+  refused(tk, "an existing task");
+  refused(doc + tk + 1000, "an id never minted");
+  // Nothing was staged, so the next commit carries no take.
+  await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: ROOT, kind: "message" } }], context);
+  assert.equal(await takenAt(db, 16), null, "a refused take is never written");
+});
+
+test("a command whose effect changes or retires a document, or updates a task, is taken through a marker entry minted in that batch", async (t) => {
+  const { db, storage } = await setUp(t, "run-marker");
+  await commandRow(db, 17, "run-marker");
+  await commandRow(db, 18, "run-marker");
   const doc = await storage.mintId();
   await commitWrites(storage, [{ type: "document.create", record: { id: doc, kind: "test.notes", scope: { kind: "conversation", conversationId: ROOT }, history: "rewindable", fork: "asOf" }, content: { kind: "base", version: 1, value: { n: 1 } } }], context);
-  storage.stage({ take: [{ command: 14, effect: doc }] });
-  await commitWrites(storage, [{ type: "document.change", id: doc, content: { kind: "base", version: 1, value: { n: 2 } } }], context);
-  assert.equal(await takenAt(db, 14), NOW, "taken with the document's change");
-  storage.stage({ take: [{ command: 15, effect: doc }] });
-  await commitWrites(storage, [{ type: "document.retire", id: doc }], context);
-  assert.equal(await takenAt(db, 15), NOW, "taken with the document's retire");
+  const marker = await storage.mintId();
+  storage.stage({ take: [{ command: 17, effect: marker }] });
+  await commitWrites(storage, [{ type: "document.change", id: doc, content: { kind: "base", version: 1, value: { n: 2 } } }, { type: "entry", value: { id: marker, conversationId: ROOT, kind: "agentrun.command", data: { command: 17 } } }], context);
+  assert.equal(await takenAt(db, 17), NOW, "taken with the change, through its marker");
+  // A task the effect's batch creates is fresh too: it may key the take itself.
+  const fresh = await storage.mintId();
+  storage.stage({ take: [{ command: 18, effect: fresh }] });
+  await commitWrites(storage, [{ type: "task", value: { id: fresh, conversationId: ROOT, kind: "test.task", version: 1, input: {}, state: { status: "pending" }, background: false, abortRequested: false } }], context);
+  assert.equal(await takenAt(db, 18), NOW, "taken with the task its batch creates");
 });
 
 test("a later stage keeps the takes still waiting for their effects", async (t) => {
@@ -139,7 +178,8 @@ test("two loops that apply the same command at once: exactly one commit lands, t
   await commandRow(db, 11, "run-race");
   // Each loop's effect has an id of its own (the two journals share the run's namespace), so only the take decides.
   const one = await first.mintId();
-  const two = (await second.mintId()) + 1;
+  await second.mintId();
+  const two = await second.mintId();
   first.stage({ take: [{ command: 11, effect: one }] });
   second.stage({ take: [{ command: 11, effect: two }] });
   const results = await Promise.allSettled([
