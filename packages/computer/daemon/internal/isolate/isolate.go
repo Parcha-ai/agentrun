@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/netstate"
 )
 
 const (
@@ -81,8 +82,9 @@ func loopbackUp() error {
 	return nil
 }
 
-// checkOwnNetwork reads back what OwnNetwork set: every thread in one network namespace, not first, and that namespace's
-// interfaces the loopback alone, up.
+// checkOwnNetwork reads back what OwnNetwork set: every thread in one network namespace, not first, and in that
+// namespace the loopback alone up or addressed (netstate.OwnProblem): a kernel's fallback tunnels, down with no address,
+// are there on some kernels (Modal's), and no program of init's can raise them, holding no CAP_NET_ADMIN.
 func checkOwnNetwork(first string) error {
 	tasks, err := os.ReadDir("/proc/self/task")
 	if err != nil {
@@ -100,16 +102,12 @@ func checkOwnNetwork(first string) error {
 			return fmt.Errorf("thread %s is still in the network namespace init started in (%s) after every thread was moved", task.Name(), link)
 		}
 	}
-	ifaces, err := net.Interfaces()
+	ifaces, err := netstate.Read()
 	if err != nil {
-		return fmt.Errorf("cannot list the new network namespace's interfaces to read it back: %w", err)
+		return fmt.Errorf("cannot read the new network namespace back: %w", err)
 	}
-	names := make([]string, 0, len(ifaces))
-	for _, iface := range ifaces {
-		names = append(names, iface.Name)
-	}
-	if len(ifaces) != 1 || ifaces[0].Flags&net.FlagLoopback == 0 || ifaces[0].Flags&net.FlagUp == 0 {
-		return fmt.Errorf("the new network namespace reads back interfaces %s, not the loopback alone, up", strings.Join(names, ", "))
+	if problem := netstate.OwnProblem(ifaces); problem != "" {
+		return fmt.Errorf("init's own network does not keep to its loopback: %s", problem)
 	}
 	return nil
 }
