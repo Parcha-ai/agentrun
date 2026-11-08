@@ -296,7 +296,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <legend className="caps text-[12px] font-semibold">Approvals</legend>
                   {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
                     <label key={value} className={cn("flex items-start gap-3 border px-3 py-2.5", approvals === value && "border-foreground")}>
-                      <input type="radio" name="approvals" value={value} className="mt-1" checked={approvals === value} onChange={() => set({ approvals: value })} />
+                      <input type="radio" name="approvals" value={value} className="mt-1" checked={approvals === value} disabled={saving} onChange={() => set({ approvals: value })} />
                       <span><span className="font-mono text-[13px]">{label}</span><span className="block text-[12px] text-muted-foreground">{note}</span></span>
                     </label>
                   ))}
