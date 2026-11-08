@@ -252,11 +252,12 @@ export function codeMode(deps: CodeModeDeps) {
           }
           // The harness answers with the result's text; its images follow as `inputImage` items, which Codex 0.164's
           // dynamic tool output takes (DynamicToolCallResponse.contentItems, its app-server schema), each a data: URL.
+          // The call runs first (`next`): its images are kept by the bridge as it answers, and taken after.
+          const answer = await next(req);
           const images = deps.bridge.takeImages?.(callId);
           // A script's nested call: Codex hands the script an inputImage as its data: URL inside the result's text, so a
           // script that prints the result would send the model the base64 as words. No image goes to code mode; a line says so.
-          if (NESTED_CALL.test(callId)) return withImagesHeld(await next(req), images);
-          return withImages(await next(req), images);
+          return NESTED_CALL.test(callId) ? withImagesHeld(answer, images) : withImages(answer, images);
         }
         return next(req);
       };
