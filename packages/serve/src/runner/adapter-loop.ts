@@ -70,27 +70,36 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let root: Conversation | undefined;
   let session: AdapterSession | undefined;
   let context: Context = BACKGROUND_CONTEXT;
-  const early: Command[] = [];
   /** Approve or deny rows refused because they named no call waiting for its answer. */
   let refusals = 0;
+  /** The claim's first delivery is done (LoopDeps.delivered): every row the runner read is with the loop. */
+  let delivered = false;
   /** Resolved once the claim's Harness is open and its root known: a command's check reads the journal through it. */
   let opened: () => void = () => {};
   const ready = new Promise<void>((resolve) => (opened = resolve));
   let held: { detach(): void } | undefined;
 
   const steer = async (command: Command): Promise<CommandOutcome> => {
-    if (!gate || !session) {
-      early.push(command);
-      return { taken: true };
-    }
+    // Handed over before the session is open: placed once it is, its outcome the real one (never taken and then dropped).
+    if (!gate || !session) await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+    // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
+    // untaken for the next claim, which hands it on again; never refused for good.
+    if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     if (!session.steer) return { refused: "this harness takes no steer mid-turn" };
     const text = typeof (command.body as { text?: unknown } | null)?.text === "string" ? (command.body as { text: string }).text : "";
     const requestId = commandRequest(command.id);
+    // A message that answers nothing (a trigger's, answers: false) waits for the turn's end and runs as a turn of its
+    // own, never steering the turn in flight, and never as a waiting call's answer.
+    const followUp = (command.body as { answers?: unknown } | null)?.answers === false;
     const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
+    // A seal while the steer is placed fails it before it is awaited: handled here.
+    taken.catch(() => undefined);
+    const theGate = gate;
     try {
-      await session.steer(text, requestId);
+      await session.steer(text, requestId, followUp ? "followUp" : "steer");
     } catch (error) {
-      taken.catch(() => {});
+      // Sealed while it was placed (the run parked meanwhile): left for the resume, as above.
+      if (theGate.sealed) return { later: "the run is parking: the steer waits for its resume" };
       return { refused: `the steer was not placed: ${(error as Error).message}` };
     }
     await taken.catch(() => {});
@@ -99,6 +108,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   async function run(claim: Claim): Promise<LoopEnd> {
     context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
+    // Every row the runner read for this claim is with the loop once delivered resolves (at once without a runner's).
+    void (deps.delivered ?? Promise.resolve()).then(() => {
+      delivered = true;
+      wakeInbox();
+    });
     const signalAbort = () => gate?.seal(new Interrupted("its claim's signal aborted"));
     deps.signal.addEventListener("abort", signalAbort, { once: true });
     let fault: KernelFault | undefined;
@@ -164,7 +178,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         root = await harness.root(context);
         opened();
         await reportHeld(harness, root.id);
-        for (const command of early.splice(0)) void steer(command);
         if (restarts > restartLimit + 1) {
           return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, []);
         }
@@ -244,12 +257,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const known = findData<AnswerData>(entries, KINDS.answer, (data) => data.callId === call.callId);
     if (known) return known;
+    // Commits the root's entry of `kind`, staging `staged` with it. False when the journal is sealed first (another call
+    // of the round parked the run): nothing landed, and the expectation's failure is no one's to wait on.
+    const entryLands = async (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]): Promise<boolean> => {
+      const landed = gate!.expect(writesEntry(kind, (entry) => entry.callId === data.callId), staged);
+      // A seal while the commit is in flight fails it before it is awaited: handled here, read by the await below.
+      landed.catch(() => undefined);
+      try {
+        await harness!.commit((tx) => tx.appendEntry(conversation.id, { kind, data: data as unknown as JsonValue }), context);
+        await landed;
+        return true;
+      } catch (error) {
+        if (gate!.sealed) return false;
+        throw error;
+      }
+    };
     if (findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId) === undefined) {
-      const data: AskData = { callId: call.callId, tool: call.tool };
-      const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
-      await harness!.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
-      await asked;
-      parked();
+      // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
+      if (await entryLands(KINDS.ask, { callId: call.callId, tool: call.tool }, { run: { state: "parked" } })) parked();
       return "park";
     }
     for (;;) {
@@ -257,20 +282,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (row) {
         inbox.splice(inbox.indexOf(row), 1);
         const data: AnswerData = { callId: call.callId, approved: row.kind === "approve" };
-        const answered = gate!.expect(writesEntry(KINDS.answer, (entry) => entry.callId === call.callId), { take: [row.id] });
-        await harness!.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.answer, data: data as unknown as JsonValue }), context);
-        await answered;
+        if (!(await entryLands(KINDS.answer, data, { take: [row.id] }))) return "park";
         return data;
       }
       if (stopReason) return "park";
-      // The row that woke this run named no waiting call and was refused: the call is asked again and the run parks on
-      // it, so a refused approval neither answers it nor keeps the run claimed.
-      if (refusals > 0) {
-        const data: AskData = { callId: call.callId, tool: call.tool };
-        const asked = gate!.expect(writesEntry(KINDS.ask, (entry) => entry.callId === call.callId), { run: { state: "parked" } });
-        await harness!.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.ask, data: data as unknown as JsonValue }), context);
-        await asked;
-        parked();
+      // No answer for this call came with the claim's first delivery (a steer woke the run, or the row that woke it named
+      // no waiting call and was refused): the call is asked again and the run parks on it, so it never waits here
+      // holding the claim while it reads running.
+      if (delivered || refusals > 0) {
+        if (await entryLands(KINDS.ask, { callId: call.callId, tool: call.tool }, { run: { state: "parked" } })) parked();
         return "park";
       }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
@@ -333,6 +353,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   async function writeEnd(on: Harness, conversation: Conversation, theGate: Gate, data: EndData, take: readonly number[]): Promise<LoopEnd> {
     const ended = theGate.expect(writesEntry(KINDS.end), { run: { state: data.state, ...(data.summary ? { summary: data.summary } : {}) }, ...(take.length ? { take } : {}) });
+    // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
+    ended.catch(() => undefined);
     try {
       await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue }), context);
     } catch (error) {

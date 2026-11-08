@@ -184,8 +184,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     },
     // A steer: pi places it in the turn in flight, at its next boundary. `id`: its request id (the command's), so the
     // commit that places it is the one that takes its row.
-    async steer(text: string, id?: string) {
-      await root.submit({ type: "input", content: text, whenBusy: "steer", ...(id ? { requestId: id } : {}) }, context);
+    async steer(text: string, id?: string, mode: "steer" | "followUp" = "steer") {
+      await root.submit({ type: "input", content: text, whenBusy: mode, ...(id ? { requestId: id } : {}) }, context);
     },
   } satisfies AdapterSession;
 }
