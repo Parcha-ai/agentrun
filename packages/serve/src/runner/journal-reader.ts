@@ -5,7 +5,9 @@
 import type { Context } from "@earendil-works/chord";
 import type { ConversationId, ConversationRecord, EntryRecord, TaskRecord } from "@earendil-works/pi-durable";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";
-import type { Journal } from "./loop-contract.js";
+// Reads only (JournalReads): a run's live journal (journal(claim)) and the server's read-only view (store.readJournal) both
+// satisfy it, so the same reader runs over either. A full Journal is assignable, so the runner's callers are unchanged.
+import type { JournalReads } from "../store/store.js";
 
 export interface CallRecord {
   readonly callId: string;
@@ -47,7 +49,7 @@ async function scanAll<T>(scan: (cursor: unknown) => Promise<{ items: readonly T
 }
 
 /** Every entry and task of the run: conversations in id order, each one's entries oldest first; tasks in id order. */
-export async function journalRecords(journal: Journal, context: Context): Promise<JournalRecords> {
+export async function journalRecords(journal: JournalReads, context: Context): Promise<JournalRecords> {
   const conversations = await scanAll<ConversationRecord>((cursor) => journal.scanConversations({ order: "ascending" } as never, PAGE, cursor as never, context));
   const entries: EntryRecord[] = [];
   for (const conversation of conversations) {
@@ -58,7 +60,7 @@ export async function journalRecords(journal: Journal, context: Context): Promis
 }
 
 /** Every entry of the run (the CLI record and pi's entries alike). */
-export async function journalEntries(journal: Journal, context: Context): Promise<EntryRecord[]> {
+export async function journalEntries(journal: JournalReads, context: Context): Promise<EntryRecord[]> {
   return [...(await journalRecords(journal, context)).entries];
 }
 
@@ -144,10 +146,10 @@ export function messagesOf(from: readonly EntryRecord[] | JournalRecords): Messa
   return out.sort((a, b) => a.entry - b.entry);
 }
 
-export async function calls(journal: Journal, context: Context): Promise<CallRecord[]> {
+export async function calls(journal: JournalReads, context: Context): Promise<CallRecord[]> {
   return callsOf(await journalRecords(journal, context));
 }
 
-export async function messages(journal: Journal, context: Context): Promise<MessageRecord[]> {
+export async function messages(journal: JournalReads, context: Context): Promise<MessageRecord[]> {
   return messagesOf(await journalRecords(journal, context));
 }
