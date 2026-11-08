@@ -37,6 +37,9 @@ export interface RunnerOptions {
   resumeTries?: number;
   /** The wait after a resume's first failed try; each later one waits twice the one before. */
   resumeBackoffMs?: number;
+  /** How long a run's end waits for a command still with its loop before it writes its end; an answer after that is
+   *  dropped (nothing written, nothing said). */
+  endWaitMs?: number;
   onEvent?: (event: RunnerEvent) => void;
 }
 
@@ -66,9 +69,14 @@ interface Held {
   cursor: number;
   /** A stop is on its way to the loop, or the loop's start() has returned. */
   stopping: boolean;
+  /** start() has returned: the run's end (its sweep, flush and release) is under way. A Fenced answer now is no lost claim. */
   ending: boolean;
+  /** No more of the claim is written: set once the end stops waiting for an in-flight delivery, before its sweep. */
+  sealed: boolean;
   renewing: boolean;
   delivering: boolean;
+  /** The delivery under way, which the end waits for (up to endWaitMs) before it writes. */
+  inFlight?: Promise<void>;
   deadline?: NodeJS.Timeout;
   done?: Promise<void>;
 }
@@ -88,6 +96,7 @@ export function startRunner(options: RunnerOptions): Runner {
     commandPollMs = 500,
     resumeTries = 3,
     resumeBackoffMs = 5_000,
+    endWaitMs = 5_000,
     onEvent = () => {},
   } = options;
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
@@ -131,7 +140,9 @@ export function startRunner(options: RunnerOptions): Runner {
 
   /** The claim is gone (fenced) or about to run out unrenewed: write nothing more, and stop the loop. */
   const loseClaim = (held: Held, why: "fenced" | "not-renewed") => {
-    if (held.fence.lost || killed) return;
+    // A run that is ending gave its claim up itself (or is about to): a Fenced answer to a call that was in flight then
+    // is no lost claim, and its loop has already stopped.
+    if (held.fence.lost || held.ending || killed) return;
     held.fence.lost = true;
     clearTimeout(held.deadline);
     emit({ type: "claim-lost", runId: held.claim.runId, epoch: held.claim.epoch, why });
@@ -150,7 +161,7 @@ export function startRunner(options: RunnerOptions): Runner {
     const sentAt = Date.now();
     try {
       const renewed = await store.renew(held.claim, { leaseMs });
-      if (held.fence.lost || killed) return;
+      if (held.fence.lost || held.ending || killed) return;
       held.claim = renewed;
       armDeadline(held, sentAt + leaseMs - stopMarginMs);
     } catch (error) {
@@ -165,32 +176,43 @@ export function startRunner(options: RunnerOptions): Runner {
     for (const held of runs.values()) void renew(held);
   }, renewEveryMs);
 
-  /** Hands the run's new command rows to its loop: stop as stop(), the other kinds as command(); refusals are taken. */
-  const deliver = async (held: Held) => {
-    if (held.delivering || held.stopping || held.ending || held.fence.lost || killed) return;
+  /** Hands the run's new command rows to its loop: stop as stop(), the other kinds as command(); refusals are taken. The
+   *  run's end waits for it (finish), so a refusal of a command the loop had when it ended is written before the release;
+   *  once the end has sealed the claim, an answer still to come is dropped: nothing written, nothing said. */
+  const deliver = (held: Held): Promise<void> => {
+    if (held.delivering || held.stopping || held.ending || held.fence.lost || killed) return Promise.resolve();
     held.delivering = true;
-    try {
-      const rows = await store.commands(held.claim.runId, held.cursor);
-      for (const row of rows) {
-        if (held.stopping || held.ending || held.fence.lost || killed) break;
-        held.cursor = Math.max(held.cursor, row.id);
-        if (row.takenAt !== null) continue;
-        if (row.kind === "stop") {
-          stopLoop(held, { kind: "command", commandId: row.id });
-          break;
+    // Declared before it is assigned: its own finally reads it.
+    let delivery: Promise<void> | undefined;
+    delivery = (async () => {
+      try {
+        const rows = await store.commands(held.claim.runId, held.cursor);
+        for (const row of rows) {
+          if (held.stopping || held.ending || held.fence.lost || killed) break;
+          held.cursor = Math.max(held.cursor, row.id);
+          if (row.takenAt !== null) continue;
+          if (row.kind === "stop") {
+            stopLoop(held, { kind: "command", commandId: row.id });
+            break;
+          }
+          const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
+          if (held.sealed || killed) return;
+          if ("refused" in outcome) {
+            await store.take(held.claim, row.id, "refused", outcome.refused);
+            emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: outcome.refused });
+          }
         }
-        const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
-        if ("refused" in outcome) {
-          await store.take(held.claim, row.id, "refused", outcome.refused);
-          emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: outcome.refused });
-        }
+      } catch (error) {
+        if (held.sealed || killed) return;
+        if (isFenced(error)) loseClaim(held, "fenced");
+        else emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
+      } finally {
+        held.delivering = false;
+        if (held.inFlight === delivery) held.inFlight = undefined;
       }
-    } catch (error) {
-      if (isFenced(error)) loseClaim(held, "fenced");
-      else emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
-    } finally {
-      held.delivering = false;
-    }
+    })();
+    held.inFlight = delivery;
+    return delivery;
   };
   const deliverAll = () => {
     if (closed || killed) return;
@@ -204,6 +226,14 @@ export function startRunner(options: RunnerOptions): Runner {
     held.ending = true;
     clearTimeout(held.deadline);
     const { claim } = held;
+    // A command still with the loop: its refusal is written before anything of the end, never after the release. A loop
+    // that does not answer within endWaitMs has its answer dropped (the claim is sealed first).
+    if (held.inFlight) {
+      let waited: NodeJS.Timeout | undefined;
+      await Promise.race([held.inFlight, new Promise<void>((resolve) => (waited = setTimeout(resolve, endWaitMs)))]);
+      clearTimeout(waited);
+    }
+    held.sealed = true;
     try {
       if (killed || held.fence.lost) return;
       // A parked run brought back (a raise, an approval) whose loop could not start stays parked: its waking row keeps
@@ -280,7 +310,7 @@ export function startRunner(options: RunnerOptions): Runner {
       flush: () => store.flush(),
       signal: abort.signal,
     });
-    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, renewing: false, delivering: false };
+    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false };
     runs.set(claim.runId, held);
     armDeadline(held, sentAt + leaseMs - stopMarginMs);
     emit({ type: "claimed", claim });
