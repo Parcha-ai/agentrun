@@ -1,88 +1,132 @@
-// The kind registry: the computer an agent is given (none, sandbox, desktop, phone, browser) as data the serve side reads,
-// each kind's required and optional capability groups and the tools a loop gets for it, the provider ids that offer it,
-// and serves()/kindOf() computed from a provider's capabilities, never from a list beside them. No vendor, no Docker.
+// The kind registry, to the agreed shape (SHAPE.md): the setting kind an agent is given (none, sandbox, desktop, phone,
+// browser) as its machine kinds and capability groups, no tool names; the protocol's machine kinds with browser; the
+// provider entries Settings reads (id, label, key names, mounts, metered) with kinds derived by serves() from each
+// provider's static capabilities; and entries for providers whose file lands later, held to it once it does.
+// No vendor, no Docker.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GROUPS, KIND_PROVIDERS, KIND_SPECS, KINDS, kindOf, providerIds, serves, toolsFor } from "../dist/index.js";
+import {
+	DaytonaProvider,
+	GROUPS,
+	KIND_SHAPES,
+	kindOf,
+	kindRefusals,
+	ModalProvider,
+	PROVIDERS,
+	providerIds,
+	providerModule,
+	SETTING_KINDS,
+	serves,
+	servingRefusals,
+} from "../dist/index.js";
+import { E2BProvider } from "../dist/e2b.js";
+import { fakeDocker } from "./fake-docker.mjs";
+import { fakeE2B } from "./fake-e2b.mjs";
+import { fakeModal } from "./fake-modal.mjs";
 
-/** Capabilities as a provider declares them, with only what serves() and kindOf() read changed per case. */
-const caps = (fields) => ({ kind: "linux", lifetime: "vendor", network: ["none"], isolation: "container", os: "linux", daemon: "pid1", groups: ["exec", "files", "processes"], maxLifetimeMs: 3_600_000, release: ["delete"], ...fields });
-const SANDBOX = ["exec", "files", "processes"];
-const DESKTOP = [...SANDBOX, "screen", "input.pointer", "input.keys"];
-const PHONE = ["screen", "input.touch", "apps"];
+const caps = (fields) => ({ kind: "linux", groups: ["exec", "files", "processes"], ...fields });
+const SETTINGS = ["none", "sandbox", "desktop", "phone", "browser"];
 
-test("the kinds are none, sandbox, desktop, phone and browser, each with its spec", () => {
-	assert.deepEqual(KINDS, ["none", "sandbox", "desktop", "phone", "browser"]);
-	assert.deepEqual(Object.keys(KIND_SPECS), KINDS);
-	for (const kind of KINDS) assert.equal(KIND_SPECS[kind].kind, kind);
+test("the protocol: browser is a machine kind (os linux, daemon none), and the groups gain cdp, stream and downloads", () => {
+	assert.deepEqual(KIND_SHAPES.browser, { os: ["linux"], daemon: ["none"] });
+	assert.deepEqual(kindRefusals({ kind: "browser", os: "linux", daemon: "none" }), []);
+	assert.equal(kindRefusals({ kind: "browser", os: "linux", daemon: "pid1" }).length, 1);
+	for (const group of ["cdp", "stream", "downloads"]) assert.ok(GROUPS.includes(group), group);
 });
 
-test("each kind's required and optional groups are the protocol's own, and never both", () => {
-	assert.deepEqual(KIND_SPECS.none.required, []);
-	assert.deepEqual(KIND_SPECS.sandbox.required, SANDBOX);
-	assert.deepEqual(KIND_SPECS.desktop.required, DESKTOP, "desktop is sandbox's groups plus a screen, a pointer and keys");
-	assert.deepEqual(KIND_SPECS.phone.required, PHONE);
-	assert.deepEqual(KIND_SPECS.phone.optional, ["input.keys", "apps.ui_tree", "apps.install"]);
-	assert.deepEqual(KIND_SPECS.browser.required, [], "a browser answers CDP, no computerd group");
-	assert.equal(KIND_SPECS.browser.plane, "cdp");
-	assert.equal(KIND_SPECS.sandbox.plane, "computerd");
-	assert.equal(KIND_SPECS.none.plane, "none");
-	for (const kind of KINDS) {
-		const { required, optional } = KIND_SPECS[kind];
+test("SETTING_KINDS is the agreed table: machine kinds, required and optional groups, and no tool names", () => {
+	assert.deepEqual(SETTING_KINDS, {
+		none: { machineKinds: [], required: [], optional: [] },
+		sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
+		desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
+		phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+		browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
+	});
+	for (const kind of SETTINGS) {
+		const { machineKinds, required, optional } = SETTING_KINDS[kind];
+		for (const machine of machineKinds) assert.ok(Object.hasOwn(KIND_SHAPES, machine), `${kind}: ${machine} is a machine kind`);
 		for (const group of [...required, ...optional]) assert.ok(GROUPS.includes(group), `${kind}: ${group} is a protocol group`);
 		assert.deepEqual(required.filter((group) => optional.includes(group)), [], `${kind}: no group both required and optional`);
 	}
 });
 
-test("each kind's tools need only its groups; a desktop gets every sandbox tool; none gets none", () => {
-	const names = (kind) => KIND_SPECS[kind].tools.map((tool) => tool.name);
-	assert.deepEqual(names("none"), []);
-	assert.deepEqual(names("sandbox"), ["bash", "read", "write", "edit", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
-	for (const name of names("sandbox")) assert.ok(names("desktop").includes(name), `desktop has ${name}`);
-	assert.ok(names("desktop").includes("screen_shot") && names("desktop").includes("desktop_input"));
-	assert.ok(names("phone").includes("screen_shot") && names("phone").includes("touch") && names("phone").includes("apps"));
-	assert.ok(!names("phone").includes("bash"), "a phone has no shell tool");
-	for (const kind of KINDS) {
-		const allowed = [...KIND_SPECS[kind].required, ...KIND_SPECS[kind].optional];
-		assert.equal(new Set(names(kind)).size, names(kind).length, `${kind}: tool names are unique`);
-		for (const tool of KIND_SPECS[kind].tools) for (const group of tool.groups) assert.ok(allowed.includes(group), `${kind}: ${tool.name} needs ${group}, which the kind neither requires nor allows`);
-	}
-});
-
-test("serves() is computed from the capabilities: every required group declared, and the protocol kind the kind allows", () => {
+test("serves() is the machine kind among the kind's and every required group declared; kindOf() is the kind served", () => {
 	assert.equal(serves(caps({}), "sandbox"), true);
 	assert.equal(serves(caps({ groups: ["exec", "files"] }), "sandbox"), false, "a provider that drops processes stops serving sandbox");
-	assert.equal(serves(caps({ kind: "desktop", groups: DESKTOP }), "desktop"), true);
-	assert.equal(serves(caps({ kind: "desktop", groups: DESKTOP }), "sandbox"), true, "a desktop is a sandbox with a screen");
-	assert.equal(serves(caps({ kind: "desktop", groups: DESKTOP.filter((group) => group !== "input.keys") }), "desktop"), false);
-	assert.equal(serves(caps({}), "desktop"), false);
-	assert.equal(serves(caps({ kind: "android", os: "android", daemon: "none", groups: PHONE }), "phone"), true);
-	assert.equal(serves(caps({ kind: "android", os: "android", daemon: "none", groups: ["screen", "input.touch"] }), "phone"), false, "a phone without apps does not serve phone");
-	assert.equal(serves(caps({ kind: "desktop", groups: [...DESKTOP, "input.touch", "apps"] }), "phone"), false, "only an android or ios computer serves phone");
-	assert.equal(serves(caps({}), "browser"), false, "no provider declares a CDP plane yet");
-	assert.equal(serves(caps({}), "none"), false, "none is no computer: no provider serves it");
-});
-
-test("kindOf() is the richest kind the capabilities serve, or undefined", () => {
+	assert.equal(serves(caps({ kind: "desktop", groups: ["screen", "input.pointer", "input.keys"] }), "desktop"), true, "a desktop needs no shell");
+	assert.equal(serves(caps({ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] }), "sandbox"), false, "only a linux machine serves sandbox");
+	assert.equal(serves(caps({ kind: "desktop", groups: ["screen", "input.pointer"] }), "desktop"), false);
+	assert.equal(serves(caps({ kind: "android", groups: ["screen", "input.touch", "apps"] }), "phone"), true);
+	assert.equal(serves(caps({ kind: "ios", groups: ["screen", "input.touch"] }), "phone"), false);
+	assert.equal(serves(caps({ kind: "browser", groups: ["cdp"] }), "browser"), true, "browser serves from its groups, cdp, like every kind");
+	assert.equal(serves(caps({ kind: "browser", groups: ["stream"] }), "browser"), false);
+	assert.equal(serves(caps({ kind: "browser", groups: [...GROUPS] }), "none"), false, "no machine serves none");
+	assert.match(servingRefusals(caps({ groups: ["exec"] }), "sandbox").join("; "), /files, processes/);
+	assert.match(servingRefusals(caps({}), "desktop").join("; "), /desktop/);
 	assert.equal(kindOf(caps({})), "sandbox");
-	assert.equal(kindOf(caps({ kind: "desktop", groups: DESKTOP })), "desktop");
-	assert.equal(kindOf(caps({ kind: "ios", os: "ios", daemon: "none", groups: [...PHONE, "apps.ui_tree"] })), "phone");
-	assert.equal(kindOf(caps({ kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], daemon: "none" })), undefined, "a screen with no shell serves no kind yet");
+	assert.equal(kindOf(caps({ kind: "desktop", groups: ["screen", "input.pointer", "input.keys"] })), "desktop");
+	assert.equal(kindOf(caps({ kind: "browser", groups: ["cdp", "downloads"] })), "browser");
 	assert.equal(kindOf(caps({ groups: ["exec"] })), undefined);
 });
 
-test("toolsFor() gives a kind's tools whose groups the capabilities declare, and nothing for a kind they do not serve", () => {
-	const phone = caps({ kind: "android", os: "android", daemon: "none", groups: PHONE });
-	assert.ok(!toolsFor("phone", phone).some((tool) => tool.name === "ui_tree"), "an optional tool needs its group declared");
-	assert.ok(toolsFor("phone", caps({ ...phone, groups: [...PHONE, "apps.ui_tree"] })).some((tool) => tool.name === "ui_tree"));
-	assert.deepEqual(toolsFor("desktop", caps({})), [], "a sandbox is given no desktop tools");
-	assert.deepEqual(toolsFor("sandbox", caps({})).map((tool) => tool.name), KIND_SPECS.sandbox.tools.map((tool) => tool.name));
+test("PROVIDERS is the agreed table of ids, labels, key names, mounts and metering", () => {
+	const rows = PROVIDERS.map(({ id, label, keys, metered }) => ({ id, label, keys, metered }));
+	assert.deepEqual(rows, [
+		{ id: "docker", label: "Docker", keys: [], metered: false },
+		{ id: "daytona", label: "Daytona", keys: [{ name: "DAYTONA_API_KEY", required: true }, { name: "DAYTONA_API_URL", required: false }, { name: "DAYTONA_TARGET", required: false }], metered: true },
+		{ id: "modal", label: "Modal", keys: [{ name: "MODAL_TOKEN_ID", required: true }, { name: "MODAL_TOKEN_SECRET", required: true }], metered: true },
+		{ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], metered: true },
+		{ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], metered: true },
+		{ id: "phone-harness", label: "Phone harness", keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }], metered: true },
+		{ id: "browserbase", label: "Browserbase", keys: [{ name: "BROWSERBASE_API_KEY", required: true }, { name: "BROWSERBASE_PROJECT_ID", required: true }], metered: true },
+		{ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], metered: true },
+	]);
+	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));
+	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"] });
+	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
+	assert.deepEqual(mounts.docker, ["bind"]);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel"]) assert.deepEqual(mounts[id], [], id);
 });
 
-test("the registry names, per kind, provider ids the registry holds; sandbox is every one of today's", () => {
-	assert.deepEqual(Object.keys(KIND_PROVIDERS), KINDS);
-	assert.deepEqual([...KIND_PROVIDERS.sandbox].sort(), ["daytona", "docker", "e2b", "modal"]);
-	assert.deepEqual([...KIND_PROVIDERS.desktop].sort(), ["docker", "e2b", "orgo"], "the Docker, E2B and Orgo desktops declare screen and input");
-	assert.deepEqual(KIND_PROVIDERS.none, []);
-	for (const kind of KINDS) for (const id of KIND_PROVIDERS[kind]) assert.ok(providerIds.includes(id), `${kind}: ${id} is a registry id`);
+test("each entry's kinds are derived by serves() from its static capabilities, never written beside them", () => {
+	for (const entry of PROVIDERS) {
+		const derived = SETTINGS.filter((kind) => entry.capabilities.some((one) => serves(one, kind)));
+		assert.deepEqual(entry.kinds, derived, entry.id);
+		assert.ok(entry.kinds.length > 0, `${entry.id} serves some kind`);
+	}
+});
+
+test("every registry provider has an entry, and its module's static capabilities and mounts are the entry's", async () => {
+	for (const id of providerIds) {
+		const entry = PROVIDERS.find((one) => one.id === id);
+		assert.ok(entry, `${id} has a PROVIDERS entry`);
+		const module = await providerModule(id);
+		assert.deepEqual(module.CAPABILITIES, entry.capabilities, `${id}: its module's CAPABILITIES are its entry's`);
+		assert.deepEqual(module.MOUNT, entry.mounts, `${id}: its module's MOUNT is its entry's mounts`);
+	}
+});
+
+test("an entry whose provider file has not landed is data alone; once it lands, the test above holds it to its file", () => {
+	const pending = PROVIDERS.filter((entry) => !providerIds.includes(entry.id)).map((entry) => entry.id);
+	for (const id of pending) assert.ok(["orgo", "phone-harness", "browserbase", "kernel"].includes(id), `${id}: only the providers to come are data alone`);
+});
+
+/** Each provider built as the registry offers it, from the unit tests' fakes. */
+const BUILT = {
+	docker: [() => fakeDocker().provider, () => fakeDocker({ desktop: {} }).provider],
+	e2b: [() => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox, kind: "linux" }), () => new E2BProvider({ apiKey: "e2b-test-key", Sandbox: fakeE2B().Sandbox })],
+	daytona: [() => new DaytonaProvider({ apiKey: "daytona-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
+	modal: [() => new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` })],
+};
+
+test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {
+	assert.deepEqual(Object.keys(BUILT).sort(), [...providerIds].sort(), "every registry provider is built here");
+	for (const [id, builds] of Object.entries(BUILT)) {
+		const entry = PROVIDERS.find((one) => one.id === id);
+		const seen = builds.map((build) => {
+			const { kind, groups } = build().capabilities();
+			return { kind, groups };
+		});
+		assert.deepEqual(seen, entry.capabilities, `${id}: each configuration's kind and groups`);
+	}
 });

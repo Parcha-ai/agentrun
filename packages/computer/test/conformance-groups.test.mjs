@@ -145,7 +145,7 @@ test("KEYS is the spec's table, and a key is a name in it or one printable ASCII
 	]);
 	for (const key of ["enter", "f12", "capslock", "a", "A", "1", "/", "~", "!"]) assert.equal(isKey(key), true, key);
 	for (const key of ["Enter", "Return", "Hyper_Q", " ", "\t", "é", "ab", "", "F13", 1, null]) assert.equal(isKey(key), false, JSON.stringify(key));
-	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"]);
+	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree", "cdp", "stream", "downloads"]);
 });
 
 test("checkActions: the whole batch first: its shape, its length, each key, each action's group, a pixel scroll and the summed wait", () => {
@@ -348,6 +348,34 @@ test("lifetime.extend passes a provider whose extend moves the deadline: the com
 	const { provider } = fakeDevices();
 	const report = await run(provider, ["lifetime.extend"]);
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
+});
+
+/** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */
+const deadlineLifetimes = (made) => made.filter(({ spec }) => spec.labels?.["agentrun.conformance.case"] === "deadline").map(({ spec }) => spec.lifetimeMs);
+
+test("provider.deadline sees the end of a 45 s lifetime on the run's clock, with no wait in a test", { timeout: 10_000 }, async () => {
+	const { provider, made } = fakeDevices();
+	const report = await run(provider, ["provider.deadline"]);
+	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
+	assert.deepEqual(deadlineLifetimes(made), [45_000]);
+});
+
+test("provider.deadline on a host slower to start a computer than its lifetime asks once more, for 45 s past twice what create took, and passes", { timeout: 10_000 }, async () => {
+	// The run's shared computer first, at once; then each create takes 50 s. The first, of a 45 s lifetime, fails as
+	// Docker's does; the second, for 145 s, takes 50 s too and leaves 95 s.
+	const { provider, made } = fakeDevices({ createMs: [0, 50_000] });
+	const report = await run(provider, ["provider.deadline"]);
+	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
+	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
+});
+
+test("provider.deadline skips in words when the second create is still too slow for its lifetime, never passing unseen", { timeout: 10_000 }, async () => {
+	const { provider, made } = fakeDevices({ createMs: [0, 50_000, 1_000_000] });
+	const report = await run(provider, ["provider.deadline"]);
+	assert.deepEqual(statuses(report), { "provider.deadline": "skip" });
+	assert.match(reasons(report)["provider.deadline"], /^create took 1000 s of a lifetime of 145 s \(the first took 50 s of 45 s\): this host starts a computer too slowly for the case to watch its deadline; /);
+	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
+	assert.equal(report.core, "fail", "a Core case that could not run is no pass");
 });
 
 /** For each case: a fake broken the way the case checks for, and what the failure says. */

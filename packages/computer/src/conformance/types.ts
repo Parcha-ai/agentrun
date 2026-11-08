@@ -3,7 +3,9 @@ import type { MountKind, MountSpec } from "../mount.js";
 import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
+import type { ComputerSettingKind } from "../kinds.js";
 import type { StartedFixture } from "./fixture.js";
+import type { KindVerdict } from "./kind.js";
 
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
@@ -48,7 +50,7 @@ export interface RunFolder {
  * What a computer of this kind and daemon mode must declare: a case that needs one of these fails Core when it is
  * missing, where a case that needs an undeclared optional group is skipped. exec, files and processes are Core whenever
  * computerd runs (pid1 or child); with daemon none they are tested only when declared. Network none is Core wherever
- * computerd runs; a phone is tested on an open network.
+ * computerd runs; a phone is tested on an open network. A browser must declare its CDP target.
  */
 export function coreGroups(kind: ComputerKind, daemon: DaemonMode): Capability[] {
 	const computerd: Capability[] = daemon === "none" ? [] : ["exec", "files", "processes", "network:none"];
@@ -60,6 +62,8 @@ export function coreGroups(kind: ComputerKind, daemon: DaemonMode): Capability[]
 		case "android":
 		case "ios":
 			return ["screen", "input.touch"];
+		case "browser":
+			return ["cdp"];
 		default:
 			return computerd;
 	}
@@ -177,8 +181,10 @@ export interface ConformanceReport {
 	daemon: { version: string; os: string; arch: string } | null;
 	/** The groups or case ids the run was limited to, when it was. */
 	only?: string[];
-	/** When only was given: the Core cases it left out, which did not run. */
+	/** When only or kind was given: the Core cases it left out, which did not run. */
 	coreNotRun?: string[];
+	/** When the run was by kind: whether the provider passes it, and why not. */
+	kindVerdict?: KindVerdict;
 	results: CaseResult[];
 	/**
 	 * pass when every Core case ran and passed, but those skipped for an optional group the computer does not declare,
@@ -213,6 +219,11 @@ export interface ConformanceOptions {
 	image: string;
 	/** Run only these groups or case ids. */
 	only?: string[];
+	/**
+	 * Run a setting kind's cases (kindCases) and give its verdict (report.kindVerdict); not with only. Kind none, no
+	 * computer, is refused, in words.
+	 */
+	kind?: ComputerSettingKind;
 	signal?: AbortSignal;
 	/** The cases to run; default every case of the suite. */
 	cases?: Case[];

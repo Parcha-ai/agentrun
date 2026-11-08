@@ -1,17 +1,24 @@
 // The registry: one line per computer, id → () => import("./<vendor>.js"). The conformance CLI (and serve, once wired)
 // resolves providers through it alone, so a new computer is its provider file and its line here, with no edit to either. Every import is
 // lazy: loading the registry loads no provider and no vendor SDK.
+//
+// A provider is built from its options alone, create(options), its key included: the library reads no environment
+// (README, Settings). The caller owns its settings' names: serve passes its own (DAYTONA_API_KEY, MODAL_TOKEN_ID, ...),
+// and the conformance CLI's modules read their COMPUTER_<ID>_* names and pass them in.
 import type { RunFolder } from "./conformance/types.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
 
-/** Where a provider's settings are read: process.env, or a record of the same shape. */
+/** Where the conformance side reads its settings: process.env, or a record of the same shape. */
 export type ProviderEnv = Readonly<Record<string, string | undefined>>;
 
 /**
  * What a conformance module exports, the CLI's contract for a module given by path too: createProvider(), and optionally
  * createDriftedProvider() for the drift case, conformanceImage() for a run that names no image, conformanceNotes for
- * the report, and mountFor() for the mount cases. The CLI passes each function its options, which a module may ignore.
+ * the report, mountFor() for the mount cases, and settingsFromEnv(env), the provider's options it reads from the
+ * environment by its COMPUTER_<ID>_* names, with ENV, those names by role. The CLI passes each function its options,
+ * which a module may ignore.
  */
 export interface ConformanceModule {
 	createProvider(options?: object): ComputerProvider | Promise<ComputerProvider>;
@@ -20,25 +27,32 @@ export interface ConformanceModule {
 	mountFor?(kind: MountKind, options?: object): RunFolder | undefined | Promise<RunFolder | undefined>;
 	conformanceImage?(options?: object): string | Promise<string>;
 	conformanceNotes?: string[];
+	settingsFromEnv?(env?: ProviderEnv): object;
+	/** Every name settingsFromEnv (and the module) reads, by role: COMPUTER_<ID>_*, or its live switch. */
+	readonly ENV?: Readonly<Record<string, string>>;
 }
 
 /** What every registry line resolves to: the provider file's module. */
 export interface ProviderModule {
-	/** Every variable fromEnv reads, by role: each named COMPUTER_<ID>_*, never a vendor's bare variable. */
-	readonly ENV: Readonly<Record<string, string>>;
 	/**
 	 * The mount kinds its computers take, the same as its provider's capabilities().mount (none: []): a caller tells which
 	 * provider binds a local folder from the registry alone, without building one.
 	 */
 	readonly MOUNT: readonly MountKind[];
 	/**
-	 * The provider, built from those variables alone; it throws in words when one is missing or wrong. A key is read here,
-	 * when the provider is built, and never when the module loads.
+	 * The machine kind and groups of each configuration it offers, as its built providers' capabilities() declare them:
+	 * the kind registry's entry for it (PROVIDERS in kinds.ts) holds the same, and derives its setting kinds from them.
 	 */
-	fromEnv(env?: ProviderEnv): ComputerProvider | Promise<ComputerProvider>;
+	readonly CAPABILITIES: readonly KindCapabilities[];
 	/**
-	 * The module the conformance CLI runs this provider through: its run's bounds, its drifted twin, its image and notes.
-	 * Without one the CLI runs fromEnv()'s provider, and the drift case skips.
+	 * The provider, built from its options alone, its key included; it reads no environment, and throws in words when an
+	 * option is missing or wrong, never echoing a key. Each provider file types its own options.
+	 */
+	create(options: object): ComputerProvider | Promise<ComputerProvider>;
+	/**
+	 * The module the conformance CLI runs this provider through: the settings it reads from the environment, its run's
+	 * bounds, its drifted twin, its image and notes. Without one the CLI runs create()'s provider with the CLI's options,
+	 * and the drift case skips.
 	 */
 	conformance?(): Promise<ConformanceModule>;
 }
@@ -53,6 +67,9 @@ export const providers = {
 
 export type ProviderId = keyof typeof providers;
 
+/** The options a registry id's create() takes. */
+export type ProviderOptions<Id extends ProviderId> = Parameters<Awaited<ReturnType<(typeof providers)[Id]>>["create"]>[0];
+
 /** Every id, in the registry's order. */
 export const providerIds = Object.keys(providers) as ProviderId[];
 
@@ -66,7 +83,7 @@ export async function providerModule(id: string): Promise<ProviderModule> {
 	return providers[id]();
 }
 
-/** The provider for an id, built from the environment by the provider file's fromEnv(). */
-export async function providerFromEnv(id: string, env: ProviderEnv = process.env): Promise<ComputerProvider> {
-	return (await providerModule(id)).fromEnv(env);
+/** The provider for an id, built by the provider file's create() from the options given, and nothing else. */
+export async function providerFor<Id extends ProviderId>(id: Id, options: ProviderOptions<Id>): Promise<ComputerProvider> {
+	return (await providerModule(id)).create(options as object);
 }

@@ -1,150 +1,166 @@
-// The kind registry: the computer an agent is given, its Setting. A kind is a set of capability groups of the computer
-// protocol (the groups a provider's capabilities() declare and its computer's hello repeats), the tools a loop gets for
-// it, and the provider ids that offer it. Whether a provider serves a kind is computed from its capabilities alone
-// (serves, kindOf), never kept in a list beside them: a provider that drops a group stops serving the kind. The serve
-// side reads this module to wire an agent's `computer: { kind, provider }` and to give its loop the kind's tools,
-// nothing else.
+// The kind registry: the computer an agent is given, its setting kind, and the providers Settings offers for it. Two
+// axes: the machine kind is the protocol's (capabilities().kind, KIND_SHAPES); the setting kind is what an agent is
+// given in Settings, `computer: { kind, provider? }`, as machine kinds and capability groups. Whether a provider serves
+// a setting kind is computed from its capabilities alone (serves), never kept beside them: a provider that drops a
+// group stops serving the kind. The model's tools are not here: they live in the kernel's tool registry, keyed by
+// these groups.
+import type { MountKind } from "./mount.js";
 import type { ComputerKind, Group } from "./protocol.js";
 import type { ComputerCapabilities } from "./provider.js";
-import type { ProviderId } from "./providers.js";
+import type { Result } from "./result.js";
 
 /**
- * What an agent's computer is. none: the run's folder only, no computer. sandbox: a Linux shell with files and
- * processes. desktop: a sandbox with a screen, a pointer and keys (Linux, Windows or macOS). phone: a screen, touch and
- * apps. browser: a computer class answering CDP.
+ * What an agent is given. none: the run's folder only, no computer. sandbox: a Linux shell with files and processes.
+ * desktop: a screen, a pointer and keys (Linux, Windows or macOS), a shell when it has one. phone: a screen, touch and
+ * apps. browser: a CDP target.
  */
-export type Kind = "none" | "sandbox" | "desktop" | "phone" | "browser";
+export type ComputerSettingKind = "none" | "sandbox" | "desktop" | "phone" | "browser";
 
-/** Every kind, from the least to the most a loop is given, browser apart. */
-export const KINDS: readonly Kind[] = ["none", "sandbox", "desktop", "phone", "browser"];
-
-/**
- * How a loop reaches a kind's computer. computerd: the computer protocol's methods (a daemon, or a provider answering
- * them itself). cdp: the Chrome DevTools Protocol, a browser's target. none: no computer.
- */
-export type KindPlane = "none" | "computerd" | "cdp";
-
-/** One tool a loop gets for a kind, and the groups it needs: given only where every one of them is declared. */
-export interface KindTool {
-	/** Its name as the model sees it; the serve side defines its words and schema. */
-	name: string;
-	groups: readonly Group[];
-}
-
-export interface KindSpec {
-	kind: Kind;
-	plane: KindPlane;
-	/** The groups a provider must declare to serve the kind, and whose conformance cases it must pass. */
+/** A setting kind's machine kinds and groups. */
+export interface SettingKindSpec {
+	/** The capabilities().kind values that can serve it. */
+	machineKinds: readonly ComputerKind[];
+	/** Every one declared, and passing its conformance cases, to serve it. */
 	required: readonly Group[];
-	/** Groups the kind takes when a provider declares them: they add tools, and are never needed. */
+	/** Brought when declared. */
 	optional: readonly Group[];
-	/** The protocol kinds (capabilities().kind) a computer serving it may be. */
-	computers: readonly ComputerKind[];
-	/** The tools a loop gets for the kind, those of optional groups only where the provider declares them. */
-	tools: readonly KindTool[];
 }
 
-const SANDBOX_GROUPS: readonly Group[] = ["exec", "files", "processes"];
-
-/** The shell and file tools, as the kernel's tool registry names them: bash and the background tools on the computer. */
-const SANDBOX_TOOLS: readonly KindTool[] = [
-	{ name: "bash", groups: ["exec"] },
-	{ name: "read", groups: ["files"] },
-	{ name: "write", groups: ["files"] },
-	{ name: "edit", groups: ["files"] },
-	{ name: "bash_background", groups: ["processes"] },
-	{ name: "bash_output", groups: ["processes"] },
-	{ name: "bash_input", groups: ["processes"] },
-	{ name: "bash_signal", groups: ["processes"] },
-	{ name: "bash_list", groups: ["processes"] },
-];
-
-/** A screenshot of the computer's screen (screen.shot). */
-const SCREEN_SHOT: KindTool = { name: "screen_shot", groups: ["screen"] };
-
-/** pi-browser's tools, the ones serve registers for a run's browser today; the browser lane owns them. */
-const BROWSER_TOOLS: readonly KindTool[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"].map(
-	(name) => ({ name, groups: [] }),
-);
-
-export const KIND_SPECS: Readonly<Record<Kind, KindSpec>> = {
-	none: { kind: "none", plane: "none", required: [], optional: [], computers: [], tools: [] },
-	sandbox: { kind: "sandbox", plane: "computerd", required: SANDBOX_GROUPS, optional: [], computers: ["linux", "desktop"], tools: SANDBOX_TOOLS },
-	desktop: {
-		kind: "desktop",
-		plane: "computerd",
-		required: [...SANDBOX_GROUPS, "screen", "input.pointer", "input.keys"],
-		optional: [],
-		computers: ["desktop"],
-		// desktop_input: input.actions with pointer and key actions.
-		tools: [...SANDBOX_TOOLS, SCREEN_SHOT, { name: "desktop_input", groups: ["input.pointer", "input.keys"] }],
-	},
-	phone: {
-		kind: "phone",
-		plane: "computerd",
-		required: ["screen", "input.touch", "apps"],
-		optional: ["input.keys", "apps.ui_tree", "apps.install"],
-		computers: ["android", "ios"],
-		// touch: input.actions with touch actions; type: with key actions; apps: list, launch, terminate.
-		tools: [
-			SCREEN_SHOT,
-			{ name: "touch", groups: ["input.touch"] },
-			{ name: "type", groups: ["input.keys"] },
-			{ name: "apps", groups: ["apps"] },
-			{ name: "ui_tree", groups: ["apps.ui_tree"] },
-			{ name: "app_install", groups: ["apps.install"] },
-		],
-	},
-	// No provider declares a CDP plane yet: the browser lane adds it to the capabilities, and serves() reads it there.
-	browser: { kind: "browser", plane: "cdp", required: [], optional: [], computers: [], tools: BROWSER_TOOLS },
+export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec>> = {
+	none: { machineKinds: [], required: [], optional: [] },
+	sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
+	desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
+	phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+	browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 };
 
-/**
- * The provider ids that offer each kind, the menu an agent's setting picks from: each id is a line of the provider
- * registry (providers.ts), and offering is not serving. serves() decides for the provider built, from its capabilities;
- * a unit test builds each one listed here as it offers the kind and holds it to serves().
- */
-export const KIND_PROVIDERS: Readonly<Record<Kind, readonly ProviderId[]>> = {
-	none: [],
-	sandbox: ["docker", "e2b", "daytona", "modal"],
-	// Docker with its desktop option, E2B with kind desktop (its default), Orgo (desktops only).
-	desktop: ["docker", "e2b", "orgo"],
-	phone: [],
-	browser: [],
-};
+/** Every setting kind, in the table's order. */
+export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingKind[];
 
 /** The capabilities serves() and kindOf() read. */
 export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups">;
 
-/** Why capabilities do not serve a kind, in words; none when they do. */
-export function servingRefusals(capabilities: KindCapabilities, kind: Kind): string[] {
-	const spec = KIND_SPECS[kind];
-	if (spec === undefined) return [`${JSON.stringify(kind)} is not a kind: ${KINDS.join(", ")}`];
-	if (spec.plane === "none") return ["kind none is no computer: no provider serves it"];
-	if (spec.plane === "cdp") return ["kind browser answers CDP, and no provider declares a CDP plane yet"];
+/** Why capabilities do not serve a setting kind, in words; none when they do. */
+export function servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[] {
+	const spec = Object.hasOwn(SETTING_KINDS, kind) ? SETTING_KINDS[kind] : undefined;
+	if (spec === undefined) return [`${JSON.stringify(kind)} is not a setting kind: ${SETTING_KIND_NAMES.join(", ")}`];
+	if (spec.machineKinds.length === 0) return [`kind ${kind} is no computer: no provider serves it`];
 	const refusals: string[] = [];
-	if (!spec.computers.includes(capabilities.kind)) refusals.push(`kind ${kind} is a ${spec.computers.join(" or ")} computer, not a ${capabilities.kind} one`);
+	if (!spec.machineKinds.includes(capabilities.kind)) refusals.push(`kind ${kind} is a ${spec.machineKinds.join(" or ")} machine, not a ${capabilities.kind} one`);
 	const groups = Array.isArray(capabilities.groups) ? capabilities.groups : [];
 	const missing = spec.required.filter((group) => !groups.includes(group));
 	if (missing.length > 0) refusals.push(`kind ${kind} needs groups ${missing.join(", ")}, which the provider does not declare`);
 	return refusals;
 }
 
-/** Whether a provider with these capabilities serves the kind: its protocol kind is one the kind allows, and it declares every required group. */
-export function serves(capabilities: KindCapabilities, kind: Kind): boolean {
+/** Whether a provider with these capabilities serves the kind: its machine kind is one of the kind's, and it declares every required group. */
+export function serves(capabilities: KindCapabilities, kind: ComputerSettingKind): boolean {
 	return servingRefusals(capabilities, kind).length === 0;
 }
 
-/** The order kindOf tries: the kind that gives a loop the most first. */
-const RICHEST: readonly Kind[] = ["phone", "desktop", "sandbox"];
-
-/** The richest kind these capabilities serve, or undefined when they serve none. */
-export function kindOf(capabilities: KindCapabilities): Kind | undefined {
-	return RICHEST.find((kind) => serves(capabilities, kind));
+/** The setting kind these capabilities serve, or undefined when they serve none. Machine kinds are apart, so at most one. */
+export function kindOf(capabilities: KindCapabilities): ComputerSettingKind | undefined {
+	return SETTING_KIND_NAMES.find((kind) => serves(capabilities, kind));
 }
 
-/** The kind's tools a loop gets from a provider with these capabilities: none when it does not serve the kind; else each tool whose groups it declares. */
-export function toolsFor(kind: Kind, capabilities: KindCapabilities): KindTool[] {
-	if (!serves(capabilities, kind)) return [];
-	return KIND_SPECS[kind].tools.filter((tool) => tool.groups.every((group) => capabilities.groups.includes(group)));
+/** One key a provider takes in Settings: its serve-side name (Settings accepts only these), and whether it is needed. */
+export interface ProviderKey {
+	name: string;
+	required: boolean;
 }
+
+/** A provider as Settings shows it. */
+export interface ProviderEntry {
+	/** Its id: a line of the provider registry (providers.ts) once its file lands. */
+	id: string;
+	label: string;
+	/** Derived: the setting kinds its capabilities serve (serves), never written by hand. */
+	kinds: readonly ComputerSettingKind[];
+	/** The serve-side key names only; never a value. */
+	keys: readonly ProviderKey[];
+	/** The mount kinds its computers take; [] cannot mount the run's folder. Its module's MOUNT, once its file lands. */
+	mounts: readonly MountKind[];
+	/** The vendor bills by time; prices are the vendor's page, not ours. */
+	metered: boolean;
+	/**
+	 * Its static capabilities: the machine kind and groups of each configuration it offers. Its module's CAPABILITIES,
+	 * once its file lands, and each built configuration's capabilities().
+	 */
+	capabilities: readonly KindCapabilities[];
+}
+
+const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
+const LINUX_DESKTOP: KindCapabilities = { kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] };
+
+/** An entry with its kinds derived from its capabilities. */
+function entry(fields: Omit<ProviderEntry, "kinds">): ProviderEntry {
+	return { ...fields, kinds: SETTING_KIND_NAMES.filter((kind) => fields.capabilities.some((one) => serves(one, kind))) };
+}
+
+/**
+ * Every provider Settings offers. orgo, phone-harness, browserbase and kernel are data until their provider file lands;
+ * a unit test then holds each to its module (CAPABILITIES, MOUNT). daytona, modal and e2b take archil mounts once D6
+ * lands, and their entries follow their modules then.
+ */
+export const PROVIDERS: readonly ProviderEntry[] = [
+	entry({ id: "docker", label: "Docker", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX, LINUX_DESKTOP] }),
+	entry({
+		id: "daytona",
+		label: "Daytona",
+		keys: [
+			{ name: "DAYTONA_API_KEY", required: true },
+			{ name: "DAYTONA_API_URL", required: false },
+			{ name: "DAYTONA_TARGET", required: false },
+		],
+		mounts: [],
+		metered: true,
+		capabilities: [SANDBOX],
+	}),
+	entry({
+		id: "modal",
+		label: "Modal",
+		keys: [
+			{ name: "MODAL_TOKEN_ID", required: true },
+			{ name: "MODAL_TOKEN_SECRET", required: true },
+		],
+		mounts: [],
+		metered: true,
+		capabilities: [SANDBOX],
+	}),
+	entry({ id: "e2b", label: "E2B", keys: [{ name: "E2B_API_KEY", required: true }], mounts: [], metered: true, capabilities: [SANDBOX, LINUX_DESKTOP] }),
+	entry({ id: "orgo", label: "Orgo", keys: [{ name: "ORGO_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "desktop", groups: ["screen", "input.pointer", "input.keys"] }] }),
+	entry({
+		id: "phone-harness",
+		label: "Phone harness",
+		keys: [{ name: "PHONE_HARNESS_API_KEY", required: true }],
+		mounts: [],
+		metered: true,
+		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "apps"] }],
+	}),
+	entry({
+		id: "browserbase",
+		label: "Browserbase",
+		keys: [
+			{ name: "BROWSERBASE_API_KEY", required: true },
+			{ name: "BROWSERBASE_PROJECT_ID", required: true },
+		],
+		mounts: [],
+		metered: true,
+		capabilities: [{ kind: "browser", groups: ["cdp"] }],
+	}),
+	entry({ id: "kernel", label: "Kernel", keys: [{ name: "KERNEL_API_KEY", required: true }], mounts: [], metered: true, capabilities: [{ kind: "browser", groups: ["cdp"] }] }),
+];
+
+/** What testConnection is given: the provider's keys by their serve-side names, and the caller's signal. */
+export interface TestConnectionOptions {
+	keys: Readonly<Record<string, string>>;
+	signal?: AbortSignal;
+}
+
+/**
+ * Settings' "test connection": ONE account-level read with the given keys (a list by label, the vendor's whoami) that
+ * never creates a computer, so it never spends. ok with words on what it read; else unauthorized, unreachable, refused
+ * or another code, the message never carrying a key. A full live check (create, then the kind's conformance) is the QA
+ * board's, not this.
+ */
+export type TestConnection = (providerId: string, options: TestConnectionOptions) => Promise<Result<{ detail: string }>>;

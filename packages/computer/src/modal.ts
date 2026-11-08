@@ -19,6 +19,7 @@ import {
 	probeReportOf,
 	WORK,
 } from "./drift.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
@@ -36,6 +37,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { connectionError } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
@@ -88,7 +90,7 @@ export interface ModalSandbox {
 
 /** The part of the SDK's ModalClient this provider calls. The host passes its own client. */
 export interface ModalSdk {
-	readonly apps: { fromName(name: string, params: { createIfMissing: true }): Promise<ModalApp> };
+	readonly apps: { fromName(name: string, params: { createIfMissing: boolean }): Promise<ModalApp> };
 	readonly images: { fromRegistry(tag: string): ModalImage };
 	readonly sandboxes: {
 		create(app: ModalApp, image: ModalImage, params: ModalCreateParams): Promise<ModalSandbox>;
@@ -148,31 +150,16 @@ export interface ModalProviderOptions {
 	probeTargets?: string[];
 }
 
-/**
- * The environment fromEnv reads, by name. Never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET: a host may hold a production token
- * under those names, and the SDK reads them, else the active profile of ~/.modal.toml, on its own
- * (modal-client@64880502:js/src/config.ts:139-145; client.ts:123).
- */
-export const ENV = {
-	tokenId: "COMPUTER_MODAL_TOKEN_ID",
-	tokenSecret: "COMPUTER_MODAL_TOKEN_SECRET",
-	app: "COMPUTER_MODAL_APP",
-	/** Optional: an image holding the daemon, pinned by digest, to COPY --from instead of uploading it. */
-	daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
-	/** The server the key goes to; the SDK's default when unset. */
-	serverUrl: "COMPUTER_MODAL_SERVER_URL",
-} as const;
-
 /** The mount kinds a Modal computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
 export const MOUNT: readonly MountKind[] = [];
 
+/** The machine kind and groups of its one configuration: a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
+
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
-const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
+export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
 
-/** The server the key goes to: COMPUTER_MODAL_SERVER_URL, else the SDK's default. */
-export const modalServerUrl = (env: Record<string, string | undefined> = process.env): string => env[ENV.serverUrl] || MODAL_DEFAULT_SERVER_URL;
-
-/** What fromEnv gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
+/** What modalClient gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
 export interface ModalClientParams {
 	tokenId: string;
 	tokenSecret: string;
@@ -181,64 +168,80 @@ export interface ModalClientParams {
 /** The SDK's ModalClient constructor, or a stand-in for one. */
 export type ModalClientConstructor = new (params: ModalClientParams) => unknown;
 
-export interface ModalFromEnvOptions extends Partial<Omit<ModalProviderOptions, "sdk" | "app">> {
+/** What modalClient takes: the token, the server it goes to, and the SDK's client class. */
+export interface ModalClientOptions {
+	/** The Modal token's id and secret. Serve passes its MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; the conformance module the token it reads. */
+	tokenId: string;
+	tokenSecret: string;
+	/** The server the token goes to; default the SDK's, https://api.modal.com:443. */
+	serverUrl?: string;
 	/** The SDK's ModalClient; imported from the host's modal package by default. */
 	ModalClient?: ModalClientConstructor;
 }
 
+/** What create() takes: the provider's options, the client's in place of the SDK. */
+export interface ModalCreateOptions extends Omit<ModalProviderOptions, "sdk">, ModalClientOptions {}
+
 /** Not a literal, so no type checker or bundler resolves the SDK from this package. */
 const MODAL_PACKAGE: string = "modal";
 
+/** The construction now running, or the last one: the next waits for it, so two never overlap. */
+let constructing: Promise<unknown> = Promise.resolve();
+
 /**
- * A Modal client given the COMPUTER_MODAL_ token explicitly, and nothing else of the environment: a tokenId and
- * tokenSecret passed to ModalClient replace what the environment or the profile held, and clear any OAuth credentials
- * (client.ts:124-148). The key goes only to the server chosen here: COMPUTER_MODAL_SERVER_URL, else the SDK's default
- * (config.ts:143). ModalClient cannot take a server explicitly: it declares `endpoint` (client.ts:51) and never reads it,
- * and the control-plane client is made from the profile's serverUrl (client.ts:131, 175, 281), which getProfile takes
- * from MODAL_SERVER_URL before any profile's server_url (config.ts:140-143), the profile being MODAL_PROFILE's or the
- * active one in MODAL_CONFIG_PATH or ~/.modal.toml (config.ts:76-82, 126-137). So an ambient MODAL_SERVER_URL is refused,
- * and MODAL_SERVER_URL is set to the choice only while the client is constructed, so no profile can redirect it. The
- * modal package is the host's: it is imported only here.
+ * A Modal client given the token passed in, and nothing of the environment: a tokenId and tokenSecret passed to
+ * ModalClient replace what the environment or the profile held, and clear any OAuth credentials (client.ts:124-148), so a
+ * MODAL_TOKEN_ID or ~/.modal.toml on the host is never used. The key goes only to options.serverUrl, else the SDK's
+ * default (config.ts:143). ModalClient cannot take a server explicitly: it declares `endpoint` (client.ts:51) and never
+ * reads it, and the control-plane client is made from the profile's serverUrl (client.ts:131, 175, 281), which getProfile
+ * takes from MODAL_SERVER_URL before any profile's server_url (config.ts:140-143), the profile being MODAL_PROFILE's or the
+ * active one in MODAL_CONFIG_PATH or ~/.modal.toml (config.ts:76-82, 126-137).
+ *
+ * So this is the library's one touch of the environment, a guard and not a setting (README, Settings): an ambient
+ * MODAL_SERVER_URL is refused, and MODAL_SERVER_URL is set to the chosen server only while the client is constructed,
+ * and put back after, so no profile can redirect the key. process.env is the whole process's: constructions run one at a
+ * time, each waiting for the last, so none sees another's server. The modal package is the host's: it is imported only
+ * here.
  */
-export async function modalClient({ env = process.env, ModalClient }: { env?: Record<string, string | undefined>; ModalClient?: ModalClientConstructor } = {}): Promise<ModalSdk> {
-	const tokenId = env[ENV.tokenId];
-	const tokenSecret = env[ENV.tokenSecret];
-	if (!tokenId || !tokenSecret) {
-		throw new Error(`the Modal provider needs ${ENV.tokenId} and ${ENV.tokenSecret} in the environment: it takes a key from those names only, never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET`);
+export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFAULT_SERVER_URL, ModalClient }: ModalClientOptions): Promise<ModalSdk> {
+	if (typeof tokenId !== "string" || tokenId === "" || typeof tokenSecret !== "string" || tokenSecret === "") {
+		throw new Error("the Modal provider needs options.tokenId and options.tokenSecret, a Modal token: it reads none from the environment, so the caller passes it");
 	}
-	if (env.MODAL_SERVER_URL) {
-		throw new Error(
-			`the Modal provider refuses to start while MODAL_SERVER_URL is set: the SDK would send the key there. ` +
-				`Unset it, and name the server in ${ENV.serverUrl} if it is not ${MODAL_DEFAULT_SERVER_URL}`,
-		);
-	}
-	const serverUrl = modalServerUrl(env);
+	if (typeof serverUrl !== "string" || !URL.canParse(serverUrl)) throw new Error("options.serverUrl is the Modal server's URL, such as https://api.modal.com:443");
+	const ambient = `the Modal provider refuses to start while MODAL_SERVER_URL is set: the SDK would send the key there. Unset it, and pass the server as options.serverUrl if it is not ${MODAL_DEFAULT_SERVER_URL}`;
+	if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
 	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: ModalClientConstructor }).ModalClient;
 	// getProfile reads MODAL_SERVER_URL from process.env when the client is constructed (client.ts:123), and the
-	// control-plane client is made then (client.ts:175); afterwards process.env is as it was.
-	const before = process.env.MODAL_SERVER_URL;
-	process.env.MODAL_SERVER_URL = serverUrl;
-	try {
-		return new Client({ tokenId, tokenSecret }) as ModalSdk;
-	} finally {
-		if (before === undefined) delete process.env.MODAL_SERVER_URL;
-		else process.env.MODAL_SERVER_URL = before;
-	}
+	// control-plane client is made then (client.ts:175); afterwards process.env is as it was. One construction at a time.
+	const turn = constructing.then(() => {
+		if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
+		const before = process.env.MODAL_SERVER_URL;
+		process.env.MODAL_SERVER_URL = serverUrl;
+		try {
+			return new Client({ tokenId, tokenSecret }) as ModalSdk;
+		} finally {
+			if (before === undefined) delete process.env.MODAL_SERVER_URL;
+			else process.env.MODAL_SERVER_URL = before;
+		}
+	});
+	constructing = turn.catch(() => undefined);
+	return turn;
 }
 
 /**
- * A ModalProvider from COMPUTER_MODAL_* alone: the client as modalClient makes it, the app, and the daemon copied from
- * COMPUTER_MODAL_DAEMON_IMAGE when it is set, else uploaded (options.daemonPath, else this package's build). The app is
- * checked before any client is made. Options win over the environment, but never give the token or the server.
+ * A ModalProvider from its options alone: the client as modalClient makes it from the token and server passed in, the
+ * app (required), and the daemon copied from options.daemonImage when given, else uploaded (options.daemonPath, else this
+ * package's build): given both, the image wins and no upload path is passed on, as the class takes one or the other. It
+ * reads no environment but the guard modalClient keeps: serve passes its MODAL_TOKEN_ID, MODAL_TOKEN_SECRET and
+ * AGENTRUN_BOX_APP, the conformance module the settings it reads. The app and the token are checked before any client
+ * is made, and neither is ever echoed.
  */
-export async function fromEnv(env: Record<string, string | undefined> = process.env, options: ModalFromEnvOptions = {}): Promise<ModalProvider> {
-	const { ModalClient, daemonPath, daemonImage, ...rest } = options;
-	const app = env[ENV.app];
-	if (!app) throw new Error(`the Modal provider needs ${ENV.app} in the environment: the app its sandboxes live in`);
-	const image = daemonImage ?? (env[ENV.daemonImage] || undefined);
-	const daemon = image === undefined ? (daemonPath === undefined ? {} : { daemonPath }) : { daemonImage: image };
-	const sdk = await modalClient({ env, ...(ModalClient ? { ModalClient } : {}) });
-	return new ModalProvider({ ...rest, sdk, app, ...daemon });
+export async function create(options: ModalCreateOptions): Promise<ModalProvider> {
+	const { tokenId, tokenSecret, serverUrl, ModalClient, daemonImage, daemonPath, ...rest } = options ?? ({} as ModalCreateOptions);
+	if (typeof rest.app !== "string" || rest.app.trim() === "") throw new Error("options.app, the Modal app its sandboxes live in, is required");
+	const daemon = daemonImage !== undefined ? { daemonImage } : daemonPath !== undefined ? { daemonPath } : {};
+	const sdk = await modalClient({ tokenId, tokenSecret, ...(serverUrl === undefined ? {} : { serverUrl }), ...(ModalClient ? { ModalClient } : {}) });
+	return new ModalProvider({ ...rest, ...daemon, sdk });
 }
 
 /** The conformance CLI's module for Modal: its live switch, the run's 30-minute cap and the drifted twin. */
@@ -431,6 +434,8 @@ function codeOf(error: unknown): ComputerErrorCode {
 	const { name, code } = (error ?? {}) as { name?: unknown; code?: unknown };
 	if (name === "NotFoundError" || code === 5) return "not_found";
 	if (name === "InvalidError" || code === 3) return "invalid";
+	// gRPC's UNAUTHENTICATED and PERMISSION_DENIED: a token Modal refused.
+	if (code === 16 || code === 7) return "denied";
 	return "modal";
 }
 
@@ -928,6 +933,18 @@ export class ModalProvider implements ComputerProvider {
 		const found = await call(`apps.fromName ${this.#appName}`, () => this.#sdk.apps.fromName(this.#appName, { createIfMissing: true }), this.#timeouts.callMs, signal);
 		if (found.ok) this.#app = found.value;
 		return found;
+	}
+
+	/**
+	 * Settings' test: the provider's app read without making it (createIfMissing false), which makes nothing. An app not
+	 * made yet is a connection all the same: the token was taken, and the first computer makes the app.
+	 */
+	async testConnection({ signal }: CallContext = {}): Promise<Result<{ detail: string }>> {
+		const found = await call(`apps.fromName ${this.#appName}`, () => this.#sdk.apps.fromName(this.#appName, { createIfMissing: false }), this.#timeouts.callMs, signal);
+		if (found.ok) return ok({ detail: `Modal answered: the app ${this.#appName} is there` });
+		if (found.error.code === "not_found") return ok({ detail: `Modal answered: no app ${this.#appName} yet; the first computer makes it` });
+		const error = connectionError(found.error);
+		return fail(error.code, error.message);
 	}
 
 	/** The sandbox with an id and the tags it carries; one Modal does not know is not_found. */

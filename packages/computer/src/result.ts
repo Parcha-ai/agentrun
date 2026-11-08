@@ -14,6 +14,9 @@ export type ComputerErrorCode =
 	| "exists"
 	| "not_dir"
 	| "is_dir"
+	// testConnection's: a key the vendor refused, and a vendor not reached.
+	| "unauthorized"
+	| "unreachable"
 	| "docker"
 	| "daytona"
 	| "modal"

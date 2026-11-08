@@ -1,13 +1,16 @@
-// `npm run conformance -w @parcha/agentrun-computer -- --provider <id> | ./module.js [--image <image>] [--only <groups>] [--json]`
+// `npm run conformance -w @parcha/agentrun-computer -- --provider <id> | ./module.js [--image <image>] [--only <groups> | --kind <kind>] [--json]`
 // An id is resolved through the provider registry (../providers.ts) and nothing else, so a new computer needs no edit here.
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
-// that ran passed: a partial run is never a Core pass, so no script reads its exit code as one.
+// that ran passed: a partial run is never a Core pass, so no script reads its exit code as one. With --kind it exits on
+// the kind's verdict alone: 0 when the provider passes the kind, 1 when it does not.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
 import type { ComputerProvider } from "../provider.js";
 import { type ConformanceModule, isProviderId, type ProviderEnv, providerIds, providerModule } from "../providers.js";
+import { type ComputerSettingKind, SETTING_KIND_NAMES } from "../kinds.js";
 import { conformanceCases } from "./cases/index.js";
+import { kindRunProblem } from "./kind.js";
 import { formatReport } from "./report.js";
 import { runConformance } from "./runner.js";
 import type { Case, CaseResult, ConformanceOptions } from "./types.js";
@@ -31,23 +34,27 @@ export interface CliIo {
 	progress?: boolean;
 	/**
 	 * Given to the module's createProvider(), createDriftedProvider() and conformanceImage(), which may ignore them; its env
-	 * is where a provider file's fromEnv() reads. A test gives a fake SDK or a shorter bound through it.
+	 * is where a conformance module reads its settings (default process.env). A provider file with no conformance module
+	 * is given them, but the env, as create()'s options. A test gives a fake SDK or a shorter bound through it.
 	 */
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,...] [--fixture <path>] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
-              fromEnv(), or a conformance module that exports createProvider() (and, for the drift case,
+              create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
   --image     the image every computer starts from (default the module's conformanceImage(), else debian:bookworm-slim)
   --only      run only these groups (health, exec, files, process, provider, drift, mount, screen, input, touch,
               apps, lifetime) or case ids; a run that leaves Core cases out is partial: no Core verdict, and exit 3 when
               every case that ran passed
+  --kind      run a setting kind's cases (sandbox, desktop, phone, browser) and exit on its verdict: the provider passes the kind only
+              when it serves it and every case of each required group passes; not with --only
   --fixture   the fixture the screen, input, touch and apps cases check effects with: computerd-fixture for a
               desktop, the fixture APK for an Android phone
   --json      print the report as JSON
-exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed`;
+exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
+      0 the provider passes the kind, 1 it does not`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
 
 class Usage extends Error {}
@@ -56,6 +63,7 @@ interface Args {
 	provider: string;
 	image?: string;
 	only?: string[];
+	kind?: ComputerSettingKind;
 	fixture?: string;
 	json: boolean;
 	help: boolean;
@@ -73,13 +81,20 @@ function parse(argv: string[], cases: Case[]): Args {
 		if (flag === "--provider") args.provider = value();
 		else if (flag === "--image") args.image = value();
 		else if (flag === "--only") args.only = value().split(",").map((part) => part.trim()).filter(Boolean);
-		else if (flag === "--fixture") args.fixture = value();
+		else if (flag === "--kind") {
+			const kind = value();
+			if (!(SETTING_KIND_NAMES as readonly string[]).includes(kind)) throw new Usage(`--kind: ${JSON.stringify(kind)} is not a kind (${SETTING_KIND_NAMES.join(", ")})`);
+			const problem = kindRunProblem(kind as ComputerSettingKind);
+			if (problem !== undefined) throw new Usage(`--kind ${kind}: ${problem}`);
+			args.kind = kind as ComputerSettingKind;
+		} else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--json") args.json = true;
 		else if (flag === "--help" || flag === "-h") args.help = true;
 		else throw new Usage(`unknown option ${flag}`);
 	}
 	if (args.help) return { provider: "", json: false, help: true };
 	if (args.provider === undefined) throw new Usage("--provider is required");
+	if (args.kind !== undefined && args.only !== undefined) throw new Usage("--kind and --only go apart: a kind runs its own cases");
 	const groups = [...new Set(cases.map((c) => c.group))];
 	for (const name of args.only ?? []) {
 		if (!groups.includes(name as Case["group"]) && !cases.some((c) => c.id === name)) {
@@ -90,6 +105,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		provider: args.provider,
 		...(args.image === undefined ? {} : { image: args.image }),
 		...(args.only ? { only: args.only } : {}),
+		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
 		json: args.json,
 		help: false,
@@ -115,9 +131,10 @@ const BARE = /^[A-Za-z][A-Za-z0-9-]*$/;
 
 /**
  * The conformance module for --provider: a registry id's provider file, or the module at a path. A provider file's
- * conformance() module is run when it has one, else its fromEnv() alone, with no drifted twin.
+ * conformance() module is run when it has one, else its create() alone, given the CLI's options but the env (a provider
+ * reads no environment), with no drifted twin.
  */
-async function conformanceModule(name: string, cwd: string, env: ProviderEnv | undefined): Promise<{ label: string; module: Partial<ConformanceModule> }> {
+async function conformanceModule(name: string, cwd: string): Promise<{ label: string; module: Partial<ConformanceModule> }> {
 	let label = name;
 	let module: Record<string, unknown>;
 	if (isProviderId(name)) {
@@ -133,9 +150,17 @@ async function conformanceModule(name: string, cwd: string, env: ProviderEnv | u
 		}
 	}
 	if (typeof module.conformance === "function") return { label, module: await module.conformance() };
-	if (typeof module.createProvider !== "function" && typeof module.fromEnv === "function") {
-		const fromEnv = module.fromEnv as (env?: ProviderEnv) => ComputerProvider | Promise<ComputerProvider>;
-		return { label, module: { createProvider: () => fromEnv(env ?? process.env) } };
+	if (typeof module.createProvider !== "function" && typeof module.create === "function") {
+		const create = module.create as (options: object) => ComputerProvider | Promise<ComputerProvider>;
+		return {
+			label,
+			module: {
+				createProvider: (options: object = {}) => {
+					const { env: _env, ...rest } = options as { env?: ProviderEnv };
+					return create(rest);
+				},
+			},
+		};
 	}
 	return { label, module: module as Partial<ConformanceModule> };
 }
@@ -146,7 +171,7 @@ async function conformanceModule(name: string, cwd: string, env: ProviderEnv | u
  */
 async function load(label: string, module: Partial<ConformanceModule>, options: object): Promise<Target> {
 	const { createProvider, createDriftedProvider, conformanceImage, mountFor } = module;
-	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or fromEnv()`);
+	if (typeof createProvider !== "function") throw new Usage(`${label} does not export createProvider() or create()`);
 	const provider = (await createProvider(options)) as ComputerProvider;
 	const lacks = PROVIDER_METHODS.filter((name) => typeof provider?.[name] !== "function");
 	if (lacks.length > 0 || typeof provider.id !== "string") {
@@ -185,7 +210,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 	const options = io.providerOptions ?? {};
 	let target: Target;
 	try {
-		const { label, module } = await conformanceModule(args.provider, cwd, options.env);
+		const { label, module } = await conformanceModule(args.provider, cwd);
 		target = await load(label, module, options);
 	} catch (error) {
 		await write(stderr, `${(error as Error).message}\n`);
@@ -201,6 +226,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(target.notes && target.notes.length > 0 ? { notes: target.notes } : {}),
 		cases,
 		...(args.only ? { only: args.only } : {}),
+		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
@@ -208,6 +234,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(onResult ? { onResult } : {}),
 	});
 	await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
+	if (report.kindVerdict) return report.kindVerdict.verdict === "pass" ? 0 : 1;
 	return report.core === "pass" ? 0 : report.core === "partial" ? 3 : 1;
 }
 

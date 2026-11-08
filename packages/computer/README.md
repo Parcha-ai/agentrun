@@ -313,6 +313,54 @@ read to its end, the push calls its `return()` however it ends, so a pull piped 
 `src/protocol.ts` and `daemon/internal/methods` are the two definitions of these methods, TypeScript and Go (the Go
 params and results of `files.*` and `tar.*` sit beside their code in `daemon/internal/files`).
 
+## Kinds: the computer an agent is given
+
+Two axes. The machine kind is the protocol's, `capabilities().kind` (`linux`, `desktop`, `android`, `ios`, `browser`;
+below). The setting kind is what an agent is given in Settings, `computer: { kind, provider? }`: one of five, each a
+set of machine kinds and capability groups (`src/kinds.ts`, `SETTING_KINDS`). The model's tools are not here: they live
+in the kernel's tool registry, keyed by these groups.
+
+| setting kind | machine kinds | required groups | optional groups |
+| --- | --- | --- | --- |
+| `none` | | | (the run's folder only: no computer) |
+| `sandbox` | `linux` | `exec`, `files`, `processes` | |
+| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `stream` |
+| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `apps.ui_tree`, `stream` |
+| `browser` | `browser` | `cdp` | `stream`, `downloads` |
+
+- `serves(capabilities, kind)` is true when `capabilities().kind` is one of the kind's machine kinds and every required
+  group is declared, so a provider that drops a group stops serving the kind; `servingRefusals` says why not in words,
+  and `kindOf` names the setting kind capabilities serve (machine kinds are apart, so at most one).
+- `PROVIDERS` is what Settings offers: each entry's `id`, `label`, `keys` (the serve-side names Settings accepts, each
+  required or not; never a value), `mounts` (the mount kinds its computers take; `[]` cannot mount the run's folder),
+  `metered` (the vendor bills by time), and `capabilities`, the machine kind and groups of each configuration it
+  offers. Its `kinds` are derived from those by `serves`, never written by hand.
+
+  | id | label | kinds | keys (required unless marked) | mounts | metered |
+  | --- | --- | --- | --- | --- | --- |
+  | docker | Docker | sandbox, desktop | none | bind | no |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | none until D6's archil | yes |
+  | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | none until D6's archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | none until D6's archil | yes |
+  | orgo | Orgo | desktop | `ORGO_API_KEY` | none | yes |
+  | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
+  | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
+  | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
+
+- Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
+  holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
+  in each configuration, to its entry's capabilities. orgo, phone-harness, browserbase and kernel are data until their
+  provider file joins the registry; that test then holds each to its file.
+- `testConnection()` (optional on `ComputerProvider`) is Settings' test of a provider's keys: ONE account-level read
+  that never creates a computer, so it never spends. Docker, Daytona and E2B list by the provider's own label; Modal
+  reads its app without making it (an app not made yet is still a connection). It answers `{ detail }` in words, or an
+  error: `unauthorized` for a key the vendor refused, `unreachable` for a vendor not reached in time, else the read's
+  own code; no message carries a key. A full live check (create, then the kind's conformance) is the QA board's.
+  `TestConnection` is the serve side's signature, `(providerId, { keys, signal })`, keys by their serve-side names.
+- A browser computer's connection carries `cdp: { url }`, its CDP target: a secret, never logged and never in a
+  result, a report or an error.
+- A provider passes a setting kind's conformance with `--kind` (see [Conformance](#conformance)).
+
 ## The protocol extension: kind, daemon modes, screen, input, apps, lifetime
 
 The types and the conformance cases for computers past a Linux shell: desktops, Android and iOS phones. This package
@@ -320,7 +368,7 @@ has the types, the cases, the daemon's screen and input on X11 ([The X11 shim](#
 a Docker desktop; a phone provider comes in a later change. Docker declares `linux` with computerd as PID 1 unless it is
 made a desktop, so on a plain Docker computer every new case skips in words.
 
-**Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios"`, and hello repeats it. `os` stays: it names
+**Kind.** `capabilities().kind` is `"linux" | "desktop" | "android" | "ios" | "browser"`, and hello repeats it. `os` stays: it names
 the platform the key table and exec need; kind names the shape the tools need. Only these pairs are valid
 (`kindRefusals(capabilities)` names any other in words, and the case `health.kind-consistent` fails it):
 
@@ -330,6 +378,10 @@ the platform the key table and exec need; kind names the shape the tools need. O
 | `desktop` | linux (windows, macos later) | `pid1`, `child` or `none` | linux's, when daemon is not `none`; and `screen`, `input.pointer`, `input.keys` |
 | `android` | android | `none` | `screen`, `input.touch`; exec and files only when declared |
 | `ios` | ios | `none` | `screen`, `input.touch` |
+| `browser` | linux | `none` | `cdp`: its connection's CDP target |
+
+The groups `cdp`, `stream` and `downloads` are the provider's (`PROVIDER_GROUPS`): a browser's CDP target, a live view of
+the screen (`provider.stream()`), the files a browser saved. A computerd hello never lists them.
 
 **Daemon mode.** `capabilities().daemon` says who answers the methods. `pid1`: computerd init is the computer's main
 process, so its exit ends the computer (Docker). `child`: the vendor's own agent is the main process and starts init at
@@ -427,6 +479,49 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   settled (250 ms after its last key, so clients have read the events bound to it). A `type` needing more keycodes at
   once than the map can give is refused as `limit`, before any key, saying to type it in parts.
 
+## Settings
+
+The library takes options only. Every provider is built by its file's `create(options)` (or its class), and every
+setting, a vendor key included, is an option: no provider reads an environment variable for a setting, and no provider
+file names one. A key is never logged or echoed in an error. Whoever builds a provider owns the names its settings
+live under:
+
+- **serve**, at the cutover, reads its own existing names and passes them in, so an owner's settings keep working:
+
+  | serve's name | becomes |
+  | --- | --- |
+  | `DAYTONA_API_KEY` | Daytona's `apiKey` |
+  | `DAYTONA_API_URL` | Daytona's `apiUrl` (unset: Daytona's own, `https://app.daytona.io/api`) |
+  | `DAYTONA_TARGET` | Daytona's `target` |
+  | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | Modal's `tokenId`, `tokenSecret` |
+  | `AGENTRUN_BOX_APP` | Modal's `app` (serve's default, `agentrun`, when unset) |
+  | `AGENTRUN_DOCKER_IMAGE` | Docker's `image` option, `{ image: <name> }` (unset: the provider's own recipe); `docker.image()` makes it ready and gives the tag a computer's spec names |
+  | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
+
+- **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
+  sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
+  `settingsFromEnv(env)`, and pass them in. Each provider's section lists its names. They never read serve's names or a
+  vendor's bare variable, which on a shared host may hold another account's key.
+
+A default never comes from the environment either: Docker's `daemonCache` defaults to `~/.cache/agentrun-computer`
+whatever `XDG_CACHE_HOME` says, and a caller that keeps its cache elsewhere passes `daemonCache`.
+
+Two lines of the library touch the environment, each a guard against a vendor SDK that reads it on its own, not a
+setting:
+
+- **Modal, `MODAL_SERVER_URL`** (`modalClient` in `src/modal.ts`). The SDK takes its server from `MODAL_SERVER_URL` and
+  has no option for it, so the provider refuses to start while it is set, and sets it to `options.serverUrl` only
+  while it constructs the client, putting back what was there after. `process.env` is the whole process's, so
+  constructions run one at a time: none sees another's server.
+- **E2B, `E2B_SANDBOX_URL`** (`ambientProblem` in `src/e2b.ts`). The SDK sends every sandbox call to it when it is set,
+  and no option clears it, so the provider refuses to start while it is set. It only reads.
+
+`scripts/check-env.mjs` holds the library to this: it reads every file under `src/` outside `src/conformance/`, those
+in its directories (`src/docker/`) included, with TypeScript's parser and fails on any use of `process.env` (dotted,
+bracketed, destructured, aliased, through `globalThis` or an import of `node:process`) but these two, each by its
+variable, its file and its function. `test/providers.test.mjs` runs it, checks the files it read, and runs it on
+fixtures of every evasion it catches.
+
 ## Docker
 
 ```ts
@@ -469,10 +564,13 @@ await docker.release(made.value, "delete");
   `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it ends every
   process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline.
   Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running after its
-  start is removed.
+  start is removed. The lifetime counts from just before the proxy (for an allowlist) and `docker run`, so a Docker host
+  that holds the start eats into it: a computer whose init exited 0 because its deadline passed before `docker run`
+  finished fails `create` as `timeout`, with the lifetime and how long the start took ("its lifetime of 45 s ended
+  before docker run finished (it took 101.2 s)").
 - **A computer binds the provider's own copy of the daemon, never `daemonPath`.** `daemonPath` may have any mode this
   process can read (npm installs it 0700 under `umask 077`). `create` copies it to `computerd-<sha256 of its bytes>`,
-  mode 0755, in `daemonCache` (default `agentrun-computer` under `XDG_CACHE_HOME`, else `~/.cache`), so every computer
+  mode 0755, in `daemonCache` (default `~/.cache/agentrun-computer`; `XDG_CACHE_HOME` is not read), so every computer
   user may run it, and binds that copy. The copy is written to a temporary file and renamed into place, then hashed
   again before each bind. The directory is made 0700 if missing and is never changed: a link, another user's
   directory, a mode other than 0700, or a directory above it another user may write is refused in words. The drift
@@ -626,7 +724,7 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
   `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
   `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
-  `MOUNT` beside its `ENV`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
+  `MOUNT` beside its `create`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
   provider binds a local folder from the registry (`providerModule(id)`) without building one.
 - `checkMount(mount, declared)` (`src/mount.ts`) is the one rule every provider's `check` runs, with no vendor call: a
   kind the provider does not declare is refused in words (`this provider does not take a mount of kind archil; it takes
@@ -689,8 +787,9 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
 - **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
-  `new DockerProvider(...)` or to `fromEnv(env, { image: { image: "..." } })`; `fromEnv` reads no image name from the
-  environment, and a `COMPUTER_DOCKER_IMAGE` there is ignored. serve keeps its own setting, `AGENTRUN_DOCKER_IMAGE`,
+  `new DockerProvider(...)` or to `create({ image: { image: "..." } })`. The library reads no environment (see
+  [Settings](#settings)), and Docker's conformance module reads no image name either: a `COMPUTER_DOCKER_IMAGE` in its
+  environment is ignored. serve keeps its own setting, `AGENTRUN_DOCKER_IMAGE`,
   and at the cutover passes it in as the `image` option, so there is one name and the owner's setting keeps working.
 - **One build per process.** Concurrent callers share one flight per docker CLI and recipe (or image): the first starts
   it, the rest wait on it and ask Docker nothing. A flight is forgotten once it settles, so the next call inspects
@@ -1064,24 +1163,31 @@ Nothing here has run against Modal. Once the lead OKs a key by name, `AGENTRUN_C
 Core `provider.stop` expects Modal's refusal (it declares no stop), and the Full `provider.janitor` case is skipped
 (`lifetime:janitor`, `release:stop`).
 
-`fromEnv(env, options?)` in `dist/modal.js` builds a real client from `COMPUTER_MODAL_TOKEN_ID` and
-`COMPUTER_MODAL_TOKEN_SECRET`. It passes that pair to `ModalClient` explicitly, and never uses `MODAL_TOKEN_ID` or
-`MODAL_TOKEN_SECRET`: a host may hold a production token under those names, and with only them set it refuses, naming
-the `COMPUTER_MODAL_` pair. The key goes only to `COMPUTER_MODAL_SERVER_URL`, else the SDK's default
-`https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL` is set, and
-sets it to its choice only while it constructs the client, so neither `MODAL_PROFILE` nor a profile in
-`MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. It also reads `COMPUTER_MODAL_APP`, and, if set,
-`COMPUTER_MODAL_DAEMON_IMAGE`; without it the daemon is uploaded from `dist/computerd-linux-amd64`, so a run publishes
-nothing. The conformance module, `dist/conformance/modal.js` (`--provider modal`), builds its provider through
-`fromEnv`, and only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before anything else. Its
+`create(options)` in `dist/modal.js` builds a real client from `options.tokenId` and `options.tokenSecret`, and the
+provider in `options.app` (required: without it, it refuses in words naming the option, before any client). It reads no
+setting from the environment (see [Settings](#settings)) and passes the token to `ModalClient` explicitly, so a
+`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl`, else the
+SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
+is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
+each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. With
+`options.daemonImage` the daemon is copied from that image (given `options.daemonPath` too, the image wins and nothing
+is uploaded); without it, it is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run
+publishes nothing.
+
+The conformance module, `dist/conformance/modal.js` (`--provider modal`), reads the run's settings from its own names
+(`settingsFromEnv`) and passes each to `create()` as its option: `COMPUTER_MODAL_TOKEN_ID` and
+`COMPUTER_MODAL_TOKEN_SECRET` (never `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under
+those names, and with only them set it refuses, naming the `COMPUTER_MODAL_` pair), `COMPUTER_MODAL_APP`, and, if set,
+`COMPUTER_MODAL_SERVER_URL` and `COMPUTER_MODAL_DAEMON_IMAGE`. It builds its provider only with
+`AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before anything else. Its
 `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift` into a
 temporary directory, so Go must be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes: Modal's timeout
 is its lifetime, and a longer one is refused in words. The modal package is the host's; it is imported only when a
 provider is made.
 
 A live run is wrapped in the sweep, `dist/conformance/modal-sweep.js`. It reads only `COMPUTER_MODAL_TOKEN_ID`,
-`COMPUTER_MODAL_TOKEN_SECRET`, `COMPUTER_MODAL_APP` and `COMPUTER_MODAL_SERVER_URL`, and makes its client the same
-pinned way (an ambient `MODAL_SERVER_URL` is refused; it needs no live switch, since it makes nothing):
+`COMPUTER_MODAL_TOKEN_SECRET`, `COMPUTER_MODAL_APP` and `COMPUTER_MODAL_SERVER_URL`, through the conformance module's
+`settingsFromEnv`, and makes its client the same pinned way (an ambient `MODAL_SERVER_URL` is refused; it needs no live switch, since it makes nothing):
 
 ```sh
 node packages/computer/dist/conformance/modal-sweep.js --before /tmp/modal-before.json
@@ -1288,14 +1394,18 @@ capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no g
 
 ### Conformance on Daytona
 
-`fromEnv(env, options?)` in `dist/daytona.js` builds the provider from these variables, by name, read when it runs:
-`COMPUTER_DAYTONA_API_KEY` (required), `COMPUTER_DAYTONA_API_URL`, `COMPUTER_DAYTONA_DAEMON`, `COMPUTER_DAYTONA_ARCH`
-(`amd64` or `arm64`), `COMPUTER_DAYTONA_TARGET`, `COMPUTER_DAYTONA_CLASS` (`container` or `linux-vm`) and
-`COMPUTER_DAYTONA_USER`. The conformance module, `dist/conformance/daytona.js` (`--provider daytona`), exports
-`createProvider()` and `createDriftedProvider()` (which builds a daemon of another version with Go) over the same
-names, and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`, Daytona's default snapshot). Neither reads
-`DAYTONA_API_KEY` or `DAYTONA_API_URL`, not even as a fallback: on a host that runs other Daytona work they may hold
-another organization's key.
+`create(options)` in `dist/daytona.js` builds the provider from its options alone and reads no environment (see
+[Settings](#settings)): `apiKey` (required), `apiUrl` (default `https://app.daytona.io/api`), `target` (default the
+organization's), `daemonPath`, `arch` (`amd64` or `arm64`), `sandboxClass` (`container` or `linux-vm`) and `daemonUser`.
+The conformance module, `dist/conformance/daytona.js` (`--provider daytona`), reads the run's settings by these names
+when it runs (`settingsFromEnv`) and passes each to `create()` as the option in brackets: `COMPUTER_DAYTONA_API_KEY`
+(`apiKey`, required), `COMPUTER_DAYTONA_API_URL` (`apiUrl`), `COMPUTER_DAYTONA_DAEMON` (`daemonPath`),
+`COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`) and
+`COMPUTER_DAYTONA_USER` (`daemonUser`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
+daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
+Daytona's default snapshot). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
+fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
+which serve passes in itself.
 
 Every sandbox of a run has a bounded life besides its TTL: the module always sets `autoStopMinutes: 30` and
 `autoDeleteMinutes: 0`, whatever the environment says. A stop therefore deletes, and the provider declares it
@@ -1310,7 +1420,8 @@ npm run conformance -w @parcha/agentrun-computer -- --provider daytona [--image 
 
 ### The sweep around a live run
 
-`dist/conformance/daytona-sweep.js` reads the same `COMPUTER_DAYTONA_API_KEY` and `COMPUTER_DAYTONA_API_URL`:
+`dist/conformance/daytona-sweep.js` reads the same `COMPUTER_DAYTONA_API_KEY` and `COMPUTER_DAYTONA_API_URL`, through
+the conformance module:
 
 ```sh
 node packages/computer/dist/conformance/daytona-sweep.js --before /tmp/daytona-before.json   # before the run
@@ -1406,16 +1517,16 @@ repository's main; the docs were read on 2026-11-05.
 ## E2B
 
 ```ts
-import { providerFromEnv } from "@parcha/agentrun-computer";
+import { providerFor } from "@parcha/agentrun-computer";
 
-// COMPUTER_E2B_API_KEY, and the host's own e2b package (npm e2b 2.63.0).
-const e2b = await providerFromEnv("e2b");
+// The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
+const e2b = await providerFor("e2b", { apiKey });
 const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" });
 ```
 
 An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2B Desktop's (Ubuntu 22.04 with Xvfb,
 Xfce, x11vnc and noVNC, e2b-dev/desktop `template/template.py:3-65`). It is kind `desktop`: computerd starts the X
-server itself, as on a Docker desktop, and its X11 shim drives it. With `COMPUTER_E2B_KIND=linux` it is kind `linux`
+server itself, as on a Docker desktop, and its X11 shim drives it. With `kind: "linux"` it is kind `linux`
 on any template, `base` by default, with no display: the same provider, minus the X server, so it costs nothing to
 offer. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, of which `src/e2b.ts` names
 only the slice it calls (`E2BSandboxClass`) and imports nothing at load; the package is the host's to install, as
@@ -1425,15 +1536,17 @@ calls.
 
 ### The key
 
-`fromEnv` reads the key from `COMPUTER_E2B_API_KEY` and nowhere else; without it, it refuses in words that name it and
-never `E2B_API_KEY`, whose value may be another team's on a shared host. The SDK reads `E2B_API_KEY`, `E2B_DOMAIN`,
-`E2B_API_URL` and `E2B_DEBUG` from `process.env` whenever it is not given them (`index.mjs:1140-1152`,
-`1177-1191`), so every call is given the key, the domain (`COMPUTER_E2B_DOMAIN`, default `e2b.app`), the API URL
-`https://api.<domain>` and `debug: false` explicitly: with debug on, the SDK fakes a create and skips a kill
-(`index.mjs:5402`, `6021-6024`). The SDK also takes `E2B_SANDBOX_URL` when it is given no sandbox URL, and no option
-clears it (`index.mjs:1152`, `1183-1185`): it would send every call into a sandbox, the upload and the bridge with it,
-there. So the provider refuses to start while it is set. A unit test hands the provider's options to the real SDK's
-`ConnectionConfig` with all four ambient variables set, and reads back the provider's own.
+`create(options)` takes the key as `options.apiKey` and nowhere else; without it, it refuses in words that name the
+option, never the key. It reads no setting from the environment (see [Settings](#settings)): serve passes its own
+`E2B_API_KEY`, and the conformance module the `COMPUTER_E2B_API_KEY` it reads, never `E2B_API_KEY`, whose value may be
+another team's on a shared host. The SDK reads `E2B_API_KEY`, `E2B_DOMAIN`, `E2B_API_URL` and `E2B_DEBUG` from
+`process.env` whenever it is not given them (`index.mjs:1140-1152`, `1177-1191`), so every call is given the key, the
+domain (`options.domain`, default `e2b.app`), the API URL `https://api.<domain>` and `debug: false` explicitly: with
+debug on, the SDK fakes a create and skips a kill (`index.mjs:5402`, `6021-6024`). The SDK also takes
+`E2B_SANDBOX_URL` when it is given no sandbox URL, and no option clears it (`index.mjs:1152`, `1183-1185`): it would
+send every call into a sandbox, the upload and the bridge with it, there. So the provider refuses to start while it is
+set in `process.env`: a read, and the library's one touch of E2B's environment. A unit test hands the provider's options
+to the real SDK's `ConnectionConfig` with all four ambient variables set, and reads back the provider's own.
 
 ### How the daemon gets in, and how it is reached
 
@@ -1477,14 +1590,14 @@ would hold an empty process table).
 
 | Capability | Declared | Why |
 | --- | --- | --- |
-| `kind` | `desktop` (default) or `linux` | `COMPUTER_E2B_KIND`; a desktop's X server is computerd's own |
+| `kind` | `desktop` (default) or `linux` | `options.kind`; a desktop's X server is computerd's own |
 | `lifetime` | `vendor` | E2B kills the sandbox at its timeout, set to the lifetime; init ends every process at the deadline too |
 | `network` | `none`, `open` | `allowInternetAccess`, read back by `getInfo` with `network.denyOut` and `allowPublicTraffic`; `open` only with `publicStream` |
 | `networkReadBack` | `true` | `getInfo` reports `allowInternetAccess` and `network` (`index.mjs:5432-5458`) |
 | `isolation` | `microvm` | Firecracker |
 | `daemon` | `child` | envd is the first process; init is a background command it runs |
 | `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys` | checked against hello on every connect |
-| `maxLifetimeMs` | 1 h, up to 24 h | Hobby's cap by default; `COMPUTER_E2B_MAX_LIFETIME_MS` up to Pro's 24 h (`index.d.mts:10169-10172`) |
+| `maxLifetimeMs` | 1 h, up to 24 h | Hobby's cap by default; `options.maxLifetimeMs` up to Pro's 24 h (`index.d.mts:10169-10172`) |
 | `release` | `delete` | `Sandbox.kill`; E2B's pause keeps a sandbox, but no release maps to it here |
 
 ### Network
@@ -1553,7 +1666,7 @@ to the cap, once it is more than 2 s past where create set it (its start plus th
 to the second E2B rounds to); extend never leaves E2B's end inside those 2 s, moving it at least 3 s past create's end,
 so an extend however short reads back.
 
-`stream()` exists only on a provider made with `publicStream` (`COMPUTER_E2B_PUBLIC_STREAM=1`): a private sandbox's
+`stream()` exists only on a provider made with `publicStream: true` (in a conformance run, `COMPUTER_E2B_PUBLIC_STREAM=1`): a private sandbox's
 URL needs the `e2b-traffic-access-token` header, which a browser cannot send (E2B docs, network/restrict-public-access),
 so a stream URL a person can open needs public traffic, and that opens every port, so such a provider's computers are
 network `open` only, and `check()` refuses none in words. `stream()` starts x11vnc on the display, listening on
@@ -1607,7 +1720,8 @@ AGENTRUN_COMPUTER_LIVE_E2B=1 COMPUTER_E2B_API_KEY=... npm run conformance -w @pa
 ```
 
 The conformance module, `dist/conformance/e2b.js`, checks `AGENTRUN_COMPUTER_LIVE_E2B=1` before it reads anything
-else, then builds the provider through `fromEnv` with every computer capped at 30 minutes, Hobby's plan for conformance
+else, then reads the run's settings (`settingsFromEnv`, below) and builds the provider through `create()` with every
+computer capped at 30 minutes, Hobby's plan for conformance
 (Hobby caps a sandbox at 1 h; a run that needs more moves to Pro). `conformanceImage()` is `COMPUTER_E2B_TEMPLATE`, else
 `desktop` (`base` for kind linux), and `createDriftedProvider()` uploads a daemon built with Go as `<version>-drift`.
 `test/e2b/conformance.e2b.test.mjs` runs the suite with `computerd-fixture` built for linux/amd64, and skips unless the
@@ -1617,10 +1731,15 @@ switch and `COMPUTER_E2B_API_KEY` are both set; `E2B_API_KEY` never counts.
 <file>` kills every one not in the file, reads each back until `getInfo` no longer finds it and the listing no longer
 shows it, up to 60 s each, and prints `{"swept":n,"gone":m,"stillThere":[ids]}`. Exit 0 when every swept sandbox is
 gone, 1 when one is still there, 2 on a usage error, an unreadable before file, no key, or a refused listing (nothing is
-killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the provider does, and needs no live switch.
+killed then). It reads `COMPUTER_E2B_API_KEY` and `COMPUTER_E2B_DOMAIN` as the conformance module does, and needs no
+live switch.
 
-`fromEnv` reads `COMPUTER_E2B_API_KEY` (required), `COMPUTER_E2B_DOMAIN`, `COMPUTER_E2B_DAEMON`, `COMPUTER_E2B_KIND`,
-`COMPUTER_E2B_MAX_LIFETIME_MS`, `COMPUTER_E2B_USER` and `COMPUTER_E2B_PUBLIC_STREAM`.
+The conformance module's `settingsFromEnv` reads these names, and the sweep and `e2b-diagnose.js` read them through it,
+each passed to `create()` as the option in brackets: `COMPUTER_E2B_API_KEY` (`apiKey`, required),
+`COMPUTER_E2B_DOMAIN` (`domain`), `COMPUTER_E2B_DAEMON` (`daemonPath`), `COMPUTER_E2B_KIND` (`kind`),
+`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms), `COMPUTER_E2B_USER` (`daemonUser`) and
+`COMPUTER_E2B_PUBLIC_STREAM` (`publicStream`, `1` or unset). It refuses while `E2B_SANDBOX_URL` is set in the
+environment it reads, as the provider does in `process.env`.
 
 ### What waits for a live run
 
@@ -1689,8 +1808,20 @@ not run, the text report lists them on a `core not run` line, and the verdict re
 not run` (on Docker, `--only health,provider`), never PASS. A partial run exits 3, so a script that checks for 0 never takes a subset for a Core pass. An
 `--only` that names every Core case is a whole run, and can pass.
 
-What a module given by path implements: either a provider file's `fromEnv()` (see
-[Adding a computer](#adding-a-computer)), run with no drifted provider, or a conformance module's:
+`--kind <kind>` (`kind` in `runConformance`'s options, never with `--only`) runs a kind's cases, `kindCases(kind)`:
+every case whose protocol groups the kind requires or allows (see [Kinds](#kinds-the-computer-an-agent-is-given)),
+those that need no group (health, provider, drift) among them. The report carries `kindVerdict` (`{ kind, verdict,
+reasons }`), the text report ends on `kind <kind> PASS` or `kind <kind> FAIL: <why>`, and the CLI exits on it: 0 when
+the provider passes the kind, 1 when it does not. A provider passes a kind only when it serves it (by its
+capabilities), no case of the run failed (a declared optional group that fails would hand a loop a broken tool),
+every required group has at least one passing case and none skipped but for an optional group the computer does not
+declare, and the run left nothing behind. `none` is no computer, and `--kind` refuses it in words; `browser` runs, and
+fails `no case of cdp passed` until the suite has CDP cases. `kindCases` and `kindVerdict` are exported, so the serve
+side reads the same table.
+
+What a module given by path implements: either a provider file's `create(options)` (see
+[Adding a computer](#adding-a-computer)), given the CLI's provider options but the env and run with no drifted
+provider, or a conformance module's:
 
 - `export function createProvider()` returning a `ComputerProvider` (sync or async): `id`, `version`,
   `capabilities()`, `check`, `create`, `attach`, `list`, `network`, `connect` and `release`, as in `src/provider.ts`.
@@ -1813,24 +1944,29 @@ export const providers = {
 } satisfies Record<string, () => Promise<ProviderModule>>;
 ```
 
-Each import is lazy: loading the registry loads no provider and no vendor SDK. `providerFromEnv(id, env?)` builds a
-provider by id and refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`,
-exports what a `ProviderModule` is:
+Each import is lazy: loading the registry loads no provider and no vendor SDK. `providerFor(id, options)` builds a
+provider by id from its options and refuses an id it does not hold, naming the ones it does. The provider file,
+`src/<vendor>.ts`, exports what a `ProviderModule` is:
 
 - the provider class, which implements `ComputerProvider` and reports the registry id as its `id`;
-- `ENV`, every variable it reads by role, each named `COMPUTER_<ID>_*`: never a vendor's bare variable such as
-  `DAYTONA_API_KEY`, which on a shared host may hold another account's key, not even as a fallback;
-- `fromEnv(env = process.env, options?)`, the provider built from those variables alone, the key read only then, and
-  refused in words when one is missing or wrong;
-- optionally `conformance`, `() => import("./conformance/<vendor>.js")`: a module that bounds a conformance run's
-  computers and makes the drifted provider (`createProvider()`, `createDriftedProvider()`, `conformanceImage()`,
-  `conformanceNotes`), building them through `fromEnv`. Without it the CLI runs `fromEnv`'s provider, and the drift
-  case skips, so Core does not pass.
+- `MOUNT`, the mount kinds its computers take;
+- `create(options)`, the provider built from its options alone, its key included, and refused in words when one is
+  missing or wrong, never echoing a key. It reads no environment (see [Settings](#settings)), and exports no names of
+  variables;
+- optionally `conformance`, `() => import("./conformance/<vendor>.js")`: a module that reads the run's settings from
+  the environment by its own `COMPUTER_<ID>_*` names (`settingsFromEnv(env)`, with `ENV` listing every name it
+  reads; never a vendor's bare variable such as
+  `DAYTONA_API_KEY`, which on a shared host may hold another account's key, not even as a fallback), bounds a
+  conformance run's computers and makes the drifted provider (`createProvider()`, `createDriftedProvider()`,
+  `conformanceImage()`, `conformanceNotes`), building them through `create()`. Without it the CLI runs `create()`'s
+  provider with the CLI's options, and the drift case skips, so Core does not pass.
 
-Docker reads `COMPUTER_DOCKER_DAEMON` (default this package's daemon for Docker's architecture, from `docker version`)
-and `COMPUTER_DOCKER_USER`; its image is an option only (see "The image"); Modal, Daytona and E2B read the names in their sections. `test/providers.test.mjs` holds every
-provider file to its registry line and its line to this shape, and checks that the CLI's usage names every id. Run the
-suite on the new computer, by path before its line exists and by id after:
+Docker's conformance module reads `COMPUTER_DOCKER_DAEMON` (`daemonPath`; unset, `create()` takes this package's daemon
+for Docker's architecture, from `docker version`), `COMPUTER_DOCKER_DAEMON_CACHE` (`daemonCache`) and
+`COMPUTER_DOCKER_USER` (`user`); the provider's `image` is an option only, which no module reads from the environment
+(see "The image"). Modal's, Daytona's and E2B's read the names in their sections. `test/providers.test.mjs` holds every
+provider file to its registry line and its line to this shape, checks that the CLI's usage names every id, and runs
+`scripts/check-env.mjs` on `src/`. Run the suite on the new computer, by path before its line exists and by id after:
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/fly.js

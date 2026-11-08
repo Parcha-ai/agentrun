@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import {
@@ -27,6 +28,7 @@ import {
 	type Refusal,
 } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { listTested } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
 
 /** The longest each kind of call may take, and the pauses between polls and retries. */
@@ -142,59 +144,26 @@ interface CallInit {
 	anyStatus?: boolean;
 }
 
-/**
- * The environment fromEnv reads, by name. Every name is COMPUTER_DAYTONA_*: a bare DAYTONA_API_KEY may hold another
- * organization's key on a host that runs other Daytona work, so it is never read, not even as a fallback.
- */
-export const ENV = {
-	/** Required: the Daytona API key. */
-	key: "COMPUTER_DAYTONA_API_KEY",
-	/** Default https://app.daytona.io/api. */
-	url: "COMPUTER_DAYTONA_API_URL",
-	/** Default this package's dist/computerd-linux-<arch>. */
-	daemon: "COMPUTER_DAYTONA_DAEMON",
-	/** amd64 (default) or arm64: the sandboxes' architecture. */
-	arch: "COMPUTER_DAYTONA_ARCH",
-	/** The Daytona target (region); default the organization's. */
-	target: "COMPUTER_DAYTONA_TARGET",
-	/** container (default) or linux-vm: the class the snapshot makes. */
-	sandboxClass: "COMPUTER_DAYTONA_CLASS",
-	/** uid:gid the daemon runs as; default 1000:1000. */
-	user: "COMPUTER_DAYTONA_USER",
-} as const;
-
 /** The mount kinds a Daytona computer takes: none yet (capabilities() declares no mount); the Archil mount comes with D6. */
 export const MOUNT: readonly MountKind[] = [];
 
-/** What fromEnv takes besides the environment: any option but the key, which comes from COMPUTER_DAYTONA_API_KEY alone. */
-export type DaytonaFromEnvOptions = Partial<Omit<DaytonaProviderOptions, "apiKey">>;
+/** The machine kind and groups of its one configuration: a linux computer. */
+export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
+
+/** What create() takes: the provider's options, the daemon optional (default this package's build for the arch). */
+export type DaytonaCreateOptions = Omit<DaytonaProviderOptions, "daemonPath"> & { daemonPath?: string };
 
 /**
- * The provider's options from COMPUTER_DAYTONA_* alone, options winning over the environment; throws in words when a
- * setting is missing or wrong. The key is read here, and only here.
+ * A DaytonaProvider from its options alone; it reads no environment, so the key, the API URL (default Daytona's own) and
+ * the target are the caller's: serve passes its DAYTONA_API_KEY, DAYTONA_API_URL and DAYTONA_TARGET, the conformance
+ * module the settings it reads. Throws in words when an option is missing or wrong, never echoing the key.
  */
-export function optionsFromEnv(env: Record<string, string | undefined> = process.env, options: DaytonaFromEnvOptions = {}): DaytonaProviderOptions {
-	const apiKey = env[ENV.key];
-	if (apiKey === undefined || apiKey === "") throw new Error(`set ${ENV.key} to a Daytona API key: the Daytona provider reads it there and nowhere else, never from DAYTONA_API_KEY`);
-	const arch = options.arch ?? (env[ENV.arch] || "amd64");
-	if (arch !== "amd64" && arch !== "arm64") throw new Error(`${ENV.arch} is amd64 or arm64, not ${arch}`);
-	const sandboxClass = options.sandboxClass ?? (env[ENV.sandboxClass] || "container");
-	if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`${ENV.sandboxClass} is container or linux-vm, not ${sandboxClass}`);
-	return {
-		daemonPath: env[ENV.daemon] || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)),
-		...(env[ENV.url] ? { apiUrl: env[ENV.url] } : {}),
-		...(env[ENV.target] ? { target: env[ENV.target] } : {}),
-		...(env[ENV.user] ? { daemonUser: env[ENV.user] } : {}),
-		...options,
-		apiKey,
-		arch,
-		sandboxClass,
-	};
-}
-
-/** A DaytonaProvider from COMPUTER_DAYTONA_* alone (see optionsFromEnv). */
-export function fromEnv(env: Record<string, string | undefined> = process.env, options: DaytonaFromEnvOptions = {}): DaytonaProvider {
-	return new DaytonaProvider(optionsFromEnv(env, options));
+export function create(options: DaytonaCreateOptions): DaytonaProvider {
+	const { apiKey, arch = "amd64", sandboxClass = "container", daemonPath } = options ?? ({} as DaytonaCreateOptions);
+	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
+	if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);
+	if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`options.sandboxClass is container or linux-vm, not ${String(sandboxClass)}`);
+	return new DaytonaProvider({ ...options, apiKey, arch, sandboxClass, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
 }
 
 /** The conformance CLI's module for Daytona: the run's idle stop and auto-delete, its snapshot, notes and drifted twin. */
@@ -1112,6 +1081,11 @@ export class DaytonaProvider implements ComputerProvider {
 		if (!answer.ok) return answer;
 		const state = (parseJson(answer.value.bytes) as { state?: unknown } | null)?.state;
 		return ok({ status: answer.value.status, ...(typeof state === "string" ? { state } : {}) });
+	}
+
+	/** Settings' test: a list by the provider's own label, one read of the account's sandboxes, which makes nothing. */
+	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
+		return listTested("Daytona", await this.list({}, context));
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

@@ -365,3 +365,34 @@ test("a viewer already watching is cut off within the re-check when another proc
   const made = await call(w.server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin: w.origin }, body: { password: PASSWORD } });
   await takenAgain(w, handed, cookieOf(made));
 });
+
+test("a run's port that resets the connection after the viewer's WebSocket opened: the viewer's socket closes with no HTTP line written into the WebSocket stream", async (t) => {
+  const net = await import("node:net");
+  const http = await import("node:http");
+  const { proxyLiveUpgrade } = await import("../dist/browser-live.js");
+  // The run's port: it takes the upgrade (101), then cuts the connection with a reset, as a crashed process would.
+  const run = net.createServer((sock) => {
+    sock.once("data", () => {
+      sock.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: x\r\n\r\n");
+      setTimeout(() => sock.resetAndDestroy(), 100);
+    });
+  });
+  await new Promise((resolve) => run.listen(0, "127.0.0.1", resolve));
+  // The server's side: its upgrade handed to proxyLiveUpgrade, as server.ts does.
+  const server = http.createServer();
+  server.on("upgrade", (req, socket, head) => proxyLiveUpgrade(req, socket, head, { port: run.address().port }, "/v/AbCdEfGhIjKlMnOpQrStUv/ws"));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { run.close(); server.close(); });
+  const client = net.connect(server.address().port, "127.0.0.1");
+  let got = Buffer.alloc(0);
+  client.on("data", (chunk) => { got = Buffer.concat([got, chunk]); });
+  client.on("error", () => {});
+  await new Promise((resolve) => client.once("connect", resolve));
+  client.write("GET /v2/runs/x/browser/live/v/AbCdEfGhIjKlMnOpQrStUv/ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+  await new Promise((resolve) => { client.once("close", resolve); setTimeout(resolve, 3000); });
+  const text = got.toString("latin1");
+  assert.match(text, /^HTTP\/1\.1 101 /, "the upgrade went through");
+  const after = text.slice(text.indexOf("\r\n\r\n") + 4);
+  assert.equal(after, "", `nothing after the 101: the WebSocket stream is never sent an HTTP line (${JSON.stringify(after)})`);
+  assert.equal(client.destroyed || client.readyState === "closed", true, "the viewer's socket closed");
+});
