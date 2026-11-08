@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
-import type { Claim, Journal, Loop, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import type { Claim, Command, Journal, Loop, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 
 /** A commit by a loop whose claim this runner gave up: refused before it reaches the store. */
@@ -155,40 +155,50 @@ export function startRunner(options: RunnerOptions): Runner {
     held.loop.stop(reason).catch((error: unknown) => emit({ type: "error", runId: held.claim.runId, step: "stop", message: message(error) }));
   };
 
-  const renew = async (held: Held) => {
-    if (held.renewing || held.fence.lost || held.ending || killed) return;
-    held.renewing = true;
+  /** Every held claim renewed in one transaction (store.renewMany), never one per run: a claim answered Fenced is lost,
+   *  the others move on. Any other failure (a busy store) is tried at the next renew; each run's deadline stops its loop
+   *  if none lands. */
+  const renewAll = async () => {
+    if (killed) return;
+    const due = [...runs.values()].filter((held) => !held.renewing && !held.fence.lost && !held.ending);
+    if (due.length === 0) return;
+    for (const held of due) held.renewing = true;
     const sentAt = Date.now();
     try {
-      const renewed = await store.renew(held.claim, { leaseMs });
-      if (held.fence.lost || held.ending || killed) return;
-      held.claim = renewed;
-      armDeadline(held, sentAt + leaseMs - stopMarginMs);
+      const results = await store.renewMany(due.map((held) => held.claim), { leaseMs });
+      results.forEach((result, i) => {
+        const held = due[i]!;
+        if (held.fence.lost || held.ending || killed) return;
+        if (isFenced(result)) loseClaim(held, "fenced");
+        else {
+          held.claim = result as Claim;
+          armDeadline(held, sentAt + leaseMs - stopMarginMs);
+        }
+      });
     } catch (error) {
-      if (isFenced(error)) loseClaim(held, "fenced");
-      // Any other failure (a busy store) is tried at the next renew; the deadline stops the loop if none lands.
-      else emit({ type: "error", runId: held.claim.runId, step: "renew", message: message(error) });
+      for (const held of due) emit({ type: "error", runId: held.claim.runId, step: "renew", message: message(error) });
     } finally {
-      held.renewing = false;
+      for (const held of due) held.renewing = false;
     }
   };
-  const renewTimer = setInterval(() => {
-    for (const held of runs.values()) void renew(held);
-  }, renewEveryMs);
+  const renewTimer = setInterval(() => void renewAll(), renewEveryMs);
 
   /** Hands the run's new command rows to its loop: stop as stop(), the other kinds as command(); refusals are taken. The
    *  run's end waits for it (finish), so a refusal of a command the loop had when it ended is written before the release;
-   *  once the end has sealed the claim, an answer still to come is dropped: nothing written, nothing said. */
-  const deliver = (held: Held): Promise<void> => {
+   *  once the end has sealed the claim, an answer still to come is dropped: nothing written, nothing said. `given`: the
+   *  rows the runner's one read of every run found for it (deliverAll), else it reads its own. */
+  const deliver = (held: Held, given?: readonly Command[]): Promise<void> => {
     if (held.delivering || held.stopping || held.ending || held.fence.lost || killed) return Promise.resolve();
     held.delivering = true;
     // Declared before it is assigned: its own finally reads it.
     let delivery: Promise<void> | undefined;
     delivery = (async () => {
       try {
-        const rows = await store.commands(held.claim.runId, held.cursor);
+        const rows = given ?? (await store.commands(held.claim.runId, held.cursor));
         for (const row of rows) {
           if (held.stopping || held.ending || held.fence.lost || killed) break;
+          // A row another delivery handed on since the runner's read is not handed on again.
+          if (row.id <= held.cursor) continue;
           held.cursor = Math.max(held.cursor, row.id);
           if (row.takenAt !== null) continue;
           if (row.kind === "stop") {
@@ -214,10 +224,22 @@ export function startRunner(options: RunnerOptions): Runner {
     held.inFlight = delivery;
     return delivery;
   };
+  /** One read of every held run's new command rows a tick (store.commandsOf), never one per run, each run's then handed
+   *  to its loop; the next tick is set once this read is done. */
   const deliverAll = () => {
     if (closed || killed) return;
-    for (const held of runs.values()) void deliver(held);
-    commandTimer = setTimeout(deliverAll, commandPollMs);
+    void (async () => {
+      const due = [...runs.values()].filter((held) => !(held.delivering || held.stopping || held.ending || held.fence.lost));
+      if (due.length === 0) return;
+      try {
+        const rows = await store.commandsOf(due.map((held) => ({ runId: held.claim.runId, after: held.cursor })));
+        for (const held of due) void deliver(held, rows.get(held.claim.runId) ?? []);
+      } catch (error) {
+        for (const held of due) emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
+      }
+    })().finally(() => {
+      if (!closed && !killed) commandTimer = setTimeout(deliverAll, commandPollMs);
+    });
   };
 
   /** After start() settles: a final run's leftover rows refused, then one flush, then the release. A lost claim writes
