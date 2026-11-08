@@ -81,7 +81,8 @@ test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the buil
   const dir = await scratch(t);
   const module = join(dir, "table.mjs");
   writeFileSync(module, "export const entries = (builtins) => ({ codex: { runs: () => false, refusal: async () => ({ reason: `stood in for ${builtins.codex.facts.label}` }) } });\n");
-  const env = { [HARNESS_TABLE_ENV]: module };
+  // Under a test runner, as a test's server and runs are (harnessTable reads NODE_TEST_CONTEXT).
+  const env = { [HARNESS_TABLE_ENV]: module, NODE_TEST_CONTEXT: "child-v8" };
   assert.equal(harnessRuns(env, "openai/gpt-6-sol", "codex"), false, "the module's entry decides");
   assert.equal(harnessRuns({}, "openai/gpt-6-sol", "codex"), true, "the built-in one, without it");
   assert.deepEqual(await harnessOf(env, "codex").refusal(env, undefined, { atStart: false }), { reason: "stood in for Codex" });
@@ -90,7 +91,7 @@ test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the buil
   assert.equal(harnessTable(env), harnessTable({ ...env }), "loaded once per module");
   const missing = join(dir, "none.mjs");
   writeFileSync(missing, "export const script = () => [];\n");
-  assert.throws(() => harnessTable({ [HARNESS_TABLE_ENV]: missing }), /exports no entries\(builtins\)/);
+  assert.throws(() => harnessTable({ [HARNESS_TABLE_ENV]: missing, NODE_TEST_CONTEXT: "child-v8" }), /exports no entries\(builtins\)/);
   assert.deepEqual(Object.keys(withoutFaux({ [HARNESS_TABLE_ENV]: module, KEEP: "1" })), ["KEEP"], "an operator's environment never loads a table module");
 });
 

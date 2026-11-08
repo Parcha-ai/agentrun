@@ -18,8 +18,9 @@ for (const [why, base] of [["plain http to another host", "http://gateway.exampl
     withEnv(t, { AGENT_MODEL_BASE_URL: base, AGENT_MODEL: "team/model", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,1" }, NAMES);
     const { api, data } = await serve(t, { faux: undefined });
     const { models } = (await api("GET", "/capabilities")).body;
-    assert.equal(models.ready, false, `the model is not ready: ${JSON.stringify(models)}`);
-    assert.ok(JSON.stringify(models).includes(REFUSAL), `capabilities say why, in gatewayBase's words: ${JSON.stringify(models)}`);
+    // As an Anthropic model under a refused ANTHROPIC_BASE_URL reads (pi-anthropic-gateway.test.mjs): not ready, and what
+    // would make it so a setting of this host (capabilities carry no words; the save and the run below give them).
+    assert.deepEqual([models.ready, models.needs], [false, "key"], `the model is not ready: ${JSON.stringify(models)}`);
     const made = await api("POST", "/agents", agent("pi-gateway-refused"));
     assert.equal(made.status, 201, JSON.stringify(made.body));
     assert.ok(JSON.stringify(made.body.warnings ?? []).includes(REFUSAL), `the save warns, in gatewayBase's words: ${JSON.stringify(made.body)}`);
