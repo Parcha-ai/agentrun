@@ -36,8 +36,15 @@ describe("the waiting row's chip, by what the run waits on", () => {
     act(() => root!.render(createElement(Timeline, { rows, live: false, ...(waitingOn ? { waitingOn } : {}) } as never)));
     return [...host.querySelectorAll("li")].map((li) => (li.textContent ?? "").match(/Paused at cap|Approval required|Input required/)?.[0] ?? null);
   };
-  it("a cap pause reads Paused at cap", () => {
-    expect(chips([waiting("w1", 3, WAITING)], "budget")).toEqual(["Paused at cap"]);
+  it("a cap pause reads Paused at cap, on the waiting row after the server's pause row", () => {
+    expect(chips([pausedRow(), waiting("e1:paused", 3, WAITING)], "budget")).toEqual([null, "Paused at cap"]);
+  });
+  it("while the pages still arrive, an answered question before the pause row is loaded keeps its own chip", () => {
+    // The run is paused at its cap (pending budget), but the page holding the pause row and its waiting row hasn't come
+    // yet: the newest waiting row so far is an earlier question, answered, never the cap's.
+    expect(chips([waiting("w0", 1, "Asked you: which?")], "budget")).toEqual(["Input required"]);
+    // Once they come, the cap's waiting row reads Paused at cap and the question keeps its own.
+    expect(chips([waiting("w0", 1, "Asked you: which?"), pausedRow(), waiting("e1:paused", 3, WAITING)], "budget")).toEqual(["Input required", null, "Paused at cap"]);
   });
   it("an approval relabels no waiting row: its own row carries Approval required, and an answered question keeps its chip", () => {
     // An approval waits on a tool_approval_requested row (its own chip), never a `waiting` one: a question asked and
@@ -47,7 +54,7 @@ describe("the waiting row's chip, by what the run waits on", () => {
   });
   it("a question, or a run not waiting now, reads Input required, and an earlier wait keeps its own", () => {
     expect(chips([waiting("w1", 3, "Asked you: which?")], "question")).toEqual(["Input required"]);
-    expect(chips([waiting("w0", 2, "Asked you: which?"), waiting("w1", 3, WAITING)], "budget")).toEqual(["Input required", "Paused at cap"]);
+    expect(chips([waiting("w0", 1, "Asked you: which?"), pausedRow(), waiting("e1:paused", 3, WAITING)], "budget")).toEqual(["Input required", null, "Paused at cap"]);
     expect(chips([waiting("w1", 3, WAITING)])).toEqual(["Input required"]);
   });
 });
