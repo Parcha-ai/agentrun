@@ -19,6 +19,7 @@ import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { type Place, resolvePlace } from "./place.js";
 import { launchBody, type RunLaunch } from "./run-launch.js";
+import type { ApprovalDecision, RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
 import { toolingOf } from "./tools.js";
@@ -30,55 +31,10 @@ import { isObject, type Json } from "./validate.js";
 /** The store slice these writers need: the run rows, its commands, and the origin read a retry makes. */
 export type RunsStore = Pick<Store, "runs" | "command" | "commands" | "runOfOrigin">;
 
-/** How a tool call's approval was answered, as the run view folds the journal and the command rows: a person's allow or
- *  deny, a withdrawal when the run was stopped, or a cancel with the run. Its words are this module's (the refusal). */
-export type ApprovalDecision = "allow" | "deny" | "withdrawn" | "canceled";
-
-/** A run's live moment, as the run view computes it (statusOf and the predicates in the old runs.ts), for the one acceptance
- *  decision each act makes. A writer reads nothing else of the run's live state; the facts a row holds (its state, its
- *  launch cap) it reads from the store itself.
- *
- *  TODO(switch): this type and the `momentOf` that builds it move to run-view.ts (E2v, branch untangle/cutover-e2s), beside
- *  the status logic. Import it from there once E2v's sha lands; this local copy keeps the same fields until then. */
-export interface RunMoment {
-  readonly id: string;
-  readonly agentId: string;
-  readonly kind: "agentic" | "workflow";
-  /** Where an imported run came from (run.imported?.source); absent for a run started here. An imported run takes no act. */
-  readonly importedSource?: string;
-  /** A cancel is in flight (run.cancel), whether or not its end is written yet. */
-  readonly cancelled: boolean;
-  /** The run has reached a last state (statusOf: completed, failed or cancelled). */
-  readonly terminal: boolean;
-  /** Which last state, for the refusal's words (completed, failed or cancelled). */
-  readonly terminalKind?: "completed" | "failed" | "cancelled";
-  /** The message "working" predicate: the run's turn is in flight (queued, working-working, or its agent waits on the
-   *  person in its browser), so a message steers it or follows it, never answers. */
-  readonly working: boolean;
-  /** The run waits on a person's answer to a question it asked (input_required and waiting on ask_person): a message
-   *  answers it. */
-  readonly awaitingAnswer: boolean;
-  /** The run's harness takes a message mid-turn (pi and every workflow run): else a message to a working run follows the
-   *  turn as a new one (follow_up), never a steer it cannot do. */
-  readonly steers: boolean;
-  /** The run's cap as it stands now (its launch cap folded with any raise rows), or undefined when it is uncapped. */
-  readonly maxCostUsd?: number;
-  /** The run is paused at its cap: a message is refused for the same room (raise the cap first). The pause's words, which
-   *  the refusal carries, or undefined when it is not paused. */
-  readonly pausedWords?: string;
-  /** The run is paused at its cap (pausedAt): raising the cap resumes it. */
-  readonly paused: boolean;
-  /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next process, not this one. */
-  readonly live: boolean;
-  /** A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else. */
-  readonly waitsOnPerson: boolean;
-  /** The tool call that waits for approval now, if any (waitingApproval): a person's message declines it. */
-  readonly waitingApprovalId?: string;
-  /** The tool calls this run has or had waiting for approval, by id (for the not-found refusal). */
-  readonly approvalIds?: ReadonlySet<string>;
-  /** The approvals already answered, by call id, as the run view folds them (for the first-wins refusal and its words). */
-  readonly answeredApprovals?: Readonly<Record<string, { readonly decision: ApprovalDecision }>>;
-}
+/** The run view (run-view.ts) owns a run's live moment and how an approval was answered (statusOf and the predicates it
+ *  folds from the journal). The write half reads the moment and never recomputes it; both types are re-exported here so the
+ *  writers and their callers (trigger-targets.ts) import them from one place. */
+export type { ApprovalDecision, RunMoment };
 
 /** Why a message that may not answer a person's question is not sent (runs.ts WAITS_ON_A_PERSON). */
 export const WAITS_ON_A_PERSON = "The run is waiting on a person.";
