@@ -139,14 +139,14 @@ export class Agents {
     this.checkVersion(definition, 1);
     await this.checked(revision);
     await check?.(revision);
+    // The agent and its first revision in one transaction: a revision that does not write leaves no agent behind.
     let agent: Agent;
     try {
-      agent = await this.request(() => this.store.createAgent({ name: definition.name as string, ...(typeof definition.description === "string" ? { description: definition.description } : {}), ...(given !== undefined ? { id: given } : {}) }));
+      ({ agent } = await this.request(() => this.store.createAgentWith({ name: definition.name as string, ...(typeof definition.description === "string" ? { description: definition.description } : {}), ...(given !== undefined ? { id: given } : {}) }, revision)));
     } catch (error) {
       if (error instanceof AgentHomeError && error.code === "exists") throw new ApiError("agent_exists", `an agent ${given} exists here`);
       storeError(error);
     }
-    await this.request(() => this.store.commitRevision(agent.id, revision, { setCurrent: true })).catch((error) => storeError(error));
     return (await this.get(agent.id))!;
   }
 

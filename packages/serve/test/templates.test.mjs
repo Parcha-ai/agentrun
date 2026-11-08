@@ -6,9 +6,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
-import { PackageError, packageModel, readPackage, readPackages } from "../dist/templates.js";
+import { applyBodyOf, PackageError, packageModel, readPackage, readPackages } from "../dist/templates.js";
 import { FINDINGS } from "./fixtures/faux-review.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -70,6 +71,8 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ edit }) => edit("${parameters.repo} with", "${parameters.repository} with"), /\$\{parameters\.repository\} names no parameter/);
   await refused(({ edit }) => edit("effort: low", "effort: off"), /effort is one of/);
   await refused(({ edit }) => edit("tier: fast", "tier: cheap"), /model is \{tier: fast \| balanced \| strong/);
+  await refused(({ edit }) => edit("tier: fast", "tier: constructor"), /model is \{tier: fast \| balanced \| strong/);
+  await refused(({ edit }) => edit("author: { name: Parcha Labs }", "author: { name: Parcha Labs, emali: team@example.com }"), /author is \{name, email\?, url\?\}/);
   await refused(({ dir }) => rmSync(join(dir, "evals", "null-name", "graders"), { recursive: true }), /evals\/null-name: has no graders/);
   await refused(({ dir }) => writeFileSync(join(dir, "evals", "null-name", "graders", "schema.md"), "---\ntype: vibes\n---\nLooks right.\n"), /graders\/schema\.md: type is one of llm, regex/);
   await refused(({ dir }) => writeFileSync(join(dir, "evals", "null-name", "notes.txt"), "x"), /evals\/null-name\/notes\.txt: a case holds prompt\.md/);
@@ -223,4 +226,27 @@ test("code-review on a server with a GitHub MCP server saved: its tools are gran
   assert.deepEqual(agent.definition.tools, granted, "no box here, so the GitHub tools alone");
   assert.deepEqual(agent.definition.tool_settings, Object.fromEntries(granted.map((tool) => [tool, { permission: "allow" }])), "allowed, so a triggered run never waits on an ask");
   for (const tool of granted) assert.equal(agent.tools.find((x) => x.name === tool)?.permission, "allow", tool);
+});
+
+test("a parameter is read from the caller's own fields: a required one named constructor is missing from {parameters: {}}", async (t) => {
+  const dir = join(await scratch(t), "inherits");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "agent.md"), "---\nname: inherits\nversion: 1.0.0\ndescription: A parameter named as an Object property.\nparameters:\n  constructor: { type: string, required: true, description: the builder }\n---\nBuilt by ${parameters.constructor}.\n");
+  const p = readPackage(dir);
+  assert.throws(() => applyBodyOf(p, { parameters: {} }), (error) => error.extra?.fields?.some((f) => f.field === "parameters.constructor" && f.reason === "missing"));
+  assert.deepEqual(applyBodyOf(p, { parameters: { constructor: "Ada" } }).parameters, { constructor: "Ada" });
+});
+
+test("an agent whose first revision does not write is not made: POST /agents and an apply leave nothing behind", async (t) => {
+  const { api, data } = await serve(t);
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  t.after(() => db.close());
+  db.exec("CREATE TRIGGER fail_revisions BEFORE INSERT ON revisions BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  const posted = await api("POST", "/agents", { definition: { name: "Half", instructions: "Answer." } });
+  assert.equal(posted.status, 500, JSON.stringify(posted.body));
+  const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } });
+  assert.equal(applied.status, 500, JSON.stringify(applied.body));
+  assert.deepEqual((await api("GET", "/agents")).body.agents, [], "no agent without its revision");
+  db.exec("DROP TRIGGER fail_revisions");
+  assert.equal((await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" } })).status, 201, "and the store writes again once the fault is gone");
 });

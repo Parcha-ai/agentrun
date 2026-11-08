@@ -75,9 +75,10 @@ export class PackageError extends Error {
 /** Every string in `value`, deep. */
 const strings = (value: unknown): string[] => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isObject(value) ? Object.values(value).flatMap(strings) : []);
 
-/** `value` with each `${parameters.x}` in its strings replaced by the value given for x. */
+/** `value` with each `${parameters.x}` in its strings replaced by the value given for x (its own: never an inherited
+ *  name such as constructor), else nothing. */
 const filled = (value: unknown, given: Record<string, unknown>): unknown =>
-  typeof value === "string" ? value.replace(PLACEHOLDER, (_, name: string) => String(given[name] ?? ""))
+  typeof value === "string" ? value.replace(PLACEHOLDER, (_, name: string) => String(Object.hasOwn(given, name) ? given[name] ?? "" : ""))
   : Array.isArray(value) ? value.map((item) => filled(item, given))
   : isObject(value) ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, filled(item, given)]))
   : value;
@@ -144,11 +145,11 @@ export function readPackage(dir: string): Package {
   else if (typeof f.version !== "string" || !SEMVER.test(f.version)) bad(MANIFEST, "version is SemVer 2 (1.2.3)");
   if (typeof f.description !== "string" || !f.description.trim() || f.description.length > 1024) bad(MANIFEST, "description is text of 1 to 1024 characters");
   if (f.license !== undefined && typeof f.license !== "string") bad(MANIFEST, "license is an SPDX id");
-  if (f.author !== undefined && !(isObject(f.author) && typeof f.author.name === "string" && Object.values(f.author).every((v) => typeof v === "string"))) bad(MANIFEST, "author is {name, email?, url?}");
+  if (f.author !== undefined && !(isObject(f.author) && !unknownFields(f.author, ["name", "email", "url"]).length && typeof f.author.name === "string" && Object.values(f.author).every((v) => typeof v === "string"))) bad(MANIFEST, "author is {name, email?, url?}");
   if (f.repository !== undefined && !(typeof f.repository === "string" && URL.canParse(f.repository) && /^https?:$/.test(new URL(f.repository).protocol))) bad(MANIFEST, "repository is an http(s) URL");
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);
-  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer"]).length && typeof f.model.tier === "string" && f.model.tier in MODEL_TIERS && (f.model.prefer === undefined || (typeof f.model.prefer === "string" && MODEL_REF.test(f.model.prefer))))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id"}`);
+  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer"]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && (f.model.prefer === undefined || (typeof f.model.prefer === "string" && MODEL_REF.test(f.model.prefer))))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id"}`);
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
   if (tools?.some((tool) => tool.startsWith("mcp:"))) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
@@ -232,7 +233,7 @@ export function readPackage(dir: string): Package {
     }
     for (const skill of skillDirs.filter((d) => d.isDirectory())) {
       const path = `${skill.name}/${entry.name}`;
-      if (path in skills) bad(`rules/${entry.name}`, `skills/${path} has the same name, and a rule ships beside each SKILL.md`);
+      if (Object.hasOwn(skills, path)) bad(`rules/${entry.name}`, `skills/${path} has the same name, and a rule ships beside each SKILL.md`);
       else skills[path] = text(`rules/${entry.name}`);
     }
   }
@@ -302,7 +303,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Record<string
     else parameters[key] = value as string | number | boolean;
   }
   for (const [key, spec] of Object.entries(p.parameters)) {
-    if (spec.required && isObject(given) && (given[key] === undefined || given[key] === "")) issues.push({ field: `parameters.${key}`, reason: "missing", message: `parameters.${key} is required: ${spec.description}` });
+    if (spec.required && isObject(given) && (!Object.hasOwn(given, key) || given[key] === undefined || given[key] === "")) issues.push({ field: `parameters.${key}`, reason: "missing", message: `parameters.${key} is required: ${spec.description}` });
   }
   const overrides = body.overrides ?? {};
   if (!isObject(overrides)) issues.push({ field: "overrides", reason: "wrong_type", message: "overrides is an object: {model?}" });

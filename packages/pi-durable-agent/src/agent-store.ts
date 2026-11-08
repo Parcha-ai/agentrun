@@ -572,6 +572,19 @@ export class AgentStore extends AgentStoreReader {
 
   createAgent(input: { name: string; description?: string; id?: string }): Agent { return this.insertAgent(input); }
 
+  /** A new agent and its first revision, current, in one transaction: a revision that is refused or does not write leaves
+   *  no agent (createAgent, then commitRevision, would leave one with none). */
+  async createAgentWith(input: { name: string; description?: string; id?: string }, revision: NewRevision): Promise<{ agent: Agent; revision: Revision }> {
+    const { body, texts } = bodyOf(revision);
+    if (revision.note !== undefined && (typeof revision.note !== "string" || revision.note.length > 2_000)) throw invalid("the note is not text of at most 2000 characters");
+    if (revision.kind === "workflow") await this.check(body); // before a write: a refusal writes nothing
+    return this.tx(() => {
+      const agent = this.insertAgent(input);
+      const written = this.writeRevision(agent.id, revision, body, texts, { setCurrent: true });
+      return { agent: { ...agent, current: written.id }, revision: written };
+    });
+  }
+
   private insertAgent(input: { name: string; description?: string; id?: string }): Agent {
     if (typeof input?.name !== "string" || input.name.trim() === "") throw invalid("the agent needs a name");
     if (input.description !== undefined && typeof input.description !== "string") throw invalid("the description is not text");

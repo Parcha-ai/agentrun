@@ -111,3 +111,20 @@ test("a revision keeps the package it was applied from, as part of what makes it
   await assert.rejects(store.commitRevision("calc", { ...A, package: "brief" }), refused("invalid"));
   store.close();
 });
+
+test("createAgentWith makes an agent and its first revision in one transaction: a revision that does not write leaves no agent", async () => {
+  const { dir, store } = await seeded();
+  const made = await store.createAgentWith({ name: "Whole", id: "whole" }, A);
+  assert.equal(store.readAgent("whole").agent.current, made.revision.id);
+  assert.equal(made.agent.current, made.revision.id);
+  // A write that fails inside the transaction (a full disk, say), planted from another connection.
+  const db = new DatabaseSync(path.join(dir, "store.sqlite"));
+  db.exec("CREATE TRIGGER fail_revisions BEFORE INSERT ON revisions BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  await assert.rejects(store.createAgentWith({ name: "Half", id: "half" }, { ...A, instructions: "Another." }), /disk full/);
+  assert.equal(store.readAgent("half"), undefined, "no agent without its revision");
+  await assert.rejects(store.createAgentWith({ name: "Bad", id: "bad" }, { ...A, package: "x" }), refused("invalid"));
+  assert.equal(store.readAgent("bad"), undefined, "a refused revision makes no agent");
+  db.exec("DROP TRIGGER fail_revisions");
+  db.close();
+  store.close();
+});
