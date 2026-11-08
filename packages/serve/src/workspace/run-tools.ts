@@ -53,6 +53,10 @@ export type RunComputer =
   | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly groups: readonly Group[] }
   | { readonly kind: "browser"; readonly connect: () => Promise<CdpSession> };
 
+/** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
+ *  holds it waits for hand-back; a read then runs, an action then is refused (the take-over's own words). */
+export type RunHold = (ports: Pick<Hands, "screen" | "input" | "phone">) => Pick<Hands, "screen" | "input" | "phone">;
+
 /** The computer the run's folder is attached to, with its check: a sandbox, or a desktop with files and exec whose
  *  provider mounts the folder; none for any other. */
 function mountedIn(computer: RunComputer | undefined): { readonly computer: AttachableComputer; readonly check: MountCheck } | undefined {
@@ -103,8 +107,10 @@ export type RunHands = {
 
 /** The run's hands and host executors on `workspace`, attached to `computer` when its kind and provider mount the folder,
  *  with its kind's ports. `aliases`: other absolute names of the run's folder a tool call may give (the harness's
- *  scratch folder), taken as the folder. */
-export async function runHands(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[] }): Promise<RunHands> {
+ *  scratch folder), taken as the folder. `hold`: a person's hold on the computer (its take-over), given a desktop's or a
+ *  phone's ports and answering them wrapped, so a call made while the person holds it waits, and an action then is
+ *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). */
+export async function runHands(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold }): Promise<RunHands> {
   const spec = await workspace.mountSpec();
   const here = spec.kind === "bind" ? spec.path : undefined;
   const mounted = mountedIn(computer);
@@ -119,7 +125,9 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const tools = Object.fromEntries([...fileTools(), bashTool()].map((tool) => [tool.name, tool]));
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
-  const { ports, kinds } = portsOf(computer);
+  const own = portsOf(computer);
+  const held = options.hold !== undefined && (computer?.kind === "desktop" || computer?.kind === "phone") && own.kinds.length > 0;
+  const { ports, kinds } = held ? { ...own, ports: options.hold!(own.ports) } : own;
   return {
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
@@ -185,7 +193,8 @@ export function bindTools(run: RunHands, registry: RunRegistry, names: readonly 
           given = { text: "", isError: true, error: (error as Error)?.message ?? String(error) };
         }
         const said = answerText(given);
-        const isError = given.isError === true;
+        // A failure is an answer with its words in `error` (the kernel's answerOf sets no isError): an error either way.
+        const isError = given.isError === true || given.error !== undefined;
         const answer = { text: isError || SAYS_PATH.has(name) ? workspaceRelative(said, works) : said, isError };
         options.results?.set(callId, answer);
         return given.images?.length ? { ...answer, images: given.images } : answer;
@@ -226,7 +235,7 @@ export type RunBrowser = {
  * limits come only from the kernel's registry, and a browser's from pi-browser's BROWSER_TOOLS; this binds their
  * executors to the run.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly browser?: RunBrowser }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly browser?: RunBrowser; readonly hold?: RunHold }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   // pi-browser's contracts, listed for what this browser offers; with no browser, all of them, so a browser tool called
   // in another run is refused in words that name the setting.

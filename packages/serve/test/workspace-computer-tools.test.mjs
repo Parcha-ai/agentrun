@@ -137,6 +137,26 @@ test("a browser: the browser's tools are pi-browser's BROWSER_TOOLS (the same ob
   await assert.rejects(runTools(localWorkspace(root), { kind: "browser", connect }, { mode: 1, context: ctx }), /no executor for snapshot/);
 });
 
+test("a person's hold on the computer: runTools hands a desktop's or a phone's ports to the hold given, and only those", async () => {
+  const root = scratch();
+  const seen = [];
+  const takenOver = Object.assign(new Error("the person had the desktop: look at the screen again before acting"), { code: "taken_over" });
+  const hold = (ports) => {
+    seen.push(Object.keys(ports).sort());
+    return { ...ports, ...(ports.input ? { input: { actions: async () => { throw takenOver; } } } : {}), ...(ports.phone ? { phone: { ...ports.phone, tap: async () => { throw takenOver; } } } : {}) };
+  };
+  const desktop = await runTools(localWorkspace(root), { kind: "desktop", computer: fakeDesktop(root), groups: DESKTOP_GROUPS, check: { readBackOf } }, { mode: 1, context: ctx, hold });
+  const tools = desktop.hostTools(DESKTOP);
+  assert.equal((await call(tools, "desktop_screen", {})).isError, false, "a read runs through the hold");
+  assert.deepEqual(await call(tools, "desktop_input", { actions: [{ type: "move", at: [1, 1] }] }), { text: "the person had the desktop: look at the screen again before acting", isError: true });
+  assert.ok(desktop.hands.processes, "the shell's processes never pass through the hold");
+  const phone = await runTools(localWorkspace(root), { kind: "phone", computer: fakeDesktop(root), groups: PHONE_GROUPS }, { mode: 1, context: ctx, hold });
+  assert.equal((await call(phone.hostTools(["phone_tap"]), "phone_tap", { x: 1, y: 1 })).isError, true);
+  await runTools(localWorkspace(root), { kind: "browser", connect: async () => ({}) }, { mode: 1, context: ctx, hold, browser: { executors: Object.fromEntries(BROWSER_TOOLS.map((one) => [one.name, async () => ({ text: "" })])), offers: { downloads: true, upload: true, handoff: true } } });
+  await runTools(localWorkspace(root), { kind: "sandbox", computer: fakeComputer(root), check: { readBackOf } }, { mode: 1, context: ctx, hold });
+  assert.deepEqual(seen, [["input", "screen"], ["phone"]], "a browser and a sandbox never pass through it");
+});
+
 test("with no computer or a sandbox, a kind's tool is refused in words naming the setting", async () => {
   const run = await runTools(localWorkspace(scratch()), undefined, { mode: 1, context: ctx });
   assert.equal((await run.registry.invoke("desktop_screen", {}, { hands: run.hands })).error, "desktop_screen needs a desktop computer: set this agent's computer to desktop (Settings → Computers).");
