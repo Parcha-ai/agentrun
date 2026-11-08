@@ -213,6 +213,11 @@ class KernelFault extends Error {
   }
 }
 
+/** Where each pi.live value the loop observes goes: `live`, as the run's held state. */
+export function heldReporter(live: NonNullable<LoopDeps["live"]>): (value: unknown) => void {
+  return (value) => live(heldStateOf(value));
+}
+
 /** A run's held state from its pi.live document: the tools running now and the answer streaming so far. */
 function heldStateOf(value: unknown): HeldState | undefined {
   const live = (value ?? {}) as { tools?: { callId: string; name: string; status: string; arguments?: unknown; output?: string }[]; generation?: { message?: { content?: { type: string; text?: string }[] } } };
@@ -467,7 +472,7 @@ function piLoop(specOf: (claim: Claim) => PiRunSpec | Promise<PiRunSpec>, deps: 
     held?.detach();
     held = undefined;
     if (!deps.live) return;
-    const report = (value: unknown) => deps.live?.(heldStateOf(value));
+    const report = heldReporter(deps.live);
     const observation = await session.observeDoc(LiveDoc as never, conversationId, {
       // Never throws out to pi (a throw would detach it for good): a value it cannot read reports nothing held.
       advance: (call: { kind: string; value?: unknown; retired?: boolean }) => {
