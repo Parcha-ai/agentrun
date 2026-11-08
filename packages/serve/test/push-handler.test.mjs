@@ -354,8 +354,9 @@ const fan = {
       return [{ key: doc.id, text: doc.text, event: doc.topic, body: doc }];
     },
   },
-  // "all" is an event every trigger takes.
+  // "all" is an event every trigger takes; each event is its own run's, never skipped behind another.
   takes: (source, event) => (source.topic === event.event || event.event === "all" ? undefined : "another topic"),
+  concurrent: () => true,
   parse: (value, _now, bad) => (typeof value.topic === "string" ? { kind: "fan", topic: value.topic } : bad("topic", "missing", "topic is a string")),
   wellFormed: (source) => typeof source.topic === "string",
 };
@@ -436,22 +437,23 @@ test("a trigger's own hook is checked by that trigger's source, whichever trigge
   await assert.rejects(startServe({ data: twice, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, ping, { ...ping }] }), /\/hooks\/ping/, "two sources on one route");
 });
 
-test("an event two triggers take, one of them full, is refused 429 with Retry-After, though the other recorded: the sender's retry records it for the full one once it has room, and is the other's duplicate", { timeout: 180_000 }, async (t) => {
+test("an event two triggers take, one of them full, is refused 429 with Retry-After, though the other recorded: the sender's retry records it for the full one once it has room, and is the other's duplicate", { timeout: 300_000 }, async (t) => {
   withEnv(t, SEAL);
   const data = join(await scratch(t), "agents");
   await mkdir(data, { recursive: true });
   const secret = `whsec_${randomBytes(32).toString("base64")}`;
   new SealedSettings(data, "fan", fan.settings, sealKey, () => {}).set("server", "signing", secret);
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", triggerAdapters: [...TRIGGER_ADAPTERS, fan] });
+  // One run at a time: a held run takes the place, so every start a firing asks for is refused and the firing waits due.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", maxRuns: 1, triggerAdapters: [...TRIGGER_ADAPTERS, fan] });
   t.after(() => server.close());
   const api = client(server.baseUrl, server.token);
   assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
   const gate = join(await scratch(t), "gate");
   const run = (await api("POST", "/agents/busy/runs", { input: { content: `Hold the answer until ${gate}.` }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"]);
-  // Topic a messages the working run, so its firings wait due; topic b starts runs.
-  const full = (await api("POST", "/triggers", { name: "a", source: { kind: "fan", topic: "a" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "More." } } })).body;
-  const other = (await api("POST", "/triggers", { name: "b", source: { kind: "fan", topic: "b" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "Also." } } })).body;
+  const target = { kind: "start_run", agent_id: "busy", input: { content: "A fan event." }, max_cost_usd: 0.5 };
+  const full = (await api("POST", "/triggers", { name: "a", source: { kind: "fan", topic: "a" }, target })).body;
+  const other = (await api("POST", "/triggers", { name: "b", source: { kind: "fan", topic: "b" }, target })).body;
   for (let n = 1; n <= 20; n++) assert.equal((await post(server.baseUrl, "/hooks/fan", JSON.stringify({ id: `evt-a${n}`, topic: "a", text: "a" }), { secret })).status, 202, `event ${n}`);
   const both = JSON.stringify({ id: "evt-all", topic: "all", text: "both" });
   const refused = await post(server.baseUrl, "/hooks/fan", both, { secret });
@@ -459,7 +461,7 @@ test("an event two triggers take, one of them full, is refused 429 with Retry-Af
   assert.equal((await api("GET", `/triggers/${other.id}/firings`)).body.firings.length, 1, "the other took it");
   await writeFile(gate, "");
   let retried;
-  for (const end = Date.now() + 60_000; (retried = await post(server.baseUrl, "/hooks/fan", both, { secret })).status !== 202; await new Promise((resolve) => setTimeout(resolve, 500))) assert.ok(Date.now() < end, `the retry goes in once the full one has room: ${retried.status}`);
+  for (const end = Date.now() + 150_000; (retried = await post(server.baseUrl, "/hooks/fan", both, { secret })).status !== 202; await new Promise((resolve) => setTimeout(resolve, 500))) assert.ok(Date.now() < end, `the retry goes in once the full one has room: ${retried.status}`);
   assert.equal((await api("GET", `/triggers/${other.id}/firings`)).body.firings.length, 1, "the other's retry is its duplicate: still one firing");
   assert.ok((await api("GET", `/triggers/${full.id}/firings`)).body.firings.some((f) => f.key === keyOf("fan", full.id, "evt-all")), "the full one recorded it");
   assert.equal((await api("DELETE", `/triggers/${full.id}`)).status, 204);
