@@ -48,13 +48,13 @@ export const isWorkspaceError = (error: unknown, code?: WorkspaceErrorCode): err
   error instanceof WorkspaceError && (code === undefined || error.code === code);
 
 /** One entry of a directory. Only files and directories are listed: a symbolic link, a pipe or a socket is left out.
- *  `modifiedMs`: when it last changed, in milliseconds since the epoch. `unreadable`: a file this backend sees but
+ *  `mtimeMs`: when it last changed, in milliseconds since the epoch. `unreadable`: a file this backend sees but
  *  cannot read (another user on this machine made it private), so a read of it is REFUSED. */
 export type Entry = {
   readonly name: string;
   readonly kind: "file" | "dir";
   readonly size: number;
-  readonly modifiedMs: number;
+  readonly mtimeMs: number;
   readonly unreadable?: true;
 };
 

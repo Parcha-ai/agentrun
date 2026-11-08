@@ -297,11 +297,11 @@ class LocalWorkspace implements Workspace {
       try {
         const entries = await Promise.all((await readdir(held.self)).map(async (name): Promise<Entry | undefined> => {
           const stats = await lstatOrNot(held.at(name));
-          if (stats?.isDirectory()) return { name, kind: "dir", size: 0, modifiedMs: stats.mtimeMs };
+          if (stats?.isDirectory()) return { name, kind: "dir", size: 0, mtimeMs: stats.mtimeMs };
           if (!stats?.isFile()) return undefined;
           // Only a flag for the listing: the read itself is what refuses (REFUSED, permission denied).
           const readable = await access(held.at(name), constants.R_OK).then(() => true, () => false);
-          return { name, kind: "file", size: stats.size, modifiedMs: stats.mtimeMs, ...(readable ? {} : { unreadable: true as const }) };
+          return { name, kind: "file", size: stats.size, mtimeMs: stats.mtimeMs, ...(readable ? {} : { unreadable: true as const }) };
         }));
         return entries.filter((entry): entry is Entry => entry !== undefined).sort((a, b) => byName(a.name, b.name));
       } catch (error) {

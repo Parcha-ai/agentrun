@@ -295,8 +295,8 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
         const page = await value(call("files.list", { path: abs, depth: 1, offset }), rel);
         for (const entry of page.entries) {
           const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-          if (entry.type === "file") entries.push({ name, kind: "file", size: entry.size, modifiedMs: entry.mtimeMs });
-          else if (entry.type === "dir") entries.push({ name, kind: "dir", size: 0, modifiedMs: entry.mtimeMs });
+          if (entry.type === "file") entries.push({ name, kind: "file", size: entry.size, mtimeMs: entry.mtimeMs });
+          else if (entry.type === "dir") entries.push({ name, kind: "dir", size: 0, mtimeMs: entry.mtimeMs });
         }
         if (!page.truncated || page.entries.length === 0) break;
         offset += page.entries.length;

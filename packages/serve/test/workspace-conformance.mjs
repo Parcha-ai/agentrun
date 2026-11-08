@@ -92,7 +92,7 @@ export function suite(name, make) {
       assert.deepEqual(await workspace.list("z/y"), []);
     });
 
-    test("list gives each entry's last change (modifiedMs, ms since the epoch): a later write moves it on", async () => {
+    test("list gives each entry's last change (mtimeMs, ms since the epoch): a later write moves it on", async () => {
       const { workspace } = await fresh();
       // A backend's clock (a disk's servers) may be a little off this machine's: two seconds either way.
       const before = Date.now() - 2000;
@@ -100,14 +100,14 @@ export function suite(name, make) {
       await workspace.mkdir("d");
       const first = await workspace.list("");
       for (const entry of first) {
-        assert.ok(Number.isFinite(entry.modifiedMs), `${entry.name}: a number, not ${entry.modifiedMs}`);
-        assert.ok(entry.modifiedMs >= before && entry.modifiedMs <= Date.now() + 2000, `${entry.name}: ${new Date(entry.modifiedMs).toISOString()} is about now`);
+        assert.ok(Number.isFinite(entry.mtimeMs), `${entry.name}: a number, not ${entry.mtimeMs}`);
+        assert.ok(entry.mtimeMs >= before && entry.mtimeMs <= Date.now() + 2000, `${entry.name}: ${new Date(entry.mtimeMs).toISOString()} is about now`);
         assert.equal(entry.unreadable, undefined, `${entry.name}: a file the workspace wrote reads`);
       }
       await sleep(1100);
       await workspace.write("a.txt", "two");
       const again = (await workspace.list("")).find((e) => e.name === "a.txt");
-      assert.ok(again.modifiedMs > first.find((e) => e.name === "a.txt").modifiedMs, "a write moves the file's time on");
+      assert.ok(again.mtimeMs > first.find((e) => e.name === "a.txt").mtimeMs, "a write moves the file's time on");
     });
 
     test("mkdir makes a directory and its parents; one already there is fine; a file in the way is EXISTS", async () => {

@@ -17,7 +17,7 @@ export const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 
 export type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
 
 const viewOf = (path: string, entry: Entry): FileView => ({
-  path, size_bytes: entry.size, modified_at: new Date(entry.modifiedMs).toISOString(), content_type: typeOf(path) ?? null, ...(entry.unreadable ? { unreadable: true as const } : {}),
+  path, size_bytes: entry.size, modified_at: new Date(entry.mtimeMs).toISOString(), content_type: typeOf(path) ?? null, ...(entry.unreadable ? { unreadable: true as const } : {}),
 });
 
 /** A folder the list skips, saying nothing: not there, a link on the way, or one this server may not enter. A backend
