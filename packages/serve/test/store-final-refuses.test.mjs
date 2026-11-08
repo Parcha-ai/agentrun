@@ -3,6 +3,7 @@
 // run (RunFinal), so a row left untaken by the end would stay so for good; a runner that dies right after the end leaves
 // none. Both writes that end a run: runs.update, and a journal commit that lands a final run patch.
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
@@ -26,6 +27,43 @@ test("runs.update to a final state refuses the run's other untaken rows with the
     assert.ok(now.takenAt !== null, `row ${row.id} settled in the same write: ${JSON.stringify(now)}`);
     assert.equal(now.refused, endedReason("stopped"));
   }
+});
+
+/** A test-only trigger on the store's file that aborts any write refusing a command row: the end and its refusals must
+ *  stand or fall together, so with the trigger the whole end rolls back (the run not final, its stop untaken). Were the
+ *  refusals a write of their own after the end, the run would land final while they failed. */
+function refusalsAbort(file) {
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TRIGGER test_no_refusal BEFORE UPDATE OF refused ON commands WHEN NEW.refused IS NOT NULL BEGIN SELECT RAISE(ABORT, 'a refusal aborted by the test'); END");
+  db.close();
+}
+
+test("runs.update to a final state and its refusals are one transaction: a refusal that fails rolls the end back", async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const raise = await store.command("run-1", { kind: "raise", body: { capUsd: 5 } });
+  const stop = await store.command("run-1", { kind: "stop" });
+  refusalsAbort(file);
+  await assert.rejects(store.runs.update(claim, { state: "stopped", summary: "stopped by a person" }, { take: [stop.id] }), /a refusal aborted by the test/);
+  assert.equal((await store.runs.get("run-1")).state, "running", "the end rolled back with its refusal: not final");
+  assert.equal((await commandRow(store, stop.id)).takenAt, null, "its stop untaken");
+  assert.equal((await commandRow(store, raise.id)).takenAt, null, "the raise untaken");
+});
+
+test("a journal commit's final run patch and its refusals are one transaction: a refusal that fails rolls the end back", async (t) => {
+  const { store, file } = await storeOn(t);
+  await queued(store);
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  const steer = await store.command("run-1", { kind: "steer", body: { text: "too late" } });
+  const journal = store.journal(claim);
+  await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
+  refusalsAbort(file);
+  const end = await journal.mintId();
+  journal.stage({ run: { state: "ended" }, effect: end });
+  await assert.rejects(commitWrites(journal, [{ type: "entry", value: { id: end, conversationId: 1, kind: "agentrun.end", data: { state: "ended" } } }], BACKGROUND_CONTEXT), /a refusal aborted by the test/);
+  assert.equal((await store.runs.get("run-1")).state, "running", "the end rolled back with its refusal: not final");
+  assert.equal((await commandRow(store, steer.id)).takenAt, null, "the steer untaken");
 });
 
 test("runs.update that leaves the run running refuses nothing", async (t) => {
