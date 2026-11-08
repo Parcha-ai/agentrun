@@ -72,6 +72,8 @@ export interface HelloResult {
 	/** Go's name for the architecture: amd64, arm64. */
 	arch: string;
 	groups: Group[];
+	/** The DISPLAY a desktop's screen and input methods drive, such as ":99"; absent on any other computer. */
+	display?: string;
 }
 
 export type PingParams = Record<string, never>;

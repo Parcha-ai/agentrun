@@ -78,6 +78,8 @@ type HelloResult struct {
 	Kind    string   `json:"kind"`
 	Arch    string   `json:"arch"`
 	Groups  []string `json:"groups"`
+	// Display is the DISPLAY a desktop's screen and input methods drive, such as ":99"; absent on any other computer.
+	Display string `json:"display,omitempty"`
 }
 
 type ExecRunParams struct {
@@ -103,11 +105,11 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 	}
 	handlers := map[string]rpc.Handler{
 		"hello": func(context.Context, json.RawMessage) (any, error) {
-			kind, groups := Kind, slices.Clone(Groups)
+			kind, groups, name := Kind, slices.Clone(Groups), ""
 			if extra := display.Groups(); len(extra) > 0 {
-				kind, groups = "desktop", append(groups, extra...)
+				kind, groups, name = "desktop", append(groups, extra...), display.Name()
 			}
-			return HelloResult{Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups}, nil
+			return HelloResult{Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil

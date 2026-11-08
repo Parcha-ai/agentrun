@@ -61,24 +61,25 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 	if (!Array.isArray(probe.sockets)) return t.assert(false, "the probe reported no list of the path unix sockets a program can connect to (a computerd too old for probe --sockets), so the socket fence could not run");
 	const connects = probe.sockets.map(String);
 	t.observe(`path unix sockets a tool can connect to: ${connects.join(", ") || "none"}`);
-	// A desktop's tools draw on its display: the one X socket of the daemon's own DISPLAY is the computer's own too.
+	// A desktop's tools draw on its display: the one X socket of the display its hello names is the computer's own too.
 	const own = [...OWN_SOCKETS];
 	if (t.provider.capabilities().kind === "desktop") {
 		const display = await displaySocket(client ?? t.client);
 		if (display !== undefined) own.push(display);
-		else t.observe("the desktop's display socket: not known (the daemon's environment names no DISPLAY of the form :N)");
+		else t.observe("the desktop's display socket: not known (its hello names no display of the form :N)");
 	}
 	const other = connects.filter((path) => !own.includes(path));
 	t.assert(other.length === 0, `a program of the computer's user connects to path unix sockets that are not the computer's own (${own.join(", ")}): ${other.join(", ")}`);
 }
 
-/** The X socket of the daemon's own DISPLAY (:N or :N.S, /tmp/.X11-unix/XN), read from its /proc/self/environ. */
+/**
+ * The X socket of the display a desktop's hello names (:N or :N.S, /tmp/.X11-unix/XN). Asked of the daemon itself: its
+ * /proc/self/environ is root's once init drops to its programs' uid (non-dumpable), so it is never read.
+ */
 async function displaySocket(client: ComputerClient): Promise<string | undefined> {
-	const read = await client.call("files.read", { path: "/proc/self/environ" });
-	if (!read.ok) return undefined;
-	const environ = Buffer.from(read.value.data, "base64").toString("utf8").split("\0");
-	const display = environ.find((entry) => entry.startsWith("DISPLAY="))?.slice("DISPLAY=".length);
-	const number = /^:(\d{1,4})(?:\.\d{1,4})?$/.exec(display ?? "")?.[1];
+	const hello = await client.call("hello", { client: "agentrun-computer conformance" });
+	if (!hello.ok) return undefined;
+	const number = /^:(\d{1,4})(?:\.\d{1,4})?$/.exec(hello.value.display ?? "")?.[1];
 	return number === undefined ? undefined : `/tmp/.X11-unix/X${number}`;
 }
 
