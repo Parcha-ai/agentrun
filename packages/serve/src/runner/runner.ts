@@ -212,9 +212,14 @@ export function startRunner(options: RunnerOptions): Runner {
           if (held.stopping || held.ending || held.fence.lost || killed) break;
           // A row another delivery handed on since the runner's read is not handed on again.
           if (row.id <= held.cursor) continue;
-          held.cursor = Math.max(held.cursor, row.id);
-          if (row.takenAt !== null) continue;
+          // The cursor moves past a row only once its delivery went through (handed to the loop, and any refusal written):
+          // a delivery that throws leaves the row for the next poll, never skipped for the rest of the claim.
+          if (row.takenAt !== null) {
+            held.cursor = Math.max(held.cursor, row.id);
+            continue;
+          }
           if (row.kind === "stop") {
+            held.cursor = Math.max(held.cursor, row.id);
             stopLoop(held, { kind: "command", commandId: row.id });
             break;
           }
@@ -225,6 +230,7 @@ export function startRunner(options: RunnerOptions): Runner {
             await store.take(held.claim, row.id, "refused", outcome.refused);
             emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: outcome.refused });
           }
+          held.cursor = Math.max(held.cursor, row.id);
         }
       } catch (error) {
         if (held.sealed || killed) return;
